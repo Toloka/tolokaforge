@@ -193,6 +193,7 @@ class GrpcSubstrateClient:
                 source=hit.source,
                 score=hit.score,
                 text=hit.text,
+                title=hit.title if hit.HasField("title") else None,
             )
             for hit in response.hits
         ]

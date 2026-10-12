@@ -9,7 +9,7 @@ For roadmap, benchmark-type status, and phased delivery details, see:
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.12+
 - A model API key (OpenAI, Anthropic, Google, OpenRouter, etc.)
 - Docker (required — the only supported runtime for tool execution)
 
@@ -32,6 +32,9 @@ PyPI install (without cloning repo):
 pip install tolokaforge
 pip install "tolokaforge[all]"  # optional full feature set
 ```
+
+tolokaforge requires litellm >= 1.93.0; an environment pinned below it must
+upgrade (see [LLM_LAYER.md § Speaking to the gateway](LLM_LAYER.md#speaking-to-the-gateway)).
 
 ## Configure API Keys
 
@@ -76,7 +79,6 @@ models:
   user:
     provider: "openai"
     name: "gpt-4o-mini"
-    temperature: 0.3
 
 orchestrator:
   workers: 1

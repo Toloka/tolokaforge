@@ -67,12 +67,19 @@ def _make_marker_writing_orchestrator(*, run_dir: Path, which: str) -> type:
 
     Simulates a budget-triggered graceful shutdown: the marker's
     ``which`` field drives the banner's ``stopped_reason``.
+
+    ``grading_completeness`` is bound inside ``run`` rather than
+    ``__init__`` because that is the real contract — the attribute is
+    published by the run, and the CLI may only read it once ``run`` has
+    returned. A stub that binds it at construction time is strictly more
+    forgiving than the orchestrator it stands in for, and would keep
+    passing if the CLI started reading the attribute too early or if a
+    ``run`` path stopped publishing it.
     """
 
     class _MarkerOrchestrator:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.tasks = [object()]
-            self.grading_completeness = complete_run()
 
         def load_tasks(self) -> None:
             return None
@@ -86,6 +93,7 @@ def _make_marker_writing_orchestrator(*, run_dir: Path, which: str) -> type:
                 "timestamp": "2026-07-15T12:00:00Z",
             }
             (output_dir / "LIMIT_HIT.json").write_text(json.dumps(marker_payload))
+            self.grading_completeness = complete_run()
             return output_dir
 
     return _MarkerOrchestrator

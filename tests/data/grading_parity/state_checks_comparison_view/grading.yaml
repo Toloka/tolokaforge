@@ -1,0 +1,29 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 1.0
+  pass_threshold: 0.5
+
+state_checks:
+  hash:
+    enabled: true
+    expect_initial_state: true
+  comparison_view:
+    version: 1
+    rules:
+      - kind: exclude_tables
+        tables: [lookup_log]
+        reason: written by the read tools; not business state
+      - kind: exclude_records
+        table: holds
+        where: { status: released }
+        reason: a released hold binds nothing
+      - kind: normalize_ids
+        table: documents
+        key: [client_id, source_id]
+        references:
+          - { table: corrections, field: document_ref }
+        # Every document, the seeded one included: a re-filed document replaces the
+        # seeded record under a new id, and only `all` keys the two alike.
+        scope: all
+        reason: a re-filed document gets a new id

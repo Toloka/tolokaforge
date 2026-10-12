@@ -204,21 +204,22 @@ class UserSimulatorConfig(BaseModel):
 
 
 # =============================================================================
-# Search / TypeSense
+# Search
 # =============================================================================
 
 class SearchPlane(str, Enum):
-    """Which plane serves a task's ``documents_path``."""
+    """Built-in names `SearchConfig.plane` carries — constants, not a closed set."""
     TYPESENSE = "typesense"                       # The runner registers a search client
     RAG_SERVICE = "rag_service"                   # rag-service indexes the bundled corpus
+    BM25 = "bm25"                                 # Okapi BM25 in the runner process
 
 
 class SearchConfig(BaseModel):
-    """Configuration for knowledge base search (TypeSense)."""
+    """Configuration for knowledge base search."""
     enabled: bool = False                         # This task needs rag-service
-    plane: Optional[SearchPlane] = None           # Which plane serves documents_path
+    plane: Optional[str] = None                   # What serves documents_path (see below)
     domain_name: Optional[str] = None             # "external_retail_v3"
-    documents_path: Optional[str] = None          # Path to docindex/ directory
+    documents_path: Optional[str] = None          # Path to the corpus directory
 
     # TypeSense connection details, for a runner no stack told where TypeSense is.
     # The stack's TYPESENSE_HOST / TYPESENSE_PORT outrank them where both exist;
@@ -227,6 +228,10 @@ class SearchConfig(BaseModel):
     host: Optional[str] = None                    # "typesense" (Docker DNS alias)
     port: Optional[int] = None                    # 8108 (container port)
     api_key: Optional[str] = None                 # TypeSense API key
+
+    # Left off the serialised description while at their default.
+    backend_config: Dict[str, Any] = {}           # Opaque; handed to the backend's factory
+    tool_name: str = "search_kb"                  # The agent's search tool
 
 
 # =============================================================================
@@ -277,6 +282,10 @@ class StateChecksConfig(BaseModel):
     numeric_string_fields: List[str] = Field(default_factory=list)  # per-field string folding
     id_fields: Dict[str, Union[str, List[str]]] = Field(default_factory=dict)  # per-table PK: one field, or an ordered component list for a composite key; absent => "id"
     relaxed_validation: bool = False              # legacy escape hatch for the id_fields check
+    compare_columns: Dict[str, Dict[str, ColumnCompareRule]] = Field(default_factory=dict)  # per-(table, column) folds, ordering, subset extras
+    auto_mask_clock_columns: bool = False         # drop write-time clock columns before hashing
+    auto_normalize_nullables: bool = False        # fold None ≡ [] ≡ {} ≡ "" before hashing
+    comparison_view: Optional[ComparisonViewConfig] = None  # one-sided pre-hash transform (docs/GRADING.md § Comparison view); left out of the dump when absent
 
     # JSONPath assertions
     jsonpath_checks: List[Dict[str, Any]] = Field(default_factory=list)
@@ -295,6 +304,7 @@ class TranscriptRulesConfig(BaseModel):
     """Transcript-based grading configuration."""
     must_contain: List[str] = Field(default_factory=list)
     disallow_regex: List[str] = Field(default_factory=list)
+    regex_engine: RegexEngineKind = "linear"   # engine for every disallow_regex pattern (docs/GRADING.md § Regex engines)
     max_turns: Optional[int] = Field(default=None, ge=1)            # a ceiling below 1 admits nothing
     min_assistant_turns: Optional[int] = Field(default=None, ge=1)  # gate: unmet → component 0.0
     tool_expectations: Optional[ToolExpectations] = None
@@ -374,6 +384,11 @@ class TaskDescription(BaseModel):
     description: str                              # Task description / user goal
     adapter_type: str                             # Open string from the adapter registry; use AdapterType.* constants for the built-ins
     schema_version: str = "1.0.0"
+    # Opt-in half-duplex budget (absent ⇒ none): one participant message is one step,
+    # a whole tool-reply batch is one environment step; see TASKS.md § Simulation step
+    # and environment-error budget
+    max_simulation_steps: Optional[int] = Field(default=None, ge=1)    # reached ⇒ max_steps
+    max_environment_errors: Optional[int] = Field(default=None, ge=1)  # reached ⇒ too_many_errors
     
     # --- System Prompt ---
     system_prompt: str                            # Full content, not file path
@@ -402,6 +417,31 @@ class TaskDescription(BaseModel):
 
     model_config = {"extra": "forbid"}
 ```
+
+### `search`: the plane, the backend's config, the tool name
+
+- **`plane`** names what serves the corpus: a search backend registered under the
+  `tolokaforge.search_backends` entry-point group (ADR-0054) — `rag_service` and
+  `bm25` are the engine's own — or `typesense`, the plane the runner serves itself for an adapter
+  that indexed the corpus host-side. `typesense` is reserved: no backend registers
+  under it. The native adapter writes the task's `initial_state.rag.backend` here.
+  The runner resolves the name at `RegisterTrial` and refuses the trial when nothing
+  is registered under it; an older image, whose `plane` is a closed enum, refuses a
+  name it predates at parse time.
+- **`enabled`** means "this task needs rag-service". It predates `plane`, and an
+  older runner image reads only it, so the native adapter emits it — `true`
+  exactly when the backend `plane` names declares the rag-service stack service.
+  A task that carries `enabled: true` and no `plane` is served by `rag_service`.
+- **`backend_config`** is the task's `initial_state.rag.backend_config`, handed to
+  the backend's factory verbatim; the engine never reads its keys.
+- **`tool_name`** is the agent's search tool when the task names one other than
+  `search_kb` (`initial_state.rag.tool.name`). The runner binds the source-less
+  tool schema of that name to the trial's search index.
+
+`backend_config` and `tool_name` are left off the serialised description while they
+hold their default (an empty mapping, `search_kb`), so a task that declares neither
+serialises without them, and an older image, which forbids a key it does not declare,
+accepts it.
 
 ---
 

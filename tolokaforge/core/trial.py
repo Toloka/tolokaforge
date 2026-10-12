@@ -45,9 +45,9 @@ class EnvEndpoints(BaseModel):
     when the run's substrate does not publish a discoverable ``db-service``
     endpoint on port 8000 — in env_manifest mode the runner-side
     ``DBServiceClient`` binds to ``DB_SERVICE_URL`` from its container
-    environment (set in the task's compose file), and ``db_json.py``
-    tools fall back to the same env var when constructed without a
-    URL. Built-in-stack mode always populates this field."""
+    environment (set in the task's compose file), and the JSON-DB
+    builtins reach db-service through that client. Built-in-stack mode
+    always populates this field."""
 
     rag_url: str | None = None
     """URL of the RAG service the runner's tool layer calls. ``None``

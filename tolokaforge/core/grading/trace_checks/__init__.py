@@ -51,7 +51,10 @@ The authored vocabulary is documented in ``docs/GRADING.md`` § "Trace Checks".
 from tolokaforge.core.grading.trace_checks.bindings import _candidates, _extracted
 from tolokaforge.core.grading.trace_checks.constraints.ordering import _VIEW_KINDS
 from tolokaforge.core.grading.trace_checks.dispatch import _HANDLERS
-from tolokaforge.core.grading.trace_checks.evaluator import evaluate_trace_checks
+from tolokaforge.core.grading.trace_checks.evaluator import (
+    compile_trace_check_patterns,
+    evaluate_trace_checks,
+)
 from tolokaforge.core.grading.trace_checks.matcher import (
     MatcherOutcome,
     _binding_operator_names,
@@ -71,6 +74,7 @@ __all__ = [
     "_candidates",
     "_extracted",
     "_operator_holds",
+    "compile_trace_check_patterns",
     "evaluate_trace_checks",
     "select_events",
 ]

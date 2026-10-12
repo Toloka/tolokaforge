@@ -2,6 +2,8 @@
   "actors": {
     "user": {
       "backstory": null,
+      "first_agent_message": null,
+      "max_tool_steps": null,
       "mode": "scripted",
       "persona": null,
       "scripted_flow": [
@@ -9,11 +11,17 @@
           "content": "Please calculate 17 times 23 and save the answer to a file called result.txt.",
           "role": "user"
         }
-      ]
+      ],
+      "simulator": null,
+      "simulator_config": null,
+      "stop_tokens": null,
+      "stop_with_text": null,
+      "tool_turns": null
     }
   },
   "adapter_settings": null,
   "adapter_type": "native",
+  "agent_prompt_contract": null,
   "category": "test",
   "description": "Calculate 17 * 23 and save the result to a file called result.txt.\n\nThis is a minimal test task designed for fast test execution.\n",
   "environment_manifest": null,
@@ -29,6 +37,8 @@
   },
   "initial_user_message": null,
   "interaction_mode": "conversational",
+  "max_environment_errors": null,
+  "max_simulation_steps": null,
   "max_turns": null,
   "metadata": {
     "complexity": null,

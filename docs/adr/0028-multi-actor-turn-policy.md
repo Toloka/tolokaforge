@@ -62,7 +62,7 @@ The factory takes a `TurnPolicyContext(user_simulator: Actor | None)` rather tha
 
 `TrialRunner` at `runner.py:317-318` today wires `should_terminate = self._agent_termination` and `user_turn = self._agent_user_turn` as callables directly into `ToolCallingLoop`. Post-ADR-0028, the runner reads `task.interaction_mode`, resolves `policy = load_turn_policy(mode)(TurnPolicyContext(user_simulator=self.user_simulator))`, and wires policy callables into the loop. The loop body has no knowledge of interaction mode — the policy encapsulates the differences. Adding a future `multi_actor` mode is a new policy registration; the loop stays untouched.
 
-The `Conductor` gates `UserSimulator(...)` construction at `conductor.py:646-668` on `task.interaction_mode == "conversational"`; under `agent_only`, no simulator is constructed and the runner receives `user_simulator=None`.
+The `Conductor` resolves the user simulator through `load_user_simulator(sim.simulator)` and constructs it only when `task.interaction_mode == "conversational"`; under `agent_only`, no simulator is constructed and the runner receives `user_simulator=None`.
 
 ### Stop protocol reuses the existing marker
 

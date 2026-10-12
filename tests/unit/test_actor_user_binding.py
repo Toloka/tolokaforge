@@ -18,6 +18,7 @@ import yaml
 from pydantic import ValidationError
 
 from tolokaforge.adapters._task_loader import load_task_yaml
+from tolokaforge.core.models import TaskDefaults, UserSimulatorConfig
 
 pytestmark = pytest.mark.unit
 
@@ -151,6 +152,236 @@ class TestActorsUserDrivesSimulator:
         assert sim.persona == "curious engineer"
         assert sim.backstory == "I just joined the ops team."
         assert len(deprecations) == 1
+
+
+class TestStopRuleDeclaration:
+    """``actors.user.stop_tokens`` / ``stop_with_text`` reach the resolved
+    simulator through every layer, and a list that cannot end a dialogue is
+    refused at load rather than on the first trial."""
+
+    _MULTI_STOP_TOKENS = ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]
+    # The built-in prompt teaches ###STOP### only; the backstory teaches the rest.
+    _MULTI_TOKEN_BACKSTORY = (
+        "Send ###TRANSFER### once the agent transfers you, and ###OUT-OF-SCOPE### when "
+        "the scenario does not say how to answer."
+    )
+
+    def test_declared_fields_reach_the_resolved_simulator(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                actors={
+                    "user": {
+                        "backstory": self._MULTI_TOKEN_BACKSTORY,
+                        "stop_tokens": self._MULTI_STOP_TOKENS,
+                        "stop_with_text": "end",
+                    }
+                }
+            ),
+        )
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert sim.stop_tokens == self._MULTI_STOP_TOKENS
+        assert sim.stop_with_text == "end"
+
+    def test_undeclared_fields_resolve_to_the_legacy_rule(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"mode": "llm"}}))
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert sim.stop_tokens == ["###STOP###"]
+        assert sim.stop_with_text == "deliver"
+
+    def test_a_project_list_and_a_task_mode_compose(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                actors={"user": {"backstory": self._MULTI_TOKEN_BACKSTORY, "stop_with_text": "end"}}
+            ),
+        )
+        task, _ = _load(
+            task_path,
+            project_task_defaults={"actors": {"user": {"stop_tokens": self._MULTI_STOP_TOKENS}}},
+        )
+        sim = task.resolve_user_simulator()
+        assert sim.stop_tokens == self._MULTI_STOP_TOKENS
+        assert sim.stop_with_text == "end"
+
+    @pytest.mark.parametrize(
+        ("tokens", "match"),
+        [
+            ([], "stop_tokens is empty"),
+            (["###STOP###", " "], "blank token"),
+            (["###STOP###", "###STOP###"], "more than once"),
+            (["###STOP###", "###STOP"], "'###STOP' inside '###STOP###'"),
+            (["###STOP###", "STOP"], "'STOP' inside '###STOP###'"),
+        ],
+    )
+    def test_a_list_that_cannot_end_a_dialogue_is_refused(
+        self, tmp_path: Path, tokens: list[str], match: str
+    ) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"stop_tokens": tokens}}))
+        with pytest.raises(ValueError, match=match):
+            load_task_yaml(task_path)
+
+    def test_an_llm_simulator_without_the_prompted_token_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path, _task_body(actors={"user": {"mode": "llm", "stop_tokens": ["###DONE###"]}})
+        )
+        with pytest.raises(ValueError, match="built-in user-simulator prompt"):
+            load_task_yaml(task_path)
+
+    def test_the_prompted_token_is_required_whichever_layer_sets_the_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """The task sets only the list; the resolved mode defaults to ``llm``."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"stop_tokens": ["###DONE###"]}}))
+        with pytest.raises(ValueError, match="built-in user-simulator prompt"):
+            load_task_yaml(task_path)
+
+    def test_a_token_the_prompt_never_names_is_refused(self, tmp_path: Path) -> None:
+        """Neither the built-in prompt nor this backstory tells the model to send
+        ###TRANSFER###, so listening for it could never end a dialogue."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                actors={
+                    "user": {
+                        "backstory": "Move my booking to Friday.",
+                        "stop_tokens": ["###STOP###", "###TRANSFER###"],
+                    }
+                }
+            ),
+        )
+        with pytest.raises(ValueError, match=r"\['###TRANSFER###'\].*never told"):
+            load_task_yaml(task_path)
+
+    def test_a_non_builtin_simulator_may_use_any_token(self, tmp_path: Path) -> None:
+        """A registered simulator owns its prompt, so the built-in prompt's rules do
+        not describe it; whether its tokens are taught is its own check."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                actors={
+                    "user": {
+                        "mode": "llm",
+                        "simulator": "custom",
+                        "stop_tokens": ["###DONE###", "###TRANSFER###"],
+                    }
+                }
+            ),
+        )
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert sim.stop_tokens == ["###DONE###", "###TRANSFER###"]
+
+    def test_a_scripted_simulator_may_use_any_token(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(actors={"user": {"mode": "scripted", "stop_tokens": ["###DONE###"]}}),
+        )
+        assert load_task_yaml(task_path)[0].resolve_user_simulator().stop_tokens == ["###DONE###"]
+
+    def test_an_unknown_stop_with_text_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"stop_with_text": "later"}}))
+        with pytest.raises(ValueError, match="stop_with_text"):
+            load_task_yaml(task_path)
+
+
+class TestToolTurnsDeclaration:
+    """``actors.user.tool_turns`` / ``max_tool_steps`` reach the resolved simulator
+    through every layer, and a step limit nothing can reach is refused."""
+
+    def test_undeclared_fields_resolve_to_shared_turns(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"mode": "llm"}}))
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert (sim.tool_turns, sim.max_tool_steps) == ("shared", 10)
+
+    def test_declared_fields_reach_the_resolved_simulator(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(actors={"user": {"tool_turns": "isolated", "max_tool_steps": 3}}),
+        )
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert (sim.tool_turns, sim.max_tool_steps) == ("isolated", 3)
+
+    def test_a_project_mode_and_a_task_limit_compose(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"max_tool_steps": 4}}))
+        defaults = TaskDefaults(actors={"user": {"tool_turns": "isolated"}})
+        task, _ = _load(task_path, project_task_defaults=defaults.model_dump(exclude_defaults=True))
+        sim = task.resolve_user_simulator()
+        assert (sim.tool_turns, sim.max_tool_steps) == ("isolated", 4)
+
+    def test_isolated_turns_without_user_tools_load(self, tmp_path: Path) -> None:
+        """An adapter can declare the mode on every task, tools or not."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"tool_turns": "isolated"}}))
+        assert load_task_yaml(task_path)[0].resolve_user_simulator().tool_turns == "isolated"
+
+    def test_a_step_limit_under_shared_turns_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"max_tool_steps": 3}}))
+        with pytest.raises(ValueError, match="never loops"):
+            load_task_yaml(task_path)
+
+    def test_a_task_opts_out_of_a_project_step_limit_with_null(self, tmp_path: Path) -> None:
+        """A project that runs isolated turns with a limit sets both for every task; a
+        task that goes back to ``shared`` drops the project's limit with ``null``."""
+        project = {"actors": {"user": {"tool_turns": "isolated", "max_tool_steps": 5}}}
+        refused = tmp_path / "refused" / "task.yaml"
+        _write_yaml(refused, _task_body(actors={"user": {"tool_turns": "shared"}}))
+        with pytest.raises(ValueError, match="write max_tool_steps: null in the task"):
+            _load(refused, project_task_defaults=project)
+
+        opted_out = tmp_path / "opted_out" / "task.yaml"
+        _write_yaml(
+            opted_out,
+            _task_body(actors={"user": {"tool_turns": "shared", "max_tool_steps": None}}),
+        )
+        task, _ = _load(opted_out, project_task_defaults=project)
+        assert task.resolve_user_simulator().tool_turns == "shared"
+
+    def test_isolated_turns_on_a_scripted_simulator_are_refused(self, tmp_path: Path) -> None:
+        """Scripted replies are authored text and never call tools, so a step mode
+        for calls it never makes describes nothing."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(actors={"user": {"mode": "scripted", "tool_turns": "isolated"}}),
+        )
+        with pytest.raises(ValueError, match="never call tools"):
+            load_task_yaml(task_path)
+
+    def test_the_resolved_step_limit_revalidates_from_its_own_dump(self) -> None:
+        """The bundle records the resolved simulator, default limit included, as
+        ``user_actor``; that record is a config its own model accepts."""
+        resolved = UserSimulatorConfig(mode="llm")
+
+        assert UserSimulatorConfig(**resolved.model_dump()) == resolved
+
+    @pytest.mark.parametrize(
+        ("user", "match"),
+        [
+            ({"tool_turns": "isolated", "max_tool_steps": 0}, "max_tool_steps"),
+            ({"tool_turns": "loop"}, "tool_turns"),
+        ],
+    )
+    def test_a_value_that_cannot_run_is_refused(
+        self, tmp_path: Path, user: dict, match: str
+    ) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": user}))
+        with pytest.raises(ValueError, match=match):
+            load_task_yaml(task_path)
 
 
 class TestFirstMessageSpellingRefused:

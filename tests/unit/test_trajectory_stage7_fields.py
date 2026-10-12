@@ -18,7 +18,7 @@ Refs:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -28,7 +28,7 @@ pytestmark = pytest.mark.unit
 
 
 def _base_kwargs() -> dict:
-    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     return {
         "task_id": "stage7-trajectory-fields",
         "trial_index": 0,

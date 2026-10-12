@@ -2,8 +2,8 @@
 
 import shlex
 import time
-from collections.abc import Sequence
-from datetime import datetime, timezone
+from collections.abc import Collection, Sequence
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge_coding_harnesses.stdout_telemetry import (
@@ -19,25 +19,37 @@ from tolokaforge_coding_harnesses.usage_log import (
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyRefused
+from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
+from tolokaforge.core.actors.tool_turns import agent_view
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
+from tolokaforge.core.actors.user_simulator import UserSimulator
+from tolokaforge.core.actors.user_stop import UserStop, UserStopRule
+from tolokaforge.core.failure_attribution import EXCLUDED_TYPED_REASONS
+from tolokaforge.core.grading.trace_timeline import (
+    TimelineInconsistencyError,
+    build_trial_timeline,
+)
 from tolokaforge.core.llm import (
     SIMULATOR_GREETING,
     GenerationResult,
     LLMClient,
     Usage,
-    UserSimulator,
 )
 from tolokaforge.core.llm.client import ParserError
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.logging_context import trial_id_scope
 from tolokaforge.core.loop import (
+    AgentLoopContext,
     LoopConfig,
+    LoopOutcome,
     MetricsSink,
     TerminationDecision,
-    ToolCallingLoop,
     UserTurnResult,
+    episode_timeout_decision,
 )
 from tolokaforge.core.models import (
+    CostByRoleMetrics,
+    CostByRoleModelMetrics,
     FirstUserMessageSource,
     Message,
     MessageRole,
@@ -62,9 +74,12 @@ from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
     LLMCallObservation,
+    LLMCallRole,
     RateLimitProbeStats,
     RunDisplayEvents,
+    conversation_session_id,
 )
+from tolokaforge.core.simulation_budget import SimulationBudget, SimulationBudgetReached
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.summarize_policy import LLMSummarizer, SummarizePolicy
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
@@ -87,12 +102,37 @@ _USAGE_READ_DETAIL_CHARS = 200
 Enough to name the cause (``cat``'s "No such file or directory" is the expected
 one) without spilling an unbounded container stream into the trial log."""
 
+BUILT_IN_AGENT_LOOP = "engine-loop"
+"""The ``tolokaforge.agent_loops`` registration of the loop this repo ships.
+
+:attr:`TrialRunner.agent_loop` defaults to it. The post-conditions read no
+loop name: the built-in loop earns its denominator-excluding reasons the way
+any other implementation does, by carrying the evidence
+:func:`~tolokaforge.core.loop.classify_loop_error` hands it.
+"""
+
+_RECONCILIATION_DETAIL_CHARS = 400
+"""How much of a timeline reconciliation failure the log carries.
+
+Enough for the first unlinkable call id and the counts around it, without
+copying an unbounded tool name or argument blob into the trial log.
+"""
+
+
+class _BootstrapUserStop(Exception):
+    """An opening user reply ended the dialogue under the explicit end rule."""
+
+
+def _call_names(calls: list[ToolCall]) -> str:
+    """The names of *calls*, in order, for a log line or a system message."""
+    return ", ".join(call.name for call in calls)
+
 
 def _as_utc(ts: float | None) -> datetime | None:
     """``time.time()`` epoch seconds as an aware UTC datetime, ``None`` passthrough."""
     if ts is None:
         return None
-    return datetime.fromtimestamp(ts, tz=timezone.utc)
+    return datetime.fromtimestamp(ts, tz=UTC)
 
 
 class TrialToolCallRecorder:
@@ -127,7 +167,7 @@ class TrialToolCallRecorder:
                 status=status,
                 output=output,
                 latency_seconds=latency_seconds,
-                timestamp=datetime.now(tz=timezone.utc),
+                timestamp=datetime.now(tz=UTC),
             )
         )
 
@@ -154,6 +194,41 @@ catching is a *multiple*: the live drifts that motivated this were 1.4x, 2.5x
 and 4.6x.
 """
 
+_COST_ROLLUP_RESIDUAL_TOLERANCE_USD = 1e-9
+"""Below this, ``cost_usd − Σ(usage.calls[*].cost_usd)`` is float noise, not
+unattributed spend, so no phantom ``agent`` residual row is emitted.
+
+An LLM-loop trial's ``cost_usd`` is the running sum of the very call costs the
+rollup re-sums, so the residual is exact zero up to summation order; a real
+harness residual is the whole trial cost, orders of magnitude above this."""
+
+
+def _enabled_completion_tools(
+    tool_schemas: list[dict[str, Any]], sourced_tool_names: Collection[str] = ()
+) -> frozenset[str]:
+    """The completion-tool names among *tool_schemas*, per the builtin registry.
+
+    Read off the tool surface the model is actually offered rather than off the
+    run config, so the termination seam and the schema list can never disagree
+    about which tools can end an episode.
+
+    *sourced_tool_names* are the offered tools the trial reconstructed from a
+    :class:`~tolokaforge.runner.models.ToolSource` — a pack's or an adapter's
+    own implementation, which the builtin registry knows nothing about. The
+    name alone does not make a tool the end-of-episode signal: a pack shipping
+    its own ``submit`` would otherwise end the trial at the call site, before
+    the tool it actually named ever ran.
+    """
+    # Deferred: importing the builtin package pulls every tool driver, and this
+    # module is on the orchestrator's import path well before any tool is built.
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    sourced = set(sourced_tool_names)
+    names = {schema.get("function", {}).get("name", "") for schema in tool_schemas}
+    return frozenset(
+        name for name in names if name not in sourced and builtin_registry.is_completion(name)
+    )
+
 
 class TrialRunner:
     """Runs a single trial of a task"""
@@ -167,6 +242,8 @@ class TrialRunner:
         tool_executor: ToolExecuting,
         tool_schemas: list[dict[str, Any]],
         max_turns: int = 50,
+        max_simulation_steps: int | None = None,
+        max_environment_errors: int | None = None,
         turn_timeout_s: int = 60,
         episode_timeout_s: int = 1200,
         stuck_detector: StuckDetector | None = None,
@@ -177,8 +254,14 @@ class TrialRunner:
         events: RunDisplayEvents = _NULL_EVENTS,
         probe_stats: RateLimitProbeStats | None = None,
         interaction_mode: InteractionMode = "conversational",
+        agent_loop: str = BUILT_IN_AGENT_LOOP,
         tool_output_max_chars_by_tool: dict[str, int] | None = None,
         loop_observer: "LoopObserver | None" = None,
+        sourced_tool_names: Collection[str] = (),
+        user_stop: UserStopRule = UserStopRule(),
+        user_tool_turns: UserToolTurnRule = UserToolTurnRule(),
+        first_agent_message: str | None = None,
+        trace_id: str | None = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -187,14 +270,28 @@ class TrialRunner:
         self.tool_executor = tool_executor
         self.tool_schemas = tool_schemas
         self.max_turns = max_turns
+        self.max_simulation_steps = max_simulation_steps
+        self.max_environment_errors = max_environment_errors
+        self._simulation_budget: SimulationBudget | None = None
         self.turn_timeout_s = turn_timeout_s
         self.episode_timeout_s = episode_timeout_s
         self.stuck_detector = stuck_detector
+        # The enabled agent tools whose call ends the episode. Empty unless an
+        # operator put a completion tool in ``tools.agent.enabled`` *and* the
+        # trial reconstructed it as the builtin, which is what keeps this seam
+        # inert for every pack that terminates through its user simulator and
+        # for one that ships a tool of the same name.
+        self._completion_tools = _enabled_completion_tools(tool_schemas, sourced_tool_names)
         self.user_tool_executor = user_tool_executor
         self.request_limiter = request_limiter
         self.verbose = verbose
         self.strict = strict
         self.interaction_mode = interaction_mode
+        # Name in the ``tolokaforge.agent_loops`` entry-point group. :meth:`run`
+        # resolves it to the loop that drives the agent's turns before the turn
+        # cycle starts; the orchestrator refuses an unregistered name at run
+        # start, ahead of any trial.
+        self.agent_loop = agent_loop
         self._events = events
         self.tool_output_max_chars_by_tool = tool_output_max_chars_by_tool
         # Non-``None`` only under rate-limit probe mode. Shared by the agent and
@@ -203,6 +300,26 @@ class TrialRunner:
         self._probe_stats = probe_stats
         # Live tracing (ADR-0047): the trial's observer bound to the agent role, or None.
         self._loop_observer = loop_observer
+        self._user_stop = user_stop
+        self._user_tool_turns = user_tool_turns
+        if (
+            max_simulation_steps is not None or max_environment_errors is not None
+        ) and not user_tool_turns.isolated:
+            raise ValueError(
+                "max_simulation_steps / max_environment_errors require isolated user-tool turns"
+            )
+        # ``actors.user.first_agent_message``: written as the transcript's first
+        # message, ahead of turn 0, when set. The message written is kept, so the
+        # turn counts can leave out the one assistant message no model generated.
+        self._first_agent_message = first_agent_message
+        self._opening_line: Message | None = None
+        # The trial attempt's trace id (``TrialIdentity.trace_id``); ``None`` leaves
+        # both roles' calls without a conversation identity.
+        if trace_id is not None and not trace_id.strip():
+            raise ValueError(
+                f"TrialRunner trace_id must be a non-empty id or None, got {trace_id!r}"
+            )
+        self._trace_id = trace_id
 
         self.messages: list[Message] = []
         self.tool_call_recorder = TrialToolCallRecorder()
@@ -241,12 +358,12 @@ class TrialRunner:
         # One entry per dispatched user turn the reply guard did not accept on
         # its first generation, carried onto the trajectory.
         self._user_reply_guard_events: list[UserReplyGuardEvent] = []
-        # Set when the simulator emits a substantive final reply glued to the
-        # ``###STOP###`` token in the same message. On the next user turn the
-        # runner terminates before calling the simulator so the agent gets
-        # exactly one more turn to act on the delivered reply, then the loop
-        # ends with ``USER_STOP``.
-        self._user_stop_pending: bool = False
+        # Set when the simulator emits a substantive final reply glued to a stop
+        # token in the same message and the rule says ``deliver``. On the next
+        # user turn the runner terminates before calling the simulator so the
+        # agent gets exactly one more turn to act on the delivered reply, then
+        # the loop ends with ``USER_STOP``.
+        self._pending_user_stop: UserStop | None = None
 
     @property
     def effective_system_prompt(self) -> str | None:
@@ -358,9 +475,23 @@ class TrialRunner:
             )
 
             self.start_time = time.time()
-            start_ts = datetime.now(tz=timezone.utc)
+            if self.max_simulation_steps is not None or self.max_environment_errors is not None:
+                if self.agent_loop != BUILT_IN_AGENT_LOOP:
+                    raise ValueError(
+                        "the opt-in simulation budget requires the built-in agent loop"
+                    )
+                self._simulation_budget = SimulationBudget(
+                    max_steps=self.max_simulation_steps,
+                    max_errors=self.max_environment_errors,
+                )
+            start_ts = datetime.now(tz=UTC)
             status = TrialStatus.COMPLETED  # Optimistic default
             termination_reason: TerminationReason | None = None
+            # What the loop returned, or ``None`` where it never returned at
+            # all. The post-conditions below check what a loop produced, so a
+            # trial that died before or inside the loop has nothing for them to
+            # read and must not be reported as a loop that broke its contract.
+            outcome: LoopOutcome | None = None
 
             # Per-trial × role observations threaded into the agent's LLM client
             # (via the loop) and into the user-simulator's ``reply`` call sites so
@@ -373,17 +504,24 @@ class TrialRunner:
                 trial_id=trial_id,
                 role="user",
                 probe_stats=self._probe_stats,
+                session_id=self._session_id("user"),
             )
 
-            try:
-                # Deferred import: the plugin registry pulls the conductor
-                # protocol, which pulls this runner module — an eager top-level
-                # import would loop.
-                from tolokaforge.core.plugin_registry import (
-                    TurnPolicyContext,
-                    load_turn_policy,
-                )
+            # Deferred import: the plugin registry pulls the conductor
+            # protocol, which pulls this runner module — an eager top-level
+            # import would loop.
+            from tolokaforge.core.plugin_registry import (
+                TurnPolicyContext,
+                load_agent_loop,
+                load_turn_policy,
+            )
 
+            # Resolved outside the ``except Exception`` below: an unregistered
+            # name is a config fault, and reporting it as this trial's status
+            # would price it as a scored agent failure.
+            loop_factory = load_agent_loop(self.agent_loop)
+
+            try:
                 policy = load_turn_policy(self.interaction_mode)(
                     TurnPolicyContext(user_simulator=self.user_simulator)
                 )
@@ -394,7 +532,7 @@ class TrialRunner:
                 )
                 self._seed_first_user_message(task_config, policy, initial_user_message)
 
-                agent_metrics_sink = _AgentMetricsSink(
+                agent_metrics_sink = _TrialMetricsSink(
                     self.metrics,
                     events=self._events,
                     trial_id=trial_id,
@@ -406,42 +544,50 @@ class TrialRunner:
                     and capabilities.context_watermark is not None
                 ):
                     summarize_policy = LLMSummarizer(self.agent_client, agent_metrics_sink)
-                outcome = ToolCallingLoop(
-                    llm_client=self.agent_client,
-                    tool_executor=self.tool_executor,
-                    tool_schemas=self.tool_schemas,
-                    validation_schemas_by_tool=self.agent_client.sanitize_tools_for_execution(
-                        self.tool_schemas
-                    ),
-                    tool_output_max_chars_by_tool=self.tool_output_max_chars_by_tool,
-                    config=LoopConfig(
-                        max_turns=self.max_turns,
-                        episode_timeout_s=self.episode_timeout_s,
-                        empty_retry_count=capabilities.empty_retry_count,
-                        output_length_retry_count=capabilities.output_length_retry_count,
-                        parser_error_retry_count=capabilities.parser_error_retry_count,
-                        tool_output_max_chars=capabilities.tool_output_max_chars,
-                        max_context_tokens=capabilities.max_context_tokens,
-                        context_watermark=capabilities.context_watermark,
-                        summarize_policy=summarize_policy,
-                    ),
-                    metrics=agent_metrics_sink,
-                    should_terminate=self._agent_termination,
-                    user_turn=lambda messages: self._policy_user_turn(policy, messages),
-                    recorder=self.tool_call_recorder,
-                    call_ids=self._call_ids,
-                    request_limiter=self.request_limiter,
-                    normalize_tool_arguments=self._normalize_tool_arguments,
-                    classify_error=self.agent_client.classify_loop_error,
-                    logger=self.logger,
-                    call_observation=LLMCallObservation(
-                        events=self._events,
-                        trial_id=trial_id,
-                        role="agent",
-                        probe_stats=self._probe_stats,
-                    ),
-                    observer=self._loop_observer,
-                ).run(system_prompt, self.messages, self.start_time)
+                loop = loop_factory(
+                    AgentLoopContext(
+                        llm_client=self.agent_client,
+                        tool_executor=self.tool_executor,
+                        tool_schemas=self.tool_schemas,
+                        validation_schemas_by_tool=self.agent_client.sanitize_tools_for_execution(
+                            self.tool_schemas
+                        ),
+                        tool_output_max_chars_by_tool=self.tool_output_max_chars_by_tool,
+                        config=LoopConfig(
+                            max_turns=self.max_turns,
+                            episode_timeout_s=self.episode_timeout_s,
+                            empty_retry_count=capabilities.empty_retry_count,
+                            reasoning_stall_retry_count=capabilities.reasoning_stall_retry_count,
+                            reasoning_stall_turn_limit=capabilities.reasoning_stall_turn_limit,
+                            output_length_retry_count=capabilities.output_length_retry_count,
+                            parser_error_retry_count=capabilities.parser_error_retry_count,
+                            tool_output_max_chars=capabilities.tool_output_max_chars,
+                            max_context_tokens=capabilities.max_context_tokens,
+                            context_watermark=capabilities.context_watermark,
+                            summarize_policy=summarize_policy,
+                        ),
+                        metrics=agent_metrics_sink,
+                        should_terminate=self._agent_termination,
+                        user_turn=lambda messages: self._policy_user_turn(policy, messages),
+                        recorder=self.tool_call_recorder,
+                        call_ids=self._call_ids,
+                        request_limiter=self.request_limiter,
+                        normalize_tool_arguments=self._normalize_tool_arguments,
+                        classify_error=self.agent_client.classify_loop_error,
+                        logger=self.logger,
+                        call_observation=LLMCallObservation(
+                            events=self._events,
+                            trial_id=trial_id,
+                            role="agent",
+                            probe_stats=self._probe_stats,
+                            session_id=self._session_id("agent"),
+                        ),
+                        observer=self._loop_observer,
+                        agent_view=agent_view if self._user_tool_turns.isolated else None,
+                        simulation_budget=self._simulation_budget,
+                    )
+                )
+                outcome = loop.run(system_prompt, self.messages, self.start_time)
 
                 status = outcome.status
                 termination_reason = outcome.termination_reason
@@ -449,6 +595,20 @@ class TrialRunner:
                     self._effective_system_prompt = outcome.captured_effective_system_prompt
                     self._effective_system_prompt_captured = True
 
+            except _BootstrapUserStop as exc:
+                termination_reason = TerminationReason.USER_STOP
+                self.messages.append(
+                    Message(role=MessageRole.SYSTEM, content=str(exc), ts=datetime.now(tz=UTC))
+                )
+            except SimulationBudgetReached as exc:
+                termination_reason = exc.reason
+                self.messages.append(
+                    Message(
+                        role=MessageRole.SYSTEM,
+                        content=str(exc),
+                        ts=datetime.now(tz=UTC),
+                    )
+                )
             except Exception as e:
                 # Catch-all for initialization errors (first-user-message generation).
                 # The simulator's opening tool calls run here, before the loop and
@@ -481,11 +641,14 @@ class TrialRunner:
                     Message(
                         role=MessageRole.SYSTEM,
                         content=f"Trial initialization error: {str(e)}. Dialogue terminated.",
-                        ts=datetime.now(tz=timezone.utc),
+                        ts=datetime.now(tz=UTC),
                     )
                 )
                 if self.strict:
                     raise
+
+            if outcome is not None:
+                termination_reason = self._audit_loop_postconditions(outcome, termination_reason)
 
             return self._finalise(
                 status=status, termination_reason=termination_reason, start_ts=start_ts
@@ -506,8 +669,9 @@ class TrialRunner:
         A harness CLI owns its own planning loop inside the container, so the
         engine's turn loop would be a second agent stacked on the first. The
         trial is one tool call instead: no LLM generation, no user turn, no
-        :class:`ToolCallingLoop`. The trajectory records *instruction* as the
-        user message and the CLI's output as the agent's single reply.
+        :class:`~tolokaforge.core.loop.AgentLoop`. The trajectory records
+        *instruction* as the user message and the CLI's output as the agent's
+        single reply.
 
         Args:
             tool_name: Tool the command runs through — the task's sole agent
@@ -544,12 +708,12 @@ class TrialRunner:
                 timeout_s=timeout_s,
             )
             self.start_time = time.time()
-            start_ts = datetime.now(tz=timezone.utc)
+            start_ts = datetime.now(tz=UTC)
             self.messages.append(
                 Message(
                     role=MessageRole.USER,
                     content=instruction,
-                    ts=datetime.now(tz=timezone.utc),
+                    ts=datetime.now(tz=UTC),
                 )
             )
 
@@ -588,7 +752,7 @@ class TrialRunner:
                 Message(
                     role=MessageRole.ASSISTANT,
                     content=output,
-                    ts=datetime.now(tz=timezone.utc),
+                    ts=datetime.now(tz=UTC),
                 )
             )
 
@@ -641,6 +805,181 @@ class TrialRunner:
             return None
         return outcomes
 
+    def _audit_loop_postconditions(
+        self, outcome: LoopOutcome, termination_reason: TerminationReason | None
+    ) -> TerminationReason | None:
+        """Check what the loop returned against the obligations of its seam.
+
+        Runs on every trial a loop returned from, whichever loop drove it. The
+        obligations :class:`~tolokaforge.core.loop.AgentLoop` states are
+        enforced by nothing at write time, and each one broken produces a
+        plausible trajectory carrying a wrong number rather than an error —
+        so they are checked here, on every run, not only under test.
+
+        Returns the trial's termination reason, downgraded where a
+        denominator-excluding one arrived with no typed evidence behind it.
+        Nothing else changes the trial: the agent's work is finished by the
+        time this runs, and
+        :func:`~tolokaforge.core.failure_attribution.classify_trial_outcome`
+        already classifies a trial grading cannot answer rather than dropping
+        it, so discarding one here would destroy evidence the run keeps.
+
+        Every finding is reported through
+        :meth:`_report_postcondition_finding`, which logs at ERROR without
+        ending the trial.
+        """
+        downgraded = self._reason_downgraded_without_typed_evidence(outcome, termination_reason)
+        self._audit_call_id_reconciliation(downgraded)
+        self._audit_metrics_sink_liveness()
+        return downgraded
+
+    def _report_postcondition_finding(self, message: str, **context: Any) -> None:
+        """Log one post-condition finding at ERROR, and leave the trial standing.
+
+        ``StructuredLogger.error`` raises under ``strict``, and these checks run
+        after the agent's work is finished and before the trajectory is
+        assembled: a raise here would take the whole trial with it, including
+        the evidence the finding describes and the remaining checks. The record
+        reaches the trial's log either way, so the finding is reported and the
+        trial finalises — the "logged, not refused" every one of these checks
+        is written to.
+        """
+        try:
+            self.logger.error(message, **context)
+        except RuntimeError:
+            return
+
+    def _reason_downgraded_without_typed_evidence(
+        self, outcome: LoopOutcome, termination_reason: TerminationReason | None
+    ) -> TerminationReason | None:
+        """Keep a denominator-excluding reason only where typed evidence earned it.
+
+        Every reason in
+        :data:`~tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS`
+        removes the trial from the measured denominator *and* produces no
+        grade, so a loop free to emit one from nothing can delete its own
+        failures from the run's results with nothing in the output to show it.
+        The evidence rides the outcome as
+        :attr:`~tolokaforge.core.loop.LoopOutcome.excluding_reason_evidence`; an
+        outcome leaving it ``None`` is an outcome that claims the exclusion
+        rather than earning it, and
+        :data:`~tolokaforge.core.models.TerminationReason.ERROR` is the counted
+        reason it becomes — ``HARNESS_ERROR`` rather than ``MEASURED``, because
+        a loop that ends a trial on an unevidenced provider fault is a defect
+        of ours and belongs in the denominator as one.
+
+        Every loop is held to it, the built-in one included. A loop that routes
+        its exceptions through ``context.classify_error`` is handed the evidence
+        on the :class:`~tolokaforge.core.loop.TerminationDecision` it already
+        copies the reason from, so the rule costs a conforming implementation
+        one field rather than a typing judgement of its own.
+        """
+        if termination_reason not in EXCLUDED_TYPED_REASONS:
+            return termination_reason
+        if outcome.excluding_reason_evidence is not None:
+            return termination_reason
+        self._report_postcondition_finding(
+            "The agent loop ended this trial on a reason that excludes it from the "
+            "measured denominator, but carried no typed evidence for it — counting "
+            "the trial instead",
+            agent_loop=self.agent_loop,
+            claimed_termination_reason=termination_reason.value,
+            counted_as=TerminationReason.ERROR.value,
+            remedy=(
+                "carry TerminationDecision.excluding_reason_evidence from "
+                "context.classify_error onto LoopOutcome.excluding_reason_evidence, "
+                "or name the empty-completion observation behind the reason"
+            ),
+        )
+        return TerminationReason.ERROR
+
+    def _audit_call_id_reconciliation(self, termination_reason: TerminationReason | None) -> None:
+        """The message view and the tool-call record must describe the same calls.
+
+        :func:`~tolokaforge.core.grading.trace_timeline.build_trial_timeline`
+        is where the two views are joined, and the only place the rule for
+        joining them lives, so this runs that function rather than restating
+        it. What the check buys over waiting for grading is *when* it speaks:
+        here it names the loop that produced the disagreement, while the trial
+        is still the subject.
+
+        Logged, not refused. Grading raises on these same inputs and
+        :func:`~tolokaforge.core.failure_attribution.classify_trial_outcome`
+        reports the trial ``UNGRADEABLE`` — counted in ``measured_trials``,
+        never a pass, and visible in the output — so the trial is already
+        handled honestly. Refusing it here would instead discard a trial whose
+        state-based checks may well still grade it.
+        """
+        recorded = self.tool_call_recorder.recorded
+        declared = sum(len(message.tool_calls or []) for message in self.messages)
+        if recorded and not self._has_conversation_turns():
+            self._report_postcondition_finding(
+                "Tool-call id reconciliation could not run: the loop recorded tool "
+                "calls but appended no assistant or user turn to reconcile them "
+                "against, so nothing declares the calls the record describes",
+                agent_loop=self.agent_loop,
+                recorded_tool_calls=len(recorded),
+            )
+            return
+        try:
+            build_trial_timeline(self.messages, recorded, termination_reason)
+        except TimelineInconsistencyError as exc:
+            self._report_postcondition_finding(
+                "The loop's declared tool calls and its recorded ones do not "
+                "reconcile, so this trial cannot be graded from its trajectory",
+                agent_loop=self.agent_loop,
+                declared_tool_calls=declared,
+                recorded_tool_calls=len(recorded),
+                detail=str(exc)[:_RECONCILIATION_DETAIL_CHARS],
+                remedy=(
+                    "key every call by context.call_ids.assign(<provider id>) and use "
+                    "that one key on the assistant message, the recorder and the "
+                    "tool executor"
+                ),
+            )
+
+    def _has_conversation_turns(self) -> bool:
+        """Whether the trial carries any turn the timeline reads as a declaration.
+
+        ``role: system`` messages are harness annotations, so a trajectory of
+        nothing but those declares no tool call.
+        """
+        return any(
+            message.role in (MessageRole.ASSISTANT, MessageRole.USER) for message in self.messages
+        )
+
+    def _audit_metrics_sink_liveness(self) -> None:
+        """Assistant turns with no recorded model call means the sink never fired.
+
+        ``cost_usd`` accumulates in :meth:`_AgentMetricsSink.record_generation`
+        and nowhere else, so a loop that generates without feeding the sink it
+        was handed leaves this trial's cost at zero however much the generation
+        spent — and the run's budget cap, which sums those per-trial figures,
+        can never fire.
+        :meth:`Orchestrator._refuse_an_unenforceable_cost_limit` does not cover
+        it: that refusal asks whether the pricing table can price the run's
+        models, not whether anything is reporting usage to price.
+
+        Logged, not refused. The spend has already happened, so dropping the
+        trial recovers neither the money nor the cap, and a trial whose
+        conversation is intact still grades.
+        """
+        # The agent's opening line (``first_agent_message``) is recorded, not
+        # generated, so it is no turn a model call should have paid for.
+        assistant_turns = self._agent_generations(self.messages)
+        if not assistant_turns or self.metrics.api_calls:
+            return
+        self._report_postcondition_finding(
+            "The agent loop produced assistant turns without recording a single model "
+            "call, so this trial reports no usage and no cost and cannot be held to a "
+            "budget cap",
+            agent_loop=self.agent_loop,
+            assistant_turns=assistant_turns,
+            api_calls=self.metrics.api_calls,
+            cost_usd=self.metrics.cost_usd,
+            remedy="call context.metrics.record_generation(result) for every generation",
+        )
+
     def _finalise(
         self,
         *,
@@ -653,11 +992,12 @@ class TrialRunner:
         Shared by every way a trial can be driven, so the recorded shape does
         not depend on which one drove it.
         """
-        end_ts = datetime.now(tz=timezone.utc)
+        end_ts = datetime.now(tz=UTC)
         self.metrics.latency_total_s = time.time() - self.start_time
-        self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
+        self.metrics.turns = self._agent_generations(self.messages)
         self._apply_probe_stats()
         self._apply_harness_telemetry()
+        self._apply_cost_rollup()
 
         recorded_calls = self.tool_call_recorder.recorded
         # Both describe the agent's tool use — the scoping stuck detection
@@ -704,6 +1044,10 @@ class TrialRunner:
             user_reply_guard_events=list(self._user_reply_guard_events),
             metrics=self.metrics,
             tool_log=list(recorded_calls),
+            simulation_steps=(self._simulation_budget.steps if self._simulation_budget else None),
+            environment_errors=(
+                self._simulation_budget.errors if self._simulation_budget else None
+            ),
         )
 
     def _apply_harness_telemetry(self) -> None:
@@ -1041,7 +1385,7 @@ class TrialRunner:
             RateLimitProbeBucketMetrics(
                 # ``bucket_start`` is already an exact integer epoch second, so
                 # this render is lossless and identical across run legs.
-                bucket_start_ts=datetime.fromtimestamp(start, tz=timezone.utc),
+                bucket_start_ts=datetime.fromtimestamp(start, tz=UTC),
                 role=role,
                 model=model,
                 successful_calls=counters.successes,
@@ -1074,6 +1418,92 @@ class TrialRunner:
                 },
             )
 
+    def _apply_cost_rollup(self) -> None:
+        """Derive the per-role cost / token breakdown onto :class:`Metrics`.
+
+        Groups ``usage.calls`` by ``(role, model)`` — summing each call's cost
+        and tokens — then rolls the pairs up per role. Derived, never
+        independently accumulated, so it cannot double-count.
+
+        A coding-harness trial issues no per-call records yet carries
+        ``cost_usd > 0`` (the engine's price for the CLI-reported tokens), so a
+        call-derived rollup alone would under-count it. The reconciliation step
+        attributes the residual ``cost_usd − Σ(call costs)`` — and the matching
+        flat-token residual — to the agent role at the agent model, which makes
+        ``sum(cost_by_role[*].cost_usd) == cost_usd`` hold on every trial. On an
+        LLM-loop trial that residual is float noise and no row is emitted; a
+        ``None`` ``cost_usd`` leaves the rollup purely call-derived.
+        """
+        token_fields = (
+            "prompt_tokens",
+            "completion_tokens",
+            "reasoning_tokens",
+            "cached_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+        cost_by_pair: dict[tuple[str, str | None], float] = {}
+        tokens_by_pair: dict[tuple[str, str | None], dict[str, int]] = {}
+
+        def _ensure(key: tuple[str, str | None]) -> None:
+            cost_by_pair.setdefault(key, 0.0)
+            tokens_by_pair.setdefault(key, dict.fromkeys(token_fields, 0))
+
+        calls_cost = 0.0
+        calls_tokens = dict.fromkeys(token_fields, 0)
+        for call in self.metrics.usage.calls:
+            key = (call.role, call.model)
+            _ensure(key)
+            if call.cost_usd is not None:
+                cost_by_pair[key] += call.cost_usd
+                calls_cost += call.cost_usd
+            for field in token_fields:
+                value = getattr(call, field)
+                tokens_by_pair[key][field] += value
+                calls_tokens[field] += value
+
+        cost_usd = self.metrics.cost_usd
+        residual = None if cost_usd is None else cost_usd - calls_cost
+        if residual is not None and abs(residual) > _COST_ROLLUP_RESIDUAL_TOLERANCE_USD:
+            # The residual is agent spend the per-call records did not carry (a
+            # coding-harness trial prices CLI-reported tokens with no per-call
+            # records). Name it at the agent model where the client exposes one;
+            # an Actor whose contract omits ``model_name`` (post ADR-0051 the
+            # agent is a Protocol) attributes the residual to the agent role with
+            # an unknown model rather than raising.
+            agent_model = getattr(self.agent_client, "model_name", None)
+            if not isinstance(agent_model, str):
+                agent_model = None
+            key = ("agent", agent_model)
+            _ensure(key)
+            cost_by_pair[key] += residual
+            for field in token_fields:
+                residual_tokens = getattr(self.metrics.usage, field) - calls_tokens[field]
+                tokens_by_pair[key][field] += residual_tokens
+
+        self.metrics.cost_by_role_model = [
+            CostByRoleModelMetrics(
+                role=role,
+                model=model,
+                cost_usd=cost_by_pair[(role, model)],
+                **tokens_by_pair[(role, model)],
+            )
+            for role, model in sorted(cost_by_pair, key=lambda pair: (pair[0], pair[1] or ""))
+        ]
+
+        role_cost: dict[str, float] = {}
+        role_tokens: dict[str, dict[str, int]] = {}
+        for (role, _model), cost in cost_by_pair.items():
+            role_cost[role] = role_cost.get(role, 0.0) + cost
+            bucket = role_tokens.setdefault(role, dict.fromkeys(token_fields, 0))
+            for field in token_fields:
+                bucket[field] += tokens_by_pair[(role, _model)][field]
+
+        self.metrics.cost_by_role = [
+            CostByRoleMetrics(role=role, cost_usd=role_cost[role], **role_tokens[role])
+            for role in sorted(role_cost)
+        ]
+
     def _seed_first_user_message(
         self,
         task_config: TaskConfig,
@@ -1081,6 +1511,10 @@ class TrialRunner:
         initial_user_message: str,
     ) -> None:
         """Determine and append the first user message before the loop runs.
+
+        A task's ``first_agent_message`` is appended ahead of it, as the agent's
+        first turn: the simulator then answers that line rather than the built-in
+        greeting, and the agent reads it back as its own.
 
         Delegates to ``policy.bootstrap(...)``: a policy may short-circuit to a
         caller-provided literal (tool-use / Tau style, agent-monologue seed),
@@ -1097,6 +1531,15 @@ class TrialRunner:
         """
         seed = initial_user_message if initial_user_message.strip() else None
         decision = policy.bootstrap(task_config, seed)
+
+        if self._first_agent_message is not None:
+            self._opening_line = Message(
+                role=MessageRole.ASSISTANT,
+                content=self._first_agent_message,
+                ts=datetime.now(tz=UTC),
+            )
+            self.messages.append(self._opening_line)
+            self.logger.info("Agent opening delivered", chars=len(self._first_agent_message))
 
         first_user_calls: list[ToolCall] = []
         if decision.first_user_message is not None:
@@ -1119,9 +1562,17 @@ class TrialRunner:
                 role=MessageRole.USER,
                 content=first_user_text,
                 tool_calls=first_user_calls if first_user_calls else None,
-                ts=datetime.now(tz=timezone.utc),
+                ts=datetime.now(tz=UTC),
             )
         )
+        if self._simulation_budget is not None:
+            reason = self._simulation_budget.participant(calls_environment=bool(first_user_calls))
+            if reason is not None:
+                raise SimulationBudgetReached(reason)
+        if not first_user_calls and self._user_stop.with_text == "end":
+            stop = self._user_stop.find(first_user_text)
+            if stop is not None:
+                raise _BootstrapUserStop(f"User signaled stop ({stop.token}). Dialogue ended.")
 
     def _record_user_reply_guard(
         self,
@@ -1146,15 +1597,37 @@ class TrialRunner:
             )
         )
 
+    def _record_actor_spend(self, result: GenerationResult) -> None:
+        """Fold a non-agent actor's usage/cost/generation-ids into the trial
+        :class:`Metrics` via a :class:`_TrialMetricsSink`.
+
+        Guarded on non-empty ``usage.calls``: scripted / mock replies carry an
+        empty ``calls`` tuple, so the guard makes the fold a no-op for them and
+        only real LLM-backed actor spend reaches ``api_calls`` / ``cost_usd`` /
+        ``usage`` / ``openrouter_generation_ids``. Reusing the trial sink also
+        fires ``trial_progress`` so the live cost total tracks the final
+        ``metrics.yaml``.
+        """
+        if not result.usage.calls:
+            return
+        _TrialMetricsSink(
+            self.metrics,
+            events=self._events,
+            trial_id=f"{self.task_id}:{self.trial_index}",
+        ).record_generation(result)
+
     def _bootstrap_via_simulator(self) -> tuple[str, list[ToolCall]]:
-        """Synthesise turn 0 by dispatching the user simulator against a canned
-        agent greeting. Retries on rate limits only.
+        """Synthesise turn 0 by dispatching the user simulator against the agent's
+        opening line, or a canned agent greeting when the task declared none.
+        Retries on rate limits only.
 
         Returns the opening message text with any tool results inlined, and the
         calls that produced them. Only the tool-call half of a user turn is
-        shared with :meth:`_dispatch_user_actor`: turn 0 keeps its own
-        ``###STOP###`` reading, which seeds the token literally rather than
-        terminating the trial before the agent has spoken.
+        shared with :meth:`_dispatch_user_actor`. Under ``stop_with_text:
+        deliver`` turn 0 does not read stop tokens, so a token in the opening is
+        seeded literally rather than terminating the trial before the agent has
+        spoken; under ``end`` the caller ends the trial on a stop token in an
+        opening that called no tools (see :meth:`_seed_first_user_message`).
 
         Probe mode collapses this to one attempt. The retry loop only ever
         catches 429s (see the ``is_rate_limit`` guard below), and under probe
@@ -1174,18 +1647,14 @@ class TrialRunner:
                 "bootstrap_via_simulator requires a user simulator; the conductor "
                 "must construct one for interaction_mode='conversational'."
             )
-        greeting_context = [
-            Message(
-                role=MessageRole.ASSISTANT,
-                content=SIMULATOR_GREETING,
-                ts=datetime.now(tz=timezone.utc),
-            )
-        ]
+        greeting_context = self._greeting_context()
+        if self._user_tool_turns.isolated:
+            return self._bootstrap_isolated(self.user_simulator, greeting_context)
         init_attempts = 1 if self._rate_limit_probe_active else 4
         for attempt in range(1, init_attempts + 1):
             try:
                 first_user_result = self.user_simulator.reply(
-                    greeting_context, observation=self._user_observation
+                    greeting_context + self.messages, observation=self._user_observation
                 )
                 self._record_user_reply_guard(
                     message_index=len(self.messages),
@@ -1211,6 +1680,7 @@ class TrialRunner:
                         "a blank opening cannot seed the conversation."
                     )
                 self.logger.debug("User simulator generated first message")
+                self._record_actor_spend(first_user_result)
                 return self._run_user_tool_calls(
                     first_user_result.text, first_user_result.tool_calls
                 )
@@ -1241,17 +1711,140 @@ class TrialRunner:
 
         raise RuntimeError("Failed to generate initial user message")
 
+    def _agent_generations(self, messages: list[Message]) -> int:
+        """The assistant messages in *messages* the agent generated: all but the opening line."""
+        return sum(
+            1
+            for message in messages
+            if message.role == MessageRole.ASSISTANT and message is not self._opening_line
+        )
+
+    def _greeting_context(self) -> list[Message]:
+        """What leads the transcript in the simulator's turn-0 context.
+
+        Nothing, when the task declared a ``first_agent_message``: the transcript
+        already opens with it. Otherwise the canned :data:`SIMULATOR_GREETING`,
+        which the simulator's view prepends to every later context as well.
+        """
+        if self._first_agent_message is not None:
+            return []
+        return [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=SIMULATOR_GREETING,
+                ts=datetime.now(tz=UTC),
+            )
+        ]
+
+    def _bootstrap_isolated(
+        self, simulator: UserSimulator, greeting_context: list[Message]
+    ) -> tuple[str, list[ToolCall]]:
+        """Turn 0 under ``isolated`` tool turns: tool steps first, then the opening.
+
+        The steps are recorded into the transcript ahead of the opening message,
+        in the order they happened, and each next ask sees them after the
+        greeting. The rate-limit retry wraps each ask on its own, so a step whose
+        calls already ran is never run again.
+
+        More steps than the rule allows refuse the trial rather than end it with
+        ``USER_TOOL_LOOP_LIMIT``: the agent has not spoken yet, so a simulator
+        that loops before its opening is a defect of the harness's own actor,
+        not an outcome the agent could be graded on.
+
+        Like the rest of turn 0 this runs before the loop, so no episode-timeout
+        check interrupts it; ``max_tool_steps`` bounds it, its wall time is spent
+        from the episode budget, and the loop's first turn ends a trial whose
+        opening ran past that budget with ``TIMEOUT``.
+        """
+        opening = self._bootstrap_reply(simulator, greeting_context + self.messages)
+        steps = 0
+        while opening.tool_calls:
+            steps += 1
+            if steps > self._user_tool_turns.max_steps:
+                raise RuntimeError(
+                    f"User simulator took more than {self._user_tool_turns.max_steps} tool "
+                    "step(s) before its opening message; the dialogue cannot start. The "
+                    f"next step called {_call_names(opening.tool_calls)}."
+                )
+            self._record_user_tool_step(self.messages, opening)
+            opening = self._bootstrap_reply(simulator, greeting_context + self.messages)
+        if not opening.text.strip():
+            raise RuntimeError(
+                "User simulator bootstrap produced an empty first message; "
+                "a blank opening cannot seed the conversation."
+            )
+        self.logger.debug("User simulator generated first message", tool_steps=steps)
+        return opening.text, []
+
+    def _bootstrap_reply(
+        self, simulator: UserSimulator, context: list[Message]
+    ) -> GenerationResult:
+        """One turn-0 ask of the simulator, retried on rate limits only.
+
+        The same budget :meth:`_bootstrap_via_simulator` applies to its single
+        ask, spent per ask here. Its probe-mode collapse to one attempt is kept in
+        step with that method, though a built trial never takes it: the conductor
+        refuses isolated tool turns under probe mode.
+        """
+        init_attempts = 1 if self._rate_limit_probe_active else 4
+        for attempt in range(1, init_attempts + 1):
+            try:
+                result = simulator.reply(context, observation=self._user_observation)
+            except UserReplyRefused as exc:
+                self._record_user_reply_guard(
+                    message_index=len(self.messages),
+                    outcome=UserReplyOutcome.REFUSED,
+                    rejected=exc.rejected,
+                )
+                raise
+            except Exception as exc:
+                self._wait_to_retry_the_opening(exc, attempt, init_attempts)
+                continue
+            self._record_user_reply_guard(
+                message_index=len(self.messages),
+                outcome=UserReplyOutcome.DELIVERED,
+                rejected=result.guard_rejections,
+            )
+            self._record_actor_spend(result)
+            return result
+        raise RuntimeError("Failed to generate initial user message")
+
+    def _wait_to_retry_the_opening(self, exc: Exception, attempt: int, init_attempts: int) -> None:
+        """Back off before the next turn-0 ask, or re-raise *exc*.
+
+        Only a rate limit is retried, and only while attempts remain.
+        """
+        if not self._is_rate_limit_error(exc) or attempt >= init_attempts:
+            raise exc
+        wait_s = min(2**attempt, 12)
+        self.logger.warning(
+            "Initial user generation rate-limited; retrying",
+            attempt=attempt,
+            max_attempts=init_attempts,
+            wait_s=wait_s,
+            error=str(exc),
+        )
+        time.sleep(wait_s)
+
     def _agent_termination(
         self, result: GenerationResult, turn: int, messages: list[Message]
     ) -> TerminationDecision | None:
-        """Agent termination policy: stuck detection, and nothing else.
+        """Agent termination policy: stuck detection and the completion signal.
 
         The agent's prose is never read for a completion signal — who speaks
-        next, and whether anyone can, is the :class:`TurnPolicy`'s decision.
+        next, and whether anyone can, is the :class:`TurnPolicy`'s decision. A
+        *tool call* is read, and only a call to a tool the registry declares a
+        completion tool and the run actually enabled. That is the same shape the
+        rubric judge terminates on (``submit_report``), moved to the agent side:
+        the terminal act is an action the model takes, not a sentence it writes,
+        so a model that never narrates can still end its own episode.
+
         Stuck sets ``metrics.stuck_detected`` as a side effect, which is why it
-        lives here rather than in the policy.
+        lives here rather than in the policy. Stuck is checked first: an agent
+        that has been repeating itself has already failed, and letting a
+        ``submit`` on that turn overwrite the diagnosis would hide it.
         """
-        del result, turn, messages
+        del turn, messages
         if self.stuck_detector and self.stuck_detector.is_stuck(
             self.tool_call_recorder.recorded_for(ToolExecutorIdentity.AGENT)
         ):
@@ -1262,7 +1855,23 @@ class TrialRunner:
                 system_message="Stuck condition detected. Dialogue terminated.",
             )
 
+        if self._completion_tools:
+            for call in result.tool_calls:
+                if call.name in self._completion_tools:
+                    self.logger.info("Agent signalled completion", tool=call.name)
+                    return TerminationDecision(
+                        reason=TerminationReason.AGENT_SUBMITTED,
+                        system_message=(
+                            f"Agent called {call.name}. Episode terminated at the "
+                            "agent's own signal."
+                        ),
+                        status=TrialStatus.COMPLETED,
+                    )
+
         return None
+
+    def _session_id(self, role: LLMCallRole) -> str | None:
+        return None if self._trace_id is None else conversation_session_id(self._trace_id, role)
 
     def _policy_user_turn(self, policy: TurnPolicy, messages: list[Message]) -> UserTurnResult:
         """Route the loop's optional user turn through ``policy.next_actor``.
@@ -1292,7 +1901,7 @@ class TrialRunner:
         state = TurnState(
             messages=messages,
             last_agent_had_tool_calls=False,
-            turn_index=sum(1 for m in messages if m.role == MessageRole.ASSISTANT),
+            turn_index=self._agent_generations(messages),
         )
         decision = policy.next_actor(state)
         if decision is None:
@@ -1302,31 +1911,114 @@ class TrialRunner:
         return self._dispatch_user_actor(decision.actor, messages)
 
     def _dispatch_user_actor(self, actor: Actor, messages: list[Message]) -> UserTurnResult:
-        """Run one user actor turn: reply, ``###STOP###`` detection, user tools.
+        """Run one user actor turn: reply, stop-token detection, user tools.
 
-        Stop-token handling has two shapes:
+        Under ``isolated`` tool turns a reply that calls tools is a tool step,
+        not the turn's reply (see :meth:`_run_user_tool_steps`). A stop token
+        inside a step is not a stop, since a step is addressed to the
+        environment.
 
-        * Bare ``###STOP###`` (or the token with only whitespace before it) —
-          terminate immediately with ``USER_STOP``.
-        * Substantive text glued to ``###STOP###`` in one message — deliver the
-          pre-token text as a normal USER message, set a pending flag, and
-          terminate on the following user turn. Guarantees the agent sees the
-          final reply (e.g. a backstory-mandated verbal decline) before the
-          dialogue ends.
+        The trial's :class:`UserStopRule` names the tokens; the earliest one in the
+        reply decides. Stop-token handling has three shapes:
+
+        * Under ``stop_with_text: end``, any reply carrying a token — record the
+          reply as the simulator wrote it, token included, as the dialogue's last
+          USER message and terminate in the same turn, so the agent never answers
+          it (:meth:`_end_on_user_stop`).
+        * Under ``stop_with_text: deliver``, a bare token (or the token with only
+          whitespace before it) — terminate immediately with ``USER_STOP``.
+        * Under ``stop_with_text: deliver``, substantive text before the token —
+          deliver the pre-token text as a normal USER message, hold the stop
+          pending, and terminate on the following user turn. Guarantees the agent
+          sees the final reply (e.g. a backstory-mandated verbal decline) before
+          the dialogue ends.
         """
-        if self._user_stop_pending:
-            self.logger.info("User signaled completion (###STOP### after final reply)")
-            self._user_stop_pending = False
+        if self._pending_user_stop is not None:
+            stop = self._pending_user_stop
+            self.logger.info(f"User signaled completion ({stop.token} after final reply)")
+            self._pending_user_stop = None
             return UserTurnResult(
-                termination=TerminationDecision(
-                    reason=TerminationReason.USER_STOP,
-                    system_message="User signaled stop (###STOP### after final reply). Dialogue ended.",
-                )
+                termination=self._user_stop_decision(stop, after_final_reply=True)
             )
 
-        # Read before the dispatch: this is the position the turn's USER message
-        # will occupy, and on a stop token or a refusal the loop puts its own
-        # SYSTEM message there instead.
+        user_result = self._reply_as_user(actor, messages)
+        if self._user_tool_turns.isolated:
+            outcome = self._run_user_tool_steps(actor, messages, user_result)
+            if isinstance(outcome, TerminationDecision):
+                return UserTurnResult(termination=outcome)
+            user_result = outcome
+
+        stop = self._user_stop.find(user_result.text)
+        if stop is not None and self._user_stop.with_text == "end":
+            return self._end_on_user_stop(stop, user_result)
+        if stop is not None and stop.dropped:
+            self.logger.info(
+                f"Dropped the text after {stop.token} in the user reply",
+                dropped_chars=len(stop.dropped),
+            )
+        if stop is not None and not stop.text:
+            self.logger.info(
+                f"User signaled completion ({stop.token})",
+                dropped_tool_calls=len(user_result.tool_calls or []),
+            )
+            return UserTurnResult(termination=self._user_stop_decision(stop))
+        if stop is not None:
+            user_result.text = stop.text
+
+        user_message_text, executed_calls = self._run_user_tool_calls(
+            user_result.text, user_result.tool_calls
+        )
+        message = Message(
+            role=MessageRole.USER,
+            content=user_message_text,
+            tool_calls=executed_calls if executed_calls else None,
+            ts=datetime.now(tz=UTC),
+        )
+
+        if stop is None:
+            return UserTurnResult(message=message)
+        self.logger.info(
+            f"User sent final reply with {stop.token} — delivering reply, stop pending"
+        )
+        self._pending_user_stop = stop
+        return UserTurnResult(message=message)
+
+    def _end_on_user_stop(self, stop: UserStop, user_result: GenerationResult) -> UserTurnResult:
+        """``stop_with_text: end``: record the stop reply as written and end the dialogue.
+
+        The reply becomes the dialogue's last USER message exactly as the simulator
+        wrote it — what precedes the token, the token and whatever follows it — so
+        a transcript keeps the stop reply verbatim, and the dialogue ends in the
+        same turn, so the agent never answers it. A bare token is recorded the
+        same way. The calls on a reply with text run and are recorded on the
+        message first, their results appended after the text as on any user
+        turn that calls tools; a bare token's calls are not run.
+        """
+        calls = user_result.tool_calls if stop.text else []
+        if not stop.text:
+            self.logger.info(
+                f"User signaled completion ({stop.token})",
+                dropped_tool_calls=len(user_result.tool_calls or []),
+            )
+        user_message_text, executed_calls = self._run_user_tool_calls(user_result.text, calls)
+        message = Message(
+            role=MessageRole.USER,
+            content=user_message_text,
+            tool_calls=executed_calls if executed_calls else None,
+            ts=datetime.now(tz=UTC),
+        )
+        self.logger.info(
+            f"User sent final reply with {stop.token} — recording reply, dialogue ends"
+        )
+        return UserTurnResult(message=message, termination=self._user_stop_decision(stop))
+
+    def _reply_as_user(self, actor: Actor, messages: list[Message]) -> GenerationResult:
+        """Ask *actor* for its reply to *messages*, recording what the reply guard spent.
+
+        The guard event's index is read before the dispatch: it is the position
+        the reply's USER message will occupy, and on a bare stop token under
+        ``deliver`` or a refusal the loop puts its own SYSTEM message there instead.
+        """
         message_index = len(messages)
         try:
             user_result = actor.reply(messages, observation=self._user_observation)
@@ -1342,38 +2034,179 @@ class TrialRunner:
             outcome=UserReplyOutcome.DELIVERED,
             rejected=user_result.guard_rejections,
         )
+        self._record_actor_spend(user_result)
+        return user_result
 
-        if "###STOP###" in user_result.text:
-            pre_stop_text, _, _ = user_result.text.partition("###STOP###")
-            pre_stop_text = pre_stop_text.rstrip()
-            if not pre_stop_text:
-                self.logger.info(
-                    "User signaled completion (###STOP###)",
-                    dropped_tool_calls=len(user_result.tool_calls or []),
-                )
-                return UserTurnResult(
-                    termination=TerminationDecision(
-                        reason=TerminationReason.USER_STOP,
-                        system_message="User signaled stop (###STOP###). Dialogue ended.",
-                    )
-                )
-            self.logger.info(
-                "User sent final reply with ###STOP### — delivering reply, stop pending"
-            )
-            self._user_stop_pending = True
-            user_result.text = pre_stop_text
+    def _run_user_tool_steps(
+        self, actor: Actor, messages: list[Message], reply: GenerationResult
+    ) -> GenerationResult | TerminationDecision:
+        """Record *reply*'s tool steps until *actor* answers with text alone.
 
-        user_message_text, executed_calls = self._run_user_tool_calls(
-            user_result.text, user_result.tool_calls
+        Each step is recorded into *messages* — never the agent's wire — and the
+        actor is asked again with its results in view. Returns the text reply, or
+        the decision that ends the dialogue: a step past the rule's
+        ``max_steps``, none of whose calls run, or the episode timeout, which is
+        checked after every step.
+        """
+        steps = 0
+        while reply.tool_calls:
+            steps += 1
+            if steps > self._user_tool_turns.max_steps:
+                return self._user_tool_loop_limit_decision(reply.tool_calls)
+            try:
+                self._record_user_tool_step(messages, reply)
+            except SimulationBudgetReached as exc:
+                return TerminationDecision(
+                    reason=exc.reason,
+                    system_message=f"Simulation ended at {exc.reason.value}.",
+                )
+            timeout = episode_timeout_decision(self.start_time, self.episode_timeout_s, self.logger)
+            if timeout is not None:
+                return timeout
+            reply = self._reply_as_user(actor, messages)
+        return reply
+
+    def _user_tool_loop_limit_decision(self, unrun: list[ToolCall]) -> TerminationDecision:
+        """End the dialogue on a step past the limit, naming the calls it would have run.
+
+        The unrun step is not recorded into the transcript, so the log line and the
+        system message are where its calls stay visible.
+        """
+        limit = self._user_tool_turns.max_steps
+        self.logger.warning(
+            "User tool loop reached its step limit",
+            max_steps=limit,
+            unrun_calls=[{"name": call.name, "arguments": call.arguments} for call in unrun],
+        )
+        return TerminationDecision(
+            reason=TerminationReason.USER_TOOL_LOOP_LIMIT,
+            system_message=(
+                f"User took {limit} tool step(s) without replying; the next step's "
+                f"{len(unrun)} call(s), {_call_names(unrun)}, were not run. Dialogue terminated."
+            ),
         )
 
-        return UserTurnResult(
-            message=Message(
-                role=MessageRole.USER,
-                content=user_message_text,
-                tool_calls=executed_calls if executed_calls else None,
-                ts=datetime.now(tz=timezone.utc),
+    def _record_user_tool_step(self, messages: list[Message], result: GenerationResult) -> None:
+        """Run and record one isolated tool step: the user's calls, then a TOOL message each.
+
+        Appended to the recorded transcript as the step runs, so a failure part-way
+        leaves no executed call the transcript does not show. Each call is keyed
+        through the trial's assigner and recorded as the user's, like a ``shared``
+        user call. Results are not capped: ``tool_output_max_chars`` bounds what
+        the agent's model reads, and none of this reaches the agent.
+
+        When the executor raises, the failing call and every call after it in the
+        step still get a TOOL message before the exception propagates. The loop's
+        API-error retry can bring the same simulator back to this transcript, and
+        its provider refuses a request whose calls lack results.
+
+        Raises:
+            RuntimeError: the step carries calls and the trial has no user-side
+                executor (see :meth:`_run_user_tool_calls`).
+        """
+        if self.user_tool_executor is None:
+            raise RuntimeError(
+                f"the user simulator emitted {len(result.tool_calls)} tool call(s) "
+                f"({', '.join(call.name for call in result.tool_calls)}) and this trial has no "
+                "user-side executor to run them. The trial is built with both or neither"
             )
+        calls = [
+            call.model_copy(update={"id": self._call_ids.assign(call.id)})
+            for call in result.tool_calls
+        ]
+        messages.append(
+            Message(
+                role=MessageRole.USER,
+                content=result.text,
+                tool_calls=calls,
+                reasoning=result.reasoning,
+                ts=datetime.now(tz=UTC),
+            )
+        )
+        if self._simulation_budget is not None:
+            self._simulation_budget.participant(calls_environment=True)
+        environment_errors = 0
+        for position, call in enumerate(calls):
+            tool_start = time.time()
+            try:
+                tool_result = self.user_tool_executor.execute(
+                    call.name, call.arguments, call_id=call.id
+                )
+            except Exception as exc:
+                self._answer_a_failed_step(messages, calls[position:], exc)
+                if self._simulation_budget is not None:
+                    # The step is answered in full, so it is still the one environment
+                    # batch that closes this participant step; left pending, the loop's
+                    # API-error retry would hit the budget's "participant replied before
+                    # the pending environment batch" refusal and mask *exc*. Counted with
+                    # the errors the completed calls returned (the raised call's answer
+                    # carries no environment-error status); a limit it reaches is
+                    # enforced at the budget's next check rather than over *exc*.
+                    self._simulation_budget.environment(errors=environment_errors)
+                raise
+            tool_duration = time.time() - tool_start
+            if resolve_tool_status(tool_result) is ToolExecutionStatus.ENVIRONMENT_ERROR:
+                environment_errors += 1
+            self.tool_call_recorder.record(
+                call_id=call.id,
+                tool_name=call.name,
+                arguments=call.arguments or {},
+                executor=ToolExecutorIdentity.USER,
+                status=resolve_tool_status(tool_result),
+                output=resolve_tool_output(tool_result),
+                latency_seconds=tool_duration,
+            )
+            self.logger.debug(
+                "User tool executed",
+                tool=call.name,
+                success=tool_result.success,
+                duration_s=tool_duration,
+            )
+            content = (
+                tool_result.output
+                if tool_result.success
+                else f"Error: {resolve_tool_output(tool_result)}"
+            )
+            messages.append(
+                self._user_tool_message(call.id, content, resolve_tool_status(tool_result))
+            )
+        if self._simulation_budget is not None:
+            reason = self._simulation_budget.environment(errors=environment_errors)
+            if reason is not None:
+                raise SimulationBudgetReached(reason)
+
+    def _answer_a_failed_step(
+        self, messages: list[Message], calls: list[ToolCall], exc: Exception
+    ) -> None:
+        """TOOL messages for a step whose first remaining call raised: its error, then
+        a "not run" answer for each call after it."""
+        failed, *unrun = calls
+        messages.append(self._user_tool_message(failed.id, f"Error: {exc}"))
+        messages.extend(
+            self._user_tool_message(call.id, "Error: not run, an earlier call of this step raised.")
+            for call in unrun
+        )
+
+    @staticmethod
+    def _user_tool_message(
+        call_id: str, content: str, status: ToolExecutionStatus | None = None
+    ) -> Message:
+        return Message(
+            role=MessageRole.TOOL,
+            content=content,
+            tool_call_id=call_id,
+            tool_status=status,
+            ts=datetime.now(tz=UTC),
+        )
+
+    @staticmethod
+    def _user_stop_decision(
+        stop: UserStop, *, after_final_reply: bool = False
+    ) -> TerminationDecision:
+        when = " after final reply" if after_final_reply else ""
+        return TerminationDecision(
+            reason=TerminationReason.USER_STOP,
+            system_message=f"User signaled stop ({stop.token}{when}). Dialogue ended.",
         )
 
     def _run_user_tool_calls(
@@ -1441,9 +2274,9 @@ class TrialRunner:
         return f"{reply_text}\n\n" + "\n".join(results_text), executed
 
 
-class _AgentMetricsSink(MetricsSink):
-    """Accumulates the agent's per-call usage/cost and tool counts into the
-    trial :class:`Metrics`, preserving the original field-wise semantics.
+class _TrialMetricsSink(MetricsSink):
+    """Accumulates an in-trial actor's per-call usage/cost and tool counts into
+    the trial :class:`Metrics`, preserving the original field-wise semantics.
 
     ``Usage.__add__`` is field-wise; ``calls`` concatenate (preserving per-call
     cost_source / latency_s); ``provider_raw`` is "latest wins" per the Usage
@@ -1480,6 +2313,15 @@ class _AgentMetricsSink(MetricsSink):
         # calls did.
         if result.cost_cache_rate_fallback:
             self._metrics.cost_cache_rate_fallback = True
+        if result.reasoning_recovered_by_fallback:
+            self._metrics.reasoning_recovered_by_fallback += 1
+        if result.reasoning_channel_unknown:
+            self._metrics.reasoning_channel_unknown += 1
+        # Sticky for the same reason the cache-rate flag is: once a codec
+        # declines to replay, it declines on every turn, so a count would only
+        # restate the turn count.
+        if result.reasoning_replay_dropped:
+            self._metrics.reasoning_replay_dropped = True
         self._last_prompt_tokens = result.usage.prompt_tokens
         self._events.trial_progress(
             trial_id=self._trial_id,

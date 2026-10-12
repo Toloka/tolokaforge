@@ -1056,11 +1056,11 @@ class TestTheConfigBlockIsTheOnlyActivationChannel:
 class TestGoodputCounters:
     """The SUCCESS side, recorded from real controller runs.
 
-    ``usage.calls`` cannot answer these questions: it holds agent calls only and
-    carries no role field, so per-model goodput and latency are not computable
-    from it. In a real measurement that gap forced counting litellm log lines by
-    hand, which conflated the agent model with the user-simulator model and
-    inflated the number.
+    ``usage.calls`` cannot answer these questions: it records only served
+    responses, so the 429 / retry / wait census is absent from it. In a real
+    measurement that gap forced counting litellm log lines by hand, which
+    conflated the agent model with the user-simulator model and inflated the
+    number.
     """
 
     def _observation(

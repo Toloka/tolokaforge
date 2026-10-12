@@ -46,6 +46,20 @@ default:
     supports_seed: true
     reasoning_via_extra_body: false
 
+# Matching is first-match-wins over ``presets:`` in declaration order.
+# Gateway-prefixed routes (openrouter/…, litellm_proxy/…, self-hosted/…) reach
+# the same model through a transport prefix, so for every glob G that does not
+# start with ``*``, ``<route>/G`` resolves to the preset that owns G: add a
+# ``*/G`` sibling unless a leading-``*`` glob in the same preset already covers
+# the routed name. The prefix is anchored on a ``/`` boundary rather than
+# matched anywhere in the string, because a bare ``*grok*`` also claims foreign
+# models whose name merely CONTAINS it; a new leading-``*`` glob starts with
+# ``*/``. A model-specific preset declared ahead of its family preset also lists
+# its vendor-dropped name (``gemini-3.5-flash`` and ``*/gemini-3.5-flash``), so
+# a gateway that serves the model without the vendor segment does not land in
+# the family preset, unless its axes were measured on the OpenRouter route alone
+# (``xai_grok_4_6`` says why). Presets that route by ``match_provider`` are
+# exempt. tests/canonical/test_preset_route_prefix_routing.py enforces this.
 presets:
   # Cohere Command A+ 05-2026 (the gateway ``azure_ai`` route) — landed via
   # auto-resolve (Slack-requested integration, PR #1124). Declared BEFORE the
@@ -315,9 +329,39 @@ presets:
               budget so it often declines to think at all. "high" is the
               nearest level that reliably engages it.
 
+  anthropic_claude_sonnet_5_5:
+    match:
+      - "anthropic/claude-sonnet-5.5*"
+      - "claude-sonnet-5.5*"
+      - "*/claude-sonnet-5.5*"
+    content_policy: anthropic
+    reasoning_codec: anthropic
+    cache_policy: anthropic_ephemeral
+    params:
+      supports_seed: false
+      param_value_rules:
+        reasoning_effort:
+          medium:
+            action: override
+            with: high
+            evidence: >-
+              2026-09-29, openrouter/anthropic/claude-sonnet-5.5, engine
+              019ca16, observe 15 reps/probe:
+              extra_body.reasoning={"effort":"medium","enabled":true} surfaced
+              no StructuredReasoning on 15/15 runs
+              (test_thinking_emits_blocks 0/15), while the same anthropic
+              reasoning codec on the same OpenRouter transport passed 15/15 at
+              effort="high" (test_unsigned_thinking_replay) and 15/15 at
+              budget_tokens=4000 with SIGNED turn-1 blocks
+              (test_thinking_replay_roundtrip). The model emits structured
+              signed blocks; "medium" under-allocates the adaptive thinking
+              budget so it declines to think. "high" is the nearest level that
+              reliably engages it.
+
   anthropic:
     match:
       - "anthropic/*"
+      - "*/anthropic/*"
       - "*claude*"
     content_policy: anthropic
     reasoning_codec: anthropic
@@ -325,6 +369,25 @@ presets:
     params:
       supports_seed: false
 
+  # ``supports_sampling_params: false``: no OpenRouter endpoint applies a
+  # sampling parameter for these models except gpt-5-image*, which this preset
+  # still claims, so it loses its ``temperature`` too. Direct OpenAI applies
+  # ``temperature`` to bare gpt-5.1+ without reasoning, which is what the
+  # per-config ``supports_sampling_params: true`` escape hatch on a
+  # ``provider: openai`` config is for; it is gpt-5-image*'s only way back, as
+  # none is gateway-safe on ``provider: openrouter``. litellm
+  # 1.93.0's ``openai`` transport refuses ``temperature`` in-process for the
+  # gpt-5 and o-series names on a gateway route (``openrouter/openai/gpt-5.2``);
+  # sending none keeps the gateway and direct routes identical. 2026-10-01:
+  # OpenRouter's /api/v1/models lists neither ``temperature`` nor ``top_p`` in
+  # ``supported_parameters`` for any openai/gpt-5*, openai/gpt-6* or
+  # openai/o1|o3|o4* model except gpt-5-image / -image-mini, and a request
+  # carrying ``temperature: 0`` with ``provider.require_parameters: true``
+  # returns 404 "No endpoints found that can handle the requested parameters"
+  # for openai/gpt-5.2 and openai/o3 (200 without it). ``openai_gpt6`` declares
+  # the knob on that support list alone (litellm's transport accepts
+  # ``temperature`` for the gpt-6 names); ``openai_o_series`` shares this
+  # evidence.
   openai_gpt5:
     match:
       - "openai/gpt-5*"
@@ -332,6 +395,8 @@ presets:
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
+    params:
+      supports_sampling_params: false
 
   # openai/gpt-6-astra (and its -pro tier): the gpt-5 axes for the GPT-6 line,
   # landed by hand after the auto-integration run on PR #1511 stopped at the
@@ -354,6 +419,8 @@ presets:
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
+    params:
+      supports_sampling_params: false
 
   # x-ai/grok-4.6 — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #1161). Declared BEFORE the generic
@@ -414,13 +481,12 @@ presets:
   # hypothesis (a fenced-JSON prompt directive, measured harmful).
   xai_grok_4_6:
     match:
+      # Vendor-anchored only: ``openai_summary_replay`` rebuilds the OpenRouter
+      # ``reasoning_details`` envelope and was measured on the OpenRouter route
+      # alone. A vendor-dropped name (``grok-4.6``, ``self-hosted/grok-4.6``) is
+      # never an OpenRouter slug, so it resolves to ``xai_grok`` below.
       - "x-ai/grok-4.6*"
       - "xai/grok-4.6*"
-      # Gateway-prefixed routes (openrouter/…, litellm_proxy/…) reach the same
-      # model through a transport prefix, so the vendor segment is anchored
-      # rather than matched anywhere in the string: a bare "*grok-4.6*" also
-      # claims foreign models whose name merely CONTAINS it, and future
-      # siblings (grok-4.60, grok-4.6-fast) whose axes are unmeasured.
       - "*/x-ai/grok-4.6*"
       - "*/xai/grok-4.6*"
     schema_sanitizer: xai_grok_recursive
@@ -429,13 +495,24 @@ presets:
     reasoning_codec: openai_summary_replay
 
   xai_grok:
+    # The ``*/`` variants carry the ``openrouter/x-ai/…`` spelling a run config
+    # writes. Without them the vendor-anchored globs match only the bare name
+    # and the prefixed one falls through to ``default`` — passthrough schema,
+    # no response policy, no reasoning codec — with nothing raised.
     match:
       - "x-ai/*"
       - "xai/*"
+      - "*/x-ai/*"
+      - "*/xai/*"
       - "grok*"
+      - "*/grok*"
     schema_sanitizer: strict
     response_policy: array_dict_map
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: probed 2026-09-30,
+    # grok-4.3 returns readable reasoning that was extracted and never
+    # replayed. Siblings that emit only a ``reasoning.encrypted`` blob
+    # (grok-4.5) are unaffected — there is nothing readable to carry.
+    reasoning_codec: openai_summary_replay
 
   # qwen/qwen3.8-max — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #845). Declared BEFORE the generic
@@ -477,11 +554,16 @@ presets:
     # ``json_coerce`` recovers the stringified-JSON failure mode.
     match:
       - "qwen/*"
+      - "*/qwen/*"
       - "qwen3*"
+      - "*/qwen3*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: probed 2026-09-30,
+    # qwen3.6-plus on Alibaba returns readable reasoning the parent codec
+    # extracts and then declines to replay.
+    reasoning_codec: openai_summary_replay
 
   # deepseek/deepseek-v4-flash-0731 — model-specific overlay landed via
   # auto-resolve (Slack-requested integration, PR #846). Declared BEFORE the
@@ -524,8 +606,17 @@ presets:
   # ``known_unsupported`` (the sibling posture).
   deepseek_v4_flash_0731_resolve:
     match:
+      # Vendor-anchored only: ``openai_summary_replay`` rebuilds the OpenRouter
+      # ``reasoning_details`` envelope and was measured on the OpenRouter route
+      # alone. A vendor-dropped name (``self-hosted/deepseek-v4-flash-0731``) is
+      # never an OpenRouter slug, so it resolves to the shared
+      # ``openrouter_dict_stringify_recovery`` preset. A vendor-anchored name on
+      # another route (``self-hosted/deepseek/deepseek-v4-flash-0731``) is
+      # claimed because it serves the same weights; the replay envelope is
+      # unmeasured there.
       - "deepseek/deepseek-v4-flash-0731"
       - "deepseek/deepseek-v4-flash-0731*"
+      - "*/deepseek/deepseek-v4-flash-0731*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
@@ -582,6 +673,10 @@ presets:
       # glm-5.30, glm-5.3-fast or glm-5.3:variant and hand it this codec
       # without a reprobe. Those fall through to the shared preset below; a new
       # point release gets its own explicit entry with reprobe evidence.
+      # Vendor-anchored only: ``openai_summary_replay`` rebuilds the OpenRouter
+      # ``reasoning_details`` envelope and was measured on the OpenRouter route
+      # alone. A vendor-dropped name (``glm-5.3``, ``self-hosted/glm-5.3``) is
+      # never an OpenRouter slug, so it resolves to the shared preset below.
       - "z-ai/glm-5.3"
       - "*/z-ai/glm-5.3"
     schema_sanitizer: passthrough
@@ -615,12 +710,24 @@ presets:
   # preset to make the capability reliable). All three also surface a
   # reasoning_content summary the ``openai`` codec lands in the logs.
   # Live 2026-06-05.
+  # The nemotron globs claim NVIDIA's Nemotron line under any vendor or route
+  # prefix, in each spelling it ships under: ``nemotron-*`` (OpenRouter),
+  # ``NVIDIA-Nemotron-*`` / ``nvidia-nemotron-*`` (Hugging Face, vLLM,
+  # Fireworks), ``nvidia.nemotron-*`` (Bedrock) and ``FW-Nemotron-*`` (Fireworks
+  # builds on Azure AI). The Bedrock glob matches anywhere because a
+  # cross-region inference-profile id joins its region group with a dot
+  # (``us-gov.nvidia.nemotron-*``), not a ``/``, and AWS extends that set of
+  # groups. Llama-based fine-tunes such as
+  # ``nvidia/llama-3.1-nemotron-70b-instruct`` only CONTAIN ``-nemotron-``;
+  # nothing was measured on them, so they resolve to ``default``.
+  # The Kimi K2 line carries the same wire-shape recovery from its own
+  # ``moonshot_kimi_k2`` preset below, which restates these four policies
+  # alongside the turn budget that line needs. Matching is first-match-wins
+  # over whole entries, so the K2 globs live in exactly one preset.
   openrouter_dict_stringify_recovery:
     match:
       - "xiaomi/mimo*"
       - "*mimo-v2*"
-      - "moonshotai/kimi-k2*"
-      - "*kimi-k2*"
       - "deepseek/deepseek-v4*"
       - "*deepseek-v4*"
       - "z-ai/glm-5*"
@@ -628,11 +735,107 @@ presets:
       - "tencent/hy3*"
       - "*hy3-preview*"
       - "nvidia/nemotron*"
-      - "*nemotron-*"
+      - "nemotron-*"
+      - "fw-nemotron-*"
+      - "nvidia-nemotron-*"
+      - "*nvidia.nemotron-*"
+      - "*/xiaomi/mimo*"
+      - "*/tencent/hy3*"
+      - "*/nvidia/nemotron*"
+      - "*/nemotron-*"
+      - "*/fw-nemotron-*"
+      - "*/nvidia-nemotron-*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: these routes answer in
+    # the reasoning channel and the parent codec's ``encode_for_replay``
+    # returns ``{}``, so the note never rides the next request and the model
+    # reads a history in which it never reasoned. Probed 2026-09-30
+    # (``scripts/analysis/probe_reasoning_transport.py``): deepseek-v4-pro,
+    # mimo-v2.5-pro, nemotron-3-super and nemotron-3-ultra each returned
+    # readable reasoning in ``reasoning_content`` / ``reasoning_details``,
+    # extracted fine, replayed nothing.
+    reasoning_codec: openai_summary_replay
+
+  # moonshotai/kimi-k2 (K2.6, K2.7-code, …) — the wire-shape recovery the
+  # ``openrouter_dict_stringify_recovery`` preset gives the rest of its
+  # lineup, restated here so this line can also carry a turn budget sized
+  # to how it works.
+  #
+  # ``default_max_turns: 90`` is the same lift, for the same reason, that
+  # ``gemini_31_pro_preview`` carries: turn budget is a function of how much
+  # a model does per turn, and the 50-turn engine default is sized for
+  # coarse-grained models. K2's edit style is the finest-grained in the P0
+  # set — median 260 completion tokens per turn, against 419 for
+  # claude-sonnet-4.6 and 756 for gpt-5.6-sol on the same ten tasks — so it
+  # converges in proportionally more steps and exhausts the same absolute
+  # budget earlier. Live evidence, 2026-09-25 T-Bench 10-task sweep at 5
+  # repeats: 37/50 trials ended ``termination_reason: max_turns`` at exactly
+  # turn 50, and 27 of those 37 were still writing files in their final ten
+  # turns — mid-productive at the cutoff, not looping. The two trials that
+  # did converge took 23 and 50 turns. Same sweep, same tasks: gpt-5.6-sol
+  # finished all 50 trials in a median of 10 turns.
+  #
+  # ``empty_retry_count: 1`` covers the reasoning-only completion class the
+  # K3 sibling opts into on the same grounds — a turn that spends its whole
+  # output budget on reasoning returns no text and no tool calls, which is
+  # otherwise trial-fatal. Two trials in that sweep died this way.
+  #
+  # ``max_context_tokens: 120000`` + ``context_watermark: 8000`` arm the
+  # summarize-and-handoff seam, and they are what makes the turn lift safe
+  # rather than merely longer. Without them a
+  # ``ContextWindowExceededError`` is terminal, and more turns means more
+  # context: measured on the sweep above, a trial's largest single request
+  # grew ~700 tokens per turn, reaching a median 32 K and a worst case
+  # 111 K by turn 50. Extrapolated to turn 90 that is ~60 K median and
+  # ~139 K worst case.
+  #
+  # 120 K is chosen against the SMALLEST window these globs match, not the
+  # largest: ``moonshotai/kimi-k2`` is a 128 K route while ``kimi-k2.5``,
+  # ``kimi-k2.6`` and ``kimi-k2.7-code`` are 256 K. A ceiling picked for the
+  # 256 K members would let the 128 K one run past its window and die. Set
+  # below the floor, the seam summarises instead — on the heaviest
+  # trajectories only, since a median trial never approaches it. Same
+  # posture as the K3 sibling, which caps at 128 K on a 1 M-window model.
+  #
+  # ``reasoning_codec: openai_summary_replay`` because this line puts its
+  # whole deliberation in the reasoning channel and none of it in
+  # ``content``. Live capture 2026-09-29, one bash tool, both on Moonshot
+  # direct and on a fan-out mirror: ``content`` comes back ``null`` (litellm
+  # normalises it to ``" "``) while ``reasoning`` / ``reasoning_details``
+  # carry the note. The parent ``openai`` codec extracts that correctly but
+  # its ``encode_for_replay`` returns ``{}``, so the note is never echoed on
+  # the next request and the model reads a history in which it has never
+  # reasoned. It then reasons far less: on the 2026-09-25 ten-task sweep
+  # (50 trials) every turn-1 call carried reasoning and only 15-34% of later
+  # turns did, 28.5% of 2,241 calls overall; on a three-task run over two
+  # fan-out mirrors it fell to 2.7% of 411 calls, against 98.2% of 277 once
+  # the note was replayed. A controlled A/B on a two-turn exchange, 3 samples
+  # per cell,
+  # moves turn-2 reasoning from 1.0 tokens without the echo to 12-19 with
+  # it. ``openai_summary_replay`` is the parent plus an ``encode_for_replay``
+  # that rebuilds the ``reasoning.text`` envelope, which is the shape this
+  # route emits.
+  #
+  # NOT opted in here, deliberately: the ``openrouter_defaults`` Moonshot
+  # pin. K3 pairs that pin with an empty-assistant filler because Moonshot
+  # direct rejects empty-content assistant turns; pinning K2.x without a
+  # filler it has no live repro for (issue #1286) would trade a routing
+  # concern for a 400 class. The sweep above ran free-routed and its losses
+  # were turn exhaustion, not routing.
+  moonshot_kimi_k2:
+    match:
+      - "moonshotai/kimi-k2*"
+      - "*kimi-k2*"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: openai_summary_replay
+    default_max_turns: 90
+    empty_retry_count: 1
+    max_context_tokens: 120000
+    context_watermark: 8000
 
   # moonshotai/kimi-k3 — Moonshot direct rejects assistant turns whose
   # ``content`` is empty when ``tool_calls`` is present:
@@ -694,16 +897,15 @@ presets:
   # bounded. The trial's recorder and the grader still read the full
   # untruncated text upstream of the cap.
   #
-  # K2.x is DELIBERATELY NOT in this preset. The
-  # ``openrouter_dict_stringify_recovery`` preset above covers K2.6 and
-  # K2.7-code but ships ``message_assembly_policy`` unset (→ ``null``);
-  # we have no live 400 repro for the K2 line on Moonshot direct yet.
-  # Issue #1286 tracks the K2 filler-on decision, gated on a repro.
+  # K2.x is DELIBERATELY NOT in this preset. The ``moonshot_kimi_k2``
+  # preset above covers that line and ships ``message_assembly_policy``
+  # unset (→ ``null``); we have no live 400 repro for the K2 line on
+  # Moonshot direct yet. Issue #1286 tracks the K2 filler-on decision,
+  # gated on a repro, and the pin stays off K2 until it lands.
   #
-  # Placed AFTER ``openrouter_dict_stringify_recovery`` (Moonshot
-  # siblings clustered). No glob overlap: ``moonshotai/kimi-k3`` does
-  # not match ``*kimi-k2*`` (K2 slugs carry a dot before the version:
-  # ``kimi-k2.6``, ``kimi-k2.7-code``).
+  # No glob overlap: ``moonshotai/kimi-k3`` does not match ``*kimi-k2*``
+  # (K2 slugs carry a dot before the version: ``kimi-k2.6``,
+  # ``kimi-k2.7-code``).
   #
   # ``max_context_tokens: 128000`` + ``context_watermark: 8000`` are the
   # fourth defence — a first-class engine seam for context-window
@@ -722,6 +924,12 @@ presets:
   # ~6 % headroom — enough for a normal-sized reasoning turn plus its
   # tool-call reply. See ``docs/LLM_LAYER.md § Context-window handoff``.
   moonshot_kimi_k3:
+    # ``reasoning_codec`` was unset (→ ``NoReasoningCodec``) while the route
+    # returns readable reasoning on every turn: probed 2026-09-30 on
+    # InferenceNet, ``reasoning_content`` / ``reasoning_details`` populated and
+    # nothing extracted. Same loss its K2 sibling was measured losing half a
+    # Terminal-Bench score to, one step earlier in the path.
+    reasoning_codec: openai_summary_replay
     match:
       - "moonshotai/kimi-k3*"
       - "*kimi-k3*"
@@ -768,9 +976,12 @@ presets:
     match:
       - "thinkingmachines/inkling"
       - "thinkingmachines/inkling*"
+      - "*/thinkingmachines/inkling*"
     schema_sanitizer: passthrough
     prompt_policy: dict_map_hints_ref
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: probed 2026-09-30 on
+    # Together, readable reasoning extracted and never replayed.
+    reasoning_codec: openai_summary_replay
 
   # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
@@ -796,6 +1007,11 @@ presets:
     content_policy: nova
     response_policy: unwrap_input
     message_assembly_policy: nova
+    # Stated rather than inherited. Not probed — the Bedrock route is not
+    # reachable from this account, so `none` is what we can defend, not what
+    # we measured. See the allow-list in
+    # tests/canonical/test_reasoning_codec_preset_routing.py.
+    reasoning_codec: none
 
   # Amazon Nova via OpenRouter arrives org-prefixed as ``amazon/nova-*``
   # (e.g. ``amazon/nova-2-lite-v1``) with provider ``openrouter``, which
@@ -816,6 +1032,9 @@ presets:
     content_policy: nova
     response_policy: standard
     message_assembly_policy: nova
+    # Stated rather than inherited. Not probed — the OpenRouter nova slug
+    # 404s from this account.
+    reasoning_codec: none
 
   # google/gemini-3.5-flash — model-specific overlay landed via
   # auto-resolve (Slack-requested integration, PR #560). Declared BEFORE the
@@ -846,7 +1065,8 @@ presets:
   gemini_35_flash_recursive:
     match:
       - "google/gemini-3.5-flash"
-      - "openrouter/google/gemini-3.5-flash"
+      - "gemini-3.5-flash"
+      - "*/gemini-3.5-flash"
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
@@ -862,7 +1082,8 @@ presets:
   gemini_36_flash_recursive:
     match:
       - "google/gemini-3.6-flash"
-      - "openrouter/google/gemini-3.6-flash"
+      - "gemini-3.6-flash"
+      - "*/gemini-3.6-flash"
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
@@ -881,7 +1102,8 @@ presets:
   gemini_37_flash_recursive:
     match:
       - "google/gemini-3.7-flash"
-      - "openrouter/google/gemini-3.7-flash"
+      - "gemini-3.7-flash"
+      - "*/gemini-3.7-flash"
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
@@ -913,7 +1135,8 @@ presets:
   gemini_31_pro_preview:
     match:
       - "google/gemini-3.1-pro-preview"
-      - "openrouter/google/gemini-3.1-pro-preview"
+      - "gemini-3.1-pro-preview"
+      - "*/gemini-3.1-pro-preview"
     reasoning_codec: gemini
     schema_sanitizer: gemini
     response_policy: array_dict_map
@@ -930,7 +1153,7 @@ presets:
   gemini:
     match:
       - "google/gemini-*"
-      - "openrouter/google/gemini-*"
+      - "*/google/gemini-*"
       - "*gemini-3*"
       - "*gemini-2.5*"
     reasoning_codec: gemini
@@ -963,7 +1186,11 @@ presets:
     match:
       - "openai/gpt-oss*"
       - "*gpt-oss*"
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: the name is OpenAI's
+    # but the route is not — probed 2026-09-30 on AkashML, readable reasoning
+    # extracted and never replayed. The parent codec's empty replay is a
+    # statement about OpenAI's own endpoints, not about this lineage.
+    reasoning_codec: openai_summary_replay
 
   # Gemma 4 (Google open-weights via OpenRouter) — NOT the Gemini API line
   # (no reasoning_details envelope), so it borrows the Gemini *schema*
@@ -974,8 +1201,13 @@ presets:
     match:
       - "google/gemma*"
       - "*gemma-*"
+      - "*/google/gemma*"
     schema_sanitizer: gemini
     response_policy: array_dict_map
+    # Stated rather than inherited: Gemma is the open-weights line with no
+    # reasoning surface at all, unlike the Gemini line whose schema
+    # sanitizer it borrows.
+    reasoning_codec: none
 
   # MiniMax-M3 (MiniMax via OpenRouter): reasoning model on the M-series
   # 1M-context line. The ``openai`` reasoning codec surfaces the
@@ -1006,32 +1238,67 @@ presets:
     reasoning_codec: openai
     response_policy: minimax_m3_tags
 
+  # OpenAI o-series (o1 / o3 / o4 and their -mini / -preview / -pro /
+  # -deep-research / -high tiers and dated snapshots): the ``default`` axes plus
+  # the sampling rule ``openai_gpt5`` records the evidence for. Declared last, so
+  # it claims only names no earlier preset matches. The ``openai/`` globs claim
+  # every vendor-named o1|o3|o4 model: over the bundled pricing.json they match
+  # exactly the 14 openai/o1|o3|o4* slugs, and with the vendor-dropped globs
+  # every one of litellm.model_cost's 62 o-series keys (``o3``, ``azure/o3``,
+  # ``azure/eu/o3-2025-04-16``). The vendor-dropped globs name the bare model
+  # and its known tiers rather than ``o3*`` / ``o3-*``: a glob's ``*`` also
+  # spans ``/``, and the broad forms claim foreign models whose name merely
+  # starts ``o1`` / ``o3`` (``O1-OPEN/OpenO1-LLaMA-8B``, ``self-hosted/o3-qwen``),
+  # which would then silently stop sending ``temperature``. A tier not listed
+  # here is claimed under ``openai/`` only.
+  openai_o_series:
+    match:
+      - "openai/o1*"
+      - "openai/o3*"
+      - "openai/o4*"
+      - "*/openai/o1*"
+      - "*/openai/o3*"
+      - "*/openai/o4*"
+      - "o1"
+      - "o1-20*"
+      - "o1-mini*"
+      - "o1-preview*"
+      - "o1-pro*"
+      - "o3"
+      - "o3-20*"
+      - "o3-mini*"
+      - "o3-pro*"
+      - "o3-deep-research*"
+      - "o4-mini*"
+      - "*/o1"
+      - "*/o1-20*"
+      - "*/o1-mini*"
+      - "*/o1-preview*"
+      - "*/o1-pro*"
+      - "*/o3"
+      - "*/o3-20*"
+      - "*/o3-mini*"
+      - "*/o3-pro*"
+      - "*/o3-deep-research*"
+      - "*/o4-mini*"
+    # ``openai`` rather than the silent default this preset carried. Probed
+    # 2026-10-02 via OpenRouter, five samples: ``openai/o3`` returned an
+    # encrypted-only blob every time, and ``openai/o4-mini`` returned one with
+    # readable ``reasoning_content`` / ``reasoning_details`` once in five — the
+    # route fans out and the arrival channel is not stable. ``NoReasoningCodec``
+    # drops that readable case on the floor, which is the shape that cost
+    # kimi-k2.7-code half its score; this codec extracts it when it arrives and
+    # costs nothing on the encrypted samples, where it extracts nothing.
+    #
+    # Replay still emits nothing, so this preset stays on the non-replaying
+    # allow-list in tests/canonical/test_reasoning_codec_preset_routing.py —
+    # OpenAI refuses echoed reasoning, the constraint its gpt5/gpt6 siblings
+    # already record.
+    reasoning_codec: openai
+    params:
+      supports_sampling_params: false
+
 providers:
   openrouter:
     params:
       reasoning_via_extra_body: true
-
-  # Direct Gemini via litellm ``gemini/*`` provider.
-  # As of litellm v1.83.14 (2026-05-21), passing ``reasoning_effort='medium'``
-  # alongside tool calls produces empty responses for Gemini 3.1 Pro
-  # (BerriAI/litellm#19403-class symptom — finish_reason=stop, zero
-  # completion tokens, no tool_calls emitted). ``low`` and ``high`` work.
-  # We surface this loud per AGENTS.md rule #1 rather than silently mapping
-  # to ``high`` — the caller decides how to react (lower/raise effort,
-  # switch to OpenRouter transport, wait for upstream fix).
-  # The OpenRouter route is unaffected because it sends
-  # ``extra_body.reasoning.effort=medium`` which OpenRouter translates
-  # directly into Google's ``thinking_level=medium``.
-  gemini:
-    params:
-      param_value_rules:
-        reasoning_effort:
-          medium:
-            action: reject
-            evidence: >-
-              2026-05-21, litellm 1.83.14: reasoning_effort='medium' alongside
-              tool calls returns an empty response on the direct gemini route
-              (finish_reason=stop, zero completion tokens, no tool_calls) for
-              Gemini 3.1 Pro. BerriAI/litellm#19403-class. low and high work;
-              the OpenRouter route is unaffected because it sends
-              extra_body.reasoning.effort

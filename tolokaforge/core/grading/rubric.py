@@ -42,6 +42,12 @@ GRADED_MET_THRESHOLD = 0.5
 #: Key suffix for the per-criterion justification field in the tool schema.
 _JUSTIFICATION_SUFFIX = "_justification"
 
+#: Key suffix for the per-criterion interpretation field emitted for graded
+#: criteria whose author did not write an ``expected:`` anchor. Forces the
+#: judge to commit to a written definition of "met" in structured output
+#: BEFORE the justification (G-Eval CoT pattern folded into submit_report).
+_INTERPRETATION_SUFFIX = "_interpretation"
+
 #: Key for the overall free-text reasons field.
 _REASONS_KEY = "reasons"
 
@@ -180,6 +186,43 @@ def _criterion_justification_property(criterion: Criterion) -> dict:
     }
 
 
+def _needs_interpretation(criterion: Criterion) -> bool:
+    """Whether the schema emits a ``<id>_interpretation`` slot for this criterion.
+
+    Fires only for graded criteria the author did not anchor with an
+    ``expected:`` field. Binary criteria are self-anchored by their pass/fail
+    semantics; graded criteria with an author-written anchor already have a
+    reference the judge scores against. Graded criteria without an anchor are
+    the class the M50 A/B identified as wording-ambiguity-flappy — the
+    interpretation slot forces the judge to commit to a specific
+    interpretation before scoring, absorbing the between-sample drift that
+    voted_rubric alone could not fix.
+    """
+    return criterion.kind == "graded" and criterion.expected is None
+
+
+def _criterion_interpretation_property(criterion: Criterion) -> dict:
+    """The per-criterion interpretation field for unanchored graded criteria.
+
+    Emitted BEFORE ``<id>_justification`` in ``properties`` insertion order
+    and in ``required``, so a provider that fills tool arguments in schema
+    order writes what "met" means for this criterion before writing the
+    reasoning that leads to a score. The interpretation lands in the
+    per-criterion ``CriterionResult.justification`` (prefixed) so it stays
+    inspectable alongside the reasoning it grounds.
+    """
+    return {
+        "type": "string",
+        "description": (
+            f"One-sentence statement of what a response would need to demonstrate "
+            f"to fully satisfy criterion '{criterion.id}' (description: "
+            f"{criterion.description!r}). Commit to this interpretation before "
+            f"reasoning about the response, so your score reflects that anchor "
+            f"rather than a fresh inference on each judgement."
+        ),
+    }
+
+
 def _build_report_tool_parameters(rubric: Rubric) -> dict:
     """Build the shared ``parameters`` JSON schema for a rubric-report tool.
 
@@ -213,6 +256,14 @@ def _build_report_tool_parameters(rubric: Rubric) -> dict:
     required: list[str] = []
 
     for criterion in rubric.criteria:
+        if _needs_interpretation(criterion):
+            interpretation_key = f"{criterion.id}{_INTERPRETATION_SUFFIX}"
+            properties[interpretation_key] = _criterion_interpretation_property(criterion)
+            # Deliberately NOT `required`: modern structured-output judges fill
+            # schema-declared properties in practice, so the CoT effect lands.
+            # Keeping it optional lets legacy cassettes / weaker models degrade
+            # to today's behaviour instead of failing whole trials on a shape
+            # they were never authored against.
         justification_key = f"{criterion.id}{_JUSTIFICATION_SUFFIX}"
         properties[justification_key] = _criterion_justification_property(criterion)
         properties[criterion.id] = _criterion_verdict_property(criterion)
@@ -360,7 +411,15 @@ def _check_verdict_marker(
 
 
 def _criterion_result(criterion: Criterion, tool_args: dict) -> CriterionResult:
-    """Build one CriterionResult, failing loud on type / range / marker mismatch."""
+    """Build one CriterionResult, failing loud on type / range / marker mismatch.
+
+    For unanchored graded criteria the schema also emits ``<id>_interpretation``
+    (see :func:`_criterion_interpretation_property`); when present the
+    interpretation is prepended to the audit-trail justification as
+    ``Interpretation: <text>\\n\\n<justification>`` so it stays inspectable
+    alongside the reasoning it grounds without changing the ``CriterionResult``
+    wire schema.
+    """
     raw_verdict = _require_present(tool_args, criterion.id, criterion.id, "verdict")
     justification_key = f"{criterion.id}{_JUSTIFICATION_SUFFIX}"
     raw_justification = _require_present(
@@ -372,6 +431,23 @@ def _criterion_result(criterion: Criterion, tool_args: dict) -> CriterionResult:
             f"{type(raw_justification).__name__}."
         )
 
+    if _needs_interpretation(criterion):
+        interpretation_key = f"{criterion.id}{_INTERPRETATION_SUFFIX}"
+        raw_interpretation = tool_args.get(interpretation_key)
+        if raw_interpretation is None:
+            justification_text = raw_justification
+        elif not isinstance(raw_interpretation, str):
+            raise SubmitReportValidationError(
+                f"Criterion '{criterion.id}' interpretation must be a string, got "
+                f"{type(raw_interpretation).__name__}."
+            )
+        else:
+            justification_text = (
+                f"Interpretation: {raw_interpretation.strip()}\n\n{raw_justification}"
+            )
+    else:
+        justification_text = raw_justification
+
     if criterion.kind == "binary":
         met = _coerce_binary_met(raw_verdict, criterion.id)
         score = 1.0 if met else 0.0
@@ -381,7 +457,7 @@ def _criterion_result(criterion: Criterion, tool_args: dict) -> CriterionResult:
 
     _check_verdict_marker(criterion, raw_justification, met, score)
 
-    return CriterionResult(id=criterion.id, met=met, score=score, justification=raw_justification)
+    return CriterionResult(id=criterion.id, met=met, score=score, justification=justification_text)
 
 
 def parse_submit_report(tool_args: dict, rubric: Rubric) -> list[CriterionResult]:
@@ -408,7 +484,12 @@ def parse_submit_report(tool_args: dict, rubric: Rubric) -> list[CriterionResult
 
     results = [_criterion_result(criterion, tool_args) for criterion in rubric.criteria]
 
-    expected_keys = known_ids | {f"{cid}{_JUSTIFICATION_SUFFIX}" for cid in known_ids}
+    interpretation_ids = {c.id for c in rubric.criteria if _needs_interpretation(c)}
+    expected_keys = (
+        known_ids
+        | {f"{cid}{_JUSTIFICATION_SUFFIX}" for cid in known_ids}
+        | {f"{cid}{_INTERPRETATION_SUFFIX}" for cid in interpretation_ids}
+    )
     expected_keys.add(_REASONS_KEY)
     extra = set(tool_args) - expected_keys
     if extra:

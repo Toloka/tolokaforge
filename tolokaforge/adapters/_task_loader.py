@@ -49,21 +49,24 @@ apart.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel
 
+from tolokaforge.core.agent_prompt_contract import resolve_agent_prompt_contract
 from tolokaforge.core.deprecations import (
     canonicalize_actor_config,
     source_context,
     warn_deprecated,
 )
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
 from tolokaforge.core.grading.config_validation import (
     UNRESOLVED_COMBINE_REASON,
     AuthoringReport,
@@ -89,6 +92,7 @@ from tolokaforge.core.models import (
     CommunicateInfo,
     GradingCombineConfig,
     GradingFindingSeverity,
+    RagConfig,
     RequiredAction,
     StateChecksConfig,
     TaskConfig,
@@ -103,6 +107,10 @@ from tolokaforge.core.project_loader import (
     deep_merge,
     resolve_effective_grading_combine,
 )
+from tolokaforge.runner.models import ToolSchema
+
+if TYPE_CHECKING:
+    from tolokaforge.core.search.backend import SearchBackend
 
 logger = get_logger(__name__)
 
@@ -249,6 +257,7 @@ _TYPED_GRADING_BLOCKS: dict[str, _TypedGradingBlock] = {
         retired_keys=RETIRED_STATE_CHECK_KEYS,
         nested_block_models=(
             _NestedBlock("hash", StateHashConfig, retired_keys=frozenset(RETIRED_HASH_KEYS)),
+            _NestedBlock("comparison_view", ComparisonViewConfig),
         ),
     ),
     # A turn window whose floor sits above its ceiling admits no assistant-turn count,
@@ -342,10 +351,11 @@ def validate_grading_yaml(
             through :func:`hash_source_layer_under_adapter`, while a run's pre-flight
             asks the adapter instance it is about to grade with.
         seeded_tables: The tables the task seeds, which its ``state_checks.id_fields``
-            declaration keys, resolved through :func:`seeded_tables_under_adapter`. A
-            caller that cannot read them leaves the default,
-            :meth:`SeededTablesLayer.unresolvable`, which moves the declaration into
-            ``unchecked`` instead of holding it against a state nobody resolved.
+            declaration keys, its database reads need and its JSON-DB builtins serve,
+            resolved through :func:`seeded_tables_under_adapter`. A caller that cannot
+            read them leaves the default, :meth:`SeededTablesLayer.unresolvable`, which
+            moves each rule reading them into ``unchecked`` instead of holding it
+            against a state nobody resolved.
         combine_layer: What the task's enclosing project supplies beneath its own
             ``combine`` block. A caller that cannot resolve it leaves the default,
             :meth:`CombineLayer.unresolvable`, which skips the two weight rules into
@@ -623,6 +633,14 @@ def load_task_yaml(
 
     task = construct_config(TaskConfig, task_data, source=task_path)
     task._source_dir = task_root
+
+    # A contract that names nothing is refused here rather than at the first
+    # trial's prompt build: by then the run has provisioned images, and the
+    # whole pack would have run on the wrong prompt had the selector been
+    # ignored instead.
+    if task.agent_prompt_contract:
+        resolve_agent_prompt_contract(task.agent_prompt_contract, task_dir=task_root)
+
     return task, task_root
 
 
@@ -686,6 +704,20 @@ def actor_tool_block(task: Any, actor: ToolActor) -> dict[str, Any]:
     return getattr(task.tools, actor.value)
 
 
+def effective_mcp_server(task: Any, actor: ToolActor) -> str | None:
+    """The ``mcp_server`` script serving *actor*'s tools, or ``None`` where builtins do.
+
+    A user block declaring no ``mcp_server`` of its own is served by the agent's, so
+    a name it enables reaches the runner as that server's tool rather than as the
+    builtin of the same name. Every reader of "which server serves this block" asks
+    here, so the wire source, the resolved schemas and the gate's inventory agree.
+    """
+    server = actor_tool_block(task, actor).get("mcp_server")
+    if server is None and actor is ToolActor.USER:
+        server = actor_tool_block(task, ToolActor.AGENT).get("mcp_server")
+    return server or None
+
+
 def enabled_tool_names(task: Any, actor: ToolActor) -> frozenset[str]:
     """The tool names ``tools.<actor>.enabled`` lists."""
     return frozenset(actor_tool_block(task, actor).get("enabled", []))
@@ -694,6 +726,118 @@ def enabled_tool_names(task: Any, actor: ToolActor) -> frozenset[str]:
 def declared_tool_names(task: Any) -> frozenset[str]:
     """Every tool name the task declares, whichever actor it declares it for."""
     return frozenset().union(*(enabled_tool_names(task, actor) for actor in ToolActor))
+
+
+@dataclass(frozen=True)
+class SearchDeclaration:
+    """A task's knowledge-base search as ``initial_state.rag`` declares it, defaults filled in.
+
+    A task that writes no ``rag`` block declares the defaults: the ``rag_service``
+    backend behind a ``search_kb`` tool, and no corpus. That is what a task enabling
+    ``search_kb`` alone has always had.
+    """
+
+    backend: str
+    backend_config: Mapping[str, Any]
+    tool_name: str
+    tool_description: str
+    corpus_dir: str | None
+    declared: bool
+    """Whether the task wrote an ``initial_state.rag`` block at all."""
+
+
+def search_declaration(task: Any) -> SearchDeclaration:
+    """The task's search declaration — a ``TaskConfig``, or a stand-in carrying one."""
+    initial_state = getattr(task, "initial_state", None)
+    if isinstance(initial_state, Mapping):
+        raw = initial_state.get("rag")
+    else:
+        raw = getattr(initial_state, "rag", None)
+    rag = raw if isinstance(raw, RagConfig) or raw is None else RagConfig.model_validate(raw)
+    effective = rag if rag is not None else RagConfig()
+    return SearchDeclaration(
+        backend=effective.backend,
+        backend_config=dict(effective.backend_config),
+        tool_name=effective.tool.name,
+        tool_description=effective.tool.description,
+        corpus_dir=effective.corpus_dir,
+        declared=rag is not None,
+    )
+
+
+def uses_search(task: Any, declaration: SearchDeclaration) -> bool:
+    """Whether the task searches: it declares a corpus, or an actor enables its search tool."""
+    return bool(declaration.corpus_dir) or declaration.tool_name in declared_tool_names(task)
+
+
+def declared_search_backend(declaration: SearchDeclaration) -> SearchBackend:
+    """The task's search backend, built from a trial-less context to read its declaration.
+
+    What the adapter and the stack rule read — ``tool_parameters()`` and
+    ``stack_service`` — may depend on ``backend_config``, so they come off a backend
+    the registry built, never a class attribute. No trial and no stack-service
+    handle: the runner builds the trial's own backend at ``RegisterTrial``.
+
+    Raises:
+        UnknownImplementationError: no backend is registered under the name.
+        ReservedNameError: the name is reserved (``typesense``).
+        UndeclaredStackServiceError: the backend's ``stack_service`` is not a
+            declared stack service.
+    """
+    from tolokaforge.core.plugin_registry import SearchBackendContext, load_search_backend
+    from tolokaforge.core.search.stack_services import declared_stack_service
+
+    factory = load_search_backend(declaration.backend)
+    backend = factory(
+        SearchBackendContext(
+            backend_config=declaration.backend_config,
+            tool_name=declaration.tool_name,
+            tool_description=declaration.tool_description,
+            logger=logging.getLogger(f"tolokaforge.search_backends.{declaration.backend}"),
+        )
+    )
+    if backend.stack_service is not None:
+        declared_stack_service(backend.stack_service)
+    return backend
+
+
+SEARCH_TOOL_TIMEOUT_S = 15.0
+"""The per-call budget the agent's search tool is declared with, for every backend."""
+
+
+def search_tool_schema(declaration: SearchDeclaration, backend: SearchBackend) -> ToolSchema:
+    """The agent's search tool: the declared name and description over the backend's parameters.
+
+    Source-less on purpose: the runner binds a source-less schema of the declared
+    name to the trial's search index, so no invocation style names a backend on the
+    wire.
+
+    Raises:
+        ValueError: the backend gives the agent no tool of its own, or declares
+            parameters without the ``query`` the runner hands its index by name.
+    """
+    parameters = backend.tool_parameters()
+    if parameters is None:
+        raise ValueError(
+            f"search backend {declaration.backend!r} gives the agent no search tool, but "
+            f"{declaration.tool_name!r} is enabled; drop it from tools.<actor>.enabled"
+        )
+    properties = parameters.get("properties")
+    if not isinstance(properties, Mapping) or "query" not in properties:
+        raise ValueError(
+            f"search backend {declaration.backend!r} declares tool parameters with no "
+            f"'query' property for {declaration.tool_name!r}; the runner hands the agent's "
+            "query argument to the trial's index by that name, so every call would search "
+            "for nothing"
+        )
+    return ToolSchema(
+        name=declaration.tool_name,
+        description=declaration.tool_description,
+        parameters=dict(parameters),
+        category="read",
+        timeout_s=SEARCH_TOOL_TIMEOUT_S,
+        source=None,
+    )
 
 
 TOOL_BLOCK_RESERVED_KEYS: frozenset[str] = frozenset({"output_max_chars"})
@@ -780,8 +924,10 @@ def resolve_tool_schemas(
 ) -> dict[str, dict]:
     """Resolve ``{tool_name: {"description", "parameters"}}`` for *actor*'s tools.
 
-    An MCP block's schemas come from ``<task_dir>/fixtures/tools.json``; a block
-    without an ``mcp_server`` gets them from the builtin registry.
+    A block served by an MCP server — its own, or for the user block the agent's
+    (:func:`effective_mcp_server`) — gets its schemas from
+    ``<task_dir>/fixtures/tools.json``; a block served by none gets them from the
+    builtin registry.
 
     Args:
         task: The loaded task config.
@@ -799,13 +945,14 @@ def resolve_tool_schemas(
         RuntimeError: If a live ``tools/list`` query is reached and fails.
         ValueError: If a ``tools.<actor>.<name>`` block is not a mapping.
     """
-    block = actor_tool_block(task, actor)
-    mcp_server_ref = block.get("mcp_server")
-    if mcp_server_ref:
+    mcp_server_ref = effective_mcp_server(task, actor)
+    if mcp_server_ref is not None:
         return _load_rich_tool_schemas(
             task_dir, task_dir / mcp_server_ref, allow_subprocess=allow_subprocess
         )
-    return _builtin_tool_schemas(block.get("enabled", []), tool_configs(task, actor))
+    return _builtin_tool_schemas(
+        actor_tool_block(task, actor).get("enabled", []), tool_configs(task, actor)
+    )
 
 
 def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
@@ -825,6 +972,11 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
     an MCP fixture listing the harness's own state tool — is dropped too, so one
     grading block cannot draw an undeclared-tool error and an argument finding
     from the same name.
+
+    :attr:`ToolInventory.json_db_builtins` is read off the same
+    :func:`effective_mcp_server` the wire build reads, so a ``db_query`` a user block
+    enables under the agent's server is that server's tool here as it is at
+    ``RegisterTrial``.
     """
     declared_by_executor = {
         ACTOR_EXECUTOR_IDENTITY[actor]: enabled_tool_names(task, actor) for actor in ToolActor
@@ -836,15 +988,15 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
         **_declared_parameters(task, task_dir, ToolActor.USER, user_declared),
         **_declared_parameters(task, task_dir, ToolActor.AGENT, agent_declared),
     }
-    if "search_kb" in declared:
-        # The runner rebuilds search_kb as a source-less RAG wrapper, so the
-        # canonical schema is what the agent is handed whatever a fixture or the
-        # registry holds. ``NativeAdapter.to_task_description`` reads the same
-        # function for the whole wire object, whose category, timeout and absent
-        # source this projection cannot carry.
-        from tolokaforge.runner.tool_factory import create_search_kb_schema
-
-        parameters["search_kb"] = create_search_kb_schema().parameters
+    search = search_declaration(task)
+    if search.tool_name in declared:
+        # The runner binds the task's search tool to the trial's search index, so
+        # the parameters its backend declares are what the agent is handed whatever
+        # a fixture or the registry holds. ``NativeAdapter.to_task_description``
+        # builds the whole wire object from the same declaration.
+        tool_parameters = declared_search_backend(search).tool_parameters()
+        if tool_parameters is not None:
+            parameters[search.tool_name] = dict(tool_parameters)
     return ToolInventory(
         declared=declared,
         agent_declared=agent_declared,
@@ -852,7 +1004,41 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
         actor_split_known=True,
         parameters=parameters,
         known=True,
+        json_db_builtins=_json_db_builtins(task),
+        json_db_tool_config_keys=_json_db_tool_config_keys(task),
     )
+
+
+def _json_db_builtins(task: TaskConfig) -> frozenset[str]:
+    """The enabled tools the runner builds as source-less ``Dispatch.JSON_DB`` builtins."""
+    from tolokaforge.tools.builtin import registry
+
+    json_db_names = registry.list_for_dispatch(registry.Dispatch.JSON_DB)
+    return frozenset().union(
+        *(
+            enabled_tool_names(task, actor) & json_db_names
+            for actor in ToolActor
+            if effective_mcp_server(task, actor) is None
+        )
+    )
+
+
+def _json_db_tool_config_keys(task: TaskConfig) -> dict[str, frozenset[str]]:
+    """The source-less ``Dispatch.JSON_DB`` builtins whose block carries init kwargs, to those keys."""
+    from tolokaforge.tools.builtin import registry
+
+    json_db_names = registry.list_for_dispatch(registry.Dispatch.JSON_DB)
+    configured = (
+        (name, frozenset(kwargs))
+        for actor in ToolActor
+        if effective_mcp_server(task, actor) is None
+        for name, kwargs in tool_configs(task, actor).items()
+        if name in json_db_names
+    )
+    keys: dict[str, frozenset[str]] = {}
+    for name, kwargs in configured:
+        keys[name] = keys.get(name, frozenset()) | kwargs
+    return keys
 
 
 def _declared_parameters(
@@ -943,6 +1129,32 @@ def seeded_tables_from_task(task: TaskConfig, task_dir: Path) -> dict[str, list[
     disk raises :class:`RuntimeError` — a task declaring state it cannot supply
     is broken wherever it is read.
     """
+    return {
+        name: _seeded_records(collection)
+        for name, collection in _declared_json_db(task, task_dir).items()
+    }
+
+
+def seeded_table_shapes(task: TaskConfig, task_dir: Path) -> dict[str, str]:
+    """The tables *task* seeds as something other than a list of records, and as what.
+
+    :func:`seeded_tables_from_task` normalises such a collection — records keyed by id
+    become their values, a lone mapping one record — and the runner's db-service holds
+    that normalised list. Core's hash reads the declared JSON as written, so a grading
+    rule reading a table row by row has to know it was not written as rows: a
+    comparison view naming one is refused (see
+    :func:`~tolokaforge.core.grading.comparison_view_checks.comparison_view_findings`).
+    A table seeded as a list is absent from the answer.
+    """
+    return {
+        name: _collection_shape(collection)
+        for name, collection in _declared_json_db(task, task_dir).items()
+        if not isinstance(collection, list)
+    }
+
+
+def _declared_json_db(task: TaskConfig, task_dir: Path) -> dict[str, Any]:
+    """``initial_state.json_db`` as declared: the named file's JSON, the inline mapping, or ``{}``."""
     if not (task.initial_state and task.initial_state.json_db):
         return {}
     json_db = task.initial_state.json_db
@@ -951,10 +1163,19 @@ def seeded_tables_from_task(task: TaskConfig, task_dir: Path) -> dict[str, list[
         if not json_db_path.exists():
             raise RuntimeError(f"JSON DB file not found: {json_db_path}")
         with open(json_db_path) as f:
-            data = json.load(f)
-    else:
-        data = json_db
-    return {name: _seeded_records(collection) for name, collection in data.items()}
+            data: dict[str, Any] = json.load(f)
+        return data
+    return dict(json_db)
+
+
+def _collection_shape(collection: Any) -> str:
+    """How a seeded collection that is not a list of records is written, in an author's words."""
+    if isinstance(collection, dict):
+        values = list(collection.values())
+        if values and all(isinstance(value, dict) for value in values):
+            return "a mapping of records keyed by id"
+        return "a single record (a mapping)"
+    return f"a {type(collection).__name__}"
 
 
 def seeded_tables_under_adapter(

@@ -1,24 +1,26 @@
-"""Every LLM-judge dispatch site reads ``LLMJudgeConfig.judge_kind`` from config.
+"""Every LLM-judge dispatch site reads ``judge_kind`` and forwards every trial option.
 
-Four parametrised sub-tests drive one LLM-judge dispatch each through
-the four call sites the runner + grader package expose:
+Five sub-tests drive one LLM-judge dispatch each through the call sites the
+runner, the grader and offline replay expose:
 
 - Runner-side composite (``RunnerServiceImpl._grade_llm_judge``)
 - Grader-service composite dispatch
   (``GraderCompositeDispatch._grade_llm_judge_block``)
 - Offline ``CompositeGraderKind._run_composite`` bundle-regrade path
 - ``run_judge_only_for_trajectory`` (judge_only helper)
+- ``replay_trial`` over inputs read from a recorded bundle
 
 A fake ``JudgeKind`` (``NAME = "call_site_probe"``) is registered
 alongside the shipped kinds via an ``importlib.metadata.entry_points``
 monkey-patch fixture that injects a stub entry-point into the
 ``tolokaforge.judge_kinds`` group; the probe records every
-``.evaluate(**kwargs)`` call so the sub-tests can assert BOTH the
+``.evaluate(**kwargs)`` call so the sub-tests can assert the
 name-resolution (the site read ``judge_kind`` from config, not a
-hardcoded string) AND, on the runner-side sub-test, the verbatim
-identity of ``kind_config`` (the site forwarded
-``llm_judge_config.kind_config``, not ``None``). A future hardcode
-regression at any one site fails loudly here.
+hardcoded string), on the runner-side sub-test the verbatim identity of
+``kind_config``, and at every site that the kind received exactly one
+:class:`JudgeTrialOptions` carrying every field of the task's
+``customization`` — each set away from its default, so a site that drops
+or defaults any one of them fails here.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.canonical._factories import make_trajectory
+from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
 from tolokaforge.core.logging import StructuredLogger
@@ -46,6 +49,7 @@ from tolokaforge.core.plugin_registry import JUDGE_KINDS_GROUP, _clear_discovery
 from tolokaforge.grader.composite_dispatch import GraderCompositeDispatch
 from tolokaforge.runner.models import (
     Criterion,
+    JudgeCustomization,
     LLMJudgeConfig,
     Rubric,
     RunnerGradingConfig,
@@ -133,12 +137,46 @@ def _rubric() -> Rubric:
     )
 
 
+_CUSTOMIZATION = JudgeCustomization(
+    disable_knowledge_search=True,
+    system_prompt="Grade against the probe's own voice.",
+    include_agent_system_prompt=False,
+    judge_snippet_chars=None,
+)
+"""Every field away from its default, so a dropped or defaulted one is visible."""
+
+_EXPECTED_OPTIONS = JudgeTrialOptions(
+    disable_knowledge_search=True,
+    custom_system_prompt="Grade against the probe's own voice.",
+    include_agent_system_prompt=False,
+    judge_snippet_chars=None,
+)
+
+_LOOSE_OPTION_KEYWORDS = frozenset(
+    {
+        "disable_knowledge_search",
+        "custom_system_prompt",
+        "include_agent_system_prompt",
+        "judge_snippet_chars",
+    }
+)
+
+
 def _llm_judge_config(*, with_kind_config: bool) -> LLMJudgeConfig:
     return LLMJudgeConfig(
         rubric=_rubric(),
         judge_kind=_PROBE_NAME,
         kind_config=dict(_KIND_CONFIG_PAYLOAD) if with_kind_config else None,
+        customization=_CUSTOMIZATION,
     )
+
+
+def _assert_every_option_forwarded() -> None:
+    """The site handed the kind one options object carrying the whole customization."""
+    (call,) = _CallSiteProbeJudgeKind.calls
+    assert call["options"] == _EXPECTED_OPTIONS
+    assert isinstance(call["options"], JudgeTrialOptions)
+    assert not _LOOSE_OPTION_KEYWORDS & set(call), "per-trial options travel in one object"
 
 
 def _empty_substrate() -> InProcessGradingSubstrate:
@@ -208,6 +246,7 @@ def test_runner_side_composite_reads_judge_kind_and_forwards_kind_config_verbati
     # Pydantic coerces dict[str, Any] into a fresh dict on model construction,
     # so this is content-equality, not object-identity.
     assert passed_kind_config == _KIND_CONFIG_PAYLOAD
+    _assert_every_option_forwarded()
 
 
 def test_grader_service_composite_dispatch_reads_judge_kind(
@@ -246,6 +285,7 @@ def test_grader_service_composite_dispatch_reads_judge_kind(
 
     assert len(_CallSiteProbeJudgeKind.calls) == 1
     assert _CallSiteProbeJudgeKind.calls[0]["kind_config"] is None
+    _assert_every_option_forwarded()
 
 
 def test_offline_composite_grader_kind_reads_judge_kind(
@@ -334,6 +374,7 @@ def test_offline_composite_grader_kind_reads_judge_kind(
 
     assert len(_CallSiteProbeJudgeKind.calls) == 1
     assert _CallSiteProbeJudgeKind.calls[0]["kind_config"] is None
+    _assert_every_option_forwarded()
 
 
 def test_judge_only_helper_reads_judge_kind(probe_judge_kind_registered) -> None:
@@ -367,3 +408,61 @@ def test_judge_only_helper_reads_judge_kind(probe_judge_kind_registered) -> None
     assert grade is not None
     assert len(_CallSiteProbeJudgeKind.calls) == 1
     assert _CallSiteProbeJudgeKind.calls[0]["kind_config"] is None
+    _assert_every_option_forwarded()
+
+
+def test_offline_replay_reads_judge_kind_and_forwards_the_recorded_options(
+    probe_judge_kind_registered, tmp_path: Path
+) -> None:
+    """Offline replay (:func:`replay_trial` over :func:`read_replay_inputs`) reads the
+    kind and every option from the recorded bundle and hands the kind one
+    :class:`JudgeTrialOptions`. Replay's knowledge-search gate is the bundle's
+    recorded ``judge_kb_gating``, so the bundle records the gate it ran under."""
+    from tolokaforge.core.grading.replay import read_replay_inputs, replay_trial
+    from tolokaforge.core.models import Grade, GradeComponents, JudgeInputs, JudgeKbGating
+    from tolokaforge.core.models import JudgeStatus as JudgeStatusEnum
+    from tolokaforge.core.output.artifacts import FileArtifactWriter
+
+    trial_dir = tmp_path / "trials" / "probe-task" / "0"
+    writer = FileArtifactWriter()
+    writer.write_trajectory(
+        trial_dir,
+        make_trajectory(
+            task_id="probe-task",
+            status=TrialStatus.COMPLETED,
+            termination_reason=TerminationReason.AGENT_DONE,
+            messages=[
+                Message(role=MessageRole.USER, content="please answer"),
+                Message(role=MessageRole.ASSISTANT, content="the answer is 42"),
+            ],
+        ),
+    )
+    writer.write_prompts(trial_dir, "you are the agent", "user-sim prompt")
+    writer.write_task(
+        trial_dir,
+        {
+            "task_id": "probe-task",
+            "trial_index": 0,
+            "grading_config": {
+                "llm_judge": _llm_judge_config(with_kind_config=False).model_dump(mode="json")
+            },
+            "model_config": {"judge": _JUDGE_MODEL.model_dump(mode="json")},
+        },
+    )
+    writer.write_grade(
+        trial_dir,
+        Grade(
+            binary_pass=True,
+            score=1.0,
+            components=GradeComponents(llm_judge=1.0),
+            judge_status=JudgeStatusEnum.COMPLETED,
+            judge_inputs=JudgeInputs(read_tools_offered=[]),
+            judge_kb_gating=JudgeKbGating(knowledge_search_disabled=True, offered=[], withheld=[]),
+        ),
+    )
+
+    result = replay_trial(read_replay_inputs(trial_dir))
+
+    assert result.reasons == "call_site_probe reached"
+    assert _CallSiteProbeJudgeKind.calls[0]["kind_config"] is None
+    _assert_every_option_forwarded()

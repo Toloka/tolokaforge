@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+import logging
+import os
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from requests import Response
 
 pytest.importorskip("opentelemetry.sdk")
 from opentelemetry.sdk.trace.export import SpanExportResult  # noqa: E402
@@ -14,21 +15,24 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,  # noqa: E402
 )
 from tolokaforge_langfuse.otel import HARNESS_TAG, OTelTrialObserver, SpanQueue  # noqa: E402
+from tolokaforge_langfuse.safety import SECRET_NAME, SafetyGate  # noqa: E402
 
 from tolokaforge.core.llm.client import GenerationResult  # noqa: E402
-from tolokaforge.core.llm.usage import Usage  # noqa: E402
+from tolokaforge.core.llm.usage import ProviderRawCall, Usage  # noqa: E402
 from tolokaforge.core.models import Message, MessageRole, ToolCall  # noqa: E402
 from tolokaforge.observability.observer import ModelRef, TrialIdentity  # noqa: E402
 from tolokaforge.tools.registry import ToolResult  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
-T0 = datetime(2026, 9, 15, 10, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 9, 15, 10, 0, 0, tzinfo=UTC)
 IDENTITY = TrialIdentity(run_id="acme/pilot/v1/123/1", task_id="T-1", trial_index=0, attempt_id=0)
 
 
 def _observer(exporter: InMemorySpanExporter, **kwargs) -> tuple[OTelTrialObserver, SpanQueue]:
     queue = SpanQueue(exporter, max_size=kwargs.pop("max_size", 100), batch_size=4, interval_s=0.05)
+    # hermetic: the developer's environment holds no credential this observer knows
+    kwargs.setdefault("gate", SafetyGate())
     observer = OTelTrialObserver(
         queue=queue,
         label="pilot_agent",
@@ -108,9 +112,9 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
     receipt = observer.run_finished()
 
     finished = exporter.get_finished_spans()
-    assert [s.name for s in finished][:1] == ["trial T-1/0"]  # the provisional root goes first
+    assert [s.name for s in finished][:1] == ["trial"]  # the provisional root goes first
     spans = {s.name: s for s in finished}  # the final root replaces the provisional one by name
-    assert set(spans) == {"assistant turn 1", "tool: shell", "trial T-1/0"}
+    assert set(spans) == {"agent", "tool: shell", "trial"}
     assert receipt.spans_exported == 4 and receipt.spans_dropped == 0 and receipt.flushed
     provisional = finished[0]
     assert format(provisional.context.span_id, "016x") == IDENTITY.root_id
@@ -118,10 +122,10 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
     assert provisional.start_time == provisional.end_time == int(T0.timestamp() * 1e9)
 
     trace_int = int(IDENTITY.trace_id, 16)
-    root = spans["trial T-1/0"]
+    root = spans["trial"]
     assert root.context.trace_id == trace_int and root.parent is None
     assert format(root.context.span_id, "016x") == IDENTITY.root_id
-    gen = spans["assistant turn 1"]
+    gen = spans["agent"]
     assert format(gen.context.span_id, "016x") == IDENTITY.observation_id("gen", 1)
     assert format(gen.parent.span_id, "016x") == IDENTITY.root_id
     tool = spans["tool: shell"]
@@ -137,7 +141,9 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
         "total": 120,
     }
     assert json.loads(gen_attrs["langfuse.observation.cost_details"]) == {"total": 0.01}
+    # without a profile's [trace] the run and the task name the trace, and it has no user
     assert gen_attrs["langfuse.trace.name"] == "pilot_agent/T-1"
+    assert "langfuse.user.id" not in gen_attrs
     assert gen_attrs["langfuse.session.id"] == "acme/pilot/v1/pilot_agent/pilot_agent/123"
     assert list(gen_attrs["langfuse.trace.tags"]) == [
         HARNESS_TAG,
@@ -150,11 +156,12 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
     assert "sk-secret" not in gen_attrs["langfuse.observation.output"]  # redacted tool arguments
 
     tool_attrs = _attrs(tool)
-    assert tool_attrs["langfuse.observation.type"] == "span"
+    assert tool_attrs["langfuse.observation.type"] == "tool"
     assert "sk-secret" not in tool_attrs["langfuse.observation.input"]
     assert tool_attrs["langfuse.observation.output"] == "file.txt"
 
     root_attrs = _attrs(root)
+    assert root_attrs["langfuse.observation.type"] == "agent"
     assert root_attrs["langfuse.trace.metadata.pass"] is True
     assert root_attrs["langfuse.trace.metadata.score"] == 1.0
     assert root_attrs["langfuse.trace.metadata.trace_time_source"] == "live"
@@ -251,7 +258,7 @@ def test_trial_that_dies_before_a_trajectory_still_closes_its_trace() -> None:
     provisional, root = exporter.get_finished_spans()
     assert _attrs(provisional)["langfuse.trace.metadata.status"] == "running"
     attrs = _attrs(root)
-    assert root.name == "trial T-1/0" and root.status.status_code.name == "ERROR"
+    assert root.name == "trial" and root.status.status_code.name == "ERROR"
     assert attrs["langfuse.trace.metadata.error"] == "RuntimeError: boom"
     assert attrs["langfuse.trace.metadata.status"] == "error"
     assert attrs["langfuse.trace.metadata.pass"] == "none"
@@ -344,7 +351,7 @@ def test_trial_persisted_attaches_the_bundle_with_the_trial_start_and_counts_in_
     ) == (8, 3, 5, 1, 1)
     assert receipt.model_dump(mode="json")["extra"]["langfuse.attachments_registered"] == 8
     # the root span was not re-emitted: the trace's end time stays the trial end
-    assert [s.name for s in exporter.get_finished_spans()].count("trial T-1/0") == 2
+    assert [s.name for s in exporter.get_finished_spans()].count("trial") == 2
 
 
 def test_without_an_attachment_step_trial_persisted_is_a_no_op(tmp_path) -> None:
@@ -427,9 +434,11 @@ def _v4_trial(observer, identity=IDENTITY):
 
 
 class TestPreviewRows:
+    """``previews=True`` (the plugin's ``LANGFUSE_TRACING_PREVIEWS``): the live rows of a v4 run."""
+
     def test_the_live_rows_are_previews_under_a_preview_root(self) -> None:
         exporter = InMemorySpanExporter()
-        observer, _ = _v4_observer(exporter)
+        observer, _ = _v4_observer(exporter, previews=True)
         _v4_trial(observer)
         observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
         receipt = observer.run_finished()
@@ -438,15 +447,15 @@ class TestPreviewRows:
         preview_root = IDENTITY.observation_id("proot", "-")
         by_name = {s.name: s for s in spans}
         assert set(by_name) >= {
-            "preview: trial T-1/0",
-            "preview: assistant turn 1",
+            "preview: trial",
+            "preview: agent",
             "preview: tool: shell",
         }
-        assert format(by_name["preview: trial T-1/0"].context.span_id, "016x") == preview_root
+        assert format(by_name["preview: trial"].context.span_id, "016x") == preview_root
         # shape R: the preview root names the final root as its parent, so the trace has one root
-        assert format(by_name["preview: trial T-1/0"].parent.span_id, "016x") == IDENTITY.root_id
+        assert format(by_name["preview: trial"].parent.span_id, "016x") == IDENTITY.root_id
         for name, kind, key in (
-            ("preview: assistant turn 1", "pgen", (1,)),
+            ("preview: agent", "pgen", (1,)),
             ("preview: tool: shell", "ptool", ("c1",)),
         ):
             span = by_name[name]
@@ -463,7 +472,7 @@ class TestPreviewRows:
 
     def test_no_preview_id_can_be_a_final_id(self) -> None:
         exporter = InMemorySpanExporter()
-        observer, _ = _v4_observer(exporter)
+        observer, _ = _v4_observer(exporter, previews=True)
         _v4_trial(observer)
         observer.run_finished()
         previews = {
@@ -480,13 +489,121 @@ class TestPreviewRows:
 
     def test_trial_finished_writes_no_root(self) -> None:
         exporter = InMemorySpanExporter()
-        observer, _ = _v4_observer(exporter)
+        observer, _ = _v4_observer(exporter, previews=True)
         _v4_trial(observer)
         observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
         # the root is one of the bundle's observations; nothing may take its id before it
         assert IDENTITY.root_id not in {
             format(s.context.span_id, "016x") for s in exporter.get_finished_spans()
         }
+
+
+class TestNoPreviewsByDefault:
+    """Without previews a v4 run writes a trial once, when it is persisted: the live hooks send
+    nothing, and the switch adds the preview rows and changes nothing else."""
+
+    def _persisted(self, tmp_path, **kwargs):
+        import parity_bundle as pb
+
+        from tolokaforge.observability.observer import TrialIdentity
+
+        identity = TrialIdentity(
+            run_id=pb.RUN_ID,
+            task_id=pb.TASK_ID,
+            trial_index=pb.TRIAL_INDEX,
+            attempt_id=pb.ATTEMPT_ID,
+            run_tag=pb.RUN_TAG,
+        )
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        exporter = InMemorySpanExporter()
+        observer, _ = _v4_observer(exporter, attachments=_V4Attachments(), **kwargs)
+        _v4_trial(observer, identity)
+        observer.trial_finished(identity, trajectory=_Trajectory([], grade=_Grade()))
+        observer.trial_persisted(identity, trial_dir=trial_dir)
+        receipt = observer.run_finished()
+        return identity, exporter.get_finished_spans(), receipt
+
+    def test_a_running_trial_writes_nothing(self) -> None:
+        exporter = InMemorySpanExporter()
+        observer, queue = _v4_observer(exporter)
+        _v4_trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
+        assert queue.flush(5)
+        assert exporter.get_finished_spans() == ()
+        receipt = observer.run_finished()
+        assert receipt.extra["langfuse.previews_sent"] == 0
+        assert receipt.details[0]["previews"] == "off"
+        # the trial never persisted: its trace still gets a root, and nothing else
+        (root,) = exporter.get_finished_spans()
+        assert format(root.context.span_id, "016x") == IDENTITY.root_id
+        assert receipt.extra["langfuse.error_roots_sent"] == 1
+
+    @pytest.mark.parametrize("hook", ["generation", "tool_call"])
+    def test_a_trial_whose_start_was_never_announced_still_gets_its_root(self, hook) -> None:
+        """The live hooks send nothing, but only after the trial is tracked: a trial the loop
+        reports without a start still owes its trace a root."""
+        exporter = InMemorySpanExporter()
+        observer, _ = _v4_observer(exporter)
+        if hook == "generation":
+            observer.generation(
+                IDENTITY,
+                role="agent",
+                index=1,
+                turn=0,
+                request=[Message(role=MessageRole.USER, content="hello", ts=T0)],
+                result=GenerationResult(
+                    text="hi", usage=Usage(prompt_tokens=1, completion_tokens=1)
+                ),
+                started_at=T0,
+                ended_at=T0 + timedelta(seconds=1),
+            )
+        else:
+            observer.tool_call(
+                IDENTITY,
+                role="agent",
+                index=1,
+                call=ToolCall(id="c1", name="shell", arguments={}),
+                result=ToolResult(success=True, output="ok"),
+                started_at=T0,
+                ended_at=T0 + timedelta(seconds=1),
+            )
+        receipt = observer.run_finished()
+        (root,) = exporter.get_finished_spans()
+        assert format(root.context.span_id, "016x") == IDENTITY.root_id
+        assert receipt.extra["langfuse.error_roots_sent"] == 1
+        assert receipt.extra["langfuse.previews_sent"] == 0
+
+    def test_the_switch_adds_the_previews_and_leaves_the_record_as_it_is(self, tmp_path) -> None:
+        def final_rows(spans):
+            return [
+                (format(s.context.span_id, "016x"), s.name)
+                for s in spans
+                if not _attrs(s).get("langfuse.observation.metadata.preview")
+            ]
+
+        identity, without, receipt_without = self._persisted(tmp_path / "off")
+        _, with_previews, receipt_with = self._persisted(tmp_path / "on", previews=True)
+        assert not any(s.name.startswith("preview: ") for s in without)
+        assert {s.name for s in with_previews if s.name.startswith("preview: ")} == {
+            "preview: trial",
+            "preview: agent",
+            "preview: tool: shell",
+        }
+        assert final_rows(without) == final_rows(with_previews)
+        assert final_rows(without)[-1] == (identity.root_id, "trial")  # the root still goes last
+        assert receipt_without.extra["langfuse.previews_sent"] == 0
+        assert receipt_with.extra["langfuse.previews_sent"] == 3
+        assert receipt_with.details[0]["previews"] == "on"
+
+    def test_a_v3_receiver_keeps_its_live_rows_and_takes_no_previews(self) -> None:
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(exporter, server_api="v3", previews=True)
+        _v4_trial(observer)
+        receipt = observer.run_finished()
+        names = {s.name for s in exporter.get_finished_spans()}
+        assert {"trial", "agent", "tool: shell"} <= names
+        assert not any(name.startswith("preview: ") for name in names)
+        assert receipt.details[0]["previews"] == "off"
 
 
 class TestTheFinalLayout:
@@ -554,6 +671,69 @@ class TestTheFinalLayout:
         assert any(s.parent is None for s in spans)  # the observations still went out
         assert receipt.extra["langfuse.scores_sent"] == 0
         assert receipt.extra["langfuse.gradings_failed"] == 1
+
+
+class TestTheProfilesTrace:
+    """A deployment's ``[trace]`` names every live row's trace and gives it its user, preview,
+    final and error root alike, as the projection does."""
+
+    SETTINGS = {"trace_name": "{domain}/{config}", "trace_user": "model"}
+
+    def test_every_live_row_carries_the_profiles_name_and_user(self) -> None:
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        exporter = InMemorySpanExporter()
+        observer, _ = _v4_observer(
+            exporter, previews=True, projection=ProjectionSettings(**self.SETTINGS)
+        )
+        _v4_trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=None, error="RuntimeError: the worker died")
+        observer.run_finished()
+        spans = exporter.get_finished_spans()
+        assert {s.name for s in spans} >= {"preview: trial", "preview: agent", "trial"}
+        assert {_attrs(s)["langfuse.trace.name"] for s in spans} == {"pilot-domain/pilot_agent"}
+        assert {_attrs(s)["langfuse.user.id"] for s in spans} == {"openai/gpt-6-astra"}
+
+    def test_an_agent_the_rules_cannot_read_names_no_user(self) -> None:
+        """The bundle pass has no identity for such a model, so no live row may claim one: the
+        raw name stands in for the tags only."""
+        from tolokaforge_langfuse.model_names import ModelNameResolverError
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        class Refusing:
+            description = "refusing"
+            rules_version = "r-1"
+
+            def resolve(self, provider, name):
+                raise ModelNameResolverError(f"{name}: unresolved tokens")
+
+        exporter = InMemorySpanExporter()
+        observer, _ = _v4_observer(
+            exporter,
+            previews=True,
+            resolver=Refusing(),
+            projection=ProjectionSettings(**self.SETTINGS),
+        )
+        _v4_trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=None, error="RuntimeError: the worker died")
+        observer.run_finished()
+        spans = exporter.get_finished_spans()
+        assert spans and not any("langfuse.user.id" in _attrs(s) for s in spans)
+        assert {_attrs(s)["langfuse.trace.name"] for s in spans} == {"pilot-domain/pilot_agent"}
+
+    def test_a_template_the_trace_cannot_fill_falls_back_to_the_run_and_the_task(self) -> None:
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(
+            exporter, projection=ProjectionSettings(trace_name="{dataset}/{domain}")
+        )
+        _v4_trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=None)
+        observer.run_finished()
+        assert {_attrs(s)["langfuse.trace.name"] for s in exporter.get_finished_spans()} == {
+            "pilot_agent/T-1"
+        }
 
 
 class TestErrorRoots:
@@ -711,29 +891,10 @@ class TestErrorRoots:
 class TestHowManyTimesABatchIsPosted:
     """The v4 producer policy makes one POST attempt per batch (ADR-0048).
 
-    The count is taken at the HTTP layer, not at the SDK's ``_export``: that method re-posts the
-    same bytes in an ``except ConnectionError`` branch of its own, so a test that stubs it cannot
-    see the repeat it is there to rule out.
+    ``test_otlp_transport.py`` owns the counts: it sends real batches to a local receiver and
+    counts what reaches the wire. What stays here is what only an in-process test reaches: the
+    endpoint's adapter, and the refusal when the single-attempt exporter cannot be built.
     """
-
-    def _count_posts(self, exporter, answer=None, raises=None):
-        """Replace the session's ``post`` with a counter; returns the list of calls."""
-        posts = []
-
-        def post(*args, **kwargs):
-            posts.append(kwargs)
-            if raises is not None:
-                raise raises
-            return answer
-
-        exporter._session.post = post
-        return posts
-
-    @staticmethod
-    def _answer(status_code: int = 503) -> Response:
-        answer = Response()
-        answer.status_code = status_code
-        return answer
 
     def _write_once(self):
         from tolokaforge_langfuse.otlp_transport import make_otlp_exporter
@@ -742,76 +903,16 @@ class TestHowManyTimesABatchIsPosted:
             "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
         )
 
-    def test_the_default_exporter_keeps_the_sdk_retries(self) -> None:
-        from tolokaforge_langfuse.otlp_transport import make_otlp_exporter
-
-        exporter = make_otlp_exporter("http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"})
-        posts = self._count_posts(exporter, answer=self._answer())
-        exporter._shutdown_in_progress.set()  # do not wait out the backoff in a unit test
-        exporter.export([])
-        assert type(exporter).__name__ == "OTLPSpanExporter"
-        assert len(posts) >= 1
-
-    def test_a_lost_connection_is_not_a_second_post(self) -> None:
-        """The case the guarantee exists for: the receiver took the body and the answer never
-        came back. The SDK's own ``_export`` posts again here; this exporter may not."""
-        from opentelemetry.sdk.trace.export import SpanExportResult
-        from requests.exceptions import ConnectionError as RequestsConnectionError
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, raises=RequestsConnectionError("peer closed"))
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1, "a batch whose answer was lost may not be posted again"
-
-    def test_a_refused_batch_is_not_posted_again(self) -> None:
-        from opentelemetry.sdk.trace.export import SpanExportResult
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, answer=self._answer())
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1
-
-    def test_a_timeout_is_not_posted_again(self) -> None:
-        from opentelemetry.sdk.trace.export import SpanExportResult
-        from requests.exceptions import Timeout
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, raises=Timeout("read timed out"))
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1
-
-    @pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
-    def test_a_redirect_is_not_followed(self, status_code: int) -> None:
-        """``requests`` follows a 307 or 308 by re-sending the body, which would be a second
-        write; the request asks for no redirect and the answer counts as a failure."""
-        from opentelemetry.sdk.trace.export import SpanExportResult
-
-        exporter = self._write_once()
-        answer = self._answer(status_code)
-        answer.headers["Location"] = "http://127.0.0.1:9/redirected"
-        posts = self._count_posts(exporter, answer=answer)
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1
-        assert posts[0]["allow_redirects"] is False
-
     def test_the_endpoints_adapter_makes_no_attempt_of_its_own(self) -> None:
-        """A session supplied through the SDK's credential-provider hook may carry an adapter
-        with a retry policy; the exporter mounts its own with none."""
+        """requests' own adapters make no retries; the exporter mounts one with none for its
+        endpoint anyway, so the guarantee does not rest on a library default."""
         exporter = self._write_once()
         adapter = exporter._session.get_adapter("http://127.0.0.1:9/v1/traces")
         assert adapter.max_retries.total == 0
 
-    @pytest.mark.parametrize("status_code", [200, 202, 204, 207, 299])
-    def test_a_successful_post_is_one_post(self, status_code: int) -> None:
-        from opentelemetry.sdk.trace.export import SpanExportResult
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, answer=self._answer(status_code))
-        assert exporter.export([]) is SpanExportResult.SUCCESS
-        assert len(posts) == 1
-
-    def test_an_sdk_that_cannot_post_once_refuses_the_run(self, monkeypatch) -> None:
-        """An incompatible SDK must refuse the run instead of silently enabling retries."""
+    def test_an_install_that_cannot_post_once_refuses_the_run(self, monkeypatch) -> None:
+        """An install that cannot build the single-attempt request must refuse the run instead
+        of silently enabling retries."""
         from tolokaforge_langfuse import otlp_transport
 
         monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: None)
@@ -820,27 +921,8 @@ class TestHowManyTimesABatchIsPosted:
                 "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
             )
 
-    def test_an_exporter_missing_what_the_post_reads_refuses_the_run(self, monkeypatch) -> None:
-        """The subclass posts off the SDK exporter's own session, endpoint, timeout, compression
-        and certificates. An SDK that renames one of them must stop the run rather than let the
-        exporter fall back to the ``_export`` that re-posts."""
-        from tolokaforge_langfuse import otlp_transport
-
-        real = otlp_transport._single_attempt_exporter_class()
-
-        class _Renamed(real):  # type: ignore[misc, valid-type]
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                del self._compression
-
-        monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: _Renamed)
-        with pytest.raises(otlp_transport.SingleAttemptUnavailable, match="_compression"):
-            otlp_transport.make_otlp_exporter(
-                "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
-            )
-
-    def test_the_same_sdk_still_serves_a_retrying_exporter(self, monkeypatch) -> None:
-        """Only the single-attempt policy needs these internals; v3 keeps the stock exporter."""
+    def test_the_retrying_exporter_does_not_need_the_single_attempt_one(self, monkeypatch) -> None:
+        """v3 keeps the stock exporter whether or not the single-attempt one can be built."""
         from tolokaforge_langfuse import otlp_transport
 
         monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: None)
@@ -850,18 +932,1071 @@ class TestHowManyTimesABatchIsPosted:
         assert type(exporter).__name__ == "OTLPSpanExporter"
 
 
-class TestTheIngestionHeader:
-    def test_the_exporter_asks_for_the_direct_ingestion_path(self) -> None:
-        from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER, make_otlp_exporter
+class TestLiveCost:
+    """A live generation shows the charge its call record states, else the eval's figure, and
+    names which."""
 
-        exporter = make_otlp_exporter("http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"})
-        assert exporter._session.headers[INGESTION_VERSION_HEADER] == "4"
+    BILLED = ProviderRawCall(
+        prompt_tokens=100,
+        completion_tokens=20,
+        cost_usd=0.0266895,
+        cost_source="litellm",
+        billed_cost_usd=0.027022,
+    )
 
-    def test_a_caller_may_turn_it_off_and_keeps_its_own_headers(self) -> None:
-        from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER, make_otlp_exporter
-
-        exporter = make_otlp_exporter(
-            "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, ingestion_version=None
+    def _generation_attrs(self, result, *, role: str = "agent", server_api: str = "v3") -> dict:
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(exporter, server_api=server_api, previews=True)
+        observer.trial_started(
+            IDENTITY, models={"agent": ModelRef("openrouter", "openai/gpt-6-astra")}, started_at=T0
         )
-        assert INGESTION_VERSION_HEADER not in exporter._session.headers
-        assert exporter._session.headers["Authorization"] == "Basic x"
+        observer.generation(
+            IDENTITY,
+            role=role,
+            index=1,
+            turn=0,
+            request=[Message(role=MessageRole.USER, content="hello", ts=T0)],
+            result=result,
+            started_at=T0,
+            ended_at=T0 + timedelta(seconds=1),
+        )
+        observer.run_finished()
+        name = "agent" if role == "agent" else "judge"
+        if server_api == "v4":
+            name = f"preview: {name}"
+        (span,) = [s for s in exporter.get_finished_spans() if s.name == name]
+        return _attrs(span)
+
+    def test_the_stated_charge_is_the_generations_cost(self) -> None:
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(self.BILLED,)),
+            cost_usd=0.0266895,
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.027022}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "billed"
+
+    def test_a_live_judge_turn_is_priced_by_the_same_rule(self) -> None:
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(self.BILLED,)),
+            cost_usd=0.0266895,
+        )
+        attrs = self._generation_attrs(result, role="judge")
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.027022}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "billed"
+
+    def test_a_call_that_stated_no_charge_shows_the_eval_figure(self) -> None:
+        call = ProviderRawCall(prompt_tokens=100, cost_usd=0.01, cost_source="local")
+        result = GenerationResult(
+            text="ok", usage=Usage(prompt_tokens=100, calls=(call,)), cost_usd=0.01
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.01}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "list"
+
+    def test_a_result_without_a_call_record_shows_the_eval_figure(self) -> None:
+        result = GenerationResult(
+            text="ok", usage=Usage(prompt_tokens=100, completion_tokens=20), cost_usd=0.01
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.01}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "eval"
+
+    def test_a_call_without_any_figure_states_a_zero_cost(self) -> None:
+        """No stated charge and no eval figure: an explicit zero, so the receiver prices
+        nothing from its own model table."""
+        call = ProviderRawCall(prompt_tokens=100, completion_tokens=20, cost_source="unknown")
+        result = GenerationResult(
+            text="ok", usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(call,))
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "none"
+        assert json.loads(attrs["langfuse.observation.usage_details"])["total"] == 120
+
+    @pytest.mark.parametrize("role", ["agent", "judge"])
+    def test_a_preview_counts_nothing_toward_the_trace(self, role: str) -> None:
+        """A preview stays beside the final row the bundle writes, and the receiver adds up the
+        usage and cost of every row: the preview states zero usage and cost, explicitly so the
+        receiver infers none from its model, and its figures as metadata, so each call counts
+        once."""
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(self.BILLED,)),
+            cost_usd=0.0266895,
+        )
+        attrs = self._generation_attrs(result, role=role, server_api="v4")
+        assert attrs["langfuse.observation.metadata.preview"] is True
+        assert json.loads(attrs["langfuse.observation.usage_details"]) == {
+            "input": 0,
+            "output": 0,
+            "total": 0,
+        }
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0}
+        assert not [key for key in attrs if key.startswith("gen_ai.usage")]
+        assert attrs["langfuse.observation.metadata.prompt_tokens"] == 100
+        assert attrs["langfuse.observation.metadata.completion_tokens"] == 20
+        assert attrs["langfuse.observation.metadata.cost"] == 0.027022
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "billed"
+
+    def _live_usage(self, prompt: int) -> dict:
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(
+                prompt_tokens=prompt,
+                completion_tokens=20,
+                cache_read_input_tokens=100,
+                cache_creation_input_tokens=200,
+            ),
+        )
+        return json.loads(self._generation_attrs(result)["langfuse.observation.usage_details"])
+
+    def test_a_live_generation_counts_cache_writes_once(self) -> None:
+        """The engine's prompt total holds the cache reads and the cache writes, so each leaves
+        ``input`` once and the components add up to ``total``."""
+        details = self._live_usage(prompt=1000)
+        assert details == {
+            "input": 700,
+            "output": 20,
+            "total": 1020,
+            "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 200,
+        }
+        assert sum(value for key, value in details.items() if key != "total") == details["total"]
+
+    def test_counters_larger_than_the_prompt_floor_a_live_input_at_zero(self) -> None:
+        assert self._live_usage(prompt=250)["input"] == 0
+
+    def test_a_live_row_on_a_v3_receiver_is_the_final_row(self) -> None:
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(self.BILLED,)),
+            cost_usd=0.0266895,
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.usage_details"]) == {
+            "input": 100,
+            "output": 20,
+            "total": 120,
+        }
+        assert attrs["gen_ai.usage.input_tokens"] == 100
+        assert attrs["gen_ai.usage.output_tokens"] == 20
+        assert "langfuse.observation.metadata.cost" not in attrs
+
+
+class TestEverySpanIsScannedBeforeItLeaves:
+    """A live span leaves before the bundle's own scan runs, so each one is scanned itself, free
+    text (model input and output, tool output and errors) included. A span that would carry a
+    secret is withheld and counted (docs/OBSERVABILITY.md, "Delivery")."""
+
+    # the shape of an OpenRouter key: 64 hex characters after the prefix
+    PROVIDER_KEY = "sk-or-v1-" + "0123456789abcdef" * 4
+    # no shape, only the environment knows it; JSON escapes its quote and its backslash
+    AWKWARD_SECRET = 'tok"en\\8f3a91c2b7d04e56'
+    FAMILIES = pytest.mark.parametrize("server_api", ["v3", "v4"])
+
+    @pytest.fixture(autouse=True)
+    def only_the_tests_own_credentials(self, monkeypatch) -> None:
+        """The gate's known values come from the environment: only the test's own are in it."""
+        for name in [name for name in os.environ if SECRET_NAME.search(name)]:
+            monkeypatch.delenv(name)
+
+    @staticmethod
+    def _trial(
+        observer,
+        *,
+        assistant_text="done",
+        request_text="hello",
+        tool_name="shell",
+        tool_arguments=None,
+        tool_output="file.txt",
+    ):
+        observer.trial_started(
+            IDENTITY, models={"agent": ModelRef("openrouter", "openai/gpt-6-astra")}, started_at=T0
+        )
+        observer.generation(
+            IDENTITY,
+            role="agent",
+            index=1,
+            turn=0,
+            request=[Message(role=MessageRole.USER, content=request_text, ts=T0)],
+            result=GenerationResult(
+                text=assistant_text, usage=Usage(prompt_tokens=10, completion_tokens=2)
+            ),
+            started_at=T0,
+            ended_at=T0 + timedelta(seconds=1),
+        )
+        observer.tool_call(
+            IDENTITY,
+            role="agent",
+            index=2,
+            call=ToolCall(id="c1", name=tool_name, arguments=tool_arguments or {"cmd": "ls"}),
+            result=ToolResult(success=True, output=tool_output),
+            started_at=T0 + timedelta(seconds=2),
+            ended_at=T0 + timedelta(seconds=2.2),
+        )
+
+    def _run(
+        self,
+        server_api,
+        *,
+        tool_error=None,
+        final_text="done",
+        error=None,
+        gate=None,
+        projection=None,
+        **trial,
+    ):
+        exporter = InMemorySpanExporter()
+        gate = gate if gate is not None else SafetyGate.from_environment()
+        extra = {"projection": projection} if projection is not None else {}
+        observer, _ = _observer(exporter, server_api=server_api, gate=gate, previews=True, **extra)
+        self._trial(observer, **trial)
+        if tool_error is not None:
+            observer.tool_call(
+                IDENTITY,
+                role="agent",
+                index=3,
+                call=ToolCall(id="c2", name="shell", arguments={}),
+                result=ToolResult(success=False, output="", error=tool_error),
+                started_at=T0 + timedelta(seconds=3),
+                ended_at=T0 + timedelta(seconds=3.2),
+            )
+        messages = [
+            Message(role=MessageRole.USER, content="hello", ts=T0),
+            Message(role=MessageRole.ASSISTANT, content=final_text, ts=T0),
+        ]
+        if error is None:
+            observer.trial_finished(IDENTITY, trajectory=_Trajectory(messages, grade=_Grade()))
+        else:
+            observer.trial_finished(IDENTITY, trajectory=None, error=error)
+        receipt = observer.run_finished()
+        return exporter.get_finished_spans(), receipt
+
+    @staticmethod
+    def _kinds(spans) -> list[str]:
+        """What went out, a preview's prefix dropped: both families write the same rows (on v4
+        the last ``trial`` is the error root, written when the run ends)."""
+        return sorted(span.name.removeprefix("preview: ") for span in spans)
+
+    @staticmethod
+    def _carried(spans, value: str) -> bool:
+        return any(value in json.dumps(dict(span.attributes), default=str) for span in spans)
+
+    @FAMILIES
+    def test_clean_spans_are_exported_and_nothing_is_counted(self, server_api, monkeypatch) -> None:
+        monkeypatch.setenv("FOO_TOKEN", "tok_8f3a91c2b7d04e56")  # held, and in no span
+        spans, receipt = self._run(server_api)
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+        assert (receipt.spans_queued, receipt.spans_exported) == (4, 4)
+
+    @FAMILIES
+    def test_a_provider_key_in_a_tool_result_withholds_that_span(self, server_api, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run(server_api, tool_output=f"found {self.PROVIDER_KEY} in it")
+        assert self._kinds(spans) == ["agent", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        # neither queued nor dropped: it never got that far
+        assert (receipt.spans_queued, receipt.spans_dropped) == (3, 0)
+        assert not self._carried(spans, self.PROVIDER_KEY)
+        # the warning names the span and the rule, never the value or a part of it
+        assert "tool: shell" in caplog.text and "openrouter-key" in caplog.text
+        assert "sk-or" not in caplog.text and "0123456789" not in caplog.text
+
+    @FAMILIES
+    def test_a_credential_the_process_holds_in_the_assistants_text_withholds_that_span(
+        self, server_api, monkeypatch, caplog
+    ) -> None:
+        value = "tok_8f3a91c2b7d04e56"
+        monkeypatch.setenv("FOO_TOKEN", value)
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run(server_api, assistant_text=f"the token is {value}")
+        assert self._kinds(spans) == ["tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert not self._carried(spans, value)
+        assert "known-secret-value" in caplog.text and value not in caplog.text
+
+    @FAMILIES
+    def test_a_credential_with_a_quote_and_a_backslash_is_found_in_the_raw_strings(
+        self, server_api, monkeypatch, caplog
+    ) -> None:
+        monkeypatch.setenv("FOO_TOKEN", self.AWKWARD_SECRET)
+        # the serialised attributes hold it escaped, so only the raw strings give it away
+        assert self.AWKWARD_SECRET not in json.dumps(self.AWKWARD_SECRET)
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run(server_api, tool_error=f"401 for {self.AWKWARD_SECRET}")
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert "known-secret-value" in caplog.text and "8f3a91c2" not in caplog.text
+
+    @FAMILIES
+    @pytest.mark.parametrize(
+        ("field", "kinds"),
+        [
+            ("assistant_text", ["tool: shell", "trial", "trial"]),
+            ("request_text", ["tool: shell", "trial", "trial"]),
+            ("tool_arguments", ["agent", "trial", "trial"]),
+        ],
+    )
+    def test_a_credential_json_escapes_is_found_in_an_attribute_that_is_json_text(
+        self, server_api, field, kinds, monkeypatch
+    ) -> None:
+        """A generation's input and output and a tool's input are JSON text: the credential is
+        escaped once more there, and withheld all the same."""
+        monkeypatch.setenv("FOO_TOKEN", self.AWKWARD_SECRET)
+        value = {"cmd": f"echo {self.AWKWARD_SECRET}"}
+        if field != "tool_arguments":
+            value = f"the token is {self.AWKWARD_SECRET}"
+        spans, receipt = self._run(server_api, **{field: value})
+        assert self._kinds(spans) == kinds
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+
+    @FAMILIES
+    def test_code_that_names_a_key_or_a_token_count_is_not_withheld(self, server_api) -> None:
+        """Only the serialised span meets the shapes: a line-anchored one would stop the ordinary
+        code a coding benchmark's tools and models print."""
+        code = (
+            "api_key = os.environ.get('X')\n"
+            "total_tokens = response.usage.total_tokens\n"
+            "GPG_KEY=0123456789ABCDEF0123456789ABCDEF01234567\n"
+        )
+        spans, receipt = self._run(
+            server_api, assistant_text=code, request_text=code, tool_output=code
+        )
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+
+    def test_the_observer_and_its_gate_print_no_known_value(self, monkeypatch) -> None:
+        monkeypatch.setenv("FOO_TOKEN", self.AWKWARD_SECRET)
+        observer, _ = _observer(InMemorySpanExporter(), gate=SafetyGate.from_environment())
+        self._trial(observer, assistant_text=self.AWKWARD_SECRET)
+        observer.run_finished()
+        text = repr(observer) + repr(observer._gate)
+        assert "8f3a91c2" not in text
+
+    @FAMILIES
+    def test_a_trials_error_that_would_carry_a_secret_withholds_the_root(self, server_api) -> None:
+        """The root (on v4 the error root) is scanned like every other span; the trial's own
+        rows went out before and stay."""
+        spans, receipt = self._run(server_api, error=f"RuntimeError: key {self.PROVIDER_KEY}")
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert receipt.extra["langfuse.error_roots_sent"] == 0
+        assert not self._carried(spans, self.PROVIDER_KEY)
+
+    def test_a_final_root_that_would_carry_a_secret_is_withheld(self) -> None:
+        spans, receipt = self._run("v3", final_text=f"done, the key was {self.PROVIDER_KEY}")
+        # the provisional root left at the trial's start, the final one is withheld
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+
+    @FAMILIES
+    def test_a_secret_in_the_traces_own_identity_withholds_every_row_roots_included(
+        self, server_api
+    ) -> None:
+        exporter = InMemorySpanExporter()
+        queue = SpanQueue(exporter, max_size=100, batch_size=4, interval_s=0.05)
+        observer = OTelTrialObserver(
+            queue=queue,
+            label="l",
+            session_id="s",
+            tags=(f"note:{self.PROVIDER_KEY}",),
+            server_api=server_api,
+            previews=True,
+        )
+        self._trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
+        receipt = observer.run_finished()
+        assert exporter.get_finished_spans() == ()
+        # every row of the trial: the (preview) root, the generation, the tool, the final or
+        # error root
+        assert receipt.extra["langfuse.spans_refused_secret"] == 4
+        assert receipt.spans_queued == 0
+
+    def test_a_tool_the_model_named_after_a_secret_is_not_named_in_the_warning(
+        self, caplog
+    ) -> None:
+        observer, _ = _observer(InMemorySpanExporter())
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            self._trial(observer, tool_name=self.PROVIDER_KEY)
+        observer.run_finished()
+        assert "not exported" in caplog.text
+        assert self.PROVIDER_KEY not in caplog.text and "sk-or" not in caplog.text
+
+    def test_the_launchers_session_id_is_not_a_secret(self, monkeypatch) -> None:
+        """Its name says SESSION, its value rides on every span by design: it must not stop them."""
+        monkeypatch.setenv(
+            "TOLOKAFORGE_TRACING_SESSION_ID", "acme/pilot/v1/pilot_agent/pilot_agent/123"
+        )
+        spans, receipt = self._run("v3")
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+
+    def test_an_injected_gate_replaces_the_environments(self, monkeypatch) -> None:
+        monkeypatch.setenv("FOO_TOKEN", "tok_8f3a91c2b7d04e56")
+        gate = SafetyGate(known_values=(b"injected-credential",))
+        spans, receipt = self._run(
+            "v3",
+            gate=gate,
+            assistant_text="tok_8f3a91c2b7d04e56",
+            tool_output="injected-credential",
+        )
+        assert self._kinds(spans) == ["agent", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+
+    # -- the gate of a run: what it leaves out, what it names, what it refreshes -------------------
+
+    @staticmethod
+    def _warnings(caplog) -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+    @FAMILIES
+    def test_a_value_the_runs_own_tags_carry_is_left_out_and_named(
+        self, server_api, caplog
+    ) -> None:
+        """``ACME_TOKEN=tolokaforge`` is also the harness tag's value, written on every span by
+        design: a gate that knew it would withhold the whole run, silently."""
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        gate = SafetyGate.from_environment({"ACME_TOKEN": "tolokaforge"})
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            # the harness tag alone carries the value: the producer is another name
+            spans, receipt = self._run(
+                server_api, gate=gate, projection=ProjectionSettings(producer="pilot-producer")
+            )
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+        warnings = self._warnings(caplog)
+        assert [w for w in warnings if "ACME_TOKEN" in w] and not [
+            w for w in warnings if "tolokaforge" in w
+        ]
+        assert gate.known_values == ()
+
+    @FAMILIES
+    def test_a_real_secret_is_still_withheld_and_its_warning_names_its_variable(
+        self, server_api, caplog
+    ) -> None:
+        value = "a-db-password-no-shape-matches"
+        gate = SafetyGate.from_environment({"ACME_TOKEN": "tolokaforge", "DB_PASSWORD": value})
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run(server_api, gate=gate, tool_output=f"it said {value}")
+        assert self._kinds(spans) == ["agent", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        span_warning = next(w for w in self._warnings(caplog) if "would carry a secret" in w)
+        assert "known-secret-value from DB_PASSWORD" in span_warning
+        assert value not in span_warning and "ACME_TOKEN" not in span_warning
+
+    def test_the_runs_id_and_tag_are_ambient_too(self, caplog) -> None:
+        gate = SafetyGate.from_environment({"RUN_SECRET": "acme/pilot/v1/123"})
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            queue = SpanQueue(InMemorySpanExporter(), max_size=10, batch_size=4, interval_s=0.05)
+            OTelTrialObserver(
+                queue=queue,
+                label="l",
+                session_id="s",
+                gate=gate,
+                ambient=("acme/pilot/v1/123/1", "v1"),
+            ).run_finished()
+        assert any("RUN_SECRET" in w for w in self._warnings(caplog))
+        assert gate.known_values == ()
+
+    def test_one_warning_at_run_end_says_what_was_withheld_and_why(self, caplog) -> None:
+        value = "a-db-password-no-shape-matches"
+        gate = SafetyGate.from_environment({"DB_PASSWORD": value})
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            self._run("v3", gate=gate, tool_output=f"it said {value}")
+        summary = [w for w in self._warnings(caplog) if w.startswith("live tracing withheld")]
+        assert len(summary) == 1
+        assert "1 span(s)" in summary[0] and "known-secret-value from DB_PASSWORD x1" in summary[0]
+        assert value not in summary[0]
+
+    def test_a_run_that_withheld_nothing_says_nothing_at_run_end(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            self._run("v3", gate=SafetyGate())
+        assert not [w for w in self._warnings(caplog) if w.startswith("live tracing withheld")]
+
+    def test_a_secret_registered_after_the_gate_was_built_is_known_at_the_next_trial(
+        self, caplog
+    ) -> None:
+        """The engine registers a generated key (``register_runtime_secret``) after the observer
+        is built; the gate is told to re-read at a trial's start."""
+        late = "late-registered-key-value"
+        gate = SafetyGate()
+        offers = [SafetyGate.from_environment({"TYPESENSE_API_KEY": late})]
+        gate.reload = lambda: offers.pop() if offers else None
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run("v3", gate=gate, tool_output=f"the key is {late}")
+        assert self._kinds(spans) == ["agent", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert any("known-secret-value from TYPESENSE_API_KEY" in w for w in self._warnings(caplog))
+
+    def test_a_refreshed_value_the_run_carries_is_left_out_again(self, caplog) -> None:
+        gate = SafetyGate()
+        offers = [SafetyGate.from_environment({"ACME_TOKEN": "tolokaforge"})]
+        gate.reload = lambda: offers.pop() if offers else None
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run("v3", gate=gate)
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+        assert [w for w in self._warnings(caplog) if "ACME_TOKEN" in w]
+
+    def test_a_gate_that_cannot_refresh_keeps_the_values_it_has(self, caplog) -> None:
+        value = "a-db-password-no-shape-matches"
+        gate = SafetyGate.from_environment({"DB_PASSWORD": value})
+
+        def broken():
+            raise ValueError("the manager is gone")
+
+        gate.reload = broken
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run("v3", gate=gate, tool_output=f"it said {value}")
+        assert self._kinds(spans) == ["agent", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert any("were not re-read: ValueError" in w for w in self._warnings(caplog))
+
+
+# -- retries at the run end and in the receipt -------------------------------------------------
+#
+# Fake time throughout: the retrier's waits and the flush's polls move a FakeTime, nothing
+# sleeps. A queue whose batch size exceeds what a test puts keeps its worker asleep, so the
+# flush drains in the test's own thread unless the test hands a batch to the worker itself.
+
+RETRY_KEYS = (
+    "retried_requests",
+    "retry_attempts",
+    "retries_recovered",
+    "retries_exhausted",
+    "retry_wait_s",
+    "retry_breaker_trips",
+)
+
+
+def _finished_spans(count: int) -> list:
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    memory = InMemorySpanExporter()
+    provider = TracerProvider(shutdown_on_exit=False)
+    provider.add_span_processor(SimpleSpanProcessor(memory))
+    tracer = provider.get_tracer("retry-test")
+    for index in range(count):
+        with tracer.start_as_current_span(f"span-{index}"):
+            pass
+    return list(memory.get_finished_spans())
+
+
+def _gateway():
+    from otlp_receiver import GATEWAY_PAGE
+    from tolokaforge_langfuse.retry import Answer
+
+    return Answer(403, GATEWAY_PAGE)
+
+
+def _retrier(time, stats=None, sleep=None, breaker=None, **policy):
+    from tolokaforge_langfuse.retry import Retrier, RetryPolicy
+
+    return Retrier(
+        RetryPolicy(**{"jitter": 0.0, **policy}),
+        stats=stats,
+        breaker=breaker,
+        clock=time.clock,
+        sleep=sleep or time.sleep,
+    )
+
+
+class _ScriptedExporter(InMemorySpanExporter):
+    """The single-attempt exporter's use of its retrier, without HTTP: each export runs through
+    the retrier against the scripted answers, then ``then`` (200 by default). ``request`` is
+    called as each post is made, standing for the request itself (its time, a lost answer)."""
+
+    def __init__(self, retrier, answers=(), *, then=None, request=None) -> None:
+        import threading
+
+        from tolokaforge_langfuse.retry import Answer
+
+        super().__init__()
+        self.retrier = retrier
+        self.answers = list(answers)
+        self.then = then if then is not None else Answer(200)
+        self.request = request
+        self.posts = 0
+        self.done = threading.Event()
+
+    def export(self, spans):
+        def attempt():
+            self.posts += 1
+            if self.request is not None:
+                self.request()
+            return self.answers.pop(0) if self.answers else self.then
+
+        try:
+            if not self.retrier.run(attempt, what="span export").ok:
+                return SpanExportResult.FAILURE
+            return super().export(spans)
+        finally:
+            self.done.set()
+
+    def shutdown(self) -> None:
+        self.retrier.cancel()
+
+
+def _queue(exporter, time, *, grace: float = 240.0, batch_size: int = 100) -> SpanQueue:
+    return SpanQueue(
+        exporter,
+        max_size=500,
+        batch_size=batch_size,
+        interval_s=3600,
+        retrier=exporter.retrier,
+        flush_grace_s=grace,
+        clock=time.clock,
+        sleep=time.sleep,
+    )
+
+
+class _Held:
+    """Holds the worker inside a wait or a request until the test lets it go."""
+
+    def __init__(self, time=None) -> None:
+        import threading
+
+        self.time = time
+        self.holding = threading.Event()
+        self.release = threading.Event()
+
+    def sleep(self, seconds: float) -> None:
+        self.holding.set()
+        assert self.release.wait(10)
+        if self.time is not None:
+            self.time.sleep(seconds)
+
+    def request(self) -> None:
+        self.sleep(0.0)
+
+
+class TestTheRunEndLeavesRoomForRetries:
+    """The run-end flush gives a batch the receiver refused without reading it its retry
+    schedule, within ``flush_timeout_s`` plus the grace, and reports what it could not
+    deliver; a flush that meets no such refusal ends at its timeout."""
+
+    def test_the_flush_waits_for_a_refused_batch_within_the_grace(self) -> None:
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        exporter = _ScriptedExporter(_retrier(time), [_gateway()] * 5)
+        queue = _queue(exporter, time)
+        for span in _finished_spans(3):
+            queue.put(span)
+        started = time.now
+        assert queue.flush(30) is True
+        # 1 + 3 + 9 + 20 + 30 s: past the flush timeout, inside the grace
+        assert time.now - started == 63.0
+        assert exporter.posts == 6 and len(exporter.get_finished_spans()) == 3
+        receipt = queue.receipt(flushed=True)
+        assert (receipt.spans_exported, receipt.spans_dropped, receipt.export_failures) == (3, 0, 0)
+
+    def test_without_a_refusal_the_flush_ends_at_its_timeout(self) -> None:
+        """A receiver that is merely slow gets no grace: the run ends when it always did."""
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        exporter = _ScriptedExporter(_retrier(time), request=lambda: time.sleep(10.0))
+        queue = _queue(exporter, time)
+        for span in _finished_spans(10):
+            queue.put(span)
+        queue._batch_size = 1  # set after the puts, which therefore left the worker asleep
+        started = time.now
+        assert queue.flush(30) is False
+        assert time.now - started == 30.0
+        receipt = queue.receipt(flushed=False)
+        assert (receipt.spans_exported, receipt.spans_dropped) == (3, 7)
+        assert queue._grace_left == 240.0  # nothing of the grace was spent
+
+    def test_the_grace_bounds_the_flush_and_what_was_not_delivered_is_reported(self) -> None:
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        exporter = _ScriptedExporter(_retrier(time), [_gateway()] * 10)
+        queue = _queue(exporter, time, grace=50.0)
+        for span in _finished_spans(4):
+            queue.put(span)
+        started = time.now
+        assert queue.flush(30) is True  # the batch left the queue and was not delivered
+        # the waits that fit before the grace ran out; the next 30 s would have ended past it
+        assert time.sleeps == [1.0, 3.0, 9.0, 20.0, 30.0] and time.now - started <= 30 + 50
+        receipt = queue.receipt(flushed=True)
+        assert (receipt.spans_exported, receipt.spans_dropped, receipt.export_failures) == (0, 4, 1)
+        assert exporter.retrier.stats.counts()["retries_exhausted"] == 1
+        # the run end's second flush (after the error roots) has only the rest of the grace
+        assert queue._grace_left == pytest.approx(50.0 - (63.0 - 30.0))
+
+    def test_without_a_grace_the_waits_stay_within_the_timeout(self) -> None:
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        exporter = _ScriptedExporter(_retrier(time), [_gateway()] * 10)
+        queue = _queue(exporter, time, grace=0.0)
+        queue.put(_finished_spans(1)[0])
+        assert queue.flush(30) is True
+        assert time.sleeps == [1.0, 3.0, 9.0] and exporter.get_finished_spans() == ()
+        assert queue.receipt(flushed=True).spans_dropped == 1
+
+    def test_a_refusal_that_began_before_the_flush_keeps_its_grace_after_it_ends(self) -> None:
+        """The worker is waiting out a refusal when the run ends, and its batch lands after
+        ``flush_timeout_s``. The receiver was refusing in this flush, so the batches queued
+        behind it are delivered, not dropped."""
+        import threading
+
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        held = _Held(time)  # the refused batch's wait, held until the flush is past its timeout
+        gate, at_gate = threading.Event(), threading.Event()
+        started: list[float] = []
+
+        def request() -> None:
+            # the first batch behind the refused one waits here, so the flush looks at its
+            # deadline while the rest of the backlog is still queued
+            if exporter.posts == 3:
+                at_gate.set()
+                assert gate.wait(10)
+
+        def poll(seconds: float) -> None:
+            time.sleep(seconds)
+            if not held.release.is_set() and time.now - started[0] > 35:
+                held.release.set()
+                assert at_gate.wait(10)
+            elif held.release.is_set() and not gate.is_set():
+                gate.set()
+                # the worker drains the backlog before the flush looks again
+                assert queue._drain_lock.acquire(timeout=10)
+                queue._drain_lock.release()
+
+        exporter = _ScriptedExporter(
+            _retrier(time, sleep=held.sleep), [_gateway()], request=request
+        )
+        queue = SpanQueue(
+            exporter,
+            max_size=500,
+            batch_size=1,
+            interval_s=3600,
+            retrier=exporter.retrier,
+            flush_grace_s=240,
+            clock=time.clock,
+            sleep=poll,
+        )
+        spans = _finished_spans(21)
+        queue.put(spans[0])  # a full batch: the worker takes it and is refused
+        assert held.holding.wait(10)
+        for span in spans[1:]:
+            queue.put(span)  # queued behind it
+        started.append(time.now)
+        try:
+            flushed = queue.flush(30)
+        finally:
+            held.release.set()
+            gate.set()
+        assert flushed is True
+        receipt = queue.receipt(flushed=True)
+        assert (receipt.spans_exported, receipt.spans_dropped, receipt.export_failures) == (
+            21,
+            0,
+            0,
+        )
+        assert 30 < time.now - started[0] <= 30 + 240
+
+    def test_a_failure_that_is_not_a_refusal_ends_the_grace(self) -> None:
+        """One 429 passes after a second, then every post times out: the receiver is down, not
+        refusing, so the flush ends at its timeout instead of running into the grace."""
+        from fake_time import FakeTime
+        from tolokaforge_langfuse.retry import Answer
+
+        time = FakeTime()
+
+        def request() -> None:
+            if exporter.posts > 2:
+                time.sleep(10.0)
+                raise ConnectionError("timed out")
+
+        exporter = _ScriptedExporter(_retrier(time), [Answer(429)], request=request)
+        queue = _queue(exporter, time)
+        for span in _finished_spans(60):
+            queue.put(span)
+        queue._batch_size = 1  # set after the puts, which therefore left the worker asleep
+        started = time.now
+        assert queue.flush(30) is False
+        assert time.now - started == 31.0  # the post in flight at the timeout, and no further
+        receipt = queue.receipt(flushed=False)
+        assert (receipt.spans_exported, receipt.export_failures, receipt.spans_dropped) == (
+            1,
+            3,
+            59,
+        )
+        assert queue._grace_left == 239.0
+
+    def test_an_open_breaker_gives_the_flush_no_grace(self) -> None:
+        """Refusals that fail at once leave nothing to wait for: the flush ends at its timeout."""
+        from fake_time import FakeTime
+        from tolokaforge_langfuse.retry import RetryBreaker
+
+        time = FakeTime()
+        breaker = RetryBreaker(1)
+        breaker.outlasted()
+        exporter = _ScriptedExporter(
+            _retrier(time, breaker=breaker), then=_gateway(), request=lambda: time.sleep(10.0)
+        )
+        queue = _queue(exporter, time)
+        for span in _finished_spans(10):
+            queue.put(span)
+        queue._batch_size = 1
+        started = time.now
+        assert queue.flush(30) is False
+        assert time.now - started == 30.0 and exporter.posts == 3
+        assert queue.receipt(flushed=False).spans_dropped == 10
+
+    @pytest.mark.parametrize("with_retrier", [True, False])
+    def test_a_batch_that_finished_past_the_timeout_has_left(self, with_retrier: bool) -> None:
+        """Every span was exported, the last batch just past the timeout: the queue is flushed,
+        as it always was, and nothing is reported lost."""
+        from fake_time import FakeTime
+
+        time = FakeTime()
+
+        class _Slow(InMemorySpanExporter):
+            def export(self, spans):
+                time.sleep(10.0)
+                return super().export(spans)
+
+        if with_retrier:
+            queue = _queue(
+                _ScriptedExporter(_retrier(time), request=lambda: time.sleep(10.0)), time
+            )
+        else:
+            queue = SpanQueue(
+                _Slow(),
+                max_size=500,
+                batch_size=100,
+                interval_s=3600,
+                clock=time.clock,
+                sleep=time.sleep,
+            )
+        for span in _finished_spans(3):
+            queue.put(span)
+        queue._batch_size = 1  # set after the puts, which therefore left the worker asleep
+        started = time.now
+        assert queue.flush(25) is True
+        assert time.now - started == 30.0
+        receipt = queue.receipt(flushed=True)
+        assert (receipt.spans_exported, receipt.spans_dropped) == (3, 0)
+
+    @pytest.mark.parametrize("draw", [0.0, 0.999999])
+    def test_the_run_end_takes_at_most_twice_the_timeout_plus_the_grace(self, draw: float) -> None:
+        """A gateway that refuses every post, each post taking 2 s, and no breaker (the worst
+        case): the write-once run end (a flush, the error roots, the shutdown's flush) stays within
+        2 x flush_timeout_s + flush_grace_s, plus one post in flight per flush."""
+        from fake_time import FakeTime
+        from tolokaforge_langfuse.retry import Retrier, RetryPolicy
+
+        time = FakeTime()
+        retrier = Retrier(
+            RetryPolicy(breaker_after=0),
+            clock=time.clock,
+            sleep=time.sleep,
+            draw=lambda: draw,
+        )
+        exporter = _ScriptedExporter(retrier, then=_gateway(), request=lambda: time.sleep(2.0))
+        queue = _queue(exporter, time, batch_size=10_000)
+        for span in _finished_spans(200):
+            queue.put(span)
+        queue._batch_size = 64
+        started = time.now
+        queue.flush(30)
+        first_flush_posts = exporter.posts
+        for span in _finished_spans(5):  # the error roots
+            queue.put(span)
+        queue.shutdown(30)
+        assert exporter.posts > first_flush_posts > 0  # both flushes waited refusals out
+        assert time.now - started <= 2 * 30 + 240 + 2 * 2.0
+        receipt = queue.receipt(flushed=False)
+        assert receipt.spans_exported == 0 and receipt.spans_dropped == receipt.spans_queued
+
+    @pytest.mark.parametrize("refused", [True, False])
+    def test_a_batch_the_worker_holds_is_awaited_within_the_bound_and_no_longer(
+        self, refused: bool
+    ) -> None:
+        """The worker took a batch just before the run end and waits: out a refusal
+        (``refused``, so the flush may use the grace) or for a slow answer (it may not)."""
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        held = _Held(time)
+        if refused:
+            exporter = _ScriptedExporter(_retrier(time, sleep=held.sleep), [_gateway()])
+        else:
+            exporter = _ScriptedExporter(_retrier(time), request=held.request)
+        queue = _queue(exporter, time, batch_size=1)
+        queue.put(_finished_spans(1)[0])  # a full batch: the worker takes it
+        assert held.holding.wait(10)
+        started = time.now
+        assert queue.flush(30) is False  # the batch is still with the worker
+        assert time.now - started == pytest.approx(30 + 240 if refused else 30, abs=0.06)
+        held.release.set()
+        # the worker lets go of the queue once it has recorded the batch's outcome
+        assert queue._drain_lock.acquire(timeout=10)
+        queue._drain_lock.release()
+        assert queue.shutdown(5) is True
+        receipt = queue.receipt(flushed=True)
+        assert (receipt.spans_exported, receipt.spans_dropped) == (1, 0)
+
+    def test_shutdown_counts_a_batch_still_in_flight_once(self) -> None:
+        held = _Held()
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        exporter = _ScriptedExporter(_retrier(time), request=held.request)
+        queue = _queue(exporter, time, batch_size=1)
+        queue.put(_finished_spans(1)[0], track="trace-1")
+        assert held.holding.wait(10)
+        assert queue.shutdown(0) is False
+        receipt = queue.receipt(flushed=False)
+        assert (receipt.spans_exported, receipt.spans_dropped, receipt.export_failures) == (0, 1, 1)
+        assert queue.failed_tracked() == {"trace-1"}
+        held.release.set()
+        assert exporter.done.wait(10)
+        queue._thread.join(5)
+        assert queue.receipt(flushed=False) == receipt  # the late answer is not counted again
+
+
+class _RetryingV4Attachments(_V4Attachments):
+    """The v4 trial-end step whose score batches go through a retrier, as the plugin's do."""
+
+    def __init__(self, retrier, answers=()) -> None:
+        super().__init__()
+        self.retrier = retrier
+        self.answers = list(answers)
+
+    def ingest(self, events, *, batch_size: int = 40) -> None:
+        from tolokaforge_langfuse.retry import Answer
+
+        answer = self.retrier.run(
+            lambda: self.answers.pop(0) if self.answers else Answer(207),
+            what="POST /api/public/ingestion",
+        )
+        if not answer.ok:
+            raise RuntimeError(f"HTTP {answer.status}")
+        self.ingested.extend(events)
+
+
+def _parity_identity():
+    import parity_bundle as pb
+
+    return TrialIdentity(
+        run_id=pb.RUN_ID,
+        task_id=pb.TASK_ID,
+        trial_index=pb.TRIAL_INDEX,
+        attempt_id=pb.ATTEMPT_ID,
+        run_tag=pb.RUN_TAG,
+    )
+
+
+def _v4_retrying_observer(queue, stats, attachments):
+    return OTelTrialObserver(
+        queue=queue,
+        label="pilot_agent",
+        session_id="s",
+        server_api="v4",
+        attachments=attachments,
+        gate=SafetyGate(),
+        retry_stats=stats,
+    )
+
+
+class TestTheReceiptCountsRetries:
+    def _run(self, tmp_path, span_answers, score_answers):
+        import parity_bundle as pb
+        from fake_time import FakeTime
+        from tolokaforge_langfuse.retry import RetryStats
+
+        time = FakeTime()
+        stats = RetryStats()
+        exporter = _ScriptedExporter(_retrier(time, stats), span_answers)
+        step = _RetryingV4Attachments(_retrier(time, stats), score_answers)
+        observer = _v4_retrying_observer(_queue(exporter, time, batch_size=500), stats, step)
+        identity = _parity_identity()
+        _v4_trial(observer, identity)
+        observer.trial_finished(identity, trajectory=_Trajectory([], grade=_Grade()))
+        observer.trial_persisted(identity, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
+        return observer.run_finished(), step
+
+    def test_what_was_refused_once_is_delivered_and_the_retries_are_counted(self, tmp_path) -> None:
+        from tolokaforge_langfuse.retry import Answer
+
+        receipt, step = self._run(tmp_path, [_gateway()], [Answer(429, retry_after="5")])
+        extra = receipt.extra
+        assert receipt.export_failures == 0 and receipt.spans_dropped == 0 and receipt.flushed
+        assert receipt.spans_exported == extra["langfuse.final_observations_sent"] > 0
+        assert extra["langfuse.gradings_sent"] == 1 and extra["langfuse.gradings_failed"] == 0
+        assert extra["langfuse.scores_sent"] == len(step.ingested) > 0
+        assert extra["langfuse.error_roots_sent"] == 0 and extra["langfuse.roots_unconfirmed"] == 0
+        assert {key: extra[f"langfuse.{key}"] for key in RETRY_KEYS} == {
+            "retried_requests": 2,
+            "retry_attempts": 2,
+            "retries_recovered": 2,
+            "retries_exhausted": 0,
+            "retry_wait_s": 1 + 5,
+            "retry_breaker_trips": 0,
+        }
+
+    def test_a_refusal_that_outlasts_the_schedule_is_counted_as_given_up(self, tmp_path) -> None:
+        receipt, _ = self._run(tmp_path, [_gateway()] * 10, [])
+        extra = receipt.extra
+        assert receipt.export_failures == 1 and receipt.spans_exported == 0
+        # the root left with its batch and was never confirmed: no second root is written
+        assert extra["langfuse.roots_unconfirmed"] == 1 and extra["langfuse.error_roots_sent"] == 0
+        assert extra["langfuse.retries_exhausted"] == 1
+        assert extra["langfuse.retry_attempts"] == 6 and extra["langfuse.retry_wait_s"] == 93
+
+    def test_a_run_without_refusals_reports_zeros(self, tmp_path) -> None:
+        receipt, _ = self._run(tmp_path, [], [])
+        assert all(receipt.extra[f"langfuse.{key}"] == 0 for key in RETRY_KEYS)
+
+
+class TestARootStillWithTheExporterAtTheRunEnd:
+    def test_it_is_counted_as_unconfirmed_when_the_run_ends(self, tmp_path) -> None:
+        """The error roots are decided while the worker still waits out a window for the batch
+        that carries a final root. When the run ends that batch has not landed: it counts as
+        posted and unconfirmed, and no second root is written under its id."""
+        import parity_bundle as pb
+        from fake_time import FakeTime
+        from tolokaforge_langfuse.retry import RetryStats
+
+        time = FakeTime()
+        held = _Held(time)
+        stats = RetryStats()
+        exporter = _ScriptedExporter(_retrier(time, stats, held.sleep), [_gateway()] * 10)
+        queue = _queue(exporter, time, grace=0.0, batch_size=500)
+        observer = _v4_retrying_observer(queue, stats, _V4Attachments())
+        identity = _parity_identity()
+        _v4_trial(observer, identity)
+        observer.trial_finished(identity, trajectory=_Trajectory([], grade=_Grade()))
+        observer.trial_persisted(identity, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
+        queue._wake.set()  # the worker takes the trial's one batch, the root in it
+        assert held.holding.wait(10)
+        try:
+            receipt = observer.run_finished()
+        finally:
+            held.release.set()
+        extra = receipt.extra
+        assert receipt.flushed is False
+        assert extra["langfuse.roots_unconfirmed"] == 1 and extra["langfuse.error_roots_sent"] == 0
+        assert receipt.export_failures == 1 and receipt.spans_exported == 0
+        assert (
+            receipt.spans_queued
+            == receipt.spans_dropped
+            == extra["langfuse.final_observations_sent"]
+        )
+        assert exporter.done.wait(10)
+        queue._thread.join(5)
+        assert queue.receipt(flushed=False).spans_dropped == receipt.spans_dropped

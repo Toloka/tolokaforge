@@ -4,9 +4,11 @@ environment, the project check and the attachment step (ADR-0047)."""
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from pathlib import Path
 
 import pytest
+from otlp_receiver import GATEWAY_PAGE, OTHER_GATEWAY_PAGE, Reply, gateway_refusal
 from tolokaforge_langfuse.config import LangfuseConfig
 from tolokaforge_langfuse.model_names import (
     ModelNameResolverError,
@@ -204,6 +206,194 @@ class TestAttachmentStep:
         monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: _Manager())
         assert sorted(plugin.secret_values()) == ["sk-lf-xyz", "sk-or-v1-abc"]
 
+    def test_secret_values_skip_the_tracing_launchers_own_variables(self, monkeypatch) -> None:
+        """A ``.env`` file may carry the launcher's session id, whose name says SESSION: it is
+        written on every span by design, so it is no credential."""
+        from tolokaforge_langfuse import plugin
+
+        class _Manager:
+            def list_all_keys(self):
+                return ["TOLOKAFORGE_TRACING_SESSION_ID", "OPENROUTER_API_KEY"]
+
+            def get_secret(self, key):
+                return {
+                    "TOLOKAFORGE_TRACING_SESSION_ID": "acme/pilot/v1/pilot_agent/123",
+                    "OPENROUTER_API_KEY": "sk-or-v1-abc",
+                }[key]
+
+        monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: _Manager())
+        assert plugin.secret_values() == ["sk-or-v1-abc"]
+
+    def test_secret_values_use_the_one_name_filter(self, monkeypatch) -> None:
+        """The plugin's list and the process environment's follow one filter: an endpoint base
+        (``_BASE``) and the shell's ``PWD`` are no credentials in either."""
+        from tolokaforge_langfuse import plugin
+
+        class _Manager:
+            def list_all_keys(self):
+                return ["AZURE_API_BASE", "PWD", "ACME_API_KEY"]
+
+            def get_secret(self, key):
+                return {
+                    "AZURE_API_BASE": "https://x.example",
+                    "PWD": "/home/x",
+                    "ACME_API_KEY": "k-12345678",
+                }[key]
+
+        monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: _Manager())
+        assert plugin.secret_items() == {"ACME_API_KEY": "k-12345678"}
+
+
+class TestTheLiveGate:
+    """One gate per run: every live span, the trial-end passes and the file attachments scan
+    with it. It knows the credentials the process holds, in its environment and in the
+    ``SecretManager`` (a ``.env`` file never reaches ``os.environ``), and the receiver's header
+    values, each by name, and the shapes."""
+
+    MANAGED = "managed-credential-value"
+
+    @pytest.fixture(autouse=True)
+    def managed_credential(self, monkeypatch) -> None:
+        from tolokaforge.secrets import DictProvider, SecretManager
+
+        monkeypatch.setattr(
+            "tolokaforge.secrets.manager._default_manager",
+            SecretManager([DictProvider({"ACME_API_KEY": self.MANAGED})]),
+        )
+
+    def test_the_gate_knows_the_environment_the_secret_manager_and_the_headers_by_name(
+        self, monkeypatch
+    ) -> None:
+        from tolokaforge_langfuse.plugin import live_gate
+
+        monkeypatch.setenv("FOO_TOKEN", "environment-credential-value")
+        gate = live_gate({"X-Runner-Key": "runner-key-value-1234", "Accept": "json"})
+
+        def named(text: bytes) -> list[str]:
+            return [f.describe() for f in gate.scan(text)]
+
+        assert named(self.MANAGED.encode()) == ["known-secret-value from ACME_API_KEY"]
+        assert named(b"environment-credential-value") == ["known-secret-value from FOO_TOKEN"]
+        assert named(b"runner-key-value-1234") == ["known-secret-value from header X-Runner-Key"]
+        assert named(b"nothing to see") == [] and named(b"json") == []
+
+    def test_a_header_value_the_runs_tags_carry_does_not_withhold_the_run(self, caplog) -> None:
+        """``X-Project: pilot-dev`` is no secret and ``project:pilot-dev`` rides on every span:
+        a gate that knew the header's value would withhold the whole run."""
+        pytest.importorskip("opentelemetry.sdk")
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+        from tolokaforge_langfuse.otel import OTelTrialObserver, SpanQueue
+        from tolokaforge_langfuse.plugin import live_gate
+
+        gate = live_gate({"X-Project": "pilot-dev"})
+        queue = SpanQueue(InMemorySpanExporter(), max_size=10, batch_size=4, interval_s=0.05)
+        with caplog.at_level("WARNING", logger="tolokaforge_langfuse.otel"):
+            OTelTrialObserver(
+                queue=queue, label="l", session_id="s", tags=("project:pilot-dev",), gate=gate
+            ).run_finished()
+        assert any("header X-Project" in r.getMessage() for r in caplog.records)
+        assert gate.scan(b"project:pilot-dev") == []
+
+    def test_a_secret_registered_after_the_gate_was_built_is_known_after_a_refresh(self) -> None:
+        """``register_runtime_secret`` replaces the default manager (the engine's generated
+        TypeSense key arrives that way, after the observer is built)."""
+        from tolokaforge_langfuse.plugin import live_gate
+
+        from tolokaforge.secrets import register_runtime_secret
+
+        gate = live_gate()
+        assert gate.refresh() == (False, [])  # still the manager it was built from
+        register_runtime_secret("TYPESENSE_API_KEY", "late-registered-key-value")
+        assert gate.refresh() == (True, [])
+        assert [f.describe() for f in gate.scan(b"late-registered-key-value")] == [
+            "known-secret-value from TYPESENSE_API_KEY"
+        ]
+        assert gate.scan(self.MANAGED.encode())  # what it held stays
+        assert gate.refresh() == (False, [])
+
+    def test_the_attachment_step_scans_with_the_runs_gate(self) -> None:
+        from tolokaforge_langfuse.plugin import build_attachments
+        from tolokaforge_langfuse.safety import SafetyGate
+
+        value = "a-db-password-no-shape-matches"
+        events = [{"body": {"output": f"it said {value}"}}]
+        endpoint = "https://lf.example/api/public/otel/v1/traces"
+        gate = SafetyGate.from_environment({"DB_PASSWORD": value})
+        assert build_attachments(LangfuseConfig(), endpoint=endpoint, gate=gate).scan_events(events)
+        # without the run's gate the step knows only the SecretManager's own list
+        assert build_attachments(LangfuseConfig(), endpoint=endpoint).scan_events(events) == []
+
+    def test_the_observer_the_plugin_builds_withholds_a_managed_credential(
+        self, tmp_path: Path
+    ) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        from datetime import datetime
+
+        from tolokaforge.core.models import ToolCall
+        from tolokaforge.observability.observer import TrialIdentity
+        from tolokaforge.tools.registry import ToolResult
+
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/v1/traces",
+                options={"langfuse": {"attach": "none"}},
+            )
+        )
+        observer, run = build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
+        now = datetime(2026, 10, 1, tzinfo=UTC)
+        trial = TrialIdentity(
+            run_id=run.run_id, task_id="T-1", trial_index=0, attempt_id=0, run_tag=run.run_tag
+        )
+        observer.tool_call(
+            trial,
+            role="agent",
+            index=1,
+            call=ToolCall(id="c1", name="shell", arguments={}),
+            result=ToolResult(success=True, output=f"the config says {self.MANAGED}"),
+            started_at=now,
+            ended_at=now,
+        )
+        receipt = observer.run_finished()
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert receipt.spans_queued == 0
+
+    def test_the_trial_end_pass_the_plugin_builds_withholds_what_the_managers_list_never_held(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """``DB_PASSWORD`` is an environment name the SecretManager's list does not hold, so the
+        attachment step's own scan never knew it: the bundle projection carrying it was sent."""
+        pytest.importorskip("opentelemetry.sdk")
+        import parity_bundle as pb
+        import yaml
+
+        from tolokaforge.observability.observer import TrialIdentity
+        from tolokaforge_langfuse import plugin
+
+        value = "a-db-password-no-shape-matches"
+        monkeypatch.setenv("DB_PASSWORD", value)
+        assert value not in plugin.secret_values()
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        trajectory = pb.trajectory()
+        assistant = next(m for m in trajectory["messages"] if m["role"] == "assistant")
+        assistant["content"] = f"the password is {value}"
+        (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), encoding="utf-8")
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/v1/traces",
+                options={"langfuse": {"attach": "none"}},
+            )
+        )
+        observer, run = build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
+        trial = TrialIdentity(
+            run_id=run.run_id, task_id=pb.TASK_ID, trial_index=0, attempt_id=0, run_tag=run.run_tag
+        )
+        observer.trial_persisted(trial, trial_dir=trial_dir)
+        receipt = observer.run_finished()
+        assert receipt.extra["langfuse.projections_refused_secret"] == 1
+        assert receipt.extra["langfuse.projections_sent"] == 0
+
 
 class TestReceiverFromTheEnvironment:
     """A launcher (the connector's with-environment) injects the receiver; the config may stay
@@ -388,7 +578,13 @@ class TestReceiverFromTheEnvironment:
 class TestTheReceiverFamily:
     """By capability, once per run, never by the version the receiver reports."""
 
-    def _build(self, monkeypatch, family_answer, options=None):
+    def _build(
+        self,
+        monkeypatch,
+        family_answer,
+        options=None,
+        endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
+    ):
         from tolokaforge_langfuse import media
 
         calls: list[str] = []
@@ -408,7 +604,7 @@ class TestTheReceiverFamily:
         config = ObservabilityConfig(
             tracing=TracingConfig(
                 exporter="otlp",
-                endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
+                endpoint=endpoint,
                 options={"langfuse": {"attach": "none", **(options or {})}},
             )
         )
@@ -440,21 +636,32 @@ class TestTheReceiverFamily:
         """The direct ingestion path and the single-post exporter are v4 answers: a v3 receiver
         gets neither, so its wire traffic is the one this observer has always written."""
         pytest.importorskip("opentelemetry.sdk")
+        from otlp_receiver import Receiver
         from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER
 
-        observer, _ = self._build(monkeypatch, (404, b""))
-        exporter = observer._queue._exporter
-        assert type(exporter).__name__ == "OTLPSpanExporter"
-        assert INGESTION_VERSION_HEADER not in exporter._session.headers
+        with Receiver() as receiver:
+            observer, _ = self._build(monkeypatch, (404, b""), endpoint=receiver.url())
+            exporter = observer._queue._exporter
+            assert type(exporter).__name__ == "OTLPSpanExporter"
+            exporter.export([])
+        [post] = receiver.posts
+        assert INGESTION_VERSION_HEADER not in post.headers
 
     def test_the_v4_family_asks_for_the_direct_path_and_posts_once(self, monkeypatch) -> None:
+        """One POST for an answer the retry policy does not name: a 502 may come after the
+        receiver took the body."""
         pytest.importorskip("opentelemetry.sdk")
+        from otlp_receiver import Receiver
         from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER
 
-        observer, _ = self._build(monkeypatch, (200, b'{"data": []}'))
-        exporter = observer._queue._exporter
-        assert type(exporter).__name__ == "SingleAttemptSpanExporter"
-        assert exporter._session.headers[INGESTION_VERSION_HEADER] == "4"
+        with Receiver() as receiver:
+            observer, _ = self._build(monkeypatch, (200, b'{"data": []}'), endpoint=receiver.url())
+            exporter = observer._queue._exporter
+            assert type(exporter).__name__ == "SingleAttemptSpanExporter"
+            receiver.answer = 502
+            exporter.export([])
+        [post] = receiver.posts
+        assert post.headers[INGESTION_VERSION_HEADER] == "4"
 
     def test_a_page_that_is_not_this_api_is_not_a_v4_receiver(self, monkeypatch) -> None:
         """An authenticating proxy answers 200 with an HTML login page on any path; taking that
@@ -488,6 +695,247 @@ class TestTheReceiverFamily:
                 (200, b'{"data": []}'),
                 options={"projection": "gradings", "attach": "all"},
             )
+
+
+class TestTheRetryPolicy:
+    """``options.langfuse.retry`` reaches every write route of the run under one count."""
+
+    def _build(
+        self, monkeypatch, family_answer, options=None, endpoint=None, writes=None, tracing=None
+    ):
+        from tolokaforge_langfuse import media
+
+        def opener(method, url, headers, body, timeout):
+            if media.V2_OBSERVATIONS_PATH in url:
+                return family_answer
+            if writes is not None:
+                return writes(method, url, headers, body, timeout)
+            return (200, b'{"data": []}')
+
+        monkeypatch.setattr(media, "urllib_opener", opener)
+        monkeypatch.delenv("TOLOKAFORGE_TRACING_TAGS", raising=False)
+        monkeypatch.delenv("TOLOKAFORGE_TRACING_EXPECT_PROJECT", raising=False)
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Basic dGVzdDpzZWNyZXQ=")
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint=endpoint or "http://127.0.0.1:9/api/public/otel/v1/traces",
+                options={"langfuse": options or {}},
+                # the worker stays asleep: the run's end exports the spans, after the trial ends
+                **{"export_interval_s": 3600, **(tracing or {})},
+            )
+        )
+        return build_trial_observer(config, engine_run_id="run-1")[0]
+
+    def _live_run(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+        *,
+        family=(200, b'{"data": []}'),
+        retry: dict | None = None,
+        tracing: dict | None = None,
+        span_answers=(),
+        span_default=None,
+        ingestion_answers=(),
+        before_ingestion=None,
+    ):
+        """One trial through the plugin, then the run's end. The spans go to a local receiver
+        that answers ``span_answers`` first, then ``span_default`` (200 unless given); the
+        ingestion route calls ``before_ingestion``, then answers ``ingestion_answers`` first and
+        accepts after them. The retries and the run-end flush share one fake time. Returns the
+        receipt, the span posts, the ingestion bodies and the fake time."""
+        import functools
+        from datetime import datetime, timedelta
+
+        import parity_bundle as pb
+        from fake_time import FakeTime
+        from otlp_receiver import Receiver
+        from tolokaforge_langfuse.retry import Retrier
+
+        from tolokaforge.observability.observer import TrialIdentity
+        from tolokaforge_langfuse import otel, plugin
+
+        time = FakeTime()
+        monkeypatch.setattr(
+            plugin,
+            "Retrier",
+            functools.partial(Retrier, clock=time.clock, sleep=time.sleep, draw=lambda: 0.0),
+        )
+        monkeypatch.setattr(
+            otel, "SpanQueue", functools.partial(otel.SpanQueue, clock=time.clock, sleep=time.sleep)
+        )
+        answers = list(ingestion_answers)
+        ingestion: list[bytes] = []
+
+        def writes(method, url, headers, body, timeout):
+            if url.endswith("/api/public/ingestion"):
+                if before_ingestion is not None:
+                    before_ingestion()
+                ingestion.append(body)
+                return answers.pop(0) if answers else (207, b'{"successes": [], "errors": []}')
+            return (404, b"")
+
+        started = datetime(2026, 10, 7, 10, 0, tzinfo=UTC)
+
+        class _Done:
+            status = "completed"
+            start_ts = started
+            end_ts = started + timedelta(seconds=30)
+
+        identity = TrialIdentity(
+            run_id=pb.RUN_ID,
+            task_id=pb.TASK_ID,
+            trial_index=pb.TRIAL_INDEX,
+            attempt_id=pb.ATTEMPT_ID,
+            run_tag=pb.RUN_TAG,
+        )
+        options: dict = {"attach": "none"}
+        if retry is not None:
+            options["retry"] = retry
+        with Receiver() as receiver:
+            receiver.script = list(span_answers)
+            if span_default is not None:
+                receiver.answer = span_default
+            observer = self._build(
+                monkeypatch,
+                family,
+                options=options,
+                endpoint=receiver.url(),
+                writes=writes,
+                tracing=tracing,
+            )
+            observer.trial_started(identity, models={}, started_at=started)
+            observer.trial_finished(identity, trajectory=_Done())
+            observer.trial_persisted(identity, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
+            receipt = observer.run_finished()
+        return receipt, receiver.posts, ingestion, time
+
+    @pytest.mark.parametrize(
+        ("retry", "page", "wait"),
+        [
+            (None, GATEWAY_PAGE, 1.0),
+            ({"gateway_markers": ["example-gateway"], "delays_s": [2]}, OTHER_GATEWAY_PAGE, 2.0),
+        ],
+        ids=["default-policy", "configured-policy"],
+    )
+    def test_a_live_run_delivers_what_the_gateway_refused_first(
+        self, monkeypatch, tmp_path: Path, retry, page: bytes, wait: float
+    ) -> None:
+        """End to end on a v4 receiver: the batch of final spans and the score batch each meet
+        the gateway's refusal page once, are posted again after the schedule's first wait, and
+        land; the receipt says so. The run's ``retry`` block reaches both routes: which page is
+        the gateway's and how long the wait is. Real posts to a local receiver, fake time."""
+        pytest.importorskip("opentelemetry.sdk")
+        receipt, posts, ingestion, time = self._live_run(
+            monkeypatch,
+            tmp_path,
+            retry=retry,
+            span_answers=[Reply(403, page, (("Content-Type", "text/html"),))],
+            ingestion_answers=[(403, page)],
+        )
+        first, second = posts
+        assert first.body == second.body
+        assert len(ingestion) == 2 and ingestion[0] == ingestion[1]
+        extra = receipt.extra
+        assert receipt.export_failures == 0 and receipt.spans_dropped == 0
+        assert receipt.spans_exported == extra["langfuse.final_observations_sent"] > 0
+        assert extra["langfuse.gradings_sent"] == 1 and extra["langfuse.gradings_failed"] == 0
+        assert extra["langfuse.retried_requests"] == 2
+        assert extra["langfuse.retries_recovered"] == 2
+        assert extra["langfuse.retries_exhausted"] == 0
+        assert extra["langfuse.retry_wait_s"] == 2 * wait
+        assert time.sleeps == [wait, wait]
+
+    def test_the_trial_ends_obey_the_breaker_without_opening_it(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """A score batch that runs out its whole schedule does not open the breaker, even with
+        ``breaker_after: 1``: the span export after it still waits its refusal out."""
+        pytest.importorskip("opentelemetry.sdk")
+        receipt, posts, ingestion, time = self._live_run(
+            monkeypatch,
+            tmp_path,
+            retry={"max_retries": 1, "breaker_after": 1},
+            span_answers=[gateway_refusal()],
+            ingestion_answers=[(403, GATEWAY_PAGE)] * 2,
+        )
+        assert len(ingestion) == 2 and receipt.extra["langfuse.gradings_failed"] == 1
+        first, second = posts
+        assert first.body == second.body and receipt.export_failures == 0
+        assert receipt.extra["langfuse.retry_breaker_trips"] == 0
+        assert time.sleeps == [1.0, 1.0]
+
+    def test_the_breaker_the_span_export_opens_stops_the_trial_ends(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """One breaker for the run's routes: the span export runs out its schedule against a
+        gateway that keeps refusing (``max_retries: 1``, ``breaker_after: 1``), and the score
+        batch the gateway refuses after that is not waited out. The background worker posts
+        each span as it is queued; the score batch is answered once the breaker has opened."""
+        pytest.importorskip("opentelemetry.sdk")
+        import logging
+        import threading
+
+        opened = threading.Event()
+
+        class _BreakerWatch(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                if "refusals now fail at once" in record.getMessage():
+                    opened.set()
+
+        watch = _BreakerWatch()
+        retry_log = logging.getLogger("tolokaforge_langfuse.retry")
+        retry_log.addHandler(watch)
+        try:
+            receipt, _, ingestion, _ = self._live_run(
+                monkeypatch,
+                tmp_path,
+                retry={"max_retries": 1, "breaker_after": 1},
+                tracing={"export_batch_size": 1},
+                span_default=gateway_refusal(),
+                ingestion_answers=[(403, GATEWAY_PAGE)],
+                before_ingestion=lambda: opened.wait(10),
+            )
+        finally:
+            retry_log.removeHandler(watch)
+        assert opened.is_set()
+        assert len(ingestion) == 1 and receipt.extra["langfuse.gradings_failed"] == 1
+        assert receipt.extra["langfuse.retry_breaker_trips"] == 1
+
+    def test_the_run_end_waits_within_the_configured_grace(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """``flush_grace_s: 0``: a span batch the gateway refuses at the run's end is not waited
+        out past ``flush_timeout_s`` (30 s), and the receipt counts it as not delivered."""
+        pytest.importorskip("opentelemetry.sdk")
+        receipt, posts, _, time = self._live_run(
+            monkeypatch,
+            tmp_path,
+            retry={"delays_s": [45], "flush_grace_s": 0},
+            span_answers=[gateway_refusal()],
+        )
+        assert time.sleeps == []
+        assert receipt.export_failures >= 1 and receipt.extra["langfuse.retries_exhausted"] >= 1
+        assert len({post.body for post in posts}) == len(posts)  # nothing was posted twice
+
+    def test_a_v3_run_retries_its_trial_end_calls_and_leaves_its_spans_to_the_sdk(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """On a v3 receiver the trial-end calls follow the run's policy, while the spans keep
+        the SDK's exporter, which does not post the gateway's page again."""
+        pytest.importorskip("opentelemetry.sdk")
+        _, posts, ingestion, time = self._live_run(
+            monkeypatch,
+            tmp_path,
+            family=(404, b""),
+            retry={"delays_s": [2]},
+            span_answers=[gateway_refusal()],
+            ingestion_answers=[(403, GATEWAY_PAGE)],
+        )
+        assert len(ingestion) == 2 and ingestion[0] == ingestion[1]
+        assert time.sleeps == [2.0]
+        assert posts and len({post.body for post in posts}) == len(posts)
 
 
 class TestSecretManagerBoundary:
@@ -554,6 +1002,7 @@ class TestPluginOptions:
             {"attach_timeout_s": 0},
             {"attach_budget_s": -1},
             {"model_name_rules": "rules.toml"},
+            {"retry": {"statuses": [200]}},
             "not a mapping",
             None,
         ],

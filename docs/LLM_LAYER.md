@@ -85,7 +85,9 @@ upgrading past v0.17.x.
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
 | [`litellm_params.py`](../tolokaforge/core/llm/litellm_params.py) | Turns overlay-declared capabilities into litellm's `allowed_openai_params`, so a vendor-native provider does not refuse `tools` for a model its map lacks — see [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model) |
 | [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional LLM-gateway transport (`ProxyConfig`), e.g. a LiteLLM proxy; configured entirely by env |
-| [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `UserSimulator` |
+| [`openrouter_headers.py`](../tolokaforge/core/llm/openrouter_headers.py) | The headers the engine adds to every OpenRouter request, and the provider predicate that selects them |
+| [`session_header.py`](../tolokaforge/core/llm/session_header.py) | Refusal of a `ModelConfig.session` header another header source also sets — see [§ Session header](#session-header) |
+| [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `BuiltinUserSimulator` |
 
 ## `reasoning`
 
@@ -127,7 +129,8 @@ the client never branches on provider. See
 |---|---|---|---|
 | `NoReasoningCodec` | default | — (always `None`) | `{}` |
 | `AnthropicReasoningCodec` | `anthropic` preset | `message.thinking_blocks` + `message.reasoning_content` | `{"thinking_blocks": [...]}` |
-| `OpenAIReasoningCodec` | `openai_gpt5` / `xai_grok` / `qwen` presets | `message.reasoning_content` | `{}` (no replay contract) |
+| `OpenAIReasoningCodec` | `openai_gpt5` / `openai_gpt6` presets | `message.reasoning_content` | `{}` (no replay contract) |
+| `OpenAISummaryReplayReasoningCodec` | every other route carrying readable reasoning — `moonshot_kimi_k2` / `k3`, `qwen`, `xai_grok`, `openrouter_dict_stringify_recovery`, `thinkingmachines_inkling`, `gpt_oss`, `z_ai_glm_5_3`, `cohere_command_a_plus_05_2026`, `deepseek_v4_flash_0731_resolve` | inherited from `OpenAIReasoningCodec` | `{"reasoning_details": [{"type": "reasoning.text", ...}]}` |
 
 ### `AnthropicReasoningCodec` contract (Stage 3, fixes P4a + P4c)
 
@@ -325,8 +328,11 @@ accumulates via `self.metrics.usage = self.metrics.usage + result.usage`;
 (`avg_prompt_tokens`, `avg_reasoning_tokens`, `avg_cache_read_input_tokens`,
 etc.).
 
-Each `ProviderRawCall` in `usage.calls` also carries the
-`openrouter_generation_id` of the call it records — see
+Each `ProviderRawCall` in `usage.calls` also carries the `role` of the actor
+whose loop issued the call (`"agent"` when the caller supplies no observation)
+and the `model` slug it was served by, so per-role cost/token attribution reads
+off the per-call record. It further carries the `openrouter_generation_id` of
+the call it records — see
 § [OpenRouter generation ids](#openrouter-generation-ids).
 
 ## `schema_sanitizer`
@@ -457,14 +463,23 @@ corruption observed in the post-PR-#88 production run:
 See [`plans/eval_post_pr88_schema_sanitizer_diagnosis.md`](../plans/eval_post_pr88_schema_sanitizer_diagnosis.md)
 for the full evidence trail.
 
-## `UserSimulator` request and reply contract
+## `BuiltinUserSimulator` request and reply contract
+
+`UserSimulator` is the `@runtime_checkable` Protocol in
+[`core/actors/user_simulator.py`](../tolokaforge/core/actors/user_simulator.py)
+that the conductor resolves through the `tolokaforge.user_simulators` registry
+(see [ADR-0051](adr/0051-user-simulator-protocol-and-registry.md));
+`BuiltinUserSimulator` is the engine's built-in implementation, registered as
+`builtin`. The contract below is the built-in's.
 
 The LLM user simulator converses from the customer's seat: before each
 generation it role-flips the shared transcript (its own past USER turns
 replay as `assistant`, the agent's ASSISTANT turns as `user`), skips
 turns carrying no dialogue text (agent tool-call turns, whitespace-only
 replies), and coalesces adjacent same-role turns so the request
-alternates strictly. Two invariants hold on the request it sends:
+alternates strictly
+([`shared_view`](../tolokaforge/core/actors/tool_turns.py)). Two
+invariants hold on the request it sends:
 
 1. **It leads with a user-role turn.** Whenever the flipped context starts
    assistant-side (the simulator's own opening comes first — caller-seeded
@@ -483,11 +498,44 @@ alternates strictly. Two invariants hold on the request it sends:
    improvising.
 
 The greeting exists only in the simulator's private request; it never
-enters the shared transcript or `trajectory.yaml`. A revision to the prompt
+enters the shared transcript or `trajectory.yaml`. A task that declares
+`actors.user.first_agent_message` has that line in the transcript instead, as its
+first message: it flips to the request's leading user-role turn, so no greeting is
+prepended, and the simulator answers the task's line at turn 0 and reads it on
+every later turn. The line is part of the agent's request as well, as its first
+message after the system prompt; the engine puts no user turn ahead of it, so a
+provider that requires one refuses the request with its own error. The line is opt-in and authored, so it is outside
+`simulator_schema_version`; a trial that ran it is identified by
+`user_actor.first_agent_message`. A revision to the prompt
 body or to this context shape bumps `Trajectory.simulator_schema_version`
 (see [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Schema Version Stamps);
 [`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)
 holds the prompt body to the generation it is stamped with.
+
+Under `actors.user.tool_turns: isolated` the context is built by
+[`simulator_view`](../tolokaforge/core/actors/tool_turns.py) instead. The
+simulator's own tool steps replay as `assistant` messages carrying their
+`tool_calls` — and the step's reasoning, so a thinking model gets its signed blocks
+back with the tool use they preceded — and their results as `tool` messages. An
+agent message that calls tools is dropped whole, text included, and only adjacent
+text turns are joined. Invariant 2 then admits a trailing `tool` message: the
+simulator reads a step's results and goes on. A tool-call reply is never given the
+filler text, since it is a step rather than a dialogue turn. The shape of this
+context is new only under `isolated`, so `simulator_schema_version` stays; a trial
+that ran it is identified by `user_actor.tool_turns`.
+
+A step whose user tool raises still gets a `tool` message for every call before
+the exception propagates, because the simulator can be asked again on the same
+transcript: when a user turn fails with an error the loop classifies as a
+provider error, the loop retries the whole turn, and the agent generates again
+before the simulator is asked. That retry predates tool turns; it leaves two
+assistant turns in a row in the agent's context.
+
+The request's `temperature` is 0.2, a per-call override the simulator passes on
+every generation; `models.user.temperature` never reaches it (see
+[`CONFIG.md`](CONFIG.md) § Notes). A simulator registered under
+`actors.user.simulator` owns its own client and sends whatever its
+`simulator_config` says.
 
 ### The prompt body
 
@@ -700,6 +748,22 @@ Vertex AI, hosted vLLM, and WatsonX. Our `StrictSchema` and `DictMapHints`
 policies in `tolokaforge/core/llm/` handle **all** GPT-5 tool-schema
 adaptation independently of litellm, so this gap is transparent to callers.
 
+Sampling parameters split the same way. The OpenRouter transport forwards
+`temperature` / `top_p` for GPT-5, GPT-6 and the o-series unchanged; a gateway's
+resolved route (`openrouter/openai/gpt-5.2`) goes out through the `openai`
+transport, whose `OpenAIGPT5Config` / `OpenAIOSeriesConfig` refuse any
+`temperature` but `1` in-process (`UnsupportedParamsError`) for the GPT-5 and
+o-series names. No OpenRouter endpoint applies a sampling parameter for these
+models (except gpt-5-image*), so `openai_gpt5`, `openai_gpt6` and
+`openai_o_series` declare `supports_sampling_params: false`: both routes send the
+same request, with no sampling key. GPT-6 is declared on OpenRouter's support list
+alone; litellm's `openai` transport accepts its `temperature`. The escape hatch,
+`capabilities: {supports_sampling_params: true}`, belongs on a `provider: openai`
+config, whose bare names (`gpt-5.2`) litellm admits a `temperature` for; on a
+`provider: openrouter` config it breaks the gateway route. gpt-5-image* is still
+claimed by `openai_gpt5` and loses its `temperature` too; that `provider: openai`
+hatch is its only way back, as none is gateway-safe on `provider: openrouter`.
+
 ## When litellm has never heard of the model
 
 litellm decides which OpenAI parameters a provider may be sent by looking the
@@ -713,12 +777,11 @@ litellm.UnsupportedParamsError: meta does not support parameters:
 ['tools', 'tool_choice'], for model=muse-spark-1.2
 ```
 
-Measured 2026-08-10 across litellm versions with an identical request: 1.83.14
-passes the tools through, 1.93.0 and 1.96.0 refuse them. The strictness arrived
-in a patch release, so a routine dependency bump can turn a working
-vendor-native model into one that cannot make a single tool call — and the
-error names the provider rather than the missing data, so it reads as "this
-vendor does not do tool calls".
+Measured with an identical request on litellm 1.93.0 and 1.96.0: both refuse
+the tools. Whether a model is in the map depends on the installed litellm
+release, and the error names the provider rather than the missing data, so it
+reads as "this vendor does not do tool calls". The outer retry does not
+re-attempt it (§ Outer retry controllers).
 
 It says nothing about the model. The identical request driven through litellm's
 `openai` transport against the same `api_base` returns a correct tool call —
@@ -745,7 +808,18 @@ litellm_models:
       against api.meta.ai returned a correct tool call."
 ```
 
-The key is the litellm model id, because that is the lookup litellm performs.
+The key is the litellm model id, because that is the lookup litellm performs:
+`<provider>/<name>` with both as the config states them and `name` verbatim,
+slashes included. `provider: openai` + `name: self-hosted/qwen3.6-35b-a3b` is
+keyed `openai/self-hosted/qwen3.6-35b-a3b`, and `provider: openrouter` + `name:
+anthropic/claude-opus-4.7` is keyed `openrouter/anthropic/claude-opus-4.7`. A
+name that already starts with `<provider>/` is the id as it stands, and Nova's
+bare name is keyed `nova/<name>`. `config validate` and the run look the entry
+up through the same function
+([`litellm_params.lookup_overlay`](../tolokaforge/core/llm/litellm_params.py)),
+which derives the key from
+[`providers.litellm_model_id`](../tolokaforge/core/llm/providers.py), the
+string the client sends; the provider segment is compared case-insensitively.
 An entry **declares**; it does not copy. Only the parameters its flags name are
 admitted, so a capability nothing observed is never asserted on the model's
 behalf.
@@ -759,7 +833,7 @@ Two rules keep it honest:
   litellm refuses for an unmapped model exactly as it refuses `tools`.
 - **Nothing is written into litellm's global map.** The kwarg is per call, so
   our own price can never end up labelled `cost_source="litellm"` (the label
-  meaning provider-authoritative), no entry of ours can outlive the day
+  meaning litellm's figure, not ours), no entry of ours can outlive the day
   upstream ships a richer one, and there is no process-global mutation to
   synchronise across the trial thread pool. Once upstream carries the model,
   the allow-list is a harmless no-op.
@@ -773,6 +847,25 @@ entry has to cover what its config asks for.
 Validation is at overlay load and is louder than the preset blocks beside it: a
 preset that fails to apply changes how a request is shaped, while a dropped
 entry here decides whether a request is sent at all.
+
+The lookup refuses an entry stored under a config's raw `name` instead of its
+`<provider>/<name>` (`OverlayKeyMismatchError`, naming both keys and the one to
+rename to). It raises when all four hold: the `name` carries a `/` and does not
+start with `<provider>/`; no entry exists under `<provider>/<name>`; an entry
+exists under the raw `name` (vendor segment lowercased); and that key's first
+segment names no provider, being in neither `providers.yaml` nor litellm's
+`provider_list`. The last condition is what keeps the refusal honest. A raw key
+such as `anthropic/<model>` is also the key of the native `(anthropic,
+<model>)` config, which an operator can hold while running `(openrouter,
+anthropic/<model>)` too, and that openrouter config needs no entry of its own.
+So such a key is left alone for the openrouter config: it admits nothing there,
+and `config validate` emits an INFO, for every model in `models:` and each of
+its `fallbacks`, saying which provider the entry applies to and which key the
+config resolves. A key like `self-hosted/<model>`, `google/<model>` or
+`meta-llama/<model>` can be no config's key, so it is refused. `config validate`
+reports an ERROR for every model in `models:` and each of its `fallbacks`, and
+`run` / `prepare` / `worker` check the same models and raise the first before
+the orchestrator is built.
 
 Three things that look like fixes and are not:
 
@@ -820,6 +913,22 @@ it. Persisting the id is therefore what makes that question answerable after the
 fact — without it, a suspect result can only be re-run, never checked, and a
 re-run samples routing afresh.
 
+The same body also names the upstream directly: OpenRouter returns a top-level
+`provider` field, which litellm keeps on `response.model_extra`.
+`extract_upstream_provider` ([`core/llm/usage.py`](../tolokaforge/core/llm/usage.py))
+reads it onto `ProviderRawCall.upstream_provider`, so a finished run's
+`metrics.yaml` names the machine per call without an API round-trip. The
+generation id remains the richer handle — it also reports native token counts
+and finish reason — but the name is the one an audit reads first. Observed
+values are vendor display names: `"Moonshot AI"`, `"CoreWeave"`, `"Novita"`,
+`"Amazon Bedrock"`, `"Google"`.
+
+How much this matters is measurable: `moonshotai/kimi-k2.7-code` resolved to
+three different upstreams across four runs on one day, and the runs split into
+behavioural profiles that tracked the upstream rather than the task — one
+returning `content: ""` and repeating an identical shell command on 30% of
+calls, another returning `content: " "` and repeating on 4%.
+
 **The header is `x-generation-id`, not `x-openrouter-generation-id`** — the
 plausible-looking longer name is not the one OpenRouter actually returns.
 litellm re-keys raw upstream headers as `llm_provider-<name>` into
@@ -850,6 +959,44 @@ attribute an id to a specific call or turn, which is what a comparison against
 another harness needs. The list is shorter than `api_calls` whenever a call was
 served off a non-OpenRouter route, and empty on a run that never reached
 OpenRouter. See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `metrics.yaml`.
+
+## Billed cost
+
+`cost_usd` is the eval's own figure and stays what the cost ladder in
+`_assemble_result` makes it (litellm's `response_cost`, else the bundled table,
+else unknown). Beside it, `ProviderRawCall.billed_cost_usd` records what the
+response's usage block states the call was charged, `None` where it states no
+charge. It feeds neither `cost_usd`, `metrics.yaml`'s totals nor any budget.
+
+OpenRouter states the charge on every response: `usage.cost`, in credits of one
+USD each (its `usage: {include: true}` request flag is deprecated and changes
+nothing; litellm still sends it). On a **BYOK** call (`usage.is_byok: true`)
+`cost` is only OpenRouter's fee, often 0 inside its free allowance, and the
+upstream bills the inference to the key's owner, stated as
+`usage.cost_details.upstream_inference_cost`; the call cost the sum, and a BYOK
+block without that figure gives `None`. `extract_billed_cost`
+([`core/llm/usage.py`](../tolokaforge/core/llm/usage.py)) is the single reader,
+and it reads the response body only. A provider's own API (Anthropic, OpenAI,
+Google) and a self-hosted model state no charge, so there `None` is the answer
+and `cost_usd` the only figure.
+
+Why the field exists although `cost_source: litellm` often carries the same
+number: litellm takes a charge the response states ahead of its own price map
+(OpenRouter's `usage.cost`, and a LiteLLM gateway's `x-litellm-response-cost`
+response header), so on a non-BYOK OpenRouter call `cost_usd` already equals the
+charge. On a BYOK call litellm's figure is OpenRouter's fee alone: inside the
+free allowance that is 0, which the ladder discards for litellm's own price map;
+outside it the fee is a few percent of the bill and the ladder keeps it, so
+`cost_usd` records the fee and not the upstream's bill. The label cannot say
+which of these a `litellm` cost is. A gateway's header is not read as a charge: on a route the
+gateway prices itself it is the gateway's estimate, not an upstream's bill.
+
+The judge sums the charges of its calls into `grade.judge_usage.billed_cost_usd`
+(field 17 of `JudgeReport`), `None` unless every call stated one
+(`usage.sum_known`): a sum over some calls would read as the bill for all. A
+runner image without the field sends none, so the sum fills once the runner
+carries it. See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) and, for where Langfuse
+shows the charge, [OBSERVABILITY.md](OBSERVABILITY.md) § "Cost on a trace".
 
 ## `proxy` — routing calls through an LLM gateway
 
@@ -887,7 +1034,7 @@ posting to a route the gateway does not serve.
 | `LLM_PROXY_BASE_URL` | Gateway base URL. **Setting this enables the transport**; everything else is optional. |
 | `LLM_PROXY_API_KEY` | Credential presented to the gateway. Omit only for gateways that authenticate by network position — litellm then falls through to its provider-env lookup and forwards the *provider's* key to the gateway host instead. |
 | `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. A value may reference a secret as `${secret:NAME}`, see below. |
-| `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
+| `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request: a per-request correlation id. A static env var cannot express "new value per call". For replica affinity, which needs one value per conversation, use the model's session header ([Session header](#session-header)). |
 | `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
 | `LLM_PROXY_PREFERRED_ROUTE` | Namespace(s) that win when the gateway serves one model under several names. A comma-separated list is honoured in order (`openrouter/,nebius/`), so multi-provider gateways can rank their routes. Without a matching entry an ambiguous lookup raises rather than guessing a serving path. |
 | `LLM_PROXY_TRUST_NAMESPACE_WILDCARDS` | `true`/`false` (default `false`). When true, a catalog entry of `<ns>/*` routes models whose own `provider` is `<ns>`, addressed by their untranslated name. Namespace-matched only - a foreign wildcard never routes. Exact entries always win. |
@@ -897,7 +1044,10 @@ and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
 A malformed value raises `ProxyConfigError` at the first `LLMClient`
 construction rather than running a whole evaluation with unattributed spend. Setting
 any companion variable while `LLM_PROXY_BASE_URL` is empty also raises, so a typo in
-the base-URL name cannot silently fall back to direct provider access.
+the base-URL name cannot silently fall back to direct provider access. When some
+model config declares `session`, `run` / `prepare` / `worker` resolve these variables
+at start and refuse a malformed value there as a one-line `Error:`, before any client
+is built ([Session header](#session-header)).
 
 ### Values may reference secrets
 
@@ -980,6 +1130,13 @@ call to a non-OpenRouter-backed route failed. The dialect also decides prefix
 handling: the OpenRouter transport strips one leading `openrouter/`, the OpenAI one
 does not.
 
+The OpenAI transport forwards `cache_control` unchanged to any `api_base` whose host
+is neither `openai.com` nor under `.openai.com`, so a preset's `anthropic_ephemeral`
+markers reach the gateway on a resolved route. On the unreadable-catalog path the
+provider's own transport forwards them too.
+[`tests/canonical/test_gateway_prompt_cache_markers.py`](../tests/canonical/test_gateway_prompt_cache_markers.py)
+pins the markers on the wire for both paths.
+
 **The name.** Those two effects are coupled, so the name that arrives depends on the
 dialect, and the gateway's name for a model is not derivable from the engine's model
 string. It is whichever of `<provider>/<name>` or `<name>` the catalog contains:
@@ -1013,6 +1170,12 @@ per-client warning. On a gateway-only model that direct call fails; on any other
 runs unattributed. If a deployment cannot rename such a route, the exact-name entry
 has to be added alongside the alias.
 
+**Hard requirement on the gateway: no `openai.com` hostname.** litellm strips every
+`cache_control` marker from a request whose `api_base` host is `openai.com` or ends
+in `.openai.com` (`api.openai.com`, `gw.openai.com`), so Claude routes behind such a
+host run uncached. The check is on the hostname only: `openai.com.gateway.example`,
+`myopenai.com` and `*.openai.azure.com` keep the markers.
+
 Wildcard entries (`openrouter/*`, `anthropic/*`) are **not** accepted as evidence by
 default: a wildcard says the gateway will forward the request, not that the model
 exists behind it. Measured on a live gateway, `anthropic/*` accepted a name that its
@@ -1025,6 +1188,10 @@ by the untranslated model string. A foreign-namespace wildcard never routes, exa
 entries always win, and a wildcard-resolved call is recorded as such on the per-call
 usage (`gateway_route_kind: "wildcard"`), so a board audit can tell the serving
 paths apart.
+
+tolokaforge requires litellm >= 1.93.0; environments pinned below it must
+upgrade (earlier releases strip Anthropic `cache_control` on resolved gateway
+routes, lack the native `meta` provider, or crash tool calls without `fastapi`).
 
 ### Serving a NEW provider behind the gateway
 
@@ -1076,8 +1243,11 @@ so one gateway state cannot produce two different routing decisions.
 ### Which providers can be routed
 
 **Setting `api_base` does not make litellm speak OpenAI to that URL — it makes
-litellm speak that provider's native protocol to that URL.** Captured against
-litellm 1.87.0:
+litellm speak that provider's native protocol to that URL.**
+[`tests/canonical/test_llm_gateway_envelope_contract.py`](../tests/canonical/test_llm_gateway_envelope_contract.py)
+pins the chat-completions path of the first two rows against the installed
+litellm and checks that the other two stay off it. The last two rows are
+litellm's documented native routes, not a captured request:
 
 | provider | request litellm sends to the gateway |
 |---|---|
@@ -1133,7 +1303,7 @@ name: azure_ai/cohere-command-a-plus-05-2026
 
 List the routes a gateway serves with `GET {base_url}/models`.
 
-Gateway-specific names have two consequences, both following from the naming
+Gateway-specific names have three consequences, all following from the naming
 couplings described below:
 
 - **Cost may be unknown.** `normalize_model_name` cannot map
@@ -1146,6 +1316,11 @@ couplings described below:
   so reasoning routes through `reasoning_effort` rather than
   `extra_body.reasoning`. That is correct for an OpenAI-shaped gateway endpoint,
   but verify it for reasoning models before trusting a run.
+- **A `litellm_models:` entry is keyed on the formatted string.** A gateway
+  route litellm's map does not carry is declared under
+  `openai/self-hosted/<model>` (or `openai/openrouter/anthropic/claude-opus-4.7`),
+  the `<provider>/<name>` the client sends, not under the bare `name`. See
+  [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model).
 
 What `_build_kwargs` does differs by path. **On a resolved route** it rewrites
 `model` to the gateway's route name and forces `custom_llm_provider="openai"`.
@@ -1161,11 +1336,16 @@ ignores it. Two distinct couplings hang off
 model naming, and only the second is to the formatted string:
 
 - Preset `match:` globs resolve off `ModelConfig.name` and the `providers:`
-  overlay off `ModelConfig.provider` (see [`presets`](#presets)). Re-prefixing
-  the model, or renaming the provider to something gateway-specific, silently
-  drops the matched preset and the `reasoning_via_extra_body` overlay — the
-  reported `effective_preset` would not change, but the reasoning wire format
-  would.
+  overlay off `ModelConfig.provider` (see [`presets`](#presets)). A re-prefixed
+  name keeps its preset: `openrouter/anthropic/claude-opus-4.7` and
+  `self-hosted/qwen3.6-35b-a3b` resolve like `anthropic/claude-opus-4.7` and
+  `qwen3.6-35b-a3b` (see [§ Preset coverage](#preset-coverage)). A
+  route-prefixed name that no preset claims while its last segment matches
+  one (`self-hosted/nova-pro-v1`, or an overlay preset without a `*/` sibling)
+  draws a WARNING from `config validate` and at run start. Renaming the
+  provider to something gateway-specific does drop the
+  `reasoning_via_extra_body` overlay: the reported `effective_preset` does not
+  change, but the reasoning wire format does.
 - [`normalize_model_name`](../tolokaforge/core/pricing.py) strips exactly one
   leading `openrouter/` and then returns any remaining slash-bearing name
   verbatim. A second prefix guarantees a pricing-table miss, degrading
@@ -1182,6 +1362,50 @@ upstream through the OpenRouter generation id rather than trusting the request
 shape (see below).
 On a header-name collision the gateway's configured header wins, since that is
 explicit operator configuration and the other is an engine default.
+
+### Reasoning that never reaches the model back
+
+A `ReasoningCodec` has two halves and they fail differently. `extract` reads the
+provider's reasoning off the response; `encode_for_replay` says what to send back
+on the next request. A codec that extracts and replays nothing leaves the model
+reading a history in which it never reasoned — and models copy that. Measured on
+`moonshotai/kimi-k2.7-code` in two datasets that disagree on magnitude and agree on
+direction: the ten-task sweep behind the published report (50 trials) carried
+reasoning on **every turn-1 call and 15–34% of later ones** — 28.5% of 2,241 calls
+overall — while a three-task run served by two fan-out mirrors fell to **2.7%** of
+411 calls, against **98.2%** of 277 once the note was replayed. Score on those three
+tasks moved 0.380 → 0.688. How far the collapse goes evidently depends on the
+upstream; that it happens does not.
+
+An empty replay is *correct* for OpenAI, which does not accept echoed reasoning.
+It is a silent defect for a route that would have honoured it, and from inside
+the engine the two are indistinguishable. Three things make the difference
+visible:
+
+* **Runtime.** `Metrics.reasoning_channel_unknown` counts calls the provider
+  charged reasoning tokens for while nothing arrived in a channel the engine
+  knows; `Metrics.reasoning_replay_dropped` marks a trial in which reasoning was
+  extracted and then not sent back. Both land in `metrics.yaml`. The second also
+  warns once per run per model — a client is built per trial per role, so the
+  guard is keyed module-side rather than held on the client.
+* **Pull-request time.**
+  [`tests/canonical/test_reasoning_codec_preset_routing.py`](../tests/canonical/test_reasoning_codec_preset_routing.py)
+  holds the allow-list of presets permitted to replay nothing, each with its
+  reason;
+  [`tests/canonical/test_capability_registry.py`](../tests/canonical/test_capability_registry.py)
+  refuses a certificate that declares all three reasoning capabilities
+  `known_unsupported` while its preset installs a codec to extract them, unless
+  it says why.
+* **On demand.**
+  [`scripts/analysis/probe_reasoning_transport.py`](../scripts/analysis/probe_reasoning_transport.py)
+  answers, for about a cent per model, where the reasoning arrives, whether the
+  codec keeps it, and whether the upstream answers differently when it is echoed
+  back. That last question matters: one route accepts the field and ignores it.
+
+`OpenAISummaryReplayReasoningCodec` (`reasoning_codec: openai_summary_replay`) is
+the OpenAI extract plus a replay that rebuilds the `reasoning.text` envelope —
+the shape OpenRouter routes emit, and what a non-OpenAI route carrying readable
+reasoning should use.
 
 ### Preset-level `openrouter_defaults`
 
@@ -1314,11 +1538,11 @@ credential lookup, key rotation, slug rewrite, rate-limit text.
 | `custom_llm_provider` | `_call_with_key_rotation` | Value pinned into `kwargs["custom_llm_provider"]`. Nova: `"openai"`. OpenRouter: `"openrouter"`. When `None`, compound providers (`openrouter/google`) fall back to `provider.split("/")[0]`; simple providers let litellm default. |
 | `rate_limit_patterns` | `LLMClient._is_rate_limit_exception` (tier-3 text fallback), `LLMClient.classify_loop_error` | Regex strings compiled once at construction. `DEFAULT_RATE_LIMIT_PATTERNS` in [`providers.py`](../tolokaforge/core/llm/providers.py) is the shipped default every non-mock provider declares verbatim; each entry is a shape an *engine wrapper* produces (`Error code: 429`, `HTTP/1.1 429`, `too many requests`, rate-limit prose in an error construction), not provider quota prose. |
 | `slug_rewrite` | `_call_with_key_rotation` | Two-step rewrite of `kwargs["model"]` per attempt: strip `strip_prefix`, then ensure `ensure_prefix`. Nova's binding declares `strip_prefix: "nova/"` and `ensure_prefix: "openai/"` — turning `nova/busan-v1` into `openai/busan-v1` on the wire without a Python conditional on provider name. |
-| `format_model_name_bare` | `LLMClient._format_model_name` | When `true`, `_format_model_name` returns `config.name` as-is (no `{provider}/` prefix). Nova only; preserves current log content. |
+| `format_model_name_bare` | `providers.litellm_model_id` | When `true`, `litellm_model_id` returns `config.name` as-is (no `{provider}/` prefix). Nova only; preserves current log content. |
 | `kwargs_pin_transport` | `_call_with_key_rotation` | When `true`, the client reads `endpoint` and `api_key_env` fresh per attempt and pins them into `kwargs["api_base"]` / `kwargs["api_key"]`. Fires the `NOVA_API_KEY is required for nova provider` fail-loud when `api_key_env` resolves empty. Nova only. |
 
 Nova's three sites (init `NOVA_API_BASE` `os.environ.setdefault`,
-`_format_model_name` bare-name return, `_call_with_key_rotation` per-attempt
+`litellm_model_id` bare-name return, `_call_with_key_rotation` per-attempt
 `api_base` / `api_key` / `custom_llm_provider` / slug rewrite) are expressed
 entirely through the fields above — a provider whose transport matches Nova's
 shape is a `providers.yaml` entry, not a `client.py` edit.
@@ -1339,9 +1563,12 @@ where the mechanism is genuinely per-provider:
   (`OPENROUTER_BASE_URL` and `OPENROUTER_API_BASE`) into one pinned value. The
   single-field `api_base_env` schema cannot express dual-env coordination; a
   schema addition just for one provider is over-engineering.
-- **`_openrouter_headers`** (`HTTP-Referer` / `X-Title`) and
-  **`provider_order`** (upstream pinning) consume config off
-  `ModelConfig.openrouter`, not transport bindings. They stay engine code.
+- **`configure_openrouter_default_headers()`**
+  ([`openrouter_headers.py`](../tolokaforge/core/llm/openrouter_headers.py))
+  sets `HTTP-Referer`, `X-Title` and `X-Data-Collection-Opt-Out` from the
+  `TOLOKAFORGE_OPENROUTER_REFERER` / `_TITLE` / `_OPT_OUT` env vars, and
+  **`provider_order`** (upstream pinning) consumes `ModelConfig.openrouter`.
+  Neither is a transport binding; both stay engine code.
 - **Mock's `if self.provider == "mock": return self._mock_generate(...)`
   early-return** — mock's binding declares `unroutable: true` (captures the
   proxy behaviour), but the branch that never constructs kwargs stays
@@ -1401,7 +1628,9 @@ The policy attaches Anthropic's ephemeral (5-minute TTL) `cache_control`
 markers on three attach sites — system, tools, and up to two message
 positions — so a second request with the same cacheable prefix reads from
 the Anthropic cache. Observable via non-zero
-`Metrics.usage.cache_read_input_tokens` on the second call.
+`Metrics.usage.cache_read_input_tokens` on the second call. The same markers
+reach an LLM gateway on both of its paths, and on a resolved route the same
+signal comes back (see [Speaking to the gateway](#speaking-to-the-gateway)).
 
 **4-breakpoint budget.** Anthropic's Messages API caps at 4 `cache_control`
 markers per request. The policy uses at most:
@@ -1539,7 +1768,7 @@ params:
     reasoning_effort:
       medium:
         action: reject
-        evidence: "2026-05-21, litellm 1.83.14: empty response with tool calls, BerriAI/litellm#19403"
+        evidence: "<date>, <transport and version>: <what the route does with this value>"
       # or, when an answer matters more than a like-for-like comparison:
       #   action: override
       #   with: low
@@ -1580,9 +1809,9 @@ one rule delete every other rule, disarming a guard nobody touched.
 One pre-existing exception, inherited from how overlays work generally: an
 overlay `presets:` entry with the **same name** as a bundled preset replaces
 that preset wholesale, rules included. Shadowing by name is a replacement, not
-a merge. Only `providers.gemini` carries rules today, so nothing is affected in
-practice, but declare rules on a differently-named preset if you mean to add
-rather than replace.
+a merge. A bundled preset that carries rules loses them to a same-named overlay
+entry, so declare rules on a differently-named preset if you mean to add rather
+than replace.
 
 `tool_choice` rules are inert on a call that sends no tools, because the
 parameter is only ever attached alongside `tools`.
@@ -1646,17 +1875,28 @@ class ParamsPolicy(ABC):
         seed: int | None,
         reasoning: ReasoningConfig | None,
     ) -> dict: ...
+
+    def declines_sampling_param(self, param: SamplingParam) -> bool:
+        return False
 ```
+
+`kwargs` arrives carrying the request's `top_p` (config or caller), so a
+policy that drops sampling parameters drops it with the rest.
+`declines_sampling_param` answers whether a config's `temperature` / `top_p`
+is never sent (`SamplingParam` is `Literal["temperature", "top_p", "top_k"]`; any
+other name answers `False`); `config validate` and the run-start sweep read it to warn on an
+explicit value the policy drops.
 
 `GenerationParams` declares its `KNOWN_KEYS` — the preset-driven flags below:
 
 | Flag | Default | Effect |
 |---|---|---|
-| `fixed_temperature` | `None` | Override caller-supplied temperature (legacy compat knob). |
+| `fixed_temperature` | `None` | Send this `temperature` in place of the config's or caller's. Sent even when `supports_sampling_params` is `false`. |
 | `supports_seed` | `true` | Forward `seed` kwarg when caller or config supplies one. |
+| `supports_sampling_params` | `true` | `false` sends no `temperature` / `top_p` / `top_k` from the config or the caller (a `fixed_temperature` is still sent). For model families whose endpoints take no sampling parameters. An explicit `temperature` / `top_p` on such a config earns a warning from `config validate` and at run start. |
 | `reasoning_via_extra_body` | `false` | Adaptive reasoning → `extra_body.reasoning={effort, enabled:true}` (OpenRouter non-Anthropic path). |
 | `reasoning_via_thinking_kwarg` | `false` | Budget reasoning → top-level `thinking={"type":"enabled","budget_tokens":N}` (Anthropic-native). |
-| `drop_sampling_when_thinking` | `false` | Pop `temperature` / `top_p` / `top_k` whenever the `thinking` kwarg was emitted (P3b — OpenRouter silently strips them today; Anthropic raw 400s). |
+| `drop_sampling_when_thinking` | `false` | Pop `temperature` / `top_p` / `top_k`, from the config or the caller, whenever the `thinking` kwarg was emitted (OpenRouter silently strips them; Anthropic raw 400s). |
 | `reasoning_budget_default` | `None` | Default `budget_tokens` when `ReasoningConfig(mode="budget")` omits its own budget. |
 
 ### Reasoning routing matrix
@@ -1689,12 +1929,13 @@ Rules made explicit:
 
 ### Preset → routing table
 
-| Preset | `reasoning_via_extra_body` | `reasoning_via_thinking_kwarg` | `drop_sampling_when_thinking` | `reasoning_budget_default` |
-|---|---|---|---|---|
-| `anthropic_claude_4_7` (Claude 4.7 Opus + Sonnet) | `true`* | **`true`** | **`true`** | **`8000`** |
-| `anthropic` (Claude 4.5 / 4.6 / Sonnet 3.x) | `true`* | `false` | `false` | — |
-| `openai_gpt5` / `xai_grok` / `qwen` | `true`* | `false` | `false` | — |
-| `default` / `aws_nova` | `false` | `false` | `false` | — |
+| Preset | `reasoning_via_extra_body` | `reasoning_via_thinking_kwarg` | `drop_sampling_when_thinking` | `reasoning_budget_default` | `supports_sampling_params` |
+|---|---|---|---|---|---|
+| `anthropic_claude_4_7` (Claude 4.7 Opus + Sonnet) | `true`* | **`true`** | **`true`** | **`8000`** | `true` |
+| `anthropic` (Claude 4.5 / 4.6 / Sonnet 3.x) | `true`* | `false` | `false` | — | `true` |
+| `openai_gpt5` / `openai_gpt6` / `openai_o_series` | `true`* | `false` | `false` | — | **`false`** |
+| `xai_grok` / `qwen` | `true`* | `false` | `false` | — | `true` |
+| `default` / `aws_nova` | `false` | `false` | `false` | — | `true` |
 
 \* `reasoning_via_extra_body` comes from the `openrouter` provider overlay, not
 the preset itself. Anthropic direct (non-OpenRouter) would have `false`.
@@ -1770,34 +2011,55 @@ as a compatibility surface — user overlay syntax and the
 `resolve_policy_names` fingerprint). Routing pinned by
 [`tests/canonical/test_message_assembly_filler_routing.py`](../tests/canonical/test_message_assembly_filler_routing.py).
 
-### Provider-side empty completion
+### Actionless completions: reasoning without action, and empty
 
 A generation that comes back with both `text == ""` and `tool_calls == []`
-is a *provider-side empty completion*: the request round-tripped and the
-provider chose to return nothing. `ToolCallingLoop._run_turn` recognises
-that shape immediately after `_generate` — before the assistant message
-would be appended — and resamples up to `capabilities.empty_retry_count`
-times without appending the empty message and without advancing the outer
-turn counter; on the `(N + 1)`-th empty result it terminates the trial with
-`TerminationReason.EMPTY_COMPLETION` and `TrialStatus.FAILED`. The metrics
-sink records every generation, resampled ones included, because the trial
-paid for each call. The default `empty_retry_count = 0` keeps the preset
-one-shot terminal for models that do not opt in. Presets that observably
-recover on a resample opt in through `empty_retry_count: <N>` on the model
-preset overlay; a `LoopConfig(empty_retry_count=N)` flows from
-`capabilities.empty_retry_count` at `runner.py` construction time.
+is *actionless*, and two different things produce that shape. The loop
+separates them on evidence the result already carries, because reporting
+one as the other names the wrong party:
+
+- **Reasoning without action** — reasoning tokens were billed, or
+  `finish_reason == "length"`. The provider did not return nothing; it
+  returned deliberation and no action. Two sub-shapes occur in practice: a
+  model cut off at its output ceiling mid-thought (`finish_reason: length`,
+  reasoning filling the completion), and a model that deliberated briefly
+  and then stopped of its own accord (`finish_reason: stop`, a few hundred
+  reasoning tokens). Resampled under `capabilities.reasoning_stall_retry_count`
+  with a `role=user` feedback turn, terminating on exhaustion with
+  `TerminationReason.REASONING_WITHOUT_ACTION`, whose evidence string carries
+  the `finish_reason` and the completion/reasoning token split it was read
+  from. The budget defaults to **1** rather than 0: the billed output tokens
+  are positive evidence that another sample is worth drawing, and a model
+  that never stalls never pays for it.
+- **Provider-side empty completion** — neither signal. The request
+  round-tripped and the provider returned nothing, where a resample has no
+  evidence behind it. Resampled up to `capabilities.empty_retry_count` times,
+  terminating on the `(N + 1)`-th with `TerminationReason.EMPTY_COMPLETION`.
+  The default `empty_retry_count = 0` keeps this one-shot terminal for models
+  that do not opt in.
+
+Both are recognised immediately after `_generate` — before the assistant
+message would be appended — and neither advances the outer turn counter.
+Both terminate with `TrialStatus.FAILED` and both sit in
+`EXCLUDED_TYPED_REASONS`, so a trial lost to either leaves the measured
+denominator rather than scoring zero against the agent.
+
+The metrics sink records every generation, resampled ones included, because
+the trial paid for each call. Presets that observably recover on a resample
+raise `empty_retry_count: <N>` on the model preset overlay; both budgets flow
+from `capabilities` at `runner.py` construction time.
 
 The distinction from `empty_assistant_filler` above is where the empty
 content lives. `empty_assistant_filler` handles empty **content the loop
 is about to send back to the provider on a tool-call turn** — Bedrock/Nova
 and Moonshot direct reject a request whose assistant turn has empty
 `content` alongside `tool_calls`, so those provider families opt in to a
-non-empty filler string. `EMPTY_COMPLETION` handles empty **content the
+non-empty filler string. Both actionless branches handle empty **content the
 provider produced**: appending it would send a request whose tail is a
 `role=model` turn with empty `content` and no `tool_calls` on the next
 iteration, and Gemini rejects that as an API error. The Gemini-legal-tail
-invariant holds across resamples because the empty assistant message is
-still not appended on any of them; only the recovered non-empty result
+invariant holds across resamples on either branch because the empty
+assistant message is still not appended on any of them; only the recovered non-empty result
 lands on `messages`. The engine consumes this one wire-shape observation
 directly rather than routing it through `classify_loop_error` so post-run
 analysis can tell "the model produced nothing" apart from the API-error
@@ -2041,7 +2303,7 @@ The composition runs at two sites, each using the same shape (`min` of the
 set candidates, `None` when none is set). The adapter site
 (`native._actor_tool_schemas`) folds the task-yaml override and the
 tool-declared bound into the emitted `ToolSchema.output_max_chars`. The
-loop site (`ToolCallingLoop._cap_tool_message_content`) folds that emitted
+loop site (`ToolCallFunnel.cap_tool_message_content`) folds that emitted
 value with the per-model backstop into the per-call effective cap.
 
 Middle-elision uses `keep_head_and_tail` from
@@ -2056,7 +2318,7 @@ the baseline for presets that do not name the key on tools that do not
 declare a cap in a pack that does not override it.
 
 The cap sits **below** the trial's recorder and the grader. The recorder
-call inside `_execute_tool_calls` reads the full text through
+call inside `ToolCallFunnel.execute` reads the full text through
 `resolve_tool_output(tool_result)` before the truncation runs, so the
 trial's ordered tool-call record and the grader inputs carry the
 untruncated tool output regardless of the cap. Only the string the model
@@ -2110,6 +2372,36 @@ the loop-layer behaviour and the helper contract are pinned by
 and
 [`tests/unit/test_tool_output_truncation.py`](../tests/unit/test_tool_output_truncation.py).
 
+### Preset-level reply contract
+
+`ModelCapabilities.default_agent_prompt_contract: str | None` names the reply
+contract a model gets when it works a task on its own. It is preset data of the
+same shape as `default_max_turns`: a value the run can still override, resolved
+to text by
+[`resolve_agent_prompt_contract`](../tolokaforge/core/agent_prompt_contract.py)
+and composed ahead of the task's own document by `build_system_prompt`.
+
+Not every model needs one. Some narrate their reasoning unprompted and some stop
+when nothing rewards it, and on a benchmark whose grader reads the container
+rather than the transcript, nothing does. The measured spread is wide — one
+model wrote text on 5 of 2,239 assistant turns here against 100% under a harness
+whose prompt asks for it, scoring 0.321 against 0.826 on the same tasks. The knob
+is per-preset because the behaviour is per-model. See
+[ADR-0052](adr/0052-agent-reply-contract.md).
+
+Precedence, lowest to highest:
+
+1. `ModelCapabilities.default_agent_prompt_contract` — this model's preset.
+   Applies **only** when `TaskConfig.interaction_mode` is `agent_only`: the
+   shipped text tells an agent that a message carrying no tool call ends the
+   task, which is what `AgentOnlyTurnPolicy` does and what a conversational turn
+   policy does not.
+2. `TaskConfig.agent_prompt_contract` — this task names one, in either mode.
+3. `task.policies["agent_system_prompt"]` — an inline prompt, reproduced byte
+   for byte; no contract is composed onto it.
+
+`None` (the default) leaves a solo task on the prompt-authoring chain alone.
+
 ### Per-model turn-budget default
 
 `ModelCapabilities.default_max_turns: int | None` is the preset-level value
@@ -2149,11 +2441,14 @@ the precedence body is pinned by
 [`tests/unit/test_conductor.py`](../tests/unit/test_conductor.py)
 (`TestResolveMaxTurns`).
 
-The `gemini_31_pro_preview` preset opts in at
-`default_max_turns: 90`. Gemini 3.1 Pro's per-turn edit style is more
-granular than the framework baseline, so the same absolute budget
-exhausts earlier on tasks a coarser-grained model completes in fewer
-turns; 90 is the conservative lift over the 50-turn framework default.
+Two presets opt in at `default_max_turns: 90`, for the same reason:
+`gemini_31_pro_preview` and `moonshot_kimi_k2`. Both lines have a
+per-turn edit style more granular than the framework baseline, so the
+same absolute budget exhausts earlier on tasks a coarser-grained model
+completes in fewer turns; 90 is the conservative lift over the 50-turn
+framework default. Kimi K2 is the finer-grained of the two — median 260
+completion tokens per turn against 419 for `claude-sonnet-4.6` and 756
+for `gpt-5.6-sol` on one ten-task sample.
 The overlay carries the generic `gemini` policy trio (`reasoning_codec`,
 `schema_sanitizer`, `response_policy`) verbatim, so the preset's only
 functional divergence from the shared `gemini` route is the turn-budget
@@ -2183,10 +2478,13 @@ Implementations:
 * `StandardResponse` — no-op (default for OpenAI / Anthropic).
 * `UnwrapInputResponse` — strips Nova/Bedrock's `{input: {...}}` wrapper.
 * `JsonCoerceResponse` — defence against open-weights stringification:
-  decodes JSON-encoded array / object arguments back to native shape.
-  When `param_types` is supplied, also coerces `''` → `[]` / `''` → `{}`
-  for declared `array` / `object` parameters (the qwen `equipment: ''`
-  bug class).
+  decodes JSON-encoded array / object arguments back to native shape,
+  except for a parameter the schema declares `string`: it carries text the
+  tool parses itself, so it is never decoded. A union of `string` with a
+  container (`str | list[str]`) is not a `string` parameter and is decoded as
+  before. When `param_types` is supplied, also coerces `''` → `[]` /
+  `''` → `{}` for declared `array` / `object` parameters (the qwen
+  `equipment: ''` bug class).
 * `ArrayDictMapResponse` — composes `JsonCoerceResponse` plus the reverse
   pivot of `StrictSchema`'s dict-map → array conversion. Used by
   `openai_gpt5` and `xai_grok` presets.
@@ -2286,22 +2584,25 @@ fresh `ModelCapabilities`. Presets live in
 
 ### Preset coverage
 
-Per-preset policy wiring as shipped today. The three `StrictSchema` presets
-all cover the same two failure surfaces — `Decimal` look-ahead regex (P1,
-Stage 1) and typed `Dict[str, T]` parameters (P2, Stage 2) — by combining
-the same three policies. Keep this table in sync with
+Per-preset policy wiring as shipped today. The `StrictSchema` presets
+(`openai_gpt5`, `xai_grok`) cover `Decimal` look-ahead regex and typed
+`Dict[str, T]` parameters with `strict` + `array_dict_map`. `openai_gpt5`,
+`openai_gpt6` and `openai_o_series` also declare `supports_sampling_params:
+false` (§ litellm OpenRouter routing caveat). Keep this table in sync with
 [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
-| Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
-|-------------------------|------------------------------------------------------------------|--------------------|---------------------|-------------------|------------------|-------------------|---------------------------|-------------------------|
-| `default`               | *(fallthrough)*                                                  | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `null`                    | `passthrough`           |
-| `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
-| `anthropic`             | `anthropic/*`, `*claude*`                                        | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
-| `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `qwen`                  | `qwen/*`, `qwen3*`                                               | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |
-| `moonshot_kimi_k3`      | `moonshotai/kimi-k3*`, `*kimi-k3*`                               | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `nova` (filler `" "`)     | `passthrough`           |
+| Preset                 | Match globs                                                                                                               | `schema_sanitizer` | `response_policy` | `prompt_policy`  | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
+|------------------------|---------------------------------------------------------------------------------------------------------------------------|--------------------|-------------------|------------------|------------------|-------------------|---------------------------|-------------------------|
+| `default`              | *(fallthrough)*                                                                                                           | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `null`                    | `passthrough`           |
+| `anthropic_claude_4_7` | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*`                                                       | `passthrough`      | `standard`        | `none`           | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `anthropic`            | `anthropic/*`, `*/anthropic/*`, `*claude*`                                                                                | `passthrough`      | `standard`        | `none`           | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `openai_gpt5`          | `openai/gpt-5*`, `*gpt-5*`                                                                                                | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `openai_gpt6`          | `openai/gpt-6*`, `*gpt-6*`                                                                                                | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `openai_o_series`      | `openai/o{1,3,4}*`, bare `o1` / `o3`, their tiers (`o3-mini*`, dated `o3-20*`, …) and `o4-mini*`, and their `*/` siblings | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `null`                    | `passthrough`           |
+| `xai_grok`             | `x-ai/*`, `xai/*`, `*/x-ai/*`, `*/xai/*`, `grok*`, `*/grok*`                                                              | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
+| `qwen`                 | `qwen/*`, `*/qwen/*`, `qwen3*`, `*/qwen3*`                                                                                | `passthrough`      | `json_coerce`     | `dict_map_hints` | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
+| `aws_nova`             | `nova*` (+ provider `nova`)                                                                                               | `passthrough`      | `unwrap_input`    | `none`           | `nova`           | `none`            | `nova`                    | `passthrough`           |
+| `moonshot_kimi_k3`     | `moonshotai/kimi-k3*`, `*kimi-k3*`                                                                                        | `passthrough`      | `standard`        | `none`           | `openai`         | `openai_summary_replay` | `nova` (filler `" "`) | `passthrough`           |
 
 Order matters — first match wins. `anthropic_claude_4_7` is declared
 *before* the generic `anthropic` preset so Claude 4.7 picks up its
@@ -2310,15 +2611,58 @@ path that 4.7 ignores (see
 [plans/eval_output_new_diagnosis.md](../plans/eval_output_new_diagnosis.md)
 Part 4).
 
-`qwen` additionally enables `dict_map_hints` (GPT-5-class presets currently
-opt-in to this via the legacy `capabilities: {dict_map_prompt_hints: true}`
-override on the model config — see the translation layer in
-[`tolokaforge/core/llm/presets.py`](../tolokaforge/core/llm/presets.py) §
-`_apply_config_overrides`). Qwen bakes the hint in unconditionally because
-its stringification failure mode is not opt-in — every Qwen call with a
-typed dict-map needs the hint.
+A route prefix does not change the preset, except for presets that route by
+`match_provider` (`aws_nova`, whose `nova` prefix is a litellm provider
+namespace, not a vendor segment). For every glob G that does not start with
+`*`, `<route>/G` resolves to the preset that owns G: G has an anchored `*/G`
+sibling unless a leading-`*` glob in the same preset already covers the routed
+name (`*gpt-5*` covers `openrouter/openai/gpt-5.5`). So
+`openrouter/qwen/qwen3-coder`, `litellm_proxy/qwen/qwen3-coder` and
+`self-hosted/qwen3.6-35b-a3b` resolve to `qwen` exactly as `qwen/qwen3-coder`
+does. A leading-`*` glob is anchored on a `/` boundary (`*/qwen3*`, not
+`*qwen3*`, which would claim any name that merely contains `qwen3`); the
+anywhere-matching globs shipped today are a frozen list.
 
-### Fingerprint helpers (Stage 7, P6)
+A model-specific preset declared ahead of its family preset also lists its
+vendor-dropped name (`gemini-3.5-flash` and `*/gemini-3.5-flash` on
+`gemini_35_flash_recursive`), so a gateway that serves the model without the
+vendor segment does not land in the family preset. Three
+`openai_summary_replay` presets measured on the OpenRouter route alone
+(`xai_grok_4_6`, `z_ai_glm_5_3`, `deepseek_v4_flash_0731_resolve`) are the
+exception: their replay rebuilds OpenRouter's `reasoning_details` envelope, and
+a vendor-dropped name is never an OpenRouter slug. What ties them to the route
+is where they were measured, not the codec: `cohere_command_a_plus_05_2026`
+shares the codec but was measured on `azure_ai`. The three claim only
+vendor-anchored names under any route prefix, so `self-hosted/grok-4.6`
+resolves to `xai_grok` and `self-hosted/glm-5.3` to
+`openrouter_dict_stringify_recovery`. The test names them in
+`_OPENROUTER_TIED_REPLAY_PRESETS`.
+
+[`test_preset_route_prefix_routing.py`](../tests/canonical/test_preset_route_prefix_routing.py)
+enforces all of this for every bundled glob and every `pricing.json` slug. A
+failure names the `preset:glob` whose routed name resolves elsewhere and
+suggests the `*/G` sibling to add.
+
+Because the match is whole-entry and first-match-wins, a slug that lands on a
+broad multi-vendor preset inherits that preset's silence on every budget knob
+even when a near-identical sibling slug routes to a narrower preset that
+declares several. `scripts/analysis/audit_preset_fallthrough.py` reports that
+asymmetry — resolved preset, declared knobs and OpenRouter context window per
+slug, plus the presets whose `max_context_tokens + context_watermark`
+disagrees with the smallest real window their globs cover. See
+[`scripts/README.md`](../scripts/README.md) § Preset fall-through audit.
+
+`qwen` keeps the dict schema (`passthrough`) and pairs `dict_map_hints` with
+`json_coerce`: Qwen never picks the array shape, so the prompt hint names the
+dict format and `json_coerce` decodes the arguments Qwen sends as stringified
+JSON. The hint is baked in because every Qwen call with a typed dict-map needs
+it. Other presets opt in to the hint via the `capabilities:
+{dict_map_prompt_hints: true}` override on the model config — see the
+translation layer in
+[`tolokaforge/core/llm/presets.py`](../tolokaforge/core/llm/presets.py) §
+`_apply_config_overrides`.
+
+### Fingerprint helpers
 
 Two public helpers on [`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py)
 produce the JSON-serialisable preset fingerprint landed on
@@ -2345,6 +2689,44 @@ guard: [`tests/unit/llm/test_preset_fingerprint.py`](../tests/unit/llm/test_pres
 parametrises over every preset in
 [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) and
 plants a rogue policy instance to confirm the raise path.
+
+Next to `resolve_effective_preset`,
+`unclaimed_route_family(model_name, provider) -> UnclaimedRouteFamily | None`
+reports a route-prefixed name whose full name resolves to `"default"` while
+its last `/` segment resolves to a preset, and `None` otherwise. The frozen
+`UnclaimedRouteFamily` carries `model_name`, `provider`, `last_segment` and
+`family` (the preset the last segment matches), plus the `remedy` text. It
+reads the merged table, overlays included. `unclaimed_route_families(models)`
+returns `(path, finding)` for every hit across a run's model configs,
+fallbacks included. `config validate` reports each as a WARNING at
+`<path>.name` with the remedy as its hint; the run logs each once after its
+tasks load as the `UNCLAIMED_ROUTE_FAMILY` event, with the finding's fields
+and `path` as context. Unit guard: [`tests/unit/llm/test_route_family_warning.py`](../tests/unit/llm/test_route_family_warning.py).
+
+`ignored_sampling_params(models)` returns `(path, IgnoredSamplingParam)` for
+every explicit, non-null `temperature` / `top_p` across a run's model configs,
+fallbacks included and `models.user.temperature` excluded, that the config's
+capabilities (its own `capabilities` overrides applied) do not send. The frozen
+`IgnoredSamplingParam` carries `field`, `model_name`, `provider` and `preset`,
+plus the `remedy` text; `path` is `<config path>.<field>`. `config validate`
+reports each as a WARNING at that path with the remedy as its hint; the run logs
+each once after its tasks load as the `IGNORED_SAMPLING_PARAM` event, with the
+finding's fields and `path` as context. `capability_override_errors(models)`
+returns `(path, CapabilityOverrideError)` for every model config, fallbacks
+included, whose capabilities do not build, whether or not it sets a sampling
+value or the run builds that role. The keyword-only error carries `path` and
+`reason`, and pickles. `path` is `<config path>.capabilities` when the config's
+own `capabilities` block is the cause: a key outside the recognised overrides, or
+a recognised one the matched preset's policies cannot take (`OpenAIReasoningCodec()
+takes no arguments`). It is `(presets)` when the same name and provider do not
+build without that block either (a preset or overlay conflict), and such a
+conflict several configs share is named once with `build_capabilities`'s own
+message. `config validate` reports each as an ERROR at `err.path`, `run` /
+`prepare` / `worker` refuse to start naming all of them, and
+`ignored_sampling_params` passes every such config over while still reporting the
+others. Unit guards:
+[`tests/unit/test_sampling_temperature.py`](../tests/unit/test_sampling_temperature.py),
+[`tests/unit/llm/test_preset_overrides.py`](../tests/unit/llm/test_preset_overrides.py).
 
 ### Startup validation
 
@@ -2410,7 +2792,7 @@ Free functions, re-exported from `tolokaforge.core.llm`:
 
 | Helper | Module | What it does |
 |---|---|---|
-| [`coerce_json_strings`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Decode stringified JSON arrays / objects in tool-call arguments back to native values. Heuristic: a `str` whose first non-whitespace character is `[` or `{` and whose `json.loads` returns a `list` / `dict`. Scalar JSON literals (`"42"` → `42`) are never promoted — string IDs would silently corrupt. |
+| [`coerce_json_strings`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Decode stringified JSON arrays / objects in tool-call arguments back to native values. Heuristic: a `str` whose first non-whitespace character is `[` or `{` and whose `json.loads` returns a `list` / `dict`. Scalar JSON literals (`"42"` → `42`) are never promoted — string IDs would silently corrupt. With `param_types`, a parameter declared `string` carries text the tool parses itself and is never decoded. |
 | [`coerce_empty_containers`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Schema-aware recovery: coerces `""` → `[]` / `""` → `{}` for declared `array` / `object` / `dict_map` parameters. No-op without `param_types`; `""` on a `string` parameter passes through. |
 | [`find_additional_properties`](../tolokaforge/core/llm/dict_maps.py) | `dict_maps` | Locate an `additionalProperties` declaration on a property schema or any of its `anyOf` / `oneOf` branches. Handles the Pydantic `Optional[Dict[str, T]]` shape (`anyOf=[{additionalProperties:T}, {null}]`). |
 
@@ -2494,9 +2876,9 @@ composes a `ModelCapabilities` and wraps litellm's `completion()`.
 `reasoning: StructuredReasoning | None`, and `effective_system_prompt`.
 See § `usage` above for the full Usage schema and accumulation contract.
 
-`UserSimulator` wraps `LLMClient` for tau-bench-style user simulation with
+`BuiltinUserSimulator` wraps `LLMClient` for tau-bench-style user simulation with
 `scripted` or `llm` modes. An `llm`-mode reply is delivered only if it survives
-the guard described in § `UserSimulator` request and reply contract;
+the guard described in § `BuiltinUserSimulator` request and reply contract;
 `GenerationResult.guard_rejections` carries the defects of the attempts
 discarded before it, and is empty everywhere else.
 
@@ -2518,8 +2900,51 @@ ever compares registered `JudgeKind`s against this one provider. A
 signature or behaviour change to `LLMClient` construction — or to the
 `empty_retry_count` / `output_length_retry_count` / `parser_error_retry_count`
 capabilities-based retry opt-in this client exposes to `ToolCallingLoop`
-(see § *Provider-side empty completion* above) — must account for both
+(see § *Actionless completions* above) — must account for both
 consumers, not just the runner.
+
+### Session header
+
+A model config's `session: {header: <name>}` ([CONFIG.md](CONFIG.md)) makes the
+engine add `<name>` with a conversation id to every request that model sends, for
+backends that keep one conversation on one replica so its prefix cache stays warm.
+It is a property of the model config, not of the gateway: the engine adds the header
+to every request's `extra_headers`, gateway on or off. Wire delivery is pinned for litellm's
+`openai` and `openrouter` transports by
+[`tests/canonical/test_litellm_extra_headers_contract.py`](../tests/canonical/test_litellm_extra_headers_contract.py).
+
+- **Value.** `LLMClient.generate` reads `LLMCallObservation.session_id`. A trial's
+  `TrialRunner` sets it on its two observations from the trial attempt's trace id,
+  `conversation_session_id(trace_id, role)` = `<trace_id>-agent` / `<trace_id>-user`;
+  a blank `trace_id` is refused at construction. That is the trace id live tracing
+  uses ([OBSERVABILITY.md](OBSERVABILITY.md)), so a gateway that logs the header can
+  join its request log to the trace. It covers the attempt, so an orchestrator retry
+  of a trial is a new conversation. A call that carries no conversation id (no
+  observation, or `session_id=None`: the summarizer, the rubric judge, warm-up,
+  certification) gets one fresh UUID4 for that `generate()` call. Either value is
+  fixed before the outer retry starts, so every outer attempt, timeout retry and the
+  OpenAI SDK's own re-sends of one call send the same value, and so does a fallback
+  hop, which forwards the same observation to the next client.
+- **Merge.** The header is added to `extra_headers` after the OpenRouter defaults
+  (seeded from the global `litellm.openai_headers`) and the gateway's
+  `request_headers()`, so its value wins over theirs; it is never written to
+  `litellm.openai_headers`. A config without `session` sends no session header, even
+  when its observation carries an id.
+- **Reserved names.** `ModelSessionConfig` refuses, case-insensitively, a header
+  litellm or the engine sets itself, since the session value would replace it:
+  `authorization`, `content-type`, `content-length`, `host`, the provider auth
+  headers `x-api-key` and `api-key`, and `anthropic-version` / `anthropic-beta`.
+- **Collision refusal.** A session header whose name (case-insensitively) is also an
+  `LLM_PROXY_HEADERS` key or the `LLM_PROXY_REQUEST_ID_HEADER` name, for a provider
+  the gateway routes, or one of the engine's OpenRouter defaults, for an OpenRouter
+  provider, is refused. Every site judges the env-resolved `resolve_proxy_config()`
+  before any catalog lookup: `LLMClient` construction (`session_header_conflict`),
+  and `session_header_conflicts` for the `run` / `prepare` / `worker` start sweep
+  over every model and fallback and for `config validate`. A config whose gateway
+  headers the catalog would drop at runtime is therefore still refused. The sweep
+  and `config validate` read the gateway environment only when some model config
+  declares `session`, so a malformed one is reported (`(environment)` in validate)
+  for those configs alone.
 
 ### Outer retry controllers
 
@@ -2534,7 +2959,18 @@ consumers, not just the runner.
 
 Both install the same `before_sleep` hook (`_make_before_sleep`), so
 `llm_retry_scheduled` events are identical on either path. `retry` is
-`_should_retry_exception` on both.
+`_should_retry_exception` on both. It re-attempts every error except three,
+which end the call after one outer attempt:
+
+- `LLMApiTimeoutError` — the per-call timeout budget is already spent;
+- `openai.AuthenticationError` (which litellm's `AuthenticationError`
+  subclasses for every provider) — a 401 does not clear on retry;
+- `litellm.UnsupportedParamsError` — litellm refuses the parameter set
+  in-process, before any request is sent, so every attempt is refused the same.
+
+`_call_with_key_rotation` re-raises provider errors as `RuntimeError(...) from
+e`, so the predicate finds these types anywhere in the `__cause__` chain
+(bounded by `_EXCEPTION_CAUSE_DEPTH`), not only on the outer exception.
 
 The probe's split accounting is load-bearing: a 5xx must not inherit the
 multi-hour 429 budget, so the non-429 attempt cap counts only non-429
@@ -2558,8 +2994,9 @@ because `_call_with_key_rotation` re-raises provider errors as
    a spent credential set as transient and hand it the multi-hour budget —
    permanently, since `_rotate_key` only ever advances its index. The type stops
    the walk and returns `False`, so the condition takes the ordinary
-   five-attempt exponential branch instead. `_should_retry_exception` is
-   deliberately unchanged, so a probe-off run retries it exactly as before.
+   five-attempt exponential branch instead. `_should_retry_exception` does
+   not treat it as terminal, so a probe-off run gives it the same five
+   attempts.
 3. **Anchored text** (`binding.rate_limit_patterns` — see § Provider bindings),
    last resort: a 429 must sit in a status position (`Error code: 429`,
    `status_code=429`, `HTTP/1.1 429`), or the message must carry the HTTP reason
@@ -2615,16 +3052,20 @@ outer controllers above, transport-timeout retry in
 protocol. Retrying them at the loop level would double-count the exclusion and
 confuse the denominator.
 
-The empty-completion retry, the output-length retry and the parser-error
-retry are three separate classes that live in `_run_turn`, each under its
-own budget on `LoopConfig.empty_retry_count`,
+The empty-completion retry, the reasoning-stall retry, the output-length
+retry and the parser-error retry are four separate classes that live in
+`_run_turn`, each under its own budget on `LoopConfig.empty_retry_count`,
+`LoopConfig.reasoning_stall_retry_count`,
 `LoopConfig.output_length_retry_count` and
-`LoopConfig.parser_error_retry_count`. The four retry classes are
+`LoopConfig.parser_error_retry_count`. The five retry classes are
 orthogonal — each fires on a distinct trigger: the API-error retry
 replays a *raised exception*, the empty-completion retry resamples a
-*returned empty-shape result* (see § *Provider-side empty completion*
-above for the resample mechanics and the Gemini-legal-tail invariant),
-the output-length retry appends a `role=user` feedback turn and
+*returned actionless result with no reasoning billed*, the
+reasoning-stall retry appends a `role=user` feedback turn and resamples a
+*returned actionless result that did carry reasoning* (see § *Actionless
+completions* above for both, the resample mechanics and the
+Gemini-legal-tail invariant), the output-length retry appends a `role=user`
+feedback turn and
 resamples a *returned content-carrying truncation* under its own budget
 before falling through to accept-and-continue (see § *Output-length
 retry* above), and the parser-error retry appends a `role=user` feedback
@@ -2676,8 +3117,9 @@ contribute to a measurement it is not part of.
 
 The agent and the user simulator are different models in an arena config, so
 their counters never merge; and `Metrics.usage` cannot answer the same questions —
-`usage.calls` holds agent calls only and carries no role field. See
-[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `rate_limit_*` / `probe_*`.
+`usage.calls` records only served responses (no 429s, no retries). At the trial
+level it holds the agent's and any in-trial user-simulator calls, each stamped
+with its actor `role`. See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `rate_limit_*` / `probe_*`.
 
 `duration_s` is the *outer* per-attempt wall time (`generate` brackets
 `_generate_once`), i.e. how long the client actually held the call in flight —
@@ -2709,3 +3151,16 @@ so `Orchestrator._build_conductor` and `run_trial` both refuse to start an armed
 run on a conductor that does not declare `supports_rate_limit_probe` — otherwise
 the run would absorb 429s while writing all-default `rate_limit_*` / `probe_*`
 metrics, and nothing in the artifacts would show it.
+
+### Per-call output format and sampling evidence
+
+`LLMClient.generate(response_format={"type": "json_object"})` passes an explicit
+output format to the transport. `GenerationResult.sent_sampling` records only
+the sampling keys actually sent after model policy (an empty dict means none;
+`None` means unobserved). Consumers must not infer sent values from the model
+config. `models.<role>.capabilities.api_call_timeout_s` accepts a finite positive
+number and overrides the call timeout for that model only.
+`generate(retry_policy="single_attempt")` makes exactly one request: the outer,
+timeout, LiteLLM and key-rotation retries are off for that call, and it refuses to
+run while the process-wide `litellm.num_retries` or `litellm.model_fallbacks` is
+set, since either would send a second request. The default is `"default"`.

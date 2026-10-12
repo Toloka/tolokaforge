@@ -33,6 +33,11 @@ call, the same code the offline connector and the CI pre-check run; this module 
 receiver: endpoint, credentials, the project check, the receiver family and the observer.
 Relative paths in the block anchor to the nearest ``project.yaml`` above the working directory.
 
+Live previews (ADR-0048, previews amendment): on a v4 receiver a trial is written once, when it
+is persisted, and nothing goes out while it runs. ``LANGFUSE_TRACING_PREVIEWS=true`` also sends
+the live rows as declared previews; they stay beside the final rows, and the receiver's own views
+count every row. Off by default; a v3 receiver always gets the live rows, which are its record.
+
 The pairing with the engine is checked once per run (:func:`check_engine_api`): the engine's
 ``PLUGIN_API_VERSION`` must equal this package's ``__api_version__``; a mismatch is a
 configuration error naming both versions, so a plugin released ahead of, or behind, the engine
@@ -44,7 +49,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
-import re
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -65,6 +70,8 @@ from tolokaforge_langfuse.preflight import (
     resolve_plan,
 )
 from tolokaforge_langfuse.projection import PROJECTION_FULL
+from tolokaforge_langfuse.retry import Retrier, RetryBreaker, RetryStats
+from tolokaforge_langfuse.safety import SafetyGate, looks_secret
 
 if TYPE_CHECKING:
     from tolokaforge.core.models import TracingConfig
@@ -76,6 +83,7 @@ TRACING_SESSION_ID_ENV = "TOLOKAFORGE_TRACING_SESSION_ID"
 TRACING_LABEL_ENV = "TOLOKAFORGE_TRACING_LABEL"
 # the one switch and the plain Langfuse receiver variables
 LANGFUSE_ENABLED_ENV = "LANGFUSE_TRACING_ENABLED"
+LANGFUSE_PREVIEWS_ENV = "LANGFUSE_TRACING_PREVIEWS"
 LANGFUSE_BASE_URL_ENV = "LANGFUSE_BASE_URL"
 LANGFUSE_PUBLIC_KEY_SECRET = "LANGFUSE_PUBLIC_KEY"
 LANGFUSE_SECRET_KEY_SECRET = "LANGFUSE_SECRET_KEY"
@@ -152,6 +160,11 @@ def build(
     release = engine_release()
     producer = producer_identity()
     version = producer_version(producer, plan.resolver.rules_version, plan.profile)
+    gate = live_gate(headers)
+    # one count of what the retry policy did, and one breaker that stops its waiting, over the
+    # span export and the trial-end calls
+    retry_stats = RetryStats()
+    retry_breaker = RetryBreaker(settings.retry.breaker_after)
     attachments = build_attachments(
         settings,
         endpoint=endpoint,
@@ -160,6 +173,16 @@ def build(
         # in the v4 layout the manifest is part of the root observation, and a legacy
         # trace-create update would be refused anyway
         send_manifest_event=server_api == SERVER_V3,
+        gate=gate,
+        retry_stats=retry_stats,
+        retry_breaker=retry_breaker,
+    )
+    # the v4 producer posts a batch once, and again only after a refusal that comes before the
+    # receiver reads it (ADR-0048); a v3 receiver keeps the SDK's retrying exporter
+    span_retrier = (
+        Retrier(settings.retry, stats=retry_stats, breaker=retry_breaker)
+        if server_api == SERVER_V4
+        else None
     )
     try:
         exporter = make_otlp_exporter(
@@ -167,8 +190,8 @@ def build(
             headers=headers,
             # the direct ingestion path is a v4 route; the v3 family is written exactly as before
             ingestion_version=INGESTION_VERSION if server_api == SERVER_V4 else None,
-            # the v4 producer policy avoids automatic repeats and unintended overwrites
             retry=server_api != SERVER_V4,
+            retrier=span_retrier,
         )
     except SingleAttemptUnavailable as exc:
         raise TracingConfigError(
@@ -179,6 +202,8 @@ def build(
         max_size=tracing.queue_size,
         batch_size=tracing.export_batch_size,
         interval_s=tracing.export_interval_s,
+        retrier=span_retrier,
+        flush_grace_s=settings.retry.flush_grace_s,
     )
     return OTelTrialObserver(
         queue=queue,
@@ -205,8 +230,14 @@ def build(
             version=version,
             producer=producer,
             derived_groups=plan.profile.derived_groups,
+            trace_name=plan.profile.trace_name,
+            trace_user=plan.profile.trace_user,
         ),
         server_api=server_api,
+        previews=langfuse_previews(),
+        gate=gate,
+        ambient=(run_id, identity.run_tag),
+        retry_stats=retry_stats,
     )
 
 
@@ -269,6 +300,12 @@ def _env(name: str) -> str | None:
 def langfuse_enabled() -> bool:
     """``LANGFUSE_TRACING_ENABLED`` is truthy (``1`` / ``true`` / ``yes`` / ``on``)."""
     return (os.environ.get(LANGFUSE_ENABLED_ENV, "").strip().lower()) in _TRUE
+
+
+def langfuse_previews() -> bool:
+    """``LANGFUSE_TRACING_PREVIEWS`` is truthy: a v4 receiver also gets the live rows as declared
+    previews while a trial runs (ADR-0048, previews amendment). Off by default."""
+    return (os.environ.get(LANGFUSE_PREVIEWS_ENV, "").strip().lower()) in _TRUE
 
 
 def _secret(name: str) -> str | None:
@@ -413,12 +450,6 @@ def check_expected_project(
 
 
 OTLP_HEADERS_SECRET = "OTEL_EXPORTER_OTLP_HEADERS"
-_SECRET_NAME = re.compile(
-    r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|PRIVATE|SIGNING|COOKIE|SESSION)", re.I
-)
-_NOT_SECRET_NAME = re.compile(
-    r"(PUBLIC_KEY_ID|_FILE$|_PATH$|_DIR$|_URL$|_BASE$|_NAME$|_HEADER$)", re.I
-)
 
 
 def build_attachments(
@@ -428,16 +459,22 @@ def build_attachments(
     headers: dict[str, str] | None = None,
     environment: str | None = None,
     send_manifest_event: bool = True,
+    gate: SafetyGate | None = None,
+    retry_stats: RetryStats | None = None,
+    retry_breaker: RetryBreaker | None = None,
 ) -> Any:
     """The post-trial step (the attachments and the ingestion route of the trial-end pass) for
     ``observability.tracing.options.langfuse.attach`` / ``projection``; ``None`` only when nothing
     runs at trial end (``attach: none`` and ``projection: none``, or ``projection: gradings`` with
     ``gradings: false``). The receiver's REST base derives from the OTLP endpoint unless given,
-    the headers are the OTLP exporter's, the data-safety scan knows the ``SecretManager``'s
-    credential values (keys with secret-like names; URL, path and name values are not
-    credentials and a bundle may legitimately quote them), and ``environment`` rides on the
-    manifest update too. ``send_manifest_event`` is false in the v4 layout, where the
-    manifest is part of the root observation instead of a ``trace-create`` update."""
+    the headers are the OTLP exporter's, the data-safety scan is the run's ``gate`` (the observer's
+    own, so one known set; without one, the ``SecretManager``'s credential values: keys with
+    secret-like names, where URL, path and name values are not credentials and a bundle may
+    legitimately quote them), and ``environment`` rides on the manifest update too.
+    ``send_manifest_event`` is false in the v4 layout, where the manifest is part of the root
+    observation instead of a ``trace-create`` update. Its writes follow ``settings.retry`` within
+    each trial's budget, counted in ``retry_stats``; while ``retry_breaker`` (the span export's)
+    is open they wait no more, and they never count towards it."""
     from tolokaforge_langfuse.attachments import ATTACH_NONE, SecretScan
     from tolokaforge_langfuse.media import (
         LangfuseAttachments,
@@ -452,31 +489,77 @@ def build_attachments(
         api_base=settings.attach_api_base or api_base_from_endpoint(endpoint),
         headers=(headers if headers is not None else otlp_headers()) or {},
         mode=settings.attach,
-        scan=SecretScan(secret_values()),
+        scan=SecretScan(gate=gate) if gate is not None else SecretScan(secret_values()),
         timeout_s=settings.attach_timeout_s,
         budget_s=settings.attach_budget_s,
         environment=environment,
         send_manifest_event=send_manifest_event,
+        # the trial ends obey the span export's breaker without counting towards it: a run's
+        # parallel trials would otherwise open it within one schedule of a long refusal
+        retrier=Retrier(
+            settings.retry, stats=retry_stats, breaker=retry_breaker, trips_breaker=False
+        ),
     )
+
+
+def live_gate(headers: Mapping[str, str] | None = None) -> SafetyGate:
+    """The data-safety gate of a run: every live span, the trial-end passes and the file
+    attachments scan with it, one known set. It knows the credentials this process holds (its
+    environment and the ``SecretManager``'s keys) and the receiver's header values, by name, and
+    re-reads them when the default ``SecretManager`` is replaced (a secret registered at run
+    time, ``register_runtime_secret``)."""
+    gate = _read_gate(headers)
+    gate.reload = _reloader(headers)
+    return gate
+
+
+def _read_gate(headers: Mapping[str, str] | None) -> SafetyGate:
+    held = {f"header {name}": value for name, value in (headers or {}).items()}
+    return SafetyGate.from_environment(extra={**secret_items(), **held})
+
+
+def _reloader(headers: Mapping[str, str] | None) -> Callable[[], SafetyGate | None]:
+    """A reload for the gate: a fresh gate once the default ``SecretManager`` is another one than
+    the last seen (the engine's log redactor watches it the same way), else ``None``."""
+    seen = [_default_manager()]
+
+    def reload() -> SafetyGate | None:
+        manager = _default_manager()
+        if manager is seen[0]:
+            return None
+        seen[0] = manager
+        return _read_gate(headers)
+
+    return reload
+
+
+def _default_manager() -> Any:
+    """The default ``SecretManager`` if one is installed, else ``None``."""
+    try:
+        from tolokaforge.secrets import get_default_or_none
+    except ImportError:  # pragma: no cover - the secrets package is part of core
+        return None
+    return get_default_or_none()
+
+
+def secret_items() -> dict[str, str]:
+    """The credentials the ``SecretManager`` resolves under secret-like key names, by name."""
+    manager = _default_manager()
+    if manager is None:
+        return {}
+    items: dict[str, str] = {}
+    for key in manager.list_all_keys():
+        if not looks_secret(key):
+            continue
+        value = manager.get_secret(key)
+        if value:
+            items[key] = value
+    return items
 
 
 def secret_values() -> list[str]:
     """The credential values the ``SecretManager`` resolves under secret-like key names."""
-    try:
-        from tolokaforge.secrets import get_default_or_none
-    except ImportError:  # pragma: no cover - the secrets package is part of core
-        return []
-    manager = get_default_or_none()
-    if manager is None:
-        return []
-    values: list[str] = []
-    for key in manager.list_all_keys():
-        if not _SECRET_NAME.search(key) or _NOT_SECRET_NAME.search(key):
-            continue
-        value = manager.get_secret(key)
-        if value:
-            values.append(value)
-    return values
+    return list(secret_items().values())
 
 
 def otlp_headers() -> dict[str, str] | None:

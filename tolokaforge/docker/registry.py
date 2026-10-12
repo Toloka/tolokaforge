@@ -10,7 +10,7 @@ Uses Pydantic BaseModel for validation and serialization.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, PrivateAttr
@@ -42,11 +42,11 @@ class TrackedImage(BaseModel):
 
     image: Image = Field(description="The underlying Image object")
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When the image was first tracked",
     )
     last_used_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When the image was last accessed",
     )
 
@@ -140,7 +140,7 @@ class ImageRegistry(BaseModel):
         )
 
         # Track the image in our registry
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if image.full_tag in self.images:
             # Update last_used_at for existing image
             tracked = self.images[image.full_tag]

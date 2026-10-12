@@ -1,7 +1,7 @@
 # 0037. A runtime gateway is harness data, and its token dialect belongs to the runtime that provisions it
 
 - **Status:** Accepted ([#1239](https://github.com/Toloka/tolokaforge/issues/1239))
-- **Date:** 2026-08-19
+- **Date:** 2026-08-19, last amended 2026-10-01
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
@@ -165,20 +165,19 @@ different owners and are not expected to converge.
 
 ### Every rule is checked at load, because there is no later
 
-`CodingHarnessDriver` (`tolokaforge/core/drivers/coding_harness.py`) reads
-`gateway_route` when a run config's `models.agent.gateway_route` names one of
-`ALTERNATIVE_GATEWAYS`: the driver resolves the four ADR-0037 token classes
-against the operator's secrets, writes `config_files` into the trial container
-verbatim, applies `model_alias_pattern` to the effective model, and skips the
-shielded sidecar (the two paths are mutually exclusive). Absent that field —
-the default across the shipped example configs — the driver stays on the
-`credential_gateway` path, and this section's premise still holds: nothing
-downstream of the registry re-checks the route. The default path can afford
-to check `provider_env` keys downstream — the adapter does, over the effective
-envelope, as it resolves a trial. The gateway path's driver consumption is
-seam-anchored at trial attach time, so a rule that is not checked at load
-becomes a runtime error the operator sees from far away. These rules
-therefore fire at registry-load time, each naming the offending key or path:
+Nothing in this repo consumes `gateway_route`: no run-config key selects it, and a
+trial here composes its container from the registry entry and any
+`harness_presets_file` overlay. The consumer is a runtime outside this repo that
+attaches to a container it did not build. That runtime resolves the four
+ADR-0037 token classes against the operator's secrets, writes `config_files`
+into the container verbatim and applies `model_alias_pattern` to the effective
+model at attach time, and nothing downstream of the registry re-checks the
+route there. The default path can afford to check `provider_env` keys
+downstream, because the adapter does it over the effective envelope as it
+resolves a trial. The gateway route has no such later check, so a rule that is
+not checked at load becomes a runtime error the operator sees from far away.
+These rules therefore fire at registry-load time, each naming the offending key
+or path:
 
 | Rule | Model |
 |---|---|

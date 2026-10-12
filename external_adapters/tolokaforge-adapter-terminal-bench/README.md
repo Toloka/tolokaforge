@@ -4,13 +4,19 @@ Runs terminal-bench task packs on the tolokaforge engine.
 
 ## Environment contract
 
-Terminal-bench tasks author a `docker-compose.yaml` that references
-`T_BENCH_*` variables (plus `CPUS` / `MEMORY`) which terminal-bench's own
-provisioner injects at up-time. The tolokaforge engine never sets those, so
-the compose file is **synthesised** before provisioning — the adapter emits
-a self-contained compose file the engine can bring up unchanged, alongside
-a staging directory that carries the task's build context, tests, and log
-mountpoints.
+A terminal-bench task declares itself with `task.toml` (or the legacy
+`task.yaml`) and an `environment/Dockerfile`. A compose file is optional and
+names the multi-container shape; it is read from `environment/docker-compose.yaml`
+first — the only location upstream reads — and from the task root second, which
+is where the pre-harbor format kept it. Most tasks ship neither, and their
+compose doc is synthesised from the Dockerfile alone.
+
+A task that does ship one authors it against `T_BENCH_*` variables (plus
+`CPUS` / `MEMORY`) which terminal-bench's own provisioner injects at up-time.
+The tolokaforge engine never sets those, so the compose file is **synthesised**
+either way — the adapter emits a self-contained compose file the engine can
+bring up unchanged, alongside a staging directory that carries the task's
+build context, tests, and log mountpoints.
 
 ### Staging directory
 
@@ -49,6 +55,19 @@ Contents of a staging directory:
   | `CPUS`                                      | `str(meta.cpus)`                                                                                          |
   | `MEMORY`                                    | `{meta.memory_mb}M`                                                                                       |
 
+  A task whose compose lives under `environment/` authors against the
+  upstream harness's own variable set instead, which is resolved the same way:
+
+  | Variable                    | Resolved value                         |
+  | --------------------------- | -------------------------------------- |
+  | `CONTEXT_DIR`               | `./environment`                        |
+  | `MAIN_IMAGE_NAME`           | same as the agent service's `image:`    |
+  | `TEST_DIR`                  | `/tests`                               |
+  | `ENV_AGENT_LOGS_PATH`       | `/logs/agent`                          |
+  | `ENV_VERIFIER_LOGS_PATH`    | `/logs/verifier`                       |
+  | `HOST_AGENT_LOGS_PATH`      | `./_logs/agent`                        |
+  | `HOST_VERIFIER_LOGS_PATH`   | `./_logs/verifier`                     |
+
   `${TOLOKAFORGE_TRIAL_SLUG}` is the one variable that survives into the
   emitted file — the engine writes it to the per-trial `.env` at provision
   time so each trial's containers get a unique name.
@@ -60,9 +79,20 @@ Contents of a staging directory:
     or `{image_registry}/{task_id}:{image_tag}` when `image_registry` is
     set (with `build:` dropped so the image is pulled);
   - `container_name: tbench_${TOLOKAFORGE_TRIAL_SLUG}_{agent_service}`;
-  - `volumes: ["./tests:/tests", "./_logs:/logs"]` — the relative bind
-    mounts against the staging dir replace the `T_BENCH_*` log mounts;
-  - `TEST_DIR=/tests` in its `environment:`.
+  - `./tests:/tests` and `./_logs:/logs` appended to whatever volumes the
+    task declared — relative binds against the staging dir. A task mount
+    targeting `/tests` or `/logs` gives way to these; anything else it
+    declares (a named volume shared with a sibling service, say) is kept;
+  - `TEST_DIR=/tests` in its `environment:`;
+  - `build.context: ./environment` when the task's compose declares no
+    build of its own. The upstream harness supplies this from a base compose
+    layer it merges underneath the task's, so most canonical compose files
+    name no build at all.
+
+- A compose file under `environment/` is read **in place** upstream, so
+  relative `build.context` values in it mean paths under `environment/`.
+  The emitted file sits one level up at the staging root, so those contexts
+  are re-rooted onto `environment/` as it is written.
 
 - Two engine services are **injected** alongside the task's own:
   - `runner` (default image `tolokaforge-runner:local`) — exposes gRPC on
@@ -118,6 +148,45 @@ CLI does not go through litellm; it reaches OpenRouter through the
 `*_BASE_URL` variables below. Left on, the prefix makes the CLI select its own
 direct-vendor handler, read the blank vendor key, and 401. The engine loop
 keeps the prefix, which is what litellm needs to route.
+
+### Turn-loop shape, under the engine loop
+
+`interaction_mode` picks whether a trial dispatches a user simulator.
+`conversational` (the default) builds one and it speaks; `agent_only` builds
+none, and the trial ends when the agent takes a turn with no tool call, or at
+`max_turns` / the episode timeout. A Terminal-Bench task has no user to consult
+— its whole instruction is delivered as turn 0 — so `agent_only` is the shape
+the benchmark actually describes, and it removes the simulator's model cost.
+
+Two things go with it. The task's instruction becomes the only opener, and a
+task whose instruction is empty fails at run start rather than degrading into a
+blank first turn. And the agent needs to know that a message with no tool call
+ends the trial, which is what the shipped `reasoning_agent` contract says —
+pair `agent_only` with `agent_prompt_contract` (or a preset that defaults one)
+unless you want trials that only ever end at their turn budget.
+
+`agent_only` is refused under a coding-harness CLI: the CLI drives its own
+trial and the engine runs no turn loop there.
+
+### The agent's prompt, under the engine loop
+
+Two params author the prompt a Terminal-Bench task gives the engine loop, and
+they are mutually exclusive — supplying both is refused.
+
+`agent_system_prompt_file` names a file whose contents become the whole prompt,
+reproduced byte for byte. It is the replay surface: use it to reproduce a run
+whose prompt is already fixed.
+
+`agent_prompt_contract` names a reply contract instead — how the agent should
+answer each turn, composed ahead of the task's own instruction rather than
+replacing it. A bare name selects one the engine ships (`reasoning_agent`); any
+other value is a path. See
+[`docs/CONFIG.md`](../../docs/CONFIG.md) § `agent_prompt_contract:` and
+[ADR-0052](../../docs/adr/0052-agent-reply-contract.md).
+
+With neither param, the adapter leaves `policies.agent_system_prompt` unset, so
+the task falls through to the engine's own prompt chain and a model preset's
+`default_agent_prompt_contract` can reach the trial.
 
 ### Image layering
 

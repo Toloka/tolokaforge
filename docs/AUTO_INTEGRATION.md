@@ -507,6 +507,62 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
 - `automation cost-summary` / `key-snapshot` / `agent-digest` - the accounting tail (see "Cost
   summary" above): key-usage snapshots, the per-run cost summary (JSON + markdown + one-liner) and
   the one-line job-log digest of an agent run's result event.
+- `automation langfuse-upload <dir>` - sends the agents' own `claude -p` output to a Langfuse
+  receiver, one trace per file (`agent_iter_<i>.jsonl` -> `resolve/<i>`, `agent_finalize.jsonl`
+  -> `finalize`, and an evaluation analysis's dimension agents: `analysis_<dimension>.json` ->
+  `analysis/<dimension>`, a later run `analysis_<dimension>.<n>.json` (n from 2) ->
+  `analysis/<dimension>/<n>`; from a directory only those names are read, so the stage's
+  `decision.json` and reprobe findings are listed as not read, not refused), through `tolokaforge_langfuse.transcripts`: a file with a shape the reader does
+  not know is refused, tool inputs and outputs are dropped unless `--tool-io scrub`, the serialised
+  payload is scanned by the outbound sentinel (the credential shapes over the JSON, the values the
+  process holds also over the raw strings), keys that open another project than `--project`
+  refuse the upload, and a trace the receiver already holds in another environment is not
+  re-sent. The model is the first name the transcript reports, unless `--model <name>` names the
+  one that served the run: a CLI pointed at an alias reports the alias, whatever a gateway routes
+  it to. `--model` becomes every generation's model, the `model:` tag and `model_name`, and the
+  facets come through the model-name resolver: raw by default (`model:<name>`, no `model_<facet>`
+  tags), or `--model-name-normalizer toloka` with the deployment's `--model-rules`, the trial
+  traces' rule, so a model has one name on both; a name those rules cannot read (a bare CLI alias
+  names no vendor) stands as spelled and `model_unresolved` in the trace metadata names it. The
+  transcript's own names stay in the trace metadata: `cli_model` is the first it reports,
+  `model_names` all of them, with the `--model` name added when it is not among them. A `--model`
+  the tag vocabulary refuses refuses every file. Nothing is inferred from a second name in the
+  transcript. The trace is named by `--trace-name`, a template over `{label}`, `{transcript}` (the
+  transcript id) and `{step}` (the id without a later run's ordinal: `analysis/four_bucket/2` ->
+  `analysis/four_bucket`), default `{label}/{transcript}`. Its user is `--user` as given (an
+  expert's id, say), or the identity of `--user-model`, the model the agents worked on (an arena
+  config stem reads under the arena's rules); none without either. The CLI writes a response with
+  several content blocks as one stream event per block, each repeating the response's usage: the
+  events of one message id are one generation (`analyzer`, so a view by observation name keeps
+  the automation agents' cost apart from the trial agents' `agent`; its position as `message_index`,
+  `stream_events` the count) and the usage counts once. A generation runs from the event before it
+  to its last event, a tool from the turn that called it to its result. Each generation states its
+  share of what the CLI reported the run cost (`total_cost_usd`, shared out by the turns' tokens at
+  Claude's relative list prices, `cost_basis: cli`), so the trace's cost is the CLI's figure; a run
+  that reported none states zero (`cost_basis: none`). Output with no turn at all (the result
+  object alone, `--output-format json`) has no generation to carry it: its trace's cost is zero,
+  and `total_cost_usd` stays in the trace metadata. The root is an `agent` observation named
+  `transcript`, each tool result a `tool` observation. `--model-name-normalizer` is `none` (the
+  names as spelled, the default) or `toloka`; any other value is an error, not raw names. The output does not repeat the prompt the agent was given: a
+  caller that keeps it beside the file as `<stem>.prompt.txt` (`analysis_four_bucket.2.json` ->
+  `analysis_four_bucket.2.prompt.txt`) gets it as the trace's input, the root observation's, with
+  no option. It is cut at 65,536 characters with a visible marker and scrubbed of every shape the
+  sentinel knows whatever `--tool-io` says; `input_chars` (its full length), `input_truncated`
+  and `input_redacted_rules` in the trace metadata say what became of it, and a `--metadata` may
+  not set them. A prompt file is never read as a transcript nor listed as not read, one without
+  its transcript is not read, and anything under that name that is not a regular file of UTF-8
+  text (a directory, a dangling link, a named pipe, a device) refuses its transcript, the
+  irregular ones unopened. Without one the trace has no input. Each transcript leaves as one OTLP
+  batch under the wheel's default retry policy ([`OBSERVABILITY.md`](OBSERVABILITY.md) § Retries):
+  a batch the receiver refused without reading it (a gateway's own 403 page, 429, 503) goes again
+  after a wait, all the upload's waits together take at most 240 s, and the report's `retries`
+  counts them.
+  The receiver is
+  `LANGFUSE_BASE_URL` (or `LANGFUSE_OTLP_ENDPOINT`); the key pair and
+  `LANGFUSE_EXTRA_HEADERS` come from the step's own environment through the `SecretManager`. A
+  file it did not send is a line in the report (`--receipt`, the job summary) and exit 1; a setup
+  error (no receiver, no key pair, keys that open another project) is one line on stderr and exit
+  1, with no receipt. `--dry-run` needs no key. No workflow step calls it.
 - `tests/unit/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
   gate: every model's resolved response policy must keep an already-valid tool-call arg valid.
 - `tests/unit/llm/test_policy_array_recovery.py` - schema-driven recovery oracle: inject

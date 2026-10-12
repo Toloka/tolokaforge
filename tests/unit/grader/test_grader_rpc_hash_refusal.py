@@ -38,6 +38,7 @@ from tolokaforge.core.grading.golden_replay import (
     GoldenActionFailure,
     GoldenReplayRecord,
 )
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis, HashGradingResult
 from tolokaforge.core.models import TrialStatus
 from tolokaforge.core.trial_grader import (
     GraderRPCTrialGrader,
@@ -47,8 +48,6 @@ from tolokaforge.core.trial_grader import (
 from tolokaforge.grader.queue import InMemoryGradeBroker
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import (
-    HashComparisonBasis,
-    HashGradingResult,
     RunnerGradingConfig,
     RunnerStateChecksConfig,
 )

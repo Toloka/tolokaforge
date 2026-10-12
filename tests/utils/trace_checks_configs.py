@@ -8,10 +8,16 @@ unchanged. A kind or an operator that stops being exercised here fails that span
 assertion rather than quietly losing its coverage.
 """
 
-from typing import Any
+from typing import Any, get_args
+
+from tolokaforge.runner.models import (
+    TRACE_CONSTRAINT_KINDS,
+    TraceConstraintExpr,
+    TraceConstraintKind,
+)
 
 # Every operator, spread across the fields whose values each one reads. The two
-# binding operators name values ``_PAYMENT_BINDER`` extracts, so the matcher is
+# binding operators name values ``PAYMENT_BINDER`` extracts, so the matcher is
 # authorable only under the constraint that carries that binder.
 EVERY_OPERATOR_MATCHER: dict[str, Any] = {
     "kind": "tool_call",
@@ -40,7 +46,7 @@ EVERY_OPERATOR_MATCHER: dict[str, Any] = {
 
 # The binder the two binding operators above read: one case id off the denial call,
 # and one currency figure captured out of the assistant's own wording.
-_PAYMENT_BINDER: dict[str, Any] = {
+PAYMENT_BINDER: dict[str, Any] = {
     "match": {
         "kind": "tool_call",
         "tool": {"equals": "servicenow_csm_update_case"},
@@ -125,6 +131,21 @@ EVERY_CONSTRAINT_KIND: dict[str, dict[str, Any]] = {
 }
 
 
+def _nests_expressions(annotation: Any) -> bool:
+    return annotation is TraceConstraintExpr or any(
+        _nests_expressions(arg) for arg in get_args(annotation)
+    )
+
+
+# Read off the field annotations, so a composite kind added to the model joins
+# without an edit here.
+COMPOSITE_CONSTRAINT_KINDS: frozenset[TraceConstraintKind] = frozenset(
+    kind
+    for kind in TRACE_CONSTRAINT_KINDS
+    if _nests_expressions(TraceConstraintExpr.model_fields[kind.value].annotation)
+)
+
+
 # ``on_missing`` is rejected over a require tree holding any of the three kinds
 # whose verdict is the match itself, so the block carries it on one kind that
 # anchors and nests nothing.
@@ -150,6 +171,6 @@ def every_kind_block() -> dict[str, Any]:
         if kind == _ON_MISSING_KIND:
             constraint["on_missing"] = "pass"
         if kind == _BINDING_KIND:
-            constraint["bind"] = _PAYMENT_BINDER
+            constraint["bind"] = PAYMENT_BINDER
         constraints.append(constraint)
     return {"constraints": constraints}

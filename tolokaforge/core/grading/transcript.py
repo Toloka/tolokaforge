@@ -14,7 +14,6 @@ already does.
 The authored vocabulary is documented in ``docs/GRADING.md`` § "Transcript Rules".
 """
 
-import re
 from collections.abc import Sequence
 
 from tolokaforge.core.grading.key_manifest import (
@@ -26,6 +25,11 @@ from tolokaforge.core.grading.key_manifest import (
     MUST_CONTAIN_KEY,
     REQUIRED_ACTIONS_KEY,
     TOOL_EXPECTATIONS_KEY,
+)
+from tolokaforge.core.grading.regex_engine import (
+    RegexEngineKind,
+    UncompilablePattern,
+    engine_for,
 )
 from tolokaforge.core.grading.trace_timeline import (
     AttemptedCall,
@@ -149,7 +153,7 @@ def evaluate_transcript_rules(
     if rules.disallow_regex:
         accounted_keys[DISALLOW_REGEX_KEY] = EVALUATED
         for pattern in rules.disallow_regex:
-            details.append(_check_disallow_regex(pattern, assistant_messages))
+            details.append(_check_disallow_regex(pattern, rules.regex_engine, assistant_messages))
 
     if rules.max_turns is not None:
         accounted_keys[MAX_TURNS_KEY] = EVALUATED
@@ -276,20 +280,26 @@ def _check_must_contain(text: str, assistant_messages: Sequence[str]) -> Transcr
     )
 
 
-def _check_disallow_regex(pattern: str, assistant_messages: Sequence[str]) -> TranscriptRuleResult:
-    """No assistant message may match the disallowed regex.
+def _check_disallow_regex(
+    pattern: str, engine: RegexEngineKind, assistant_messages: Sequence[str]
+) -> TranscriptRuleResult:
+    """No assistant message may match the disallowed regex, read case-insensitively.
 
-    An invalid regex is an author error — surface it as a FAIL rather than
-    silently treating it as 'no match'.
+    The pattern is compiled under ``engine`` before any message is read, so one the
+    engine refuses is an author error surfaced as a FAIL — on a transcript with no
+    assistant message too — rather than silently treated as 'no match'.
     """
     try:
-        compiled = re.compile(pattern, re.IGNORECASE)
-    except re.error as exc:
+        compiled = engine_for(engine).compile(pattern, ignore_case=True)
+    except UncompilablePattern as exc:
         return TranscriptRuleResult(
             rule_type="disallow_regex",
             rule={"disallow_regex": pattern},
             passed=False,
-            message=f"Invalid disallow_regex {pattern!r}: {exc}",
+            message=(
+                f"Invalid disallow_regex {pattern!r}: the {exc.engine.value} regex engine "
+                f"cannot compile it: {exc.reason}"
+            ),
         )
 
     for content in assistant_messages:

@@ -11,19 +11,24 @@ An uncompilable ``not_regex`` pattern is caught at the authoring gate, not at
 Pydantic construction — mirroring ``regex``, which the same gate handles. That
 parametric row lives in ``test_grading_authoring_gate.py`` under label
 ``matcher_not_regex_that_does_not_compile``; the pure-operator semantics are
-here.
+here. A regex operator receives its pattern compiled under the predicate's
+engine, never the authored string.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from tolokaforge.core.grading.regex_engine import CompiledPatterns, RegexEngineKind
 from tolokaforge.core.grading.trace_check_operator import (
     not_contains_op,
     not_regex_matches,
+    regex_matches,
 )
 
 pytestmark = pytest.mark.unit
+
+_PAY_PREFIX = CompiledPatterns.compile(["^PAY-"], RegexEngineKind.LINEAR)
 
 
 def test_not_contains_holds_when_the_needle_is_absent() -> None:
@@ -54,11 +59,18 @@ def test_not_contains_is_case_sensitive() -> None:
 
 
 def test_not_regex_holds_when_the_pattern_does_not_match() -> None:
-    assert not_regex_matches("REF-1234", "^PAY-", {}) is True
+    assert not_regex_matches("REF-1234", _PAY_PREFIX, {}) is True
 
 
 def test_not_regex_fails_when_the_pattern_matches() -> None:
-    assert not_regex_matches("PAY-1234", "^PAY-", {}) is False
+    assert not_regex_matches("PAY-1234", _PAY_PREFIX, {}) is False
+
+
+@pytest.mark.parametrize("operator", [regex_matches, not_regex_matches])
+def test_a_regex_operator_refuses_an_uncompiled_pattern(operator) -> None:
+    """The authored string is not an operand: which engine reads it is not in it."""
+    with pytest.raises(TypeError, match="CompiledPatterns"):
+        operator("PAY-1234", "^PAY-", {})
 
 
 def test_not_regex_on_none_reads_false() -> None:
@@ -70,7 +82,7 @@ def test_not_regex_on_none_reads_false() -> None:
 def test_not_regex_on_a_non_string_value_reads_false() -> None:
     """A non-string value has no regex reading — the same shape ``regex`` refuses.
 
-    Numbers, lists, and mappings cannot be searched by ``re.search`` without a
+    Numbers, lists, and mappings cannot be searched by a regex engine without a
     coercion the timeline contract does not have; both regex operators guard
     on ``isinstance(value, str)`` for that reason. The complementary shape —
     the operator held True on a non-string because "no match" reads through —
@@ -78,5 +90,5 @@ def test_not_regex_on_a_non_string_value_reads_false() -> None:
     (a mapping) and score every trial True, which is the vacuous truth the
     timeline contract forbids.
     """
-    assert not_regex_matches(123, "^PAY-", {}) is False
-    assert not_regex_matches(["PAY-1"], "^PAY-", {}) is False
+    assert not_regex_matches(123, _PAY_PREFIX, {}) is False
+    assert not_regex_matches(["PAY-1"], _PAY_PREFIX, {}) is False

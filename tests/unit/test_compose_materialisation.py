@@ -281,8 +281,8 @@ class TestResolveEnvEndpoints:
         """db_url is best-effort — a task compose file that omits
         ``db-service:8000`` gets ``EnvEndpoints(db_url=None, ...)``.
         The runner-side ``DBServiceClient`` binds to ``DB_SERVICE_URL``
-        from its container env, and ``db_json.py`` tools fall back to
-        the same env var when constructed without a URL."""
+        from its container env, and the JSON-DB builtins reach
+        db-service through that client."""
         compose = MagicMock()
         compose.get_service_host_and_port.side_effect = KeyError("no db-service")
         compose.get_container.side_effect = KeyError("no rag either")

@@ -29,7 +29,6 @@ not checked in).
 | Empty assistant content with tool_calls gets echoed by Gemini | All Gemini | **Fixed** via [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py) (only `aws_nova*` and `moonshot_kimi_k3` opt into the filler; the filler string is data on the policy, chosen so nothing echoable survives on Kimi's side) |
 | `oneOf`+`discriminator` Pydantic unions → invented arg names | All Gemini | **Fixed** in [`GeminiSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) |
 | OpenRouter's 48-char placeholder UUID on no-thinking turns | All Gemini | **Fixed** — codec drops it on replay (togglable) |
-| `litellm` direct `gemini/*` + `reasoning_effort=medium` → empty response | All Gemini, direct provider only | **Guarded** via `param_value_rules` in [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) |
 | Nullable + optional Pydantic fields treated as opt-in | All Gemini, **most strict in Pro 3.1** | Intrinsic — measured by eval |
 | Doubled-prefix tool name mangling (`a_a_foo` → `a:a_foo`) | Pro 3.1 | Known_unsupported `TOOL_NAME_DISCIPLINE` |
 | Lexical tool invention (`knowledge_base_search_policy`) | Pro 3.1 | Known_unsupported `LEXICAL_TOOL_INVENTION` |
@@ -143,45 +142,7 @@ artifact reflects what the wire returned. Togglable via the
 `gemini_drop_placeholder_signature` capability override (default
 `True`).
 
-### 1.5 `litellm` direct `gemini/*` + `reasoning_effort=medium` is broken
-
-As of `litellm==1.83.14`, the direct `gemini/*` provider returns
-`finish_reason=stop` with zero completion tokens and no tool calls
-whenever `reasoning_effort=medium` is combined with `tool_choice`.
-`low` and `high` work correctly. The OpenRouter route is **unaffected**
-because it sends `extra_body.reasoning.effort=medium`, which OpenRouter
-translates upstream into Google's `thinking_level=medium`.
-
-**Harness mitigation**: a [`param_value_rules`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
-entry on the `providers.gemini` overlay — provider-scoped, so the OpenRouter
-route is untouched:
-
-```yaml
-providers:
-  gemini:
-    params:
-      param_value_rules:
-        reasoning_effort:
-          medium:
-            action: reject
-            evidence: "2026-05-21, litellm 1.83.14: ..."
-```
-
-Per AGENTS.md rule #1 the harness **fails loud** rather than silently mapping
-to `high`. `action: override` with `with: low` is available if an answer
-matters more than a like-for-like comparison, but see the warning in
-[`docs/LLM_LAYER.md`](LLM_LAYER.md) before reaching for it:
-
-```
-ValueError: ReasoningConfig(effort_hint='medium') is declared unsupported
-for this provider+model combination (refused: ['medium']). Evidence:
-2026-05-21, litellm 1.83.14: reasoning_effort='medium' alongside tool calls
-returns an empty response on the direct gemini route ... Use one of
-['low', 'high', 'xhigh'], or route through a transport that supports this
-effort level (e.g. OpenRouter rather than the direct provider).
-```
-
-### 1.6 Nullable + optional Pydantic fields are treated as opt-in
+### 1.5 Nullable + optional Pydantic fields are treated as opt-in
 
 Gemini reads the JSON Schema fragment
 
@@ -292,7 +253,7 @@ reasoning to every turn.
 
 ### 2.4 Most aggressive nullable-optional skip behavior
 
-See §1.6. Pro is the family member most likely to omit nullable
+See §1.5. Pro is the family member most likely to omit nullable
 optional fields. Within OTS task packs, the dominant failure pattern is
 missing `organization_id` (60% of post-fix failures on logistics; was
 92% pre-fix).
@@ -441,7 +402,7 @@ without strong distinguishing characteristics. Worth using when:
 
 ### 5.1 "Gemini Pro has a 22 pp gap to Sonnet 4.6 on logistics — must be a Gemini bug"
 
-False after the §1.2 fix. The residual gap is the §1.6 nullable+optional
+False after the §1.2 fix. The residual gap is the §1.5 nullable+optional
 skip behavior plus the §2.1 / §2.2 known regressions. Removing those
 would require Gemini-favoring schema or prompt changes that we
 explicitly do not make.
@@ -470,7 +431,7 @@ logistics: $1.86 / pass → $0.41 / pass — 4.5× more efficient).
 | Multi-step workflows where stopping early is right (bank_hr-shape) | Flash 3.0 or Pro | **Flash 3.5** | §3.3 |
 | Heavy mid-task reasoning required | Pro 3.1 | Flash 3.0 | Pro thinks more carefully |
 | Cost-bounded, simple-shape tasks | Flash 3.0 | Flash 3.5 | Cheapest, no runaway risk |
-| Many nullable-optional Pydantic fields critical to grading | (any non-Gemini) | All Gemini | §1.6 — fundamental |
+| Many nullable-optional Pydantic fields critical to grading | (any non-Gemini) | All Gemini | §1.5 — fundamental |
 
 ## 7. References
 
@@ -489,6 +450,5 @@ logistics: $1.86 / pass → $0.41 / pass — 4.5× more efficient).
 - Capability registry: [`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py)
   (`TOOL_NAME_DISCIPLINE`, `LEXICAL_TOOL_INVENTION` declared
   `known_unsupported` for Pro).
-- Codec fix commits: `c394409a0` (extras round-trip), `8b1511d67`
-  (effort-level guard).
+- Codec fix commit: `c394409a0` (extras round-trip).
 - Eval data: `output/collected/` (post-fix), 2026-05-21 / 2026-05-22.

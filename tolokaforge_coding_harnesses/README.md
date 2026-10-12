@@ -117,6 +117,13 @@ The proxy is stdlib only (~200 LOC), boots inside the harness-command preamble
 and is unaware to the CLI. Nothing to configure — it applies automatically
 when `agent_harness: kimi-code`.
 
+It runs on whatever `python3` the task image provides, not on the engine's
+interpreter, and supports Python 3.10 or newer. Its per-file lint target in the
+root `pyproject.toml` (`[tool.ruff.per-file-target-version]`, `py310`) keeps
+newer syntax and stdlib names out, and the container test
+`tests/integration/docker/test_middleware_proxy_container.py` runs it on
+`python:3.10-slim`, the image that target names.
+
 The same boot arms the proxy's usage tap: every response that reports token
 counts appends one NDJSON record (model, token counts, status, path, UTC
 timestamp) to `MIDDLEWARE_USAGE_LOG_CONTAINER_PATH`

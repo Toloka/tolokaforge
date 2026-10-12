@@ -38,6 +38,10 @@ CALLER_TAGS = (
     "ci_run:100",
 )
 CALLER_METADATA = {"model_stem": "pilot_agent", "campaign": "parity"}
+# the deployment profile's [trace] both producers apply: a trace named after its dataset and
+# domain, its user the agent's model identity
+TRACE_NAME = "{dataset}/{domain}"
+TRACE_USER = "model"
 AGENT_MODEL = ("openrouter", "acme/pilot-1")
 USER_MODEL = ("openrouter", "acme/sim-2")
 JUDGE_MODEL = ("openrouter", "acme/judge-3")
@@ -172,16 +176,33 @@ def metrics() -> dict[str, Any]:
     return {
         "latency_total_s": 39.5,
         "turns": 3,
-        "api_calls": 3,
+        "api_calls": 5,
         "usage": {
-            "prompt_tokens": 3000,
-            "completion_tokens": 90,
+            "prompt_tokens": 3720,
+            "completion_tokens": 127,
             "reasoning_tokens": 30,
             "cached_tokens": 0,
-            "cache_creation_input_tokens": 0,
+            "cache_creation_input_tokens": 200,
             "cache_read_input_tokens": 100,
             "calls": [
+                # the user simulator's opener (turn 0); a call of the agent and one of the user
+                # simulator in the order they were made
                 {
+                    "role": "user",
+                    "prompt_tokens": 300,
+                    "completion_tokens": 25,
+                    "cached_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cost_usd": 0.0002,
+                    "cost_source": "litellm",
+                    "latency_s": 1.0,
+                    "openrouter_generation_id": "gen-user-0",
+                    "billed_cost_usd": 0.0002,
+                },
+                {
+                    "role": "agent",
                     "prompt_tokens": 900,
                     "completion_tokens": 20,
                     "cached_tokens": 0,
@@ -192,8 +213,10 @@ def metrics() -> dict[str, Any]:
                     "cost_source": "provider",
                     "latency_s": 3.0,
                     "openrouter_generation_id": "gen-agent-1",
+                    "billed_cost_usd": 0.001,
                 },
                 {
+                    "role": "agent",
                     "prompt_tokens": 1000,
                     "completion_tokens": 30,
                     "cached_tokens": 0,
@@ -204,22 +227,42 @@ def metrics() -> dict[str, Any]:
                     "cost_source": "provider",
                     "latency_s": 4.0,
                     "openrouter_generation_id": "gen-agent-2",
+                    # a BYOK call: the upstream's bill is above the eval's own figure
+                    "billed_cost_usd": 0.0025,
                 },
                 {
+                    "role": "agent",
                     "prompt_tokens": 1100,
                     "completion_tokens": 40,
                     "cached_tokens": 0,
                     "reasoning_tokens": 10,
-                    "cache_creation_input_tokens": 0,
+                    # a cache write: the prompt total holds it, the input counts it once
+                    "cache_creation_input_tokens": 200,
                     "cache_read_input_tokens": 0,
                     "cost_usd": 0.003,
                     "cost_source": "provider",
                     "latency_s": 8.0,
                     "openrouter_generation_id": "gen-agent-3",
+                    "billed_cost_usd": 0.003,
+                },
+                # the simulator's last turn (turn 6): billed above litellm's estimate
+                {
+                    "role": "user",
+                    "prompt_tokens": 420,
+                    "completion_tokens": 12,
+                    "cached_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cost_usd": 0.00025,
+                    "cost_source": "litellm",
+                    "latency_s": 0.8,
+                    "openrouter_generation_id": "gen-user-6",
+                    "billed_cost_usd": 0.0003,
                 },
             ],
         },
-        "cost_usd": 0.006,
+        "cost_usd": 0.00645,
         "tool_calls": 2,
         "tool_success_rate": 0.5,
         "stuck_detected": False,
@@ -270,6 +313,7 @@ def grade() -> dict[str, Any]:
             "completion_tokens": 60,
             "reasoning_tokens": 20,
             "cost_usd": 0.0015,
+            "billed_cost_usd": 0.0016,
             "tool_calls": 0,
             "consistency_rejections": 0,
         },

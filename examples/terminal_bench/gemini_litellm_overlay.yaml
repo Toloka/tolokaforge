@@ -13,13 +13,15 @@
 # LiteLLM's Gemini passthrough at ``{base}/gemini/v1beta/models/…`` serves
 # them and forwards to Google using the gateway's own credential.
 #
-# Apply this file via the run config's harness-adapter params:
+# Apply this file from the run config, beside the harness selector:
 #
+#   models:
+#     agent:
+#       harness: gemini-cli
 #   evaluation:
 #     harness_adapter:
 #       type: terminal_bench
 #       params:
-#         agent_harness: gemini-cli
 #         harness_presets_file: examples/terminal_bench/gemini_litellm_overlay.yaml
 #
 # ADR-0033 does whole-entry replacement, so this file redeclares every
@@ -49,6 +51,15 @@
 
 harnesses:
   gemini-cli:
+    # No ``request_middleware`` here, so a trial on this route reports no token
+    # counts and the engine records it as unmeasured rather than as zero spend.
+    # That is correct, and it is a property of *this* route, not of gemini-cli:
+    # ``gemini_openrouter_overlay.yaml`` declares the tap, and the proxy reads
+    # ``usageMetadata`` off ``streamGenerateContent`` as well as the unary path
+    # (``middleware_proxy._gemini_token_counts``), so the CLI measures fine
+    # there. Closing it on this route means either adding the tap or fixing the
+    # gateway, which reports real counts on the unary path and zeros on the
+    # streamed one the CLI actually takes.
     install_method: "npm"
     install_source: "@google/gemini-cli"
     version: "0.55.1"

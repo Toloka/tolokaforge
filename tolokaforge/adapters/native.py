@@ -3,6 +3,8 @@
 import base64
 import glob as glob_module
 import json
+from datetime import UTC
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -15,10 +17,15 @@ from tolokaforge.adapters._task_loader import (
     _detect_task_root,
     actor_tool_block,
     build_tool_inventory,
+    declared_search_backend,
     declared_tool_names,
+    effective_mcp_server,
     load_task_yaml,
     refuse_malformed_grading_shapes,
     resolve_tool_schemas,
+    search_declaration,
+    search_tool_schema,
+    seeded_table_shapes,
     seeded_tables_from_task,
     tool_configs,
     tool_output_max_chars_overrides,
@@ -37,6 +44,10 @@ from tolokaforge.adapters.native_harness_synthesis import (
     materialise_harness_environment,
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
+from tolokaforge.core.grading.comparison_view_checks import (
+    check_authored_comparison_view,
+    check_wire_comparison_view,
+)
 from tolokaforge.core.grading.config_validation import (
     CombineLayer,
     HashSourceLayer,
@@ -166,9 +177,12 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
 
     A builtin carries no :class:`ToolSource` — the runner's source-less dispatch
     arm routes it by name via the unified builtin registry, and ``tool_config``
-    carries any per-task init kwargs. A block naming an ``mcp_server`` carries the
-    script relative to the task dir, which the runner resolves against its
-    extracted artifacts dir.
+    carries any per-task init kwargs. The task's search tool is source-less too:
+    the runner binds it to the trial's search index by the declared name
+    (``initial_state.rag.tool``), so its schema is the declared name and
+    description over the declared backend's ``tool_parameters()``. A block naming
+    an ``mcp_server`` carries the script relative to the task dir, which the
+    runner resolves against its extracted artifacts dir.
 
     Raises:
         NativeAdapterMisconfigurationError: An enabled tool is not a builtin and
@@ -178,41 +192,28 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
         ValueError: If a ``tools.<actor>.<name>`` block is not a mapping.
     """
     from tolokaforge.runner.models import InvocationStyle, ToolSchema, ToolSource
-    from tolokaforge.runner.tool_factory import create_search_kb_schema
     from tolokaforge.tools.builtin import registry as builtin_registry
 
     block = actor_tool_block(task, actor)
-    mcp_server_ref: str | None = block.get("mcp_server")
-    if mcp_server_ref is None and actor is ToolActor.USER:
-        # A ``tools.user.enabled`` block that names an mcp-served tool but
-        # declares no ``mcp_server`` of its own falls back to the agent's
-        # server (``task_config.py`` permits the shape). Without this fallback
-        # the ``ToolSource`` is built as ``None`` and the runner's
-        # source-less-dispatch arm routes to the ``builtin`` registry — an 8-
-        # tool name (bash / calculator / browser / http_request / db_query /
-        # db_update / read_file / write_file) can shadow the pack's MCP tool
-        # of the same name, silently substituting the wrong implementation.
-        # A name with no builtin instead raises ``ToolConfigurationError``
-        # at RegisterTrial. Reading the agent block as the fallback matches
-        # the ``core/actors`` convention documented at ``task_config.py:450``.
-        mcp_server_ref = actor_tool_block(task, ToolActor.AGENT).get("mcp_server")
+    mcp_server_ref = effective_mcp_server(task, actor)
     if mcp_server_ref and not (task_dir / mcp_server_ref).exists():
         raise RuntimeError(f"MCP server script not found: {task_dir / mcp_server_ref}")
 
     configs = tool_configs(task, actor)
     overrides = tool_output_max_chars_overrides(task, actor)
     rich_schemas = resolve_tool_schemas(task, task_dir, actor, allow_subprocess=True)
+    search = search_declaration(task)
 
     schemas: list[ToolSchema] = []
     for tool_name in block.get("enabled", []):
-        if tool_name == "search_kb":
-            # The runner reconstructs search_kb as a RAGSearchToolWrapper
-            # (source-less, RAG dispatch). Carry the canonical schema so
-            # the LLM sees the real {query, top_k, alpha} parameters.
-            # The task-yaml override composes with the schema's existing
+        if tool_name == search.tool_name:
+            # The runner binds the source-less search tool to the trial's
+            # search index by this name. Carry the declared backend's own
+            # parameters so the LLM sees what that backend reads. The
+            # task-yaml override composes with the schema's existing
             # ``output_max_chars`` under the same tighter-wins rule the
             # generic branch below applies to every other tool.
-            base = create_search_kb_schema()
+            base = search_tool_schema(search, declared_search_backend(search))
             cap_candidates = [
                 c for c in (base.output_max_chars, overrides.get(tool_name)) if c is not None
             ]
@@ -254,6 +255,15 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
             )
         )
     return schemas
+
+
+def _declared_unstable_paths(task_dir: Path) -> tuple[str, ...]:
+    """The task's ``fixtures/unstable_fields.json`` as dotted paths, as the run path reads it."""
+    from tolokaforge.runner.models import read_unstable_field_specs
+
+    return tuple(
+        f"{spec.table_name}.{spec.field_name}" for spec in read_unstable_field_specs(task_dir)
+    )
 
 
 class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
@@ -595,12 +605,23 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             combine = resolve_effective_grading_combine(
                 self._project_combine_defaults(), task_combine
             )
-            return construct_config(
+            config = construct_config(
                 GradingConfig,
                 {**grading_data, "combine": combine},
                 source=grading_path,
                 section="grading",
             )
+            if config.state_checks is not None and config.state_checks.comparison_view:
+                err = check_authored_comparison_view(
+                    config.state_checks,
+                    tables=seeded_tables_from_task(task, task_dir),
+                    unstable_fields=_declared_unstable_paths(task_dir),
+                    context=task_id,
+                    table_shapes=seeded_table_shapes(task, task_dir),
+                )
+                if err:
+                    raise ValueError(err)
+            return config
 
         raise ValueError(f"Grading config not found: {grading_path}")
 
@@ -648,9 +669,16 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         The reading a declared ``id_fields`` primary key is held against — the same
         one the run path builds when it turns the task description into the trial's
         starting state — so a key naming a table the task does not seed is caught
-        before the trial is paid for rather than raising during grading.
+        before the trial is paid for rather than raising during grading. The unstable
+        fields ``fixtures/unstable_fields.json`` declares ride along, read the way the
+        run path reads them, for the rule holding a comparison view to the masks, and so
+        does the shape of every table not seeded as a list of records.
         """
-        return SeededTablesLayer(tables=seeded_tables_from_task(task, task_dir))
+        return SeededTablesLayer(
+            tables=seeded_tables_from_task(task, task_dir),
+            unstable_fields=partial(_declared_unstable_paths, task_dir),
+            table_shapes=seeded_table_shapes(task, task_dir),
+        )
 
     @classmethod
     def grading_source(cls, task: TaskConfig, task_dir: Path) -> GradingSource:
@@ -830,7 +858,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """
         if self.agent_harness != ENGINE_LOOP:
             return self._to_harness_task_description(task_id)
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from tolokaforge.runner.models import (
             AdapterType,
@@ -963,6 +991,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     auto_normalize_nullables=state_checks_data.get(
                         "auto_normalize_nullables", False
                     ),
+                    comparison_view=state_checks_data.get("comparison_view"),
                 )
 
             # Build transcript rules. One model serves the authored block and the
@@ -1053,6 +1082,15 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             unstable_fields=read_unstable_field_specs(task_dir),
             filesystem=initial_filesystem,
         )
+        if state_checks is not None:
+            err = check_wire_comparison_view(
+                state_checks,
+                initial_state,
+                context=task_id,
+                table_shapes=seeded_table_shapes(task, task_dir),
+            )
+            if err:
+                raise ValueError(err)
 
         # Build source files for debugging
         source_files = {
@@ -1133,7 +1171,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             search=search_config,
             grading=grading_config,
             source_files=source_files,
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             metadata={
                 "mcp_server_ref": mcp_server_ref,
             },
@@ -1162,7 +1200,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         environment manifest pointing at the synthesised per-task compose
         file that layers the CLI on the pack's own image.
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from tolokaforge.runner.models import (
             AdapterType,
@@ -1255,7 +1293,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             initial_state=RunnerInitialStateConfig(),
             user_simulator=RunnerUserSimulatorConfig(mode="scripted"),
             grading=grading_config,
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             metadata=metadata,
             environment_manifest=environment_manifest,
         )
@@ -1273,36 +1311,39 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """Build the trial's ``SearchConfig`` from ``initial_state.rag``.
 
         A task that declares ``initial_state.rag.corpus_dir`` opts into
-        per-trial RAG indexing: the corpus files travel in ``tool_artifacts``
-        and the runner indexes them so ``search_kb`` returns the corpus's
-        documents. ``documents_path`` is the declared ``corpus_dir`` verbatim,
-        resolved runner-side against the extracted artifacts dir, and the plane
-        serving it is declared ``rag_service`` so a run that also configures
-        TypeSense does not pull the corpus onto the other plane. Tasks that
-        declare no corpus keep search disabled.
+        per-trial search: the corpus files travel in ``tool_artifacts`` and the
+        runner builds the trial's index with the declared backend, so the
+        declared search tool returns the corpus's documents.
+        ``documents_path`` is the declared ``corpus_dir`` verbatim, resolved
+        runner-side against the extracted artifacts dir. The plane serving it is
+        the declared backend (``rag.backend``, default ``rag_service``), so a run
+        that also configures TypeSense does not pull the corpus onto the other
+        plane; ``enabled`` says whether that backend needs rag-service, for an
+        older runner that reads only it. ``backend_config`` and a tool name other
+        than ``search_kb`` ride along, and stay off the wire at their defaults.
+        Tasks that declare no corpus keep search disabled.
 
         Raises:
-            ValueError: if a corpus is declared without ``search_kb`` in either
-                actor's tools (the corpus could never be searched), or the
-                declared ``corpus_dir`` does not resolve to a directory.
+            ValueError: if a corpus is declared without the declared search tool
+                in either actor's tools (the corpus could never be searched), or
+                the declared ``corpus_dir`` does not resolve to a directory.
+            UnknownImplementationError: no backend is registered under
+                ``rag.backend``.
         """
-        from tolokaforge.runner.models import SearchConfig, SearchPlane
+        from tolokaforge.core.search.backend import RAG_SERVICE_STACK_SERVICE
+        from tolokaforge.runner.models import SearchConfig
 
-        rag = task.initial_state.rag
-        corpus_dir = rag.get("corpus_dir") if rag else None
+        search = search_declaration(task)
+        corpus_dir = search.corpus_dir
         if not corpus_dir:
             return SearchConfig(enabled=False)
-        if not isinstance(corpus_dir, str):
-            raise ValueError(
-                f"Task {task_id!r} initial_state.rag.corpus_dir must be a string path, "
-                f"got {type(corpus_dir).__name__}={corpus_dir!r}"
-            )
 
-        if "search_kb" not in declared_tool_names(task):
+        tool_name = search.tool_name
+        if tool_name not in declared_tool_names(task):
             raise ValueError(
                 f"Task {task_id!r} declares initial_state.rag.corpus_dir "
-                f"{corpus_dir!r} but no actor enables the 'search_kb' tool; "
-                f"the corpus would never be searchable. Add 'search_kb' to "
+                f"{corpus_dir!r} but no actor enables the {tool_name!r} tool; "
+                f"the corpus would never be searchable. Add {tool_name!r} to "
                 f"tools.agent.enabled or tools.user.enabled, or drop the rag corpus."
             )
 
@@ -1313,36 +1354,45 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 f"{corpus_dir!r} but {corpus_path} is not a directory."
             )
 
+        backend = declared_search_backend(search)
         return SearchConfig(
-            enabled=True,
-            plane=SearchPlane.RAG_SERVICE,
+            enabled=backend.stack_service == RAG_SERVICE_STACK_SERVICE,
+            plane=search.backend,
             domain_name=task.category or task_id,
             documents_path=corpus_dir,
+            backend_config=dict(search.backend_config),
+            tool_name=tool_name,
         )
 
     def _bundle_corpus_artifacts(self, task_dir: Path, corpus_dir: str) -> dict[str, str]:
-        """Bundle the RAG corpus's ``.md``/``.txt`` files as base64 artifacts.
+        """Bundle the RAG corpus's ``.md``/``.txt``/``.json`` files as base64 artifacts.
 
         Only the corpus files travel, keyed under the declared *corpus_dir*
         prefix, so the runner resolves ``artifacts_dir / documents_path`` to
         the same tree. Globs are flat (non-recursive), matching
-        ``load_documents_from_directory``. The whole task directory is
-        deliberately NOT bundled — that would ship ``grading.yaml`` (which may
-        carry a planted retrieval fact) into the runner.
+        ``load_documents_from_directory``. ``.json`` files are the ``bm25``
+        backend's ``{id, title, content}`` documents (ADR-0054); which files a
+        backend indexes is the backend's own rule — ``rag_service`` reads the
+        ``.md``/``.txt`` ones. The whole task directory is deliberately NOT
+        bundled — that would ship ``grading.yaml`` (which may carry a planted
+        retrieval fact) into the runner.
 
         Raises:
-            ValueError: if the corpus directory holds no ``.md``/``.txt`` files.
+            ValueError: if the corpus directory holds no ``.md``/``.txt``/``.json``
+                files.
         """
         corpus_path = task_dir / corpus_dir
         artifacts: dict[str, str] = {}
-        for pattern in ("*.md", "*.txt"):
+        for pattern in ("*.md", "*.txt", "*.json"):
             for file_path in sorted(corpus_path.glob(pattern)):
                 if not file_path.is_file():
                     continue
                 rel_path = f"{corpus_dir}/{file_path.name}"
                 artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode("ascii")
         if not artifacts:
-            raise ValueError(f"RAG corpus at {corpus_path} contains no .md or .txt files to index.")
+            raise ValueError(
+                f"RAG corpus at {corpus_path} contains no .md, .txt or .json files to index."
+            )
         return artifacts
 
     def _bundle_task_artifacts(self, task_dir: Path) -> dict[str, str]:

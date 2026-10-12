@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from tolokaforge.runner.grading import _records_might_match, compute_state_diff
+from tolokaforge.core.grading.trial_golden_diff import _records_might_match, compute_state_diff
 
 pytestmark = pytest.mark.unit
 

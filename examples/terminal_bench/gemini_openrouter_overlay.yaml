@@ -32,11 +32,13 @@
 #
 # Apply it the same way as its sibling::
 #
+#   models:
+#     agent:
+#       harness: gemini-cli
 #   evaluation:
 #     harness_adapter:
 #       type: terminal_bench
 #       params:
-#         agent_harness: gemini-cli
 #         harness_presets_file: examples/terminal_bench/gemini_openrouter_overlay.yaml
 #
 # ADR-0033 does whole-entry replacement, so this file redeclares every

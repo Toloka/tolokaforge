@@ -20,6 +20,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.key_manifest import (
     COMMUNICATE_INFO_KEY,
     DISALLOW_REGEX_KEY,
@@ -50,7 +51,6 @@ from tolokaforge.core.grading.key_manifest import (
 from tolokaforge.core.grading.state_composition import HASH_SOURCE_KEYS
 from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
-    HashComparisonBasis,
     KeyAccounting,
     KeyAccountingRecord,
     RunnerGradingConfig,

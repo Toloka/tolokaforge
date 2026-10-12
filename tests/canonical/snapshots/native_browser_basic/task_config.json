@@ -2,6 +2,8 @@
   "actors": {
     "user": {
       "backstory": null,
+      "first_agent_message": null,
+      "max_tool_steps": null,
       "mode": "scripted",
       "persona": null,
       "scripted_flow": [
@@ -9,11 +11,17 @@
           "content": "Please open the test.html file in the browser and find the secret code displayed on the page. Save the secret code to a file called secret.txt.",
           "role": "user"
         }
-      ]
+      ],
+      "simulator": null,
+      "simulator_config": null,
+      "stop_tokens": null,
+      "stop_with_text": null,
+      "tool_turns": null
     }
   },
   "adapter_settings": null,
   "adapter_type": "native",
+  "agent_prompt_contract": null,
   "category": "test",
   "description": "Open a simple HTML page and extract information from it.\n\nThis is a minimal test task for browser functionality testing.\n",
   "environment_manifest": null,
@@ -29,6 +37,8 @@
   },
   "initial_user_message": null,
   "interaction_mode": "conversational",
+  "max_environment_errors": null,
+  "max_simulation_steps": null,
   "max_turns": null,
   "metadata": {
     "complexity": null,

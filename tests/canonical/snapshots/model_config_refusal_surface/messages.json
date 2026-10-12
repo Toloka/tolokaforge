@@ -1,0 +1,14 @@
+{
+  "model_config": {
+    "loc": "models.agent",
+    "msg": "Value error, ModelConfig was given a key it does not declare:\n  - unknown key 'sesion' \u2014 did you mean 'session'? Rename `sesion` to `session` (or remove it if unused).\nModelConfig accepts: provider, name, temperature, max_tokens, seed, parallel_tool_calls, harness, reasoning, top_p, capabilities, openrouter, session, fallbacks."
+  },
+  "openrouter": {
+    "loc": "models.agent.openrouter",
+    "msg": "Value error, OpenRouterConfig was given a key it does not declare:\n  - unknown key 'provider_ordr' \u2014 did you mean 'provider_order'? Rename `provider_ordr` to `provider_order` (or remove it if unused).\nOpenRouterConfig accepts: provider_order, allow_fallbacks."
+  },
+  "reasoning": {
+    "loc": "models.agent.reasoning",
+    "msg": "Value error, ReasoningConfig was given a key it does not declare:\n  - unknown key 'mdoe' \u2014 did you mean 'mode'? Rename `mdoe` to `mode` (or remove it if unused).\nReasoningConfig accepts: mode, budget_tokens, effort_hint, display."
+  }
+}

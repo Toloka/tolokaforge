@@ -15,6 +15,12 @@ the seam cannot answer for them; the registered callables are stubs kept
 only to keep the frozenset and the entry-point registry in lockstep, and a
 downstream registration under either name is not reached.
 
+``regex`` and ``not_regex`` receive their patterns compiled rather than as
+authored: ``expected`` is a
+:class:`~tolokaforge.core.grading.regex_engine.CompiledPatterns` holding every
+pattern of the predicate's list (a single string is the one-item list), built by
+the matcher under the predicate's effective engine.
+
 Two arities collapse to one Protocol. Non-binding operators ignore
 ``bindings``; the binding operators (identified by the ``_binding``
 suffix on their registered name) read ``bindings[expected]`` — the name
@@ -29,12 +35,12 @@ row.
 from __future__ import annotations
 
 import operator as _operator
-import re
 from collections.abc import Callable, Mapping, Sized
 from datetime import datetime
 from typing import Any, TypeAlias
 
 from tolokaforge.core.grading.predicates import contains, date_comparison_key
+from tolokaforge.core.grading.regex_engine import CompiledPatterns
 
 __all__ = [
     "TraceCheckOperator",
@@ -93,11 +99,21 @@ def not_contains_op(value: Any, expected: Any, bindings: Mapping[str, Any]) -> b
 
 
 def regex_matches(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
-    return isinstance(value, str) and re.search(expected, value) is not None
+    return isinstance(value, str) and _compiled(expected).every_searches(value)
 
 
 def not_regex_matches(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
-    return isinstance(value, str) and re.search(expected, value) is None
+    return isinstance(value, str) and _compiled(expected).none_searches(value)
+
+
+def _compiled(expected: Any) -> CompiledPatterns:
+    if not isinstance(expected, CompiledPatterns):
+        raise TypeError(
+            "a regex operator's expected operand is CompiledPatterns, not "
+            f"{type(expected).__name__}. Compile the pattern under its engine with "
+            "CompiledPatterns.compile([pattern], engine)"
+        )
+    return expected
 
 
 def gt(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:

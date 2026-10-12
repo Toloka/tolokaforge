@@ -1,6 +1,8 @@
 """Combine grading components into final score"""
 
+import copy
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +33,6 @@ from tolokaforge.core.grading.combine_weights import (
     resolve_uncounted_fold,
 )
 from tolokaforge.core.grading.golden_replay import (
-    GoldenReplayRecord,
     incomplete_replay_reason,
     read_declared_initial_state,
     refuse_unreplayable_golden_source,
@@ -39,6 +40,7 @@ from tolokaforge.core.grading.golden_replay import (
     resolve_initial_state,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, component_requested
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis, HashGradingResult
 from tolokaforge.core.grading.state_checks import (
     StateChecker,
     extract_db_state,
@@ -70,6 +72,26 @@ from tolokaforge.core.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _StateHashCheck:
+    """What the state-hash source gave: its result, or ``None`` for no verdict, and why.
+
+    ``reasons`` are the sentences the fold reports for it, the block's ``description``
+    appended; a block with no source has no result and one reason saying so.
+    """
+
+    result: HashGradingResult | None
+    reasons: tuple[str, ...] = ()
+
+
+def _reported_reason(result: HashGradingResult) -> str:
+    """The sentence core's hash check reports its verdict with; every core check writes one."""
+    if result.reason is None:
+        raise ValueError("core's hash check returned a verdict without the reason it reports")
+    return result.reason
+
 
 _HASH_NOT_CHECKED_NO_SOURCE = (
     f"state_checks.hash is enabled but declares none of {' or '.join(HASH_SOURCE_KEYS)}, "
@@ -126,10 +148,14 @@ class GradingEngine:
                 also scores, so one ``state_checks`` component holds two verdicts with no
                 declared share between them. Re-resolved here rather than trusted from
                 load, because the config is mutable after validation.
+            ComparisonViewError: the declared ``comparison_view`` cannot be computed for
+                the expected state — no verdict, so the trial is left with a grading
+                error, as the runner leaves it. A trial whose own state cannot be viewed
+                fails instead.
         """
         components = GradeComponents()
         reasons_parts = []
-        state_diff_result = None  # Will store diff if state check fails
+        hash_result: HashGradingResult | None = None  # The state hash's, when one ran
         custom_checks_details = None  # Will store detailed custom check results
 
         timeline = build_trial_timeline(
@@ -138,9 +164,7 @@ class GradingEngine:
 
         # State checks
         if self.config.state_checks:
-            state_score, state_reasons, state_diff_result = self._grade_state_checks(
-                final_env_state
-            )
+            state_score, state_reasons, hash_result = self._grade_state_checks(final_env_state)
             if state_reasons:
                 reasons_parts.append(f"State: {state_reasons}")
 
@@ -213,7 +237,12 @@ class GradingEngine:
             score=folded.score,
             components=components,
             reasons=" | ".join(reasons_parts) if reasons_parts else "All checks passed",
-            state_diff=state_diff_result,
+            state_diff=hash_result.state_diff if hash_result is not None else None,
+            comparison_view=(
+                hash_result.comparison_view.model_dump(mode="json")
+                if hash_result is not None and hash_result.comparison_view is not None
+                else None
+            ),
             custom_checks_details=custom_checks_details,
             trace_check_results=trace_checks_result.constraints,
             trace_checks_summary=TraceChecksSummary(
@@ -275,7 +304,7 @@ class GradingEngine:
 
     def _grade_state_checks(
         self, final_env_state: dict[str, Any]
-    ) -> tuple[float | None, str, dict[str, Any] | None]:
+    ) -> tuple[float | None, str, HashGradingResult | None]:
         """Fold the configured state-check sources into one ``state_checks`` score.
 
         The two sources read two levels of ``final_env_state``: JSONPath assertions
@@ -302,7 +331,9 @@ class GradingEngine:
             hash_config=checks.hash,
             context="grading.yaml state_checks",
         )
-        hash_score, hash_reasons, diff_result, replay = self._check_state_hash(final_env_state)
+        hash_check = self._check_state_hash(final_env_state)
+        hash_result = hash_check.result
+        hash_score = hash_result.hash_score if hash_result is not None else None
         # Not called for an empty list: ``check_jsonpaths`` answers "what fraction of
         # these assertions passed?", and its honest answer over zero assertions is
         # ``1.0``. Keeping the vacuous value out of this scope is what stops it
@@ -329,18 +360,17 @@ class GradingEngine:
         inert_reason = inert_hash_weight_reason(
             hash_score=hash_score, jsonpath_score=jsonpath_score, hash_weight=hash_weight
         )
-        reasons = jsonpath_reasons + hash_reasons
+        reasons = jsonpath_reasons + list(hash_check.reasons)
+        replay = hash_result.golden_replay if hash_result is not None else None
         replay_reason = incomplete_replay_reason(replay) if replay is not None else None
         if replay_reason:
             reasons.append(replay_reason)
         if inert_reason:
             reasons.append(inert_reason)
-        return score, "; ".join(reasons), diff_result
+        return score, "; ".join(reasons), hash_result
 
-    def _check_state_hash(
-        self, final_env_state: dict[str, Any]
-    ) -> tuple[float | None, list[str], dict[str, Any] | None, GoldenReplayRecord | None]:
-        """Return the state-hash verdict, its reasons, the state diff, and the replay.
+    def _check_state_hash(self, final_env_state: dict[str, Any]) -> _StateHashCheck:
+        """Return the state-hash source's result and the reasons the fold reports for it.
 
         ``None`` is *no verdict*: hash grading is off, or it is on and the block
         declares no source to check against — which is reported rather than scored as a
@@ -356,6 +386,10 @@ class GradingEngine:
         carries, in the parenthesised shape ``state_checks.jsonpaths[*].description``
         already reads into an assertion's reason.
 
+        A declared ``comparison_view`` is applied by both sources' checks, each with an
+        initial state of its own: the golden replay mutates the state it loads, so the
+        view never reads that one. Its record is on the result, ``None`` without a view.
+
         Raises:
             UnresolvableInitialState: ``expect_initial_state`` is the source and the task
                 declares no initial state to compare against, so there is no expected
@@ -368,17 +402,17 @@ class GradingEngine:
             UnbuildableGoldenReplayWorld: ``golden_actions`` is the source and the task
                 declares no world to replay them against, so there is no expected state
                 and the trial is left unscored.
+            ComparisonViewError: the declared view cannot be computed for the expected
+                state, so there is no verdict and the trial is left with a grading error.
         """
         checks = self.config.state_checks
         hash_config = checks.hash
         if hash_config is None or not hash_config.enabled:
-            return None, [], None, None
+            return _StateHashCheck(result=None)
 
         db_state = extract_db_state(final_env_state)
         unstable_fields = load_task_unstable_fields(self.task_dir)
-        score: float | None
-        diff_result: dict[str, Any] | None = None
-        replay: GoldenReplayRecord | None = None
+        result: HashGradingResult | None = None
 
         if hash_config.expect_initial_state:
             initial_state = resolve_initial_state(
@@ -388,8 +422,9 @@ class GradingEngine:
                 ),
             )
             # check_hash owns the pipeline for both sides — pass the raw
-            # expected state and it hashes both after one pipeline run.
-            score, reason = self.state_checker.check_hash(
+            # expected state and it hashes both after one pipeline run. The view, when
+            # declared, reads a copy of the initial state no other reader holds.
+            result = self.state_checker.check_hash(
                 db_state,
                 expected_state=initial_state,
                 numeric_string_fields=checks.numeric_string_fields,
@@ -397,10 +432,16 @@ class GradingEngine:
                 auto_normalize_nullables=checks.auto_normalize_nullables,
                 compare_columns=checks.compare_columns,
                 unstable_fields=unstable_fields,
+                comparison_view=checks.comparison_view,
+                initial_state=(
+                    copy.deepcopy(initial_state) if checks.comparison_view is not None else None
+                ),
+                id_fields=checks.id_fields,
+                basis=HashComparisonBasis.DECLARED_INITIAL_STATE,
             )
-            reasons = [reason]
+            reasons = [_reported_reason(result)]
         elif not hash_config.golden_actions:
-            score, reasons = None, [_HASH_NOT_CHECKED_NO_SOURCE]
+            reasons = [_HASH_NOT_CHECKED_NO_SOURCE]
         else:
             golden_actions = hash_config.golden_actions
             refuse_unreplayable_golden_source(golden_actions, context="grading.yaml")
@@ -411,26 +452,26 @@ class GradingEngine:
                 ),
                 mcp_server=self.task_mcp_server,
             )
-            score, reason, diff_result, replay = (
-                self.state_checker.check_hash_against_golden_replay(
-                    db_state=db_state,
-                    golden_actions=golden_actions,
-                    task_dir=world.task_dir,
-                    initial_state_path=world.initial_state_path,
-                    mcp_server_path=world.mcp_server_path,
-                    task_domain=self.task_domain,
-                    numeric_string_fields=checks.numeric_string_fields,
-                    compare_columns=checks.compare_columns,
-                    auto_mask_clock_columns=checks.auto_mask_clock_columns,
-                    auto_normalize_nullables=checks.auto_normalize_nullables,
-                    unstable_fields=unstable_fields,
-                )
+            result = self.state_checker.check_hash_against_golden_replay(
+                db_state=db_state,
+                golden_actions=golden_actions,
+                task_dir=world.task_dir,
+                initial_state_path=world.initial_state_path,
+                mcp_server_path=world.mcp_server_path,
+                task_domain=self.task_domain,
+                numeric_string_fields=checks.numeric_string_fields,
+                compare_columns=checks.compare_columns,
+                auto_mask_clock_columns=checks.auto_mask_clock_columns,
+                auto_normalize_nullables=checks.auto_normalize_nullables,
+                unstable_fields=unstable_fields,
+                comparison_view=checks.comparison_view,
+                id_fields=checks.id_fields,
             )
-            reasons = [reason]
+            reasons = [_reported_reason(result)]
 
         if hash_config.description:
             reasons = [f"{reason} ({hash_config.description})" for reason in reasons]
-        return score, reasons, diff_result, replay
+        return _StateHashCheck(result=result, reasons=tuple(reasons))
 
     def _run_custom_checks(
         self,

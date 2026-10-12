@@ -9,25 +9,38 @@ Covers the two halves of the feature:
   route-resolving branches live in test_gateway_routing_applied.py. What preset
   resolution and pricing key off either way is ``ModelConfig``, never the wire
   name.
+
+It also covers ``ModelConfig.session``, whose header rides the same
+``extra_headers`` on every route, gateway or not, and is refused when another
+header source sets the same name.
 """
 
 from __future__ import annotations
 
 import os
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
+import litellm
 import pytest
+import tenacity.nap
 
 from tolokaforge.core.llm import client as client_module
 from tolokaforge.core.llm.client import LLMClient
-from tolokaforge.core.llm.providers import get_provider_binding
+from tolokaforge.core.llm.fallback_client import FallbackLLMClient
+from tolokaforge.core.llm.providers import get_provider_binding, litellm_model_id
 from tolokaforge.core.llm.proxy import (
     ProxyConfig,
     ProxyConfigError,
     resolve_proxy_config,
 )
+from tolokaforge.core.llm.session_header import (
+    SessionHeaderConflictError,
+    session_header_conflicts,
+)
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
+from tolokaforge.core.run_display_events import _NULL_EVENTS, LLMCallObservation
 from tolokaforge.secrets import DictProvider, SecretManager
 from tolokaforge.secrets import manager as secrets_manager
 
@@ -625,3 +638,340 @@ class TestTrustWildcardsFlag:
         install_secrets({"LLM_PROXY_TRUST_NAMESPACE_WILDCARDS": "true"})
         with pytest.raises(ProxyConfigError):
             resolve_proxy_config()
+
+
+SESSION_HEADER = "x-session-id"
+CANARY = "self-hosted/tolokaforge-canary"
+_ROUTING_SECRETS = {
+    "OPENAI_API_KEY": "sk-openai",
+    "OPENROUTER_API_KEY": "sk-or",
+    "ANTHROPIC_API_KEY": "sk-ant",
+}
+_GATEWAY_ON = {"LLM_PROXY_BASE_URL": "https://gateway.example.com"}
+
+
+class _RecordingCompletion:
+    """Stands in for litellm ``completion``: records each call's kwargs, raises
+    a retryable error for the first ``failures`` calls, then answers."""
+
+    def __init__(self, failures: int = 0) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._failures = failures
+
+    def __call__(self, **kwargs: Any) -> litellm.ModelResponse:
+        self.calls.append(kwargs)
+        if len(self.calls) <= self._failures:
+            raise RuntimeError("upstream 503")
+        return litellm.ModelResponse(
+            model=kwargs["model"],
+            choices=[
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "ok"},
+                }
+            ],
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        )
+
+    def sent(self, header: str = SESSION_HEADER) -> list[str | None]:
+        return [(call.get("extra_headers") or {}).get(header) for call in self.calls]
+
+
+def _observation(session_id: str | None) -> LLMCallObservation:
+    return LLMCallObservation(
+        events=_NULL_EVENTS, trial_id="task:0", role="agent", session_id=session_id
+    )
+
+
+def _generate(client: LLMClient, observation: LLMCallObservation | None) -> None:
+    client.generate(
+        system="s", messages=[Message(role=MessageRole.USER, content="hi")], observation=observation
+    )
+
+
+#: `(provider, name, gateway)`: every provider path that builds ``extra_headers``.
+#: ``gateway`` is ``None`` (off), ``"unreadable"`` (catalog fetch fails) or
+#: ``"resolved"`` (the catalog serves the model).
+SESSION_ROUTES = [
+    pytest.param("openai", CANARY, None, id="openai-direct"),
+    pytest.param("openrouter", "anthropic/claude-opus-4.7", None, id="openrouter-direct"),
+    pytest.param("anthropic", "claude-sonnet-4-6", None, id="plain-provider"),
+    pytest.param("openai", CANARY, "unreadable", id="openai-gateway-unreadable"),
+    pytest.param(
+        "openrouter", "anthropic/claude-opus-4.7", "unreadable", id="openrouter-gateway-unreadable"
+    ),
+    pytest.param("openai", CANARY, "resolved", id="openai-gateway-route"),
+    pytest.param(
+        "openrouter", "anthropic/claude-opus-4.7", "resolved", id="openrouter-gateway-route"
+    ),
+]
+
+
+class TestSessionHeader:
+    """``ModelConfig.session`` puts one conversation value on every request of a call."""
+
+    @pytest.fixture
+    def completion(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[_RecordingCompletion]:
+        recorder = _RecordingCompletion()
+        # client.py imports the name, so only its binding is live.
+        monkeypatch.setattr(client_module, "completion", recorder)
+        yield recorder
+
+    def _client(
+        self,
+        install_secrets: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        name: str,
+        gateway: str | None,
+        *,
+        session: dict[str, str] | None,
+    ) -> LLMClient:
+        secrets = dict(_ROUTING_SECRETS)
+        if gateway is not None:
+            secrets.update(_GATEWAY_ON)
+        if gateway == "resolved":
+            served = frozenset({litellm_model_id(provider, name)})
+            monkeypatch.setattr(client_module, "fetch_gateway_catalog", lambda *_a, **_k: served)
+        install_secrets(secrets)
+        client = LLMClient(ModelConfig(provider=provider, name=name, session=session))
+        assert (client._proxy is not None) == (gateway is not None)
+        assert (client._gateway_route is not None) == (gateway == "resolved")
+        client._retry_sleep = lambda _s: None
+        return client
+
+    @pytest.mark.parametrize("provider, name, gateway", SESSION_ROUTES)
+    def test_the_observation_id_reaches_every_route(
+        self, install_secrets, monkeypatch, completion, provider, name, gateway
+    ) -> None:
+        client = self._client(
+            install_secrets,
+            monkeypatch,
+            provider,
+            name,
+            gateway,
+            session={"header": SESSION_HEADER},
+        )
+        _generate(client, _observation("trace-agent"))
+        _generate(client, _observation("trace-agent"))
+        assert completion.sent() == ["trace-agent", "trace-agent"]
+
+    @pytest.mark.parametrize("provider, name, gateway", SESSION_ROUTES)
+    def test_no_session_block_sends_no_header_even_with_an_id(
+        self, install_secrets, monkeypatch, completion, provider, name, gateway
+    ) -> None:
+        client = self._client(install_secrets, monkeypatch, provider, name, gateway, session=None)
+        _generate(client, _observation("trace-agent"))
+        assert completion.sent() == [None]
+        assert "trace-agent" not in str(completion.calls[0])
+
+    @pytest.mark.parametrize(
+        "observation", [None, _observation(None)], ids=["no-observation", "no-session-id"]
+    )
+    def test_a_call_without_identity_is_its_own_conversation(
+        self, install_secrets, monkeypatch, completion, observation
+    ) -> None:
+        client = self._client(
+            install_secrets,
+            monkeypatch,
+            "openai",
+            CANARY,
+            "unreadable",
+            session={"header": SESSION_HEADER},
+        )
+        _generate(client, observation)
+        _generate(client, observation)
+        first, second = completion.sent()
+        assert first and second and first != second
+        assert str(uuid.UUID(first)) == first
+
+    def test_one_id_across_the_outer_retry_of_a_call_without_identity(
+        self, install_secrets, monkeypatch
+    ) -> None:
+        """The fault is raised where tenacity sees it; a 5xx on the wire would be
+        re-sent inside the OpenAI SDK and never reach the outer retry."""
+        recorder = _RecordingCompletion(failures=1)
+        monkeypatch.setattr(client_module, "completion", recorder)
+        client = self._client(
+            install_secrets,
+            monkeypatch,
+            "openai",
+            CANARY,
+            "unreadable",
+            session={"header": SESSION_HEADER},
+        )
+        sleeps: list[float] = []
+        client._retry_sleep = sleeps.append
+
+        _generate(client, None)
+
+        assert len(sleeps) == 1
+        first, second = recorder.sent()
+        assert first is not None and first == second
+
+    def test_the_observation_id_wins_over_a_stale_global_openai_header(
+        self, install_secrets, monkeypatch, completion
+    ) -> None:
+        """The OpenRouter defaults are seeded from ``litellm.openai_headers``, whose
+        keys no construction-time refusal sees."""
+        monkeypatch.setattr(litellm, "openai_headers", {SESSION_HEADER: "stale"}, raising=False)
+        client = self._client(
+            install_secrets,
+            monkeypatch,
+            "openrouter",
+            "anthropic/claude-opus-4.7",
+            None,
+            session={"header": SESSION_HEADER},
+        )
+        _generate(client, _observation("trace-agent"))
+        assert completion.sent() == ["trace-agent"]
+
+    def test_the_session_header_stays_off_litellms_global_headers(
+        self, install_secrets, monkeypatch, completion
+    ) -> None:
+        client = self._client(
+            install_secrets,
+            monkeypatch,
+            "openrouter",
+            "anthropic/claude-opus-4.7",
+            None,
+            session={"header": SESSION_HEADER},
+        )
+        _generate(client, _observation("trace-agent"))
+        assert SESSION_HEADER not in (litellm.openai_headers or {})
+
+    @pytest.mark.parametrize(
+        "fallback_session, expected", [({"header": SESSION_HEADER}, "trace-agent"), (None, None)]
+    )
+    def test_each_link_of_a_fallback_chain_sends_its_own_declaration(
+        self, install_secrets, monkeypatch, fallback_session, expected
+    ) -> None:
+        """One observation across a failover: a fallback that declares ``session``
+        sends the conversation's value, one that declares none sends no header."""
+        install_secrets(_ROUTING_SECRETS)
+        failing = _RecordingCompletion(failures=10**6)
+        answering = _RecordingCompletion()
+
+        def by_model(**kwargs: Any) -> litellm.ModelResponse:
+            recorder = failing if kwargs["model"] == "openai/primary" else answering
+            return recorder(**kwargs)
+
+        monkeypatch.setattr(client_module, "completion", by_model)
+        # Both links bind their outer-retry sleep at construction; the fallback's
+        # is built inside the chain on failover.
+        monkeypatch.setattr(tenacity.nap, "sleep", lambda _s: None)
+        chain = FallbackLLMClient(
+            primary=ModelConfig(
+                provider="openai", name="primary", session={"header": SESSION_HEADER}
+            ),
+            fallbacks=[ModelConfig(provider="openai", name="hosted", session=fallback_session)],
+        )
+
+        _generate(chain, _observation("trace-agent"))
+
+        assert chain.cursor == 1
+        assert failing.sent() == ["trace-agent"] * 5
+        assert answering.sent() == [expected]
+
+
+class TestSessionHeaderConflicts:
+    """A session header another header source also sets is refused at construction."""
+
+    @pytest.mark.parametrize(
+        "provider, session_header, gateway_env, source",
+        [
+            pytest.param(
+                "openai",
+                "X-Team-Id",
+                {**_GATEWAY_ON, "LLM_PROXY_HEADERS": '{"x-team-id": "research"}'},
+                "LLM_PROXY_HEADERS",
+                id="static-gateway-header",
+            ),
+            pytest.param(
+                "openrouter",
+                "x-request-id",
+                {**_GATEWAY_ON, "LLM_PROXY_REQUEST_ID_HEADER": "X-Request-Id"},
+                "LLM_PROXY_REQUEST_ID_HEADER",
+                id="gateway-request-id",
+            ),
+            pytest.param(
+                "openrouter",
+                "x-title",
+                {},
+                "the engine's OpenRouter default headers",
+                id="openrouter-default",
+            ),
+            pytest.param(
+                "OpenRouter",
+                "x-title",
+                {},
+                "the engine's OpenRouter default headers",
+                id="openrouter-default-mixed-case-provider",
+            ),
+        ],
+    )
+    def test_each_source_is_refused_case_insensitively(
+        self, install_secrets, provider, session_header, gateway_env, source
+    ) -> None:
+        install_secrets({**_ROUTING_SECRETS, **gateway_env})
+        with pytest.raises(SessionHeaderConflictError) as refused:
+            LLMClient(
+                ModelConfig(provider=provider, name=CANARY, session={"header": session_header})
+            )
+        assert (refused.value.path, refused.value.header, refused.value.source) == (
+            "session.header",
+            session_header,
+            source,
+        )
+        assert source in str(refused.value)
+
+    def test_gateway_headers_do_not_bind_a_provider_the_gateway_skips(
+        self, install_secrets
+    ) -> None:
+        install_secrets(
+            {
+                **_ROUTING_SECRETS,
+                **_GATEWAY_ON,
+                "LLM_PROXY_HEADERS": '{"x-team-id": "research"}',
+                "LLM_PROXY_REQUEST_ID_HEADER": SESSION_HEADER,
+            }
+        )
+        client = LLMClient(
+            ModelConfig(
+                provider="anthropic", name="claude-sonnet-4-6", session={"header": SESSION_HEADER}
+            )
+        )
+        assert client._proxy is None
+
+    def test_openrouter_defaults_do_not_bind_another_provider(self, install_secrets) -> None:
+        install_secrets(_ROUTING_SECRETS)
+        LLMClient(ModelConfig(provider="openai", name=CANARY, session={"header": "X-Title"}))
+
+    def test_the_sweep_names_a_conflict_that_sits_only_on_a_fallback(self, install_secrets) -> None:
+        install_secrets(
+            {
+                **_ROUTING_SECRETS,
+                **_GATEWAY_ON,
+                "LLM_PROXY_REQUEST_ID_HEADER": SESSION_HEADER,
+            }
+        )
+        models = {
+            "agent": ModelConfig(
+                provider="anthropic",
+                name="claude-sonnet-4-6",
+                session={"header": SESSION_HEADER},
+                fallbacks=[
+                    ModelConfig(provider="openai", name=CANARY, session={"header": SESSION_HEADER})
+                ],
+            ),
+            "user": ModelConfig(provider="openai", name=CANARY),
+        }
+        conflicts = session_header_conflicts(models)
+        assert [(path, err.path, err.source) for path, err in conflicts] == [
+            (
+                "models.agent.fallbacks[0]",
+                "models.agent.fallbacks[0].session.header",
+                "LLM_PROXY_REQUEST_ID_HEADER",
+            )
+        ]

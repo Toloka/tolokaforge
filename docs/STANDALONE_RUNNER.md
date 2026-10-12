@@ -140,7 +140,7 @@ committed "service is up" signal.
 |---|---|---|---|
 | `TOLOKAFORGE_SECRETS_JSON` | no | unset | JSON credential map. When set, it bootstraps the `SecretManager` singleton at container start; when unset, the manager lazy-inits from the `EnvProvider` / `.env` on first secret read. |
 | `DB_SERVICE_URL` | no | `http://localhost:8000` | URL of the db-service. A wrong or unreachable URL fails loud on first call. |
-| `RAG_SERVICE_URL` | no | *(none — honest absence)* | URL of the rag-service. Present iff a rag-service is running; unset means the runner builds no RAG client and offers no `search_kb` tool. |
+| `RAG_SERVICE_URL` | no | *(none — honest absence)* | URL of the rag-service. Present iff a rag-service is running; unset means the runner reaches no rag-service and refuses to register a trial whose search backend declares the `rag_service` stack service. |
 | `TYPESENSE_HOST` | no | *(none — honest absence)* | Host the TypeSense server answers on, as reachable from this container. Present iff the run configured a TypeSense plane; unset means the runner falls back to the connection details its task descriptions carry. |
 | `TYPESENSE_PORT` | no | *(none — honest absence)* | Port paired with `TYPESENSE_HOST`. Set together with it — a container given one without the other is a half-configured stack, and the runner refuses rather than falling back. |
 

@@ -7,6 +7,7 @@ base — plus the rate-limit probe budget invariant.
 """
 
 import warnings
+from collections.abc import Iterator, Mapping
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
@@ -29,6 +30,7 @@ from tolokaforge.core.run_display_events import (
 )
 
 __all__ = [
+    "USER_TEMPERATURE_IGNORED",
     "BundleStoreBackend",
     "ComputeConfig",
     "DOCKER_RUNTIME_ALIAS_TARGET",
@@ -561,6 +563,18 @@ class OrchestratorConfig(BaseModel):
     pack but one, so these are the values most trials run at. The canonical
     home is ``task_defaults``; a ``DeprecationWarning`` fires when this
     field is explicitly set."""
+
+    agent_loop: str = "engine-loop"
+    """Name of the in-process loop that drives the agent's turns.
+
+    Resolved against the ``tolokaforge.agent_loops`` entry-point group and
+    threaded into the trial runner, which builds the loop from the trial's own
+    dependencies. ``engine-loop`` is the built-in tool-calling loop; a
+    downstream package registers an alternative shape (a terminal-oriented
+    loop, a deep-research loop) under the same group and selects it here
+    without a framework PR. A name with no registration is refused at
+    run-start with the known names listed.
+    """
 
     runtime: str | None = None
     """Deprecated plan-shape coercion knob.
@@ -1243,6 +1257,45 @@ def require_user_simulator_config(user_config: ModelConfig | None) -> ModelConfi
         "in. Example: `models: {user: {provider: openrouter, "
         "name: openai/gpt-5}}`."
     )
+
+
+USER_TEMPERATURE_IGNORED = (
+    "models.user.temperature is not read: the built-in user simulator samples at its own "
+    "temperature (0.2), and a simulator registered under actors.user.simulator at what its "
+    "simulator_config says. Remove the key."
+)
+"""Why an explicit ``models.user.temperature`` is warned about rather than honoured.
+
+The simulator has sent 0.2 in the key's place for as long as the key has existed,
+and the run configs that set it — most of them at ``0.0`` — rely on what they get;
+honouring the key now would silently change every one of those runs.
+"""
+
+
+def sets_user_temperature(models: Mapping[str, ModelConfig]) -> bool:
+    """Whether the run's ``models.user`` declares ``temperature`` explicitly.
+
+    Read off ``model_fields_set`` rather than the value, so a declared ``0.0`` or
+    ``null`` counts: neither reaches the simulator either.
+    """
+    user = models.get("user")
+    return user is not None and "temperature" in user.model_fields_set
+
+
+def iter_model_configs(models: Mapping[str, ModelConfig]) -> Iterator[tuple[str, ModelConfig]]:
+    """Every model config the run can build a client for, with its config path.
+
+    Yields ``("models.<role>", cfg)`` for each role in mapping order, each
+    followed by its ``fallbacks`` as ``"<path>.fallbacks[<i>]"``, recursively.
+    """
+    for role, cfg in models.items():
+        yield from _iter_with_fallbacks(f"models.{role}", cfg)
+
+
+def _iter_with_fallbacks(path: str, cfg: ModelConfig) -> Iterator[tuple[str, ModelConfig]]:
+    yield path, cfg
+    for index, fallback in enumerate(cfg.fallbacks):
+        yield from _iter_with_fallbacks(f"{path}.fallbacks[{index}]", fallback)
 
 
 class RunConfig(BaseModel):

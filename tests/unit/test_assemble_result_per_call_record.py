@@ -6,7 +6,8 @@ Pins the contract that every ``GenerationResult`` carries exactly one
 ``cost_usd``:
 
 * ``"litellm"`` — populated from ``response._hidden_params['response_cost']``
-  or :func:`litellm.completion_cost` (provider-authoritative, cache-aware).
+  or :func:`litellm.completion_cost` (cache-aware: a charge the response
+  states, else litellm's own price map).
 * ``"local"`` — populated from the bundled :data:`MODEL_PRICING` table
   when both litellm paths fail.
 * ``"unknown"`` — neither could price; ``cost_usd is None``.

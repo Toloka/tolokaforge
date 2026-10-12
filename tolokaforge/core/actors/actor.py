@@ -1,8 +1,8 @@
 """Actor Protocol — behavioural contract for per-turn message producers.
 
 Formalises the ``reply(context, *, observation) -> GenerationResult`` shape
-that :class:`~tolokaforge.core.llm.client.UserSimulator` has satisfied
-implicitly since it was written (``UserSimulator.reply`` at
+that :class:`~tolokaforge.core.llm.client.BuiltinUserSimulator` has satisfied
+implicitly since it was written (``BuiltinUserSimulator.reply`` at
 ``tolokaforge/core/llm/client.py:2137-2155``).
 
 The Protocol follows the ADR-0026 *Service Readiness Contract* Pattern-A
@@ -18,7 +18,7 @@ The value objects on the contract are re-exported here so callers of
 :class:`Actor` do not need to reach into ``tolokaforge.core.llm.*``.
 :class:`GenerationResult` is bound lazily via :pep:`562` ``__getattr__``
 because ``tolokaforge.core.llm.client`` imports :class:`Actor` for its
-:class:`~tolokaforge.core.llm.client.UserSimulator` base — an eager
+:class:`~tolokaforge.core.llm.client.BuiltinUserSimulator` base — an eager
 top-level import would loop.
 """
 

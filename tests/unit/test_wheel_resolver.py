@@ -5,9 +5,11 @@ All tests are synthetic — no Docker daemon, no network, no real wheel builds.
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import textwrap
+import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +24,7 @@ from tolokaforge.docker.wheel_resolver import (
     WheelArtifact,
     WheelProvider,
     WheelResolver,
+    _EngineSourceSearch,
     _hash_file,
     _is_engine_pyproject,
     _looks_like_sha,
@@ -125,6 +128,17 @@ class TestPyprojectHelpers:
     def test_version_missing(self, tmp_path: Path):
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
         assert _read_pyproject_version(tmp_path) is None
+
+    def test_commented_project_table_is_the_engine(self, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text(
+            textwrap.dedent("""\
+                [project]  # distribution metadata
+                name = "tolokaforge"  # the engine
+                version = "9.9.9"
+            """),
+        )
+        assert _is_engine_pyproject(tmp_path / "pyproject.toml")
+        assert _read_pyproject_version(tmp_path) == "9.9.9"
 
 
 # ===================================================================
@@ -272,6 +286,35 @@ class TestLocalSourceWheelProvider:
         assert art1 is not None
         assert art2 is not None
         assert art1.content_hash == art2.content_hash
+
+    def test_malformed_pyproject_is_not_the_engine(
+        self, tmp_path: Path, cache_dir: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """An unparsable ancestor pyproject is skipped, but named in the log and last_failure."""
+        checkout = tmp_path / "checkout"
+        fake_module = checkout / "tolokaforge" / "docker" / "wh.py"
+        fake_module.parent.mkdir(parents=True)
+        fake_module.touch()
+        pyproject = checkout / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "tolokaforge\nversion = 1\n')
+        with pytest.raises(tomllib.TOMLDecodeError) as parse_error:
+            tomllib.loads(pyproject.read_text())
+        expected = f"{pyproject}: {parse_error.value}"
+
+        provider = LocalSourceWheelProvider()
+        with (
+            caplog.at_level(logging.WARNING, logger="tolokaforge.docker.wheel_resolver"),
+            patch("tolokaforge.docker.wheel_resolver.__file__", str(fake_module)),
+        ):
+            assert provider.provide(cache_dir) is None
+
+        assert "no engine source tree" in provider.last_failure
+        assert f"skipped unparsable {expected}" in provider.last_failure
+        assert any(
+            str(pyproject) in record.getMessage() and str(parse_error.value) in record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        )
 
     def test_no_source_yields_none(self, cache_dir: Path):
         """When no source checkout is found, return None."""
@@ -669,7 +712,7 @@ class TestGitInstallRelocatedCacheResolution:
             ),
             patch(
                 "tolokaforge.docker.wheel_resolver._find_engine_source_root",
-                return_value=None,
+                return_value=_EngineSourceSearch(root=None),
             ),
             patch(
                 "tolokaforge.docker.wheel_resolver._read_direct_url",
@@ -1152,6 +1195,40 @@ class TestReinstallWheelProvider:
             )
         assert not ok
         assert "git not on PATH" in err
+
+    def test_materialize_git_skips_lfs_and_filters_blobs(self, cache_dir: Path, monkeypatch):
+        """Every git subprocess carries GIT_LFS_SKIP_SMUDGE=1; each clone filters blobs.
+
+        Covers both ref shapes: a hex SHA (full clone + explicit checkout)
+        and a tag/branch (shallow clone).
+        """
+        calls: list[tuple[list[str], dict[str, str] | None]] = []
+
+        def fake_run(argv, *, timeout=300, env=None):
+            calls.append((argv, env))
+            return True, ""
+
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver.shutil.which",
+            lambda name: f"/usr/bin/{name}",
+        )
+        monkeypatch.setattr("tolokaforge.docker.wheel_resolver._run", fake_run)
+
+        for ref in ("a" * 40, "v1.2.3"):
+            calls.clear()
+            ok, err = ReinstallWheelProvider._materialize_git(
+                "https://example.com/repo.git", ref, cache_dir
+            )
+            assert ok, err
+            git_calls = [(argv, env) for argv, env in calls if argv[0] == "git"]
+            assert git_calls, f"no git subprocess ran for ref {ref!r}"
+            for _argv, env in git_calls:
+                assert env is not None
+                assert env["GIT_LFS_SKIP_SMUDGE"] == "1"
+            clone_calls = [argv for argv, _ in git_calls if "clone" in argv]
+            assert clone_calls, f"no git clone ran for ref {ref!r}"
+            for argv in clone_calls:
+                assert "--filter=blob:none" in argv
 
     def test_materialize_archive_rejects_non_archive_url(self, cache_dir: Path):
         ok, err = ReinstallWheelProvider._materialize_archive(

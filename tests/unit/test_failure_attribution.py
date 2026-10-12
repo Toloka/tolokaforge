@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -52,57 +52,77 @@ _UNGRADEABLE = TrialOutcomeClass.UNGRADEABLE
 # prevent.
 _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeClass, bool], ...] = (
     (TrialStatus.COMPLETED, TerminationReason.AGENT_DONE, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.AGENT_SUBMITTED, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.USER_STOP, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.STUCK_DETECTED, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.MAX_TURNS, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.MAX_STEPS, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.TOO_MANY_ERRORS, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.USER_TOOL_LOOP_LIMIT, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.TIMEOUT, _MEASURED, True),
     (TrialStatus.COMPLETED, TerminationReason.ERROR, _HARNESS, True),
     (TrialStatus.COMPLETED, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.COMPLETED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.COMPLETED, TerminationReason.EMPTY_COMPLETION, _ABORT, False),
+    (TrialStatus.COMPLETED, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.COMPLETED, None, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.AGENT_DONE, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.AGENT_SUBMITTED, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.USER_STOP, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.STUCK_DETECTED, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.MAX_TURNS, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.MAX_STEPS, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.TOO_MANY_ERRORS, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.USER_TOOL_LOOP_LIMIT, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.TIMEOUT, _MEASURED, True),
     (TrialStatus.FAILED, TerminationReason.ERROR, _HARNESS, True),
     (TrialStatus.FAILED, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.FAILED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, _ABORT, False),
+    (TrialStatus.FAILED, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.FAILED, None, _HARNESS, False),
     (TrialStatus.TIMEOUT, TerminationReason.AGENT_DONE, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.AGENT_SUBMITTED, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.USER_STOP, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.STUCK_DETECTED, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.MAX_TURNS, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.MAX_STEPS, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.TOO_MANY_ERRORS, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.USER_TOOL_LOOP_LIMIT, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.TIMEOUT, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.ERROR, _HARNESS, True),
     (TrialStatus.TIMEOUT, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.EMPTY_COMPLETION, _ABORT, True),
+    (TrialStatus.TIMEOUT, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.TIMEOUT, TerminationReason.TRIAL_LOST, _HARNESS, True),
     (TrialStatus.TIMEOUT, None, _HARNESS, True),
     (TrialStatus.ERROR, TerminationReason.AGENT_DONE, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.AGENT_SUBMITTED, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.USER_STOP, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.STUCK_DETECTED, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.MAX_TURNS, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.MAX_STEPS, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.TOO_MANY_ERRORS, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.USER_TOOL_LOOP_LIMIT, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.TIMEOUT, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.ERROR, _HARNESS, True),
     (TrialStatus.ERROR, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.EMPTY_COMPLETION, _ABORT, True),
+    (TrialStatus.ERROR, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.ERROR, TerminationReason.TRIAL_LOST, _HARNESS, True),
@@ -190,7 +210,7 @@ class TestOutcomeClassificationCrossProduct:
             for ungradeable in (False, True)
         }
         assert cells == expected
-        assert len(_OUTCOME_CELLS) == len(expected) == 112
+        assert len(_OUTCOME_CELLS) == len(expected) == 152
 
     def test_the_class_column_exhausts_the_declared_vocabulary(self) -> None:
         """The table is hand-maintained and the enum is declared in production,
@@ -299,8 +319,8 @@ def _base_trajectory(*, grading_error: str | None = None) -> Trajectory:
     return Trajectory(
         task_id="task_x",
         trial_index=0,
-        start_ts=datetime.now(tz=timezone.utc),
-        end_ts=datetime.now(tz=timezone.utc),
+        start_ts=datetime.now(tz=UTC),
+        end_ts=datetime.now(tz=UTC),
         messages=[Message(role=MessageRole.USER, content="hello")],
         metrics=Metrics(),
         grade=(

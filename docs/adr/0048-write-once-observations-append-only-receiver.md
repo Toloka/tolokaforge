@@ -78,7 +78,12 @@ metadata, so a human and a naive reader can tell them apart too.
 the preview root, whose parent is the **final** root's id, with the trace name, session, the tags
 known then, the native fields and the identity metadata. Every live body then goes out under its
 preview kind, under the preview root. The trace has no root row until the trial ends; a reviewer
-reaches it by its deterministic trace id or by its session.
+reaches it by its deterministic trace id or by its session. A preview generation states zero usage
+and cost, its own figures in its metadata: the receiver adds every row of a trace into the trace's
+cost, and the final row written from the bundle carries the call's, so each call counts once. A
+trace whose final rows never arrive (the trial never persisted, or every final batch was lost; a
+lost batch among several leaves the cost short)
+therefore shows 0 USD; an offline upload restores its cost only where a bundle exists.
 
 **4. The record is written once, from the bundle, root last.** At `trial_persisted`, after the
 attachment step, the bundle's projection is converted to OTLP spans by an engine-free converter in
@@ -117,14 +122,17 @@ the family in `details`. The first three count what was queued; what left is the
   policy; it does not prevent an undeletable duplicate. A failed batch is reported in the receipt,
   and the offline sibling can recover missing observations. A root the exporter posted but could
   not confirm gets **no** error root, only a counter and a warning, so a minimal error record does
-  not overwrite a complete root that may already be stored. An OpenTelemetry SDK that cannot
-  enforce the single-attempt policy fails the run instead of silently enabling retries.
+  not overwrite a complete root that may already be stored. An install that cannot build the
+  single-attempt request fails the run instead of silently enabling retries.
 - **The guarantee is about the physical request, and the stock transport repeats it in three
   places.** Turning off the exporter's own retry loop is not enough: the SDK's `_export` re-posts
-  the same bytes in an `except ConnectionError` branch (which is precisely the lost-answer case),
+  the same bytes in an `except ConnectionError` branch (its OTLP client's `_submit` from
+  OpenTelemetry 1.45; precisely the lost-answer case),
   and `requests` follows a 307 or 308 by re-sending the body while a caller-supplied session's
-  adapter may retry on its own. The exporter therefore issues the `session.post` itself, with
-  redirects refused and the endpoint's adapter mounted with no retries. Only 2xx responses count
+  adapter may retry on its own. The exporter therefore builds and issues the request itself,
+  without the SDK's exporter (the body from the SDK's public OTLP encoder, the `session.post`
+  through a session of its own), with redirects refused and the endpoint's adapter mounted with
+  no retries, so no SDK-private setting is read. Only 2xx responses count
   as successful exports; a redirect is a failed export. Tests count posts at the HTTP layer and
   use real response objects to preserve HTTP status semantics.
 - A live re-run under the same run id can overwrite existing observation ids. A new run id keeps
@@ -132,7 +140,8 @@ the family in `details`. The first three count what was queued; what left is the
   ids and its write-once mode refuses root rewrites; those are uploader policies, not storage
   limitations.
 - A trace list shows one row per finished trial and nothing for a trial in flight. Tooling that
-  polls the trace list for progress has to poll the session or the known trace id instead.
+  polls the trace list for progress has to poll the session or the known trace id instead, and
+  finds rows there only with previews on (amendment 2026-10-04).
 - Anything that reads "the current verdict" from the trace metadata is wrong on this family and has
   to read the `scope = primary` scores. This is a reporting change, not a storage change.
 - The v3 family keeps ADR-0047's path, so a deployment on either receiver runs the same build. The
@@ -141,6 +150,113 @@ the family in `details`. The first three count what was queued; what left is the
 - Two producers now share one converter module in the plugin wheel, pinned by a span-attribute
   golden on both sides. The converter may not import the engine, which is enforced by test.
 
+## Amendment 2026-10-04: previews are opt-in
+
+**Context.** The first CI round with previews on a v4 receiver (Langfuse 4.35) showed the cost of
+decision 3: a preview is an observation like any other, so the receiver's built-in dashboards
+count it. A sample of 115 traces showed every tool call twice in the Agent dashboard's call counts
+(466 rows for 233 executions), and the preview rows joined the observation counts and latency
+distributions. Usage and cost were right, since a preview states zero. A preview cannot be removed
+once its final row arrives, because a single observation cannot be deleted. Langfuse's own guidance
+for an OTLP producer on v4 is one complete span per unit of work, exported once after it ends.
+
+**Decision.** The v4 family writes no live rows unless the run asks for them:
+`LANGFUSE_TRACING_PREVIEWS=true` (`1` / `yes` / `on`), read by the plugin at run start, sends the
+preview root and the per-call previews exactly as decision 3 describes. Without it a trial is
+written once, at `trial_persisted`, as decision 4 describes, and a trial that never persists still
+gets its error root (decision 6). A v3 receiver ignores the switch, since its live rows are its
+record. The receipt's `details` entry says whether previews went out (`previews: on | off`;
+always `off` on a v3 receiver).
+
+**Consequences.** By default a trial in flight has no rows at all; it appears, complete, when it
+is persisted, which is minutes after it ends rather than after the run, and a trial that never
+persists appears at run end, as its error root. This reverses, for the default, the weighing of
+the driver "a trial in flight must stay reachable": reaching it is now opt-in, because its price
+is paid in every count-based view of the receiver. A deployment that wants to watch a long trial
+turns previews on and accepts the double counts in the receiver's own views, or reads the views
+through a filter on the `preview` metadata marker.
+
+## Amendment 2026-10-07: a refusal that comes before the body is read is posted again
+
+**Context.** A receiver may sit behind a gateway that answers a shared write limit with its own
+block page: a 403 the gateway sends without forwarding the request, in bursts that can last
+minutes while other clients spend the same limit. With one POST per batch every such refusal lost
+its batch, so spans, trial-end scores and agent transcripts went missing although the receiver
+never saw those bodies. The single attempt exists so that a body the receiver may already hold is
+never sent again; these refusals say the receiver never read the body.
+
+**Decision.** The producers keep one POST per batch, with one exception: a refusal that comes before
+the receiver reads the body is posted again, the same bytes, after a wait. By default those are a
+gateway's own 403 page (recognised by a marker in its body, `gateway_markers`, by default the Azure
+Application Gateway's, as the offline connector recognises it), 429 (a limit refuses before
+processing) and 503 (a service answers it before processing; a proxy may answer it after forwarding
+the request, and on a v4 receiver that re-send is an update with the same content). A 403 the
+receiver answers itself is JSON and is never posted again, so a key the receiver rejects fails at
+once. A lost answer, a timeout and every other status keep the single attempt: 500, 502 and 504 in
+particular can come after the receiver read and wrote the batch.
+
+The policy is one setting of the plugin, `options.langfuse.retry`, read like every other receiver
+setting and shared by the routes that write. Every retried answer follows one schedule: waits of
+1, 3, 9, 20 and 30 s, the last one repeating, for at most 6 re-sends per request (7 posts, 93 s of
+waiting, which fits inside a trial's default 120 s attachment budget), a longer `Retry-After`
+honoured up to 60 s in place of the step, and a jitter that only lengthens a wait (up to 20 %), so
+a run's parallel trials spread their next posts and a `Retry-After` never ends early.
+`docs/OBSERVABILITY.md` ("Retries") gives the reason for each default.
+
+The gateway's page does not say why it refused: a block rule of its own looks like its shared
+limit. A breaker therefore stops the waiting once two span batches in a row ran out their whole
+schedule still refused; from then on a refusal fails at once, without a wait, until a write is
+accepted again (`breaker_after`), and the waits in progress end when it opens. The trial-end
+calls obey it without counting towards it: a run's parallel trials would otherwise open it within
+one schedule of any long refusal.
+
+Every bound stays. The span export retries in its background thread and the trials never wait for
+it. A trial-end call starts no wait that would end past the trial's attachment budget. The run-end
+flush ends at `flush_timeout_s` unless the receiver refuses it with such an answer (a batch already
+waiting one out when the flush starts included); then it goes on for at most `flush_grace_s` (240 s)
+more in total, and it stops going on once a batch fails in another way or the breaker opens. A
+transcript upload waits at most one such grace in all. The receipt counts the retried requests, the
+extra posts, the requests that landed after a retry, those still refused when the policy, a
+deadline, the breaker or the run's end stopped them, the seconds waited and the times the breaker
+opened; every other counter keeps its meaning. A v3 receiver keeps the SDK's exporter, whose own
+retries cover 429, 502, 503 and 504; its trial-end calls follow the policy.
+
+The loop is written out in `retry.py` rather than built on `tenacity`, the retry library
+AGENTS.md prefers. `tenacity` would carry the loop alone: post, decide, wait, post again. The rest
+is this policy's own and would stay custom through `tenacity`'s callbacks: a wait that ends early
+when the run's end moves the deadline, the producer shuts down or the breaker opens (`tenacity`
+posts again once its `sleep` returns, so such a wait could only end by raising, to be turned back
+into the last answer), a wait budget that counts only the time spent waiting, the breaker a
+producer's routes share, the run end's view of whether the receiver is refusing, and the receipt's
+counts. The wheel also installs next to whatever engine a deployment pins and requires nothing
+from it, so `tenacity` would be a dependency of its own.
+
+**Consequences.**
+
+- A re-sent body is one the receiver did not read, so the overwrite this ADR guards against does
+  not happen on the default list, save a 503 that a proxy answers after forwarding the request,
+  which on a v4 receiver is an update with the same content. An operator may list 500, 502 or
+  504: then a body the receiver may already have read is sent again, which on a v4 receiver is an
+  update with the same content (same ids, same rows, last write wins), the trade-off the single
+  attempt avoided, now an explicit choice.
+- A refusal that outlasts the schedule still loses the batch, and the receipt counts it: a
+  gateway burst longer than about 93 s costs the batches it refuses throughout. At a trial's end
+  the whole schedule fits the default budget; a deployment that wants to ride out longer refusals
+  there raises `attach_budget_s` and `max_retries` and accepts the longer trials.
+- A gateway rule that refuses for good costs the span export two schedules in its background
+  thread before the breaker opens, and each trial end its schedule until then (the attachment
+  step's own breaker switches the step off after three trials that reached nothing). On a v3
+  receiver nothing opens the breaker, so each trial end waits out its schedule within its budget
+  until the attachment step's breaker switches the step off.
+- A v4 run's end takes at most twice `flush_timeout_s` plus `flush_grace_s` (300 s by default),
+  plus, per flush, the timeout of one request in flight, while the receiver refuses.
+  `flush_grace_s: 0` keeps it at twice `flush_timeout_s` plus those requests, and
+  `max_retries: 0` or an empty status list keeps the single attempt.
+- The run-end flush holds its bound while the background thread still exports a batch, rather
+  than waiting for the thread's whole drain. A root batch still with the exporter when the error
+  roots are decided, and not landed when the run ends, counts in `roots_unconfirmed`, like any
+  root posted and not confirmed.
+
 ## Links
 
 - Related ADRs: [ADR-0047](0047-live-tracing-trial-observer-otel.md) (the seam, the projection, the
@@ -148,7 +264,10 @@ the family in `details`. The first three count what was queued; what left is the
 - Related code: `tolokaforge/observability/ids.py` (the preview kinds),
   `tolokaforge/observability/factory.py` (the plugin API version),
   `tolokaforge_langfuse/src/tolokaforge_langfuse/otlp_spans.py` (the engine-free converter),
-  `otel.py` (the preview rows, the single write, the error roots), `gradings.py` (the score
-  timestamps and the primary pointer), `docs/OBSERVABILITY.md`
+  `otel.py` (the preview rows, the single write, the error roots, the run-end flush), `gradings.py`
+  (the score timestamps and the primary pointer), `retry.py` and `otlp_transport.py` (the retry
+  policy and the single-attempt exporter that takes it), `docs/OBSERVABILITY.md`
 - External references: Langfuse v4 write modes and the OpenTelemetry ingestion attribute
-  conventions
+  conventions;
+  [Migrate custom ingestion to Langfuse v4](https://langfuse.com/integrations/native/opentelemetry/migration-to-v4)
+  (one complete span per unit of work, exported once)

@@ -8,6 +8,7 @@ Utility scripts for developing with Tolokaforge.
     ├── with_profile.sh                        # Load profile (no .env) + run a command
     ├── generate_task_pack_compose_override.py  # Generate Docker compose overrides for task packs
     ├── analysis/
+    │   ├── audit_preset_fallthrough.py         # Read-only audit: which models resolve to a shared preset that carries none of the budget knobs a sibling carries
     │   └── calibrate_rubric.sh                 # Calibrate a rubric judge against golden fixtures + apply the trust gate
     ├── docker/
     │   └── prune-docker.sh                     # Reclaim Docker disk between many-trial runs (keeps layers held by running containers)
@@ -36,6 +37,32 @@ Utility scripts for developing with Tolokaforge.
 
     # Run the smoke test suite
     scripts/tests/smoke.sh
+
+    # Audit model → preset resolution before a multi-model sweep
+    uv run python scripts/analysis/audit_preset_fallthrough.py
+    uv run python scripts/analysis/audit_preset_fallthrough.py moonshotai/kimi-k2.6 moonshotai/kimi-k3
+    uv run python scripts/analysis/audit_preset_fallthrough.py --json --fail-on-suspect
+
+## Preset fall-through audit
+
+`scripts/analysis/audit_preset_fallthrough.py` reports, per model slug, the
+preset `tolokaforge.core.llm.presets` resolves it to, which budget knobs
+(`default_max_turns`, `empty_retry_count`, `max_context_tokens` +
+`context_watermark`, `tool_output_max_chars`, `message_assembly_policy`,
+`parser_error_retry_count`, `output_length_retry_count`) that preset declares,
+and the model's OpenRouter context window. It flags two structural hazards:
+
+- **SUSPECT** — the slug resolves to a preset whose match globs span more than
+  one vendor, while a same-family slug resolves to a different preset carrying
+  budget knobs this one does not.
+- **CONTEXT CEILING** — a preset's `max_context_tokens + context_watermark`
+  sits above (overshoot) or far below (undershoot) the smallest real window
+  among the slugs its globs match.
+
+With no arguments it audits every concrete slug named by a preset match glob
+plus the current sweep lineup. `--offline` skips the OpenRouter fetch and
+falls back to the cache at `.cache/openrouter_models.json`; the preset half of
+the audit runs either way. The script writes nothing outside that cache.
 
 ## Formatting and linting
 

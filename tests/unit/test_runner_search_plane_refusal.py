@@ -347,7 +347,7 @@ def test_a_rag_corpus_task_reaches_the_rag_plane_not_the_typesense_one(
     response = _register(service, mock_grpc_context, "rag_only:0", _task(search, GOOD_CORPUS))
 
     assert response.success is False
-    assert "RAG service not configured" in response.error
+    assert "stack service 'rag_service' is not reachable" in response.error
     assert registry.calls == []
 
 
@@ -368,7 +368,7 @@ def test_a_broken_typesense_plane_is_reported_before_the_missing_rag_service(
 
     assert response.success is False
     assert "unreachable or refused the collection" in response.error
-    assert "RAG service not configured" not in response.error
+    assert "stack service 'rag_service' is not reachable" not in response.error
 
 
 @pytest.mark.parametrize(

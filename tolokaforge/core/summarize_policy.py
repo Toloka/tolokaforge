@@ -90,7 +90,8 @@ class SummarizePolicy(Protocol):
 
     The loop passes the effective system prompt and the recorded messages at
     the summarize point (the same view the grader sees). The returned string
-    lands on the wire as the second entry after ``messages[0]``.
+    lands on the wire right after the user's first message, which the wire keeps
+    together with the agent's opening line ahead of it, if the task declared one.
     """
 
     def summarize(self, system_prompt: str, messages: list[Message]) -> str: ...

@@ -208,6 +208,7 @@ def test_orchestrator_persists_fingerprint_matching_seam(flat_pack: Path, tmp_pa
     adapter_stub.get_task_dir.side_effect = lambda _tid: task_dir
     adapter_stub.docker_stack_requirements.return_value = None
     adapter_stub.trial_grader_name = "runner_rpc"
+    adapter_stub.requires_judge_model.side_effect = adapter.requires_judge_model
     # A stub adapter reports nothing; left unstubbed it would hand the writer
     # a `MagicMock` that `json.dumps` cannot serialise.
     adapter_stub.fingerprint.return_value = None

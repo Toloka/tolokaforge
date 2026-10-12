@@ -41,6 +41,10 @@ def _build_adapter(
         corpus_dir.mkdir(parents=True)
         (corpus_dir / "policies.md").write_text(f"# Policies\n\n{_PLANTED_FACT}\n")
         (corpus_dir / "faq.txt").write_text("Q: What is the return window?\n")
+        (corpus_dir / "glossary.json").write_text(
+            '{"id": "glossary", "title": "Glossary", "content": "RX: a refund code"}'
+        )
+        (corpus_dir / "ignored.yaml").write_text("not: a document\n")
     task_yaml: dict = {
         "task_id": "rag_task",
         "name": "rag task",
@@ -89,6 +93,8 @@ class TestRagSearchEnabled:
         # back to their on-disk content.
         assert "rag/corpus/policies.md" in td.tool_artifacts
         assert "rag/corpus/faq.txt" in td.tool_artifacts
+        assert "rag/corpus/glossary.json" in td.tool_artifacts, "JSON documents travel too"
+        assert "rag/corpus/ignored.yaml" not in td.tool_artifacts
         decoded = base64.b64decode(td.tool_artifacts["rag/corpus/policies.md"]).decode()
         assert _PLANTED_FACT in decoded
 

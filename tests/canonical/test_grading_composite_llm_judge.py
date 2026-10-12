@@ -161,9 +161,6 @@ def _drive_grade_llm_judge(
     llm_messages: list[dict[str, Any]],
     state_diff: str | None,
     script: list[Any],
-    disable_knowledge_search: bool = False,
-    custom_system_prompt: str | None = None,
-    include_agent_system_prompt: bool = True,
 ):
     """Drive :func:`composite.grade_llm_judge` through the live
     ``load_judge_kind("single_shot_rubric")`` path with a scripted
@@ -175,9 +172,6 @@ def _drive_grade_llm_judge(
         substrate=substrate,
         judge_kind=kind,
         judge_model_provider=provider,
-        disable_knowledge_search=disable_knowledge_search,
-        custom_system_prompt=custom_system_prompt,
-        include_agent_system_prompt=include_agent_system_prompt,
         kind_config=None,
         llm_messages=llm_messages,
         judge_model_config=_JUDGE_MODEL,

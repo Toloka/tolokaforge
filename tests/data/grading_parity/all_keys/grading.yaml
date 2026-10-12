@@ -57,6 +57,7 @@ state_checks:
   # tests/data/tasks/db_probe_grading, and manifest totality is a union over the two.
 
 transcript_rules:
+  regex_engine: backtracking
   must_contain:
     - "Widget W1 closed"
   disallow_regex:
@@ -85,6 +86,7 @@ transcript_rules:
 # each of them: a key the manifest claims and this file omits is a translation
 # nothing exercises.
 trace_checks:
+  regex_engine: backtracking
   constraints:
     - id: wrote_the_file_before_closing
       description: the report is written before widget W1 is closed

@@ -117,6 +117,10 @@ def _grade_from_wire(grade: grader_pb2.Grade) -> dict:
         "score": grade.score,
         "reasons": grade.reasons,
         "state_diff_json": grade.state_diff_json if grade.state_diff_json else None,
+        "comparison_view_json": grade.comparison_view_json if grade.comparison_view_json else None,
+        "state_snapshots_json": (
+            grade.state_snapshots_json if grade.HasField("state_snapshots_json") else None
+        ),
         "components": (
             _components_from_wire(grade.components) if grade.HasField("components") else {}
         ),
@@ -202,7 +206,6 @@ def _judge_report_from_wire(report: grader_pb2.JudgeReport) -> dict:
         "state_diff_text": report.state_diff_text,
         "read_tools_offered": list(report.read_tools_offered),
         "custom_system_prompt": report.custom_system_prompt,
-        "chunk_boundaries_json": report.chunk_boundaries_json,
     }
     if report.transcript_json:
         out["transcript_json"] = report.transcript_json
@@ -211,4 +214,7 @@ def _judge_report_from_wire(report: grader_pb2.JudgeReport) -> dict:
     # not-set-by-a-legacy-sender).
     if report.HasField("include_agent_system_prompt"):
         out["include_agent_system_prompt"] = report.include_agent_system_prompt
+    # Presence-gated too: absent means not every judge call stated a charge.
+    if report.HasField("billed_cost_usd"):
+        out["billed_cost_usd"] = report.billed_cost_usd
     return out

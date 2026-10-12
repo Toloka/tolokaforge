@@ -39,7 +39,7 @@ test-coverage:
 # =============================================================================
 
 # Directories to lint/format (contrib/ excluded - external libraries)
-LINT_DIRS = tolokaforge tests scripts tools
+LINT_DIRS = tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
 
 # Check linting (no fix) - CI ready, exits non-zero on issues
 lint:

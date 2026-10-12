@@ -15,20 +15,26 @@ from typing import TYPE_CHECKING, Any, NoReturn
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from pydantic import ValidationError
+
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters._task_loader import (
     GradingSourceKind,
     ToolActor,
     actor_tool_block,
+    declared_search_backend,
     declared_tool_names,
     enabled_tool_names,
     grading_source_under_adapter,
     replay_world_under_adapter,
+    search_declaration,
     seeded_tables_under_adapter,
     tool_inventory_under_adapter,
+    uses_search,
     validate_grading_yaml,
 )
 from tolokaforge.core.budgets import (
+    LIMIT_HIT_MARKER_FILENAME,
     BudgetHit,
     CompositeBudget,
     CostBudget,
@@ -55,7 +61,12 @@ from tolokaforge.core.failure_attribution import (
 )
 from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.llm.presets import (
+    IGNORED_SAMPLING_PARAM,
+    UNCLAIMED_ROUTE_FAMILY,
     get_overlay_path,
+    ignored_sampling_params,
+    resolve_effective_preset,
+    unclaimed_route_families,
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.metrics import (
@@ -78,16 +89,26 @@ from tolokaforge.core.models import (
     TypeSenseConfig,
     require_user_simulator_config,
 )
-from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
+from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, sets_user_temperature
+from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION, _engine_version
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
-from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
+from tolokaforge.core.output.artifacts import (
+    FileArtifactWriter,
+    TrialArtifactWriter,
+    read_report_trajectory,
+)
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.plugin_registry import (
+    RAG_SERVICE_STACK_SERVICE,
+    RegistryError,
     RuntimeBackendBuildContext,
     TrialGraderContext,
+    UnknownImplementationError,
+    load_agent_loop,
     load_conductor,
     load_runtime_backend,
     load_trial_grader,
+    load_user_simulator,
 )
 from tolokaforge.core.pricing import pricing_table_metadata, resolve_pricing
 from tolokaforge.core.pricing_freshness import compare_against_source, live_prices
@@ -100,6 +121,7 @@ from tolokaforge.core.run_display_events import (
 )
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runtime import RuntimeBackend
+from tolokaforge.core.search.stack_services import UndeclaredStackServiceError
 from tolokaforge.core.trial import (
     DEFAULT_TOOL_TIMEOUT_S,
     EnvEndpoints,
@@ -133,23 +155,27 @@ _PLAYWRIGHT_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 
 # Tools / initial-state declarations that require ``full_stack`` (mock-web
 # at port 8080 and rag-service at 8001) on top of the core db-service +
-# runner. ``browser`` and ``mobile`` reach mock-web for app/site URLs;
-# ``search_kb`` reaches rag-service. Tasks may also declare
-# ``initial_state.mock_web`` / ``initial_state.rag`` directly without
-# enabling those tools — both shapes flip the switch.
+# runner. ``browser`` and ``mobile`` reach mock-web for app/site URLs. A task
+# may also declare ``initial_state.mock_web`` directly without enabling those
+# tools. Knowledge-base search needs rag-service when the task's search backend
+# says so (ADR-0054): not by the tool's name, which a task may choose, but by
+# the ``stack_service`` its backend (``initial_state.rag.backend``, default
+# ``rag_service``) declares — for a task that searches at all, i.e. declares a
+# corpus or enables its search tool (``initial_state.rag.tool.name``, default
+# ``search_kb``).
 #
 # Routing matrix, over either actor's block:
-# +--------------------------------------+--------------+
-# | Signal in task config                | Stack        |
-# +--------------------------------------+--------------+
-# | tools.<actor>.enabled ∋ browser      | full_stack   |
-# | tools.<actor>.enabled ∋ mobile       | full_stack   |
-# | tools.<actor>.enabled ∋ search_kb    | full_stack   |
-# | initial_state.mock_web is truthy     | full_stack   |
-# | initial_state.rag is truthy          | full_stack   |
-# | otherwise                            | core_stack   |
-# +--------------------------------------+--------------+
-_FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile", "search_kb"})
+# +------------------------------------------------------+--------------+
+# | Signal in task config                                | Stack        |
+# +------------------------------------------------------+--------------+
+# | tools.<actor>.enabled ∋ browser                      | full_stack   |
+# | tools.<actor>.enabled ∋ mobile                       | full_stack   |
+# | initial_state.mock_web is truthy                     | full_stack   |
+# | the task searches, and its backend's stack_service   | full_stack   |
+# |   is rag_service (the default backend's)             |              |
+# | otherwise                                            | core_stack   |
+# +------------------------------------------------------+--------------+
+_FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 
 # Where a bridged local TypeSense server answers from inside ``runner-net``.
 # The alias is attached when the bridge connects the container to the network,
@@ -409,6 +435,8 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
     for task in tasks:
         if _FULL_STACK_TOOL_NAMES & declared_tool_names(task):
             return True
+        if _search_needs_rag_service(task):
+            return True
         initial_state = task.initial_state if task.initial_state is not None else None
         if initial_state is None:
             continue
@@ -417,14 +445,29 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
             if hasattr(initial_state, "mock_web")
             else (initial_state.get("mock_web") if isinstance(initial_state, dict) else None)
         )
-        rag = (
-            initial_state.rag
-            if hasattr(initial_state, "rag")
-            else (initial_state.get("rag") if isinstance(initial_state, dict) else None)
-        )
-        if mock_web or rag:
+        if mock_web:
             return True
     return False
+
+
+def _is_a_malformed_search_declaration(error: Exception) -> bool:
+    """Whether a task failed to load because its ``initial_state.rag`` is malformed."""
+    if not isinstance(error, ValidationError):
+        return False
+    return any(tuple(detail["loc"][:2]) == ("initial_state", "rag") for detail in error.errors())
+
+
+def _search_needs_rag_service(task: Any) -> bool:
+    """Whether the task searches with a backend that declares the rag-service stack service.
+
+    A typed ``rag: {}`` block declares no corpus, so it searches only if an actor
+    enables its search tool — as the empty dict it replaced never selected the
+    full stack on its own.
+    """
+    search = search_declaration(task)
+    if not uses_search(task, search):
+        return False
+    return declared_search_backend(search).stack_service == RAG_SERVICE_STACK_SERVICE
 
 
 def _run_needs_full_stack(tasks: list[Any], stack_requirements: Any) -> bool:
@@ -774,6 +817,7 @@ class Orchestrator:
         self.project = project
         self.tasks: list[TaskConfig] = []
         self.results: list[Trajectory] = []
+        self._previous_report_results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
         # Trial graders whose ``close()`` must fire at run teardown. Populated
@@ -961,8 +1005,29 @@ class Orchestrator:
         )
 
     @staticmethod
+    def _trial_total_spend_usd(trajectory: Trajectory) -> float:
+        """Total LLM spend for a trial across every actor role.
+
+        ``metrics.cost_usd`` already sums the in-trial actors (agent + user
+        simulator); the rubric judge runs its own LLM outside the trial loop,
+        so its cost lives on ``grade.judge_usage`` and is added here.
+        """
+        total = trajectory.metrics.cost_usd or 0.0
+        grade = trajectory.grade
+        if grade is not None and grade.judge_usage is not None:
+            total += grade.judge_usage.cost_usd
+        elif grade is None and trajectory.grading_judge_usage is not None:
+            total += trajectory.grading_judge_usage.cost_usd
+        return total
+
+    @staticmethod
     def _collect_existing_cost(output_dir: Path) -> float:
-        """Aggregate already-recorded trial cost from output artifacts."""
+        """Aggregate already-recorded cross-role trial cost from output artifacts.
+
+        Sums each trial's ``metrics.yaml`` ``cost_usd`` (agent + user simulator)
+        and its ``grade.yaml`` ``judge_usage.cost_usd``, so a resumed run seeds
+        its budget with the full cross-role spend already on disk.
+        """
         total_cost = 0.0
         trials_root = output_dir / "trials"
         if not trials_root.exists():
@@ -970,12 +1035,44 @@ class Orchestrator:
 
         import yaml
 
+        from tolokaforge.core.output_writer import GRADE_FILENAME
+
+        logger = get_logger("orchestrator")
+
+        def judge_cost(judge_usage: Any, path: Path) -> float:
+            if not isinstance(judge_usage, dict):
+                logger.warning(
+                    "Ignoring non-mapping judge usage during resume cost seed",
+                    path=str(path),
+                    judge_usage_type=type(judge_usage).__name__,
+                )
+                return 0.0
+            return float(judge_usage.get("cost_usd", 0.0) or 0.0)
+
         for metrics_path in trials_root.glob("*/*/metrics.yaml"):
             try:
                 with open(metrics_path) as f:
                     metrics = yaml.safe_load(f) or {}
                 total_cost += float(metrics.get("cost_usd", 0.0) or 0.0)
-            except Exception:
+                grade_path = metrics_path.parent / GRADE_FILENAME
+                if grade_path.exists():
+                    with open(grade_path) as f:
+                        grade = yaml.safe_load(f) or {}
+                    total_cost += judge_cost(grade.get("judge_usage") or {}, grade_path)
+                else:
+                    trajectory_path = metrics_path.parent / "trajectory.yaml"
+                    if trajectory_path.exists():
+                        with open(trajectory_path) as f:
+                            trajectory = yaml.safe_load(f) or {}
+                        total_cost += judge_cost(
+                            trajectory.get("grading_judge_usage") or {}, trajectory_path
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "Skipping unreadable trial bundle during resume cost seed",
+                    metrics_path=str(metrics_path),
+                    error=str(exc),
+                )
                 continue
         return total_cost
 
@@ -2297,6 +2394,7 @@ class Orchestrator:
                 )
 
         self._warn_on_unreliable_pricing()
+        self._refuse_an_unregistered_agent_loop()
         self._refuse_an_unreachable_harness_provider()
         self._refuse_prices_it_cannot_vouch_for()
         self._refuse_an_unenforceable_cost_limit()
@@ -2317,10 +2415,127 @@ class Orchestrator:
                         "(orchestrator.strict_task_load=true — the run refuses "
                         "to start with a silently shorter task list)"
                     ) from e
+                if _is_a_malformed_search_declaration(e):
+                    raise RuntimeError(
+                        f"Failed to load task {task_id!r}: {e} (a malformed "
+                        "initial_state.rag refuses the run whatever "
+                        "orchestrator.strict_task_load says)"
+                    ) from e
                 self.logger.error("Failed to load task", task_id=task_id, error=str(e))
         self.tasks.extend(loaded)
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
+
+        self._refuse_an_unregistered_user_simulator()
+        self._refuse_an_unregistered_search_backend()
+        if sets_user_temperature(self.config.models):
+            self.logger.warning(
+                USER_TEMPERATURE_IGNORED, declared=self.config.models["user"].temperature
+            )
+        for path, finding in unclaimed_route_families(self.config.models):
+            self.logger.warning(
+                UNCLAIMED_ROUTE_FAMILY,
+                path=f"{path}.name",
+                model_name=finding.model_name,
+                provider=finding.provider,
+                last_segment=finding.last_segment,
+                family=finding.family,
+                remedy=finding.remedy,
+            )
+        for path, sampling in ignored_sampling_params(self.config.models):
+            self.logger.warning(
+                IGNORED_SAMPLING_PARAM,
+                path=path,
+                field=sampling.field,
+                model_name=sampling.model_name,
+                provider=sampling.provider,
+                preset=sampling.preset,
+                remedy=sampling.remedy,
+            )
+
+    def _refuse_an_unregistered_user_simulator(self) -> None:
+        """Resolve every task's ``actors.user.simulator`` once, before any trial.
+
+        The simulator is actor-scoped config, so a run may mix names across its
+        tasks; each distinct name is resolved here — after tasks load, before any
+        trial — so an unregistered name (a typo, or an editable install whose
+        ``.dist-info`` predates the ``tolokaforge.user_simulators`` group) is one
+        refusal naming the known registrations and the task that asked for it,
+        not one scored failure per trial after the trial's container is already
+        up. ``agent_only`` tasks resolve no user actor, so they are skipped.
+        """
+        checked: set[str] = set()
+        for task in self.tasks:
+            if task.interaction_mode != "conversational":
+                continue
+            name = task.resolve_user_simulator().simulator
+            if name in checked:
+                continue
+            checked.add(name)
+            try:
+                load_user_simulator(name)
+            except UnknownImplementationError as exc:
+                raise RuntimeError(f"task {task.task_id!r}: actors.user.simulator: {exc}") from exc
+
+    def _refuse_an_unregistered_search_backend(self) -> None:
+        """Build every searching task's search backend once, before any trial.
+
+        ``initial_state.rag.backend`` is task-scoped, so a run may mix backends, and
+        ``backend_config`` is per task. Each task that declares a ``rag`` block or
+        enables its search tool has its backend built here from the trial-less
+        context the adapter and the stack rule build it from, so an unregistered
+        name (a typo, a package not installed, or an editable install whose
+        ``.dist-info`` predates the ``tolokaforge.search_backends`` group) — or a
+        backend refusing the task's ``backend_config``, or one declaring a stack
+        service the engine does not declare — is one refusal naming the task and the
+        backend, not a bare error out of the stack rule or one refused
+        ``RegisterTrial`` per trial. ``typesense`` is refused too: it is the plane an
+        adapter declares for a corpus it indexed host-side, not a backend a task
+        selects.
+        """
+        for task in self.tasks:
+            search = search_declaration(task)
+            if not (search.declared or uses_search(task, search)):
+                continue
+            where = (
+                "initial_state.rag.backend"
+                if search.declared
+                else f"the default search backend {search.backend!r}"
+            )
+            try:
+                declared_search_backend(search)
+            except RegistryError as exc:
+                raise RuntimeError(f"task {task.task_id!r}: {where}: {exc}") from exc
+            except UndeclaredStackServiceError as exc:
+                raise RuntimeError(
+                    f"task {task.task_id!r}: {where}: search backend {search.backend!r} needs "
+                    f"a stack service this engine does not declare: {exc}"
+                ) from exc
+            except Exception as exc:
+                raise RuntimeError(
+                    f"task {task.task_id!r}: {where}: search backend {search.backend!r} "
+                    f"refused the task's declaration: {type(exc).__name__}: {exc}"
+                ) from exc
+
+    def _refuse_an_unregistered_agent_loop(self) -> None:
+        """Resolve ``orchestrator.agent_loop`` once, before any trial work.
+
+        Every trial of the run drives the same loop, so the name is resolved
+        here rather than per trial: an unregistered name — a typo, or an
+        editable install whose ``.dist-info`` predates the
+        ``tolokaforge.agent_loops`` group — is one refusal naming the known
+        registrations, not one scored failure per trial after the trial's
+        container is already up.
+
+        :class:`~tolokaforge.core.plugin_registry.UnknownImplementationError`
+        carries the group and the known names; the config path is added here
+        because the operator types the name in ``orchestrator.agent_loop``.
+        """
+        name = self.config.orchestrator.agent_loop
+        try:
+            load_agent_loop(name)
+        except UnknownImplementationError as exc:
+            raise RuntimeError(f"orchestrator.agent_loop: {exc}") from exc
 
     def _refuse_an_unreachable_harness_provider(self) -> None:
         """Refuse before any container work when the CLI's provider is dead.
@@ -2378,11 +2593,12 @@ class Orchestrator:
         """Refuse a spend cap the run has no way to enforce.
 
         A cost limit stops the run when accumulated spend crosses it, and the
-        accumulator adds ``trajectory.metrics.cost_usd or 0.0`` — so a trial
-        the table cannot price contributes **nothing**. A run whose model has
-        no pricing row therefore charges zero against its cap for every trial,
-        and the cap can never fire however much the run actually spends. The
-        operator asked for a bound and silently does not have one.
+        accumulator adds each trial's cross-role spend (:meth:`_trial_total_spend_usd`)
+        — so a trial the table cannot price contributes **nothing** for that
+        actor. A run whose agent model has no pricing row therefore charges zero
+        against its cap for every trial, and the cap can never fire however much
+        the run actually spends. The operator asked for a bound and silently
+        does not have one.
 
         Only refused when a cap is actually set. Without one an unpriced model
         is a reporting gap, which ``_warn_on_unreliable_pricing`` already
@@ -2547,9 +2763,8 @@ class Orchestrator:
         rejected here — before any trial executes — naming the offending tasks
         (AGENTS.md rule 1).
 
-        Assumes every adapter populates ``to_task_description().grading.llm_judge``
-        for rubric tasks; only ``NativeAdapter`` implements rubric grading today,
-        so non-native adapters simply surface no offending tasks here.
+        The adapter declares whether its grader needs a judge, including
+        host-side graders whose briefs are outside the runner rubric block.
         """
         judge_config = self.config.models.get("judge")
         if judge_config is not None:
@@ -2561,13 +2776,11 @@ class Orchestrator:
                 "Ensure load_tasks() has run successfully."
             )
         offending = [
-            task.task_id
-            for task in self.tasks
-            if self.adapter.to_task_description(task.task_id).grading.llm_judge is not None
+            task.task_id for task in self.tasks if self.adapter.requires_judge_model(task.task_id)
         ]
         if offending:
             raise ValueError(
-                "These selected tasks use an llm_judge grading component but the run "
+                "These selected tasks require a judge model but the run "
                 "config has no judge model: "
                 f"{', '.join(sorted(offending))}. Add a judge model to the run config "
                 "under models.judge (provider/name), e.g. "
@@ -2664,6 +2877,8 @@ class Orchestrator:
             return f"* {task.task_id} — {exc}"
         for skip in report.unchecked:
             self._warn_grading_unchecked(task.task_id, skip.where, skip.reason)
+        for hint in report.hints:
+            self._warn_grading_hint(task.task_id, hint.where, hint.message)
         return None
 
     def _warn_grading_unchecked(self, task_id: str, where: str, reason: str) -> None:
@@ -2677,6 +2892,24 @@ class Orchestrator:
             task_id=task_id,
             where=where,
             reason=reason,
+        )
+
+    def _warn_grading_hint(self, task_id: str, where: str, hint_message: str) -> None:
+        """Report one author-facing hint the gate raised beside the task it read.
+
+        A hint is non-fatal by construction (``AuthoringReport.fatal`` never
+        returns it, at any :class:`GradingFindingSeverity`), so it never affects
+        the pre-flight return value. Surfaced through the same warning logger as
+        ``unchecked`` so a pack owner who ignores ``tolokaforge validate`` still
+        sees the nudge in the run's log. ``hint_message`` names what it holds
+        (``Finding.message``); the bare name ``message`` would collide with
+        :attr:`logging.LogRecord.message`.
+        """
+        self.logger.warning(
+            "Grading validation raised an authoring hint on this task's block",
+            task_id=task_id,
+            where=where,
+            hint_message=hint_message,
         )
 
     def _build_agent_client(self, agent_config: ModelConfig) -> LLMClient:
@@ -2753,6 +2986,19 @@ class Orchestrator:
             run_state = self.state_manager.load_state()
             if run_state:
                 self._canonicalise_resumed_run_id(run_state, run_id)
+                self._previous_report_results = []
+                for trial in run_state.get_completed_trials():
+                    if self.state_manager.is_completed(
+                        trial.task_id, trial.trial_index, run_state=run_state
+                    ):
+                        bundle = output_dir / "trials" / trial.task_id / str(trial.trial_index)
+                        previous = read_report_trajectory(bundle)
+                        if (previous.task_id, previous.trial_index) != (
+                            trial.task_id,
+                            trial.trial_index,
+                        ):
+                            raise ValueError(f"Completed trial bundle identity mismatch: {bundle}")
+                        self._previous_report_results.append(previous)
                 resume_info = self.state_manager.get_resume_info()
                 if resume_info:
                     self.logger.info(
@@ -2905,8 +3151,9 @@ class Orchestrator:
                 # so the playwright/binds plumbing above still applies.
                 if _run_needs_full_stack(self.tasks, stack_requirements):
                     self.logger.info(
-                        "Full-stack-dependent run detected (task browser/mobile/search_kb, "
-                        "initial_state.mock_web/rag, or adapter-declared rag-service need) "
+                        "Full-stack-dependent run detected (task browser/mobile, "
+                        "initial_state.mock_web, a search backend needing rag-service, or "
+                        "adapter-declared rag-service need) "
                         "- using full_stack (db-service + runner + rag-service + mock-web)",
                         adapter_needs_rag_service=bool(
                             stack_requirements is not None
@@ -3125,6 +3372,10 @@ class Orchestrator:
                     "Loaded existing run spend", total_cost_usd=round(total_cost_usd, 6)
                 )
             budget = self._resolve_budget(initial_cost_usd=total_cost_usd)
+            # This marker describes the current invocation, not an earlier
+            # budget pause. A fresh hit below writes the new value back.
+            (output_dir / LIMIT_HIT_MARKER_FILENAME).unlink(missing_ok=True)
+            self._stopped_reason = None
             budget_exhausted = False
             last_hit: BudgetHit | None = None
             if budget is not None:
@@ -3234,7 +3485,7 @@ class Orchestrator:
                             trial_result = future.result()
                             trajectory = trial_result.trajectory
                             self.results.append(trajectory)
-                            trial_cost = trajectory.metrics.cost_usd or 0.0
+                            trial_cost = self._trial_total_spend_usd(trajectory)
                             total_cost_usd += trial_cost
                             if budget is not None:
                                 budget.record_generation_cost(trial_cost)
@@ -3403,7 +3654,22 @@ class Orchestrator:
             # Publish completeness and generate reports before stamping the
             # run as completed, so ``run_state.json``'s completion gates are
             # derived from the published counts.
-            if not (budget_exhausted and remaining > 0):
+            if budget_exhausted and remaining > 0:
+                # A paused run publishes completeness and writes its reports
+                # over the attempts it ran; only the completed stamp is
+                # withheld, because resume detection reads ``status`` alone.
+                #
+                # Both halves are load-bearing. Completeness is read
+                # unconditionally by every caller of :meth:`run`, and the
+                # reports are what the completeness gates tell the operator to
+                # go and read — a gate firing against a missing
+                # ``aggregate.json``, or against a stale one left by an earlier
+                # pass over this run directory, is worse than no gate at all.
+                # Publishing first keeps the attribute bound even if report
+                # generation raises.
+                self._publish_grading_completeness()
+                self._generate_reports(output_dir)
+            else:
                 self._finalize_run_reports_and_status(output_dir)
 
             resolved_output_dir = output_dir.resolve()
@@ -3644,7 +3910,7 @@ class Orchestrator:
                     trial_result = trial_executor.execute(spec, task)
                     trajectory = trial_result.trajectory
                     self.results.append(trajectory)
-                    trial_cost = trajectory.metrics.cost_usd or 0.0
+                    trial_cost = self._trial_total_spend_usd(trajectory)
                     total_cost_usd += trial_cost
 
                     if self._is_retryable_trajectory(trajectory):
@@ -3801,6 +4067,52 @@ class Orchestrator:
                 pass_at_k_without_coverage=lost_k,
             )
 
+    def _reasoning_transport_rollup(self) -> dict[str, int]:
+        """How the run's reasoning actually travelled, counted over trials.
+
+        Two numbers, because they ask for different things. Recovery means a
+        preset reads a narrower channel than its model uses — nothing was lost,
+        and the fix is a preset edit. An unknown channel means the provider
+        billed for deliberation that arrived nowhere the engine looks, which is
+        the one remaining way to lose it and needs a live probe to resolve.
+        """
+        recovered = [t.metrics.reasoning_recovered_by_fallback for t in self.results]
+        unknown = [t.metrics.reasoning_channel_unknown for t in self.results]
+        return {
+            "recovered_by_fallback_calls": sum(recovered),
+            "recovered_by_fallback_trials": sum(1 for n in recovered if n),
+            "channel_unknown_calls": sum(unknown),
+            "channel_unknown_trials": sum(1 for n in unknown if n),
+        }
+
+    def _warn_on_reasoning_transport(self, rollup: dict[str, int]) -> None:
+        """Say once per run what the per-call logs said per model and upstream."""
+        if not (rollup["recovered_by_fallback_calls"] or rollup["channel_unknown_calls"]):
+            return
+        agent = (self.config.models or {}).get("agent")
+        model = agent.name if agent else None
+        preset = resolve_effective_preset(agent.name, agent.provider) if agent else None
+        if rollup["recovered_by_fallback_calls"]:
+            self.logger.warning(
+                "Reasoning arrived in a channel this run's preset does not read; "
+                "it was kept, but the preset is routed too narrowly",
+                model=model,
+                preset=preset,
+                calls=rollup["recovered_by_fallback_calls"],
+                trials=rollup["recovered_by_fallback_trials"],
+                probe="scripts/analysis/probe_reasoning_transport.py",
+            )
+        if rollup["channel_unknown_calls"]:
+            self.logger.warning(
+                "Billed for reasoning that arrived in no channel the engine knows; "
+                "this run lost it",
+                model=model,
+                preset=preset,
+                calls=rollup["channel_unknown_calls"],
+                trials=rollup["channel_unknown_trials"],
+                probe="scripts/analysis/probe_reasoning_transport.py",
+            )
+
     def _finalize_run_reports_and_status(self, output_dir: Path) -> None:
         """Publish completeness, generate reports, and stamp completion status.
 
@@ -3863,13 +4175,14 @@ class Orchestrator:
 
     def _generate_reports(self, output_dir: Path) -> None:
         """Generate aggregate reports with pass@k"""
-        if not self.results:
+        results = [*self._previous_report_results, *self.results]
+        if not results:
             self.logger.warning("No results to report")
             return
 
         # Group trajectories by task
         task_trajectories = {}
-        for traj in self.results:
+        for traj in results:
             if traj.task_id not in task_trajectories:
                 task_trajectories[traj.task_id] = []
             task_trajectories[traj.task_id].append(traj)
@@ -3893,7 +4206,7 @@ class Orchestrator:
         # Calculate aggregate metrics
         aggregate = calculate_aggregate_metrics(all_task_metrics, weighted=True)
         aggregate.update(
-            calculate_latency_percentiles([t.metrics.latency_total_s for t in self.results])
+            calculate_latency_percentiles([t.metrics.latency_total_s for t in results])
         )
 
         # Metadata-sliced aggregates
@@ -3934,14 +4247,19 @@ class Orchestrator:
                 group, weighted=True
             )
 
+        reasoning_transport = self._reasoning_transport_rollup()
+        self._warn_on_reasoning_transport(reasoning_transport)
+        aggregate["reasoning_transport"] = reasoning_transport
+
         aggregate["schema_version"] = AGGREGATE_SCHEMA_VERSION
+        aggregate["tolokaforge_version"] = _engine_version()
         aggregate["captured_service_logs"] = collect_service_log_captures(output_dir).model_dump(
             by_alias=True, mode="json"
         )
 
         # Deterministic failure attribution report
         failure_attributions = [
-            attribute_failure(traj) for traj in self.results if is_failed_trajectory(traj)
+            attribute_failure(traj) for traj in results if is_failed_trajectory(traj)
         ]
         failure_summary = summarize_failure_attributions(failure_attributions)
         failure_attribution_payload = {
@@ -3957,10 +4275,20 @@ class Orchestrator:
             failure_attribution_payload,
         )
 
-        # Log summary
+        # Log summary. ``measured_trials`` and the aborts that reduced it ride
+        # beside the rates they are the denominator for: a run reporting 1.0
+        # over four of five trials and a run reporting 1.0 over five of five
+        # read identically without them, and the difference is the whole
+        # question of whether the number describes the model.
         self.logger.info(
             "Aggregate Results",
             total_trials=aggregate["total_trials"],
+            measured_trials=aggregate.get("measured_trials"),
+            infrastructure_aborts={
+                reason: count
+                for reason, count in (aggregate.get("infrastructure_aborts") or {}).items()
+                if count
+            },
             total_tasks=aggregate["total_tasks"],
             success_rate_micro=aggregate.get("success_rate_micro"),
             avg_score_micro=aggregate.get("avg_score_micro"),

@@ -2,13 +2,21 @@
   "actors": {
     "user": {
       "backstory": "You are an operations manager validating that the assistant can use tools to update ticket state safely and summarize next actions. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s).",
+      "first_agent_message": null,
+      "max_tool_steps": null,
       "mode": null,
       "persona": null,
-      "scripted_flow": null
+      "scripted_flow": null,
+      "simulator": null,
+      "simulator_config": null,
+      "stop_tokens": null,
+      "stop_with_text": null,
+      "tool_turns": null
     }
   },
   "adapter_settings": null,
   "adapter_type": "native",
+  "agent_prompt_contract": null,
   "category": "tool_use",
   "description": "Use database tools to triage a high-priority support ticket, update status, and produce an operator-facing action plan.",
   "environment_manifest": null,
@@ -31,6 +39,8 @@
   },
   "initial_user_message": "Use the ticket data to move ticket `T-100` to `in_progress`, assign it to `oncall-platform`, and write a resolution plan to `submissions/tool_use_ticket_plan.md`.",
   "interaction_mode": "conversational",
+  "max_environment_errors": null,
+  "max_simulation_steps": null,
   "max_turns": null,
   "metadata": {
     "complexity": null,

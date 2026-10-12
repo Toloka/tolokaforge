@@ -42,7 +42,6 @@ from tolokaforge.runner import runner_pb2_grpc as pb2_grpc
 from tolokaforge.runner.models import RunnerInitialStateConfig, TaskDescription
 from tolokaforge.runner.service import RunnerServiceImpl, TrialContextRuntime
 from tolokaforge.runner.substrate_service import SubstrateServicer
-from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
 
 pytestmark = pytest.mark.canonical
 
@@ -55,28 +54,26 @@ class _FakeDBClient:
         return None
 
 
-class _StubBashTool(DockerComposeExecToolWrapper):
-    """Real subclass so :func:`isinstance` recognises it; scripted exec calls.
+class _StubBashTool:
+    """Plain object exposing the env-exec capability; scripted exec calls.
 
-    ``_exec_sync_with_rc`` returns entries from ``responses``; a ``responses``
-    entry may be an :class:`BaseException` to signal a raised exec call.
+    ``exec_in_env_with_exit_code`` returns entries from ``responses``; a
+    ``responses`` entry may be an :class:`BaseException` to signal a raised
+    exec call.
     """
 
     def __init__(
         self,
         responses: list[tuple[int, str] | BaseException],
     ) -> None:
-        # Skip the base ``__init__`` — its ToolSchemaModel path is out of
-        # scope here. The fields the servicer consults are set explicitly.
         self._responses = list(responses)
         self.calls: list[tuple[str, float]] = []
-        self._container = "stub_container"
-        self._trial_id = _TRIAL_ID
 
-    def _exec_sync_with_rc(  # type: ignore[override]
-        self, command: str, timeout: float
-    ) -> tuple[int, str]:
-        self.calls.append((command, timeout))
+    def exec_in_env(self, command: str, timeout_s: float) -> str:
+        return self.exec_in_env_with_exit_code(command, timeout_s)[1]
+
+    def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
+        self.calls.append((command, timeout_s))
         if not self._responses:
             raise AssertionError(f"unexpected exec call: {command!r}")
         entry = self._responses.pop(0)
@@ -161,7 +158,7 @@ def test_rc_nonzero_with_reward_is_surfaced_by_reward_not_exit_code() -> None:
     ``exit_code`` rides on the wire but ``script_exec_error`` is empty.
 
     The stub emits the ``\\n[exit code: N]\\n{stderr}`` suffix the real
-    :meth:`DockerComposeExecToolWrapper._exec_sync_with_rc` appends on
+    :meth:`DockerComposeExecToolWrapper.exec_in_env_with_exit_code` appends on
     rc≠0, so the wire stdout preserves the exit-code marker — the same
     suffix a reader would see in ``Grade.reasons`` when the kind renders
     the merged stdout in its "test output (truncated):" block."""

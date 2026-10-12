@@ -63,6 +63,7 @@ from tolokaforge_langfuse.profile import (
 from tolokaforge_langfuse.vocabulary import (
     DEFAULT_ENVIRONMENT_RULE,
     VocabularyError,
+    project_tag_value,
     validate_caller_tag,
 )
 
@@ -485,10 +486,14 @@ def resolve_plan(
     )
     expect_project = _expected_project(settings, environ)
     if expect_project and not any(tag.startswith("project:") for tag in tags):
-        # the project tag mirrors the project the credentials must open
+        # the project tag mirrors the project the credentials must open, in a tag's spelling
+        try:
+            project_tag = f"project:{project_tag_value(expect_project)}"
+        except VocabularyError as exc:
+            raise PreflightError(f"tracing tag: {exc}") from exc
         tags, origins = merge_tag_sources(
             *[(origins[t.partition(":")[0]], [t]) for t in tags],
-            ("receiver", [f"project:{expect_project}"]),
+            ("receiver", [project_tag]),
         )
     environment = resolve_environment(
         settings, profile, tags, environ, source=source, warnings=warnings

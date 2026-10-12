@@ -17,7 +17,7 @@ package's own ``pyproject.toml``:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from tolokaforge.core.models import Grade, TaskConfig, Trajectory, TrialStatus
@@ -40,7 +40,7 @@ __all__ = [
 
 #: Fixed, obviously-synthetic timestamp for both trajectory bounds — keeps the
 #: serialized ``TrialResult`` byte-stable so the golden transcript needs no mask.
-_FIXED_TS = datetime(2020, 1, 1, tzinfo=timezone.utc)
+_FIXED_TS = datetime(2020, 1, 1, tzinfo=UTC)
 
 #: Sentinel grade values no built-in grader produces — a test asserting these
 #: proves the grade came from this fixture, not a shipped grader.

@@ -24,6 +24,7 @@ from tolokaforge.adapters.base import (
     ComposeImageBuild,
     DockerStackRequirements,
 )
+from tolokaforge.core.agent_prompt_contract import CONTRACTS
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -47,6 +48,8 @@ from tolokaforge.runner.models import (
     ToolSchema,
 )
 from tolokaforge.secrets import expand_secret_refs, get_default
+from tolokaforge.tools.builtin import registry as builtin_registry
+from tolokaforge.tools.builtin.submit import SUBMIT_TOOL_NAME
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     DEFAULT_SKILL_DELIVERY,
     PROJECT_PREFIX,
@@ -76,6 +79,22 @@ from tolokaforge_coding_harnesses import (
 )
 
 _AGENT_TOOL_TIMEOUT_S = 120.0
+
+AGENT_TOOL_BASH = "bash"
+"""One ``docker exec`` per call: no cwd, environment or shell state survives it."""
+
+AGENT_TOOL_BASH_SESSION = "bash_session"
+"""One held ``docker exec`` bash session for the trial: state survives every call."""
+
+AGENT_TOOLS: tuple[str, ...] = (AGENT_TOOL_BASH, AGENT_TOOL_BASH_SESSION)
+"""Values ``adapter_params.agent_tool`` accepts, default first."""
+
+_INTERACTION_MODES: frozenset[str] = frozenset({"conversational", "agent_only"})
+"""Values ``adapter_params.interaction_mode`` accepts.
+
+Mirrors ``TaskConfig.interaction_mode`` rather than re-deriving it: a mode the
+engine grows reaches a run here by being added to this set.
+"""
 
 _REMOVED_PARAMS: dict[str, str] = {
     "runner_task_dir": (
@@ -143,6 +162,16 @@ def _resolve_provider_env(
             "interpolation. Neither survives intact."
         )
     return resolved
+
+
+def _looks_like_a_bare_name(selector: str) -> bool:
+    """Whether *selector* names a shipped contract rather than a file.
+
+    Mirrors :func:`~tolokaforge.core.agent_prompt_contract.resolve_agent_prompt_contract`,
+    which tries the registry first and falls back to a path relative to the
+    task's own directory.
+    """
+    return "/" not in selector and not selector.endswith((".md", ".txt"))
 
 
 class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
@@ -218,6 +247,33 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     f"terminal-bench adapter: agent_system_prompt_file "
                     f"{prompt_file!r} is empty — omit the key to use the default"
                 )
+        # Names a reply contract the engine resolves, rather than a prompt this
+        # adapter writes. Set, the adapter supplies no prompt of its own and the
+        # engine composes one; unset, the adapter's own terminal-bench prompt
+        # applies, which is what keeps scores comparable with the benchmark. An
+        # explicit ``agent_system_prompt_file`` wins over both, for byte-exact
+        # replay. A model preset's ``default_agent_prompt_contract`` therefore
+        # does not reach a terminal-bench task either way — changing that would
+        # change what every task in the corpus is scored against.
+        self._agent_prompt_contract: str | None = params.get("agent_prompt_contract")
+        if self._agent_prompt_contract and _looks_like_a_bare_name(self._agent_prompt_contract):
+            # Checked here rather than at the first trial's prompt build, which
+            # happens after the run has provisioned images. Only bare names:
+            # a path-shaped selector resolves against each task's own directory,
+            # which this object does not know yet.
+            if self._agent_prompt_contract not in CONTRACTS:
+                known = ", ".join(sorted(CONTRACTS))
+                raise ValueError(
+                    f"terminal-bench adapter: unknown agent_prompt_contract "
+                    f"{self._agent_prompt_contract!r} — shipped contracts are {known}, "
+                    f"or give a path to a contract file beside the tasks"
+                )
+        if self._agent_prompt_contract and self._agent_system_prompt is not None:
+            raise ValueError(
+                "terminal-bench adapter: set agent_system_prompt_file or "
+                "agent_prompt_contract, not both — the first supplies the whole "
+                "prompt verbatim and the second asks the engine to compose one"
+            )
         self.task_id_filter: list[str] | None = params.get("task_ids")
         self.network_policy = NetworkPolicy(
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
@@ -249,6 +305,52 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 "`agent_model` — the CLI selects its own default otherwise, so the run "
                 "config's model would not be the one measured."
             )
+        self.agent_tool: str = params.get("agent_tool", AGENT_TOOL_BASH)
+        if self.agent_tool not in AGENT_TOOLS:
+            raise ValueError(
+                f"terminal-bench adapter: agent_tool {self.agent_tool!r} is not one of "
+                f"{list(AGENT_TOOLS)!r}."
+            )
+        if self.agent_tool != AGENT_TOOL_BASH and self.agent_harness != ENGINE_LOOP:
+            raise ValueError(
+                f"terminal-bench adapter: agent_tool {self.agent_tool!r} requires "
+                f"agent_harness {ENGINE_LOOP!r} — under a coding-harness CLI the engine "
+                "runs no turn loop and the whole trial is one tool call, so a "
+                "session-lifetime shell has nothing to carry state across."
+            )
+        self.agent_completion_tool: bool = bool(params.get("agent_completion_tool", False))
+        if self.agent_completion_tool and self.agent_harness != ENGINE_LOOP:
+            raise ValueError(
+                f"terminal-bench adapter: agent_completion_tool requires agent_harness "
+                f"{ENGINE_LOOP!r} — a coding-harness CLI ends its own trial when the "
+                "process exits, so there is no turn loop for a completion signal to end."
+            )
+        self.interaction_mode: str = str(params.get("interaction_mode", "conversational"))
+        if self.interaction_mode not in _INTERACTION_MODES:
+            raise ValueError(
+                f"terminal-bench adapter: interaction_mode "
+                f"{self.interaction_mode!r} is not one of "
+                f"{', '.join(sorted(_INTERACTION_MODES))}."
+            )
+        if self.interaction_mode == "agent_only" and not (
+            self._agent_prompt_contract or self._agent_system_prompt
+        ):
+            raise ValueError(
+                "terminal-bench adapter: interaction_mode 'agent_only' needs a prompt "
+                "that tells the agent how the episode ends — set agent_prompt_contract "
+                "(or agent_system_prompt_file). Under this mode a turn carrying no tool "
+                "call ends the trial at whatever index it happens on, turn 1 included, "
+                "graded against an untouched container; the adapter's own default prompt "
+                "says nothing about that, so a model that opens with a plan scores zero "
+                "and the bundle looks like a completed trial."
+            )
+        if self.interaction_mode == "agent_only" and self.agent_harness != ENGINE_LOOP:
+            raise ValueError(
+                f"terminal-bench adapter: interaction_mode 'agent_only' requires "
+                f"agent_harness {ENGINE_LOOP!r} — under a coding-harness CLI the "
+                "engine runs no turn loop, so there is no user turn to suppress."
+            )
+
         self.agent_provider_env: dict[str, str] = _resolve_provider_env(
             self.harness_spec.provider_env if self.harness_spec else {},
             params.get("agent_provider_env") or {},
@@ -367,11 +469,13 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             initial_user_message=meta.instruction if meta.instruction.strip() else None,
             initial_state=InitialStateConfig(),
             tools=ToolsConfig(
-                agent={"enabled": ["bash"]},
+                agent=self.agent_tool_block(task_id),
                 user={"enabled": []},
             ),
             grading="__adapter__",
-            policies={"agent_system_prompt": self.get_system_prompt(task_id)},
+            policies=self._agent_policies(task_id),
+            agent_prompt_contract=self._agent_prompt_contract,
+            interaction_mode=self.interaction_mode,  # type: ignore[arg-type]
             environment_manifest=self._environment_patch(task_id),
             adapter_settings={
                 "difficulty": meta.difficulty,
@@ -427,6 +531,123 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     def get_registry_tools(self, task_id: str, env: AdapterEnvironment) -> list[Any]:
         return []
 
+    def _agent_tool_timeout_s(self, task_id: str) -> float:
+        """Subprocess budget the runner-side wrapper enforces per call.
+
+        Under the engine loop a call is one agent command, so the budget is the
+        fixed per-command ceiling. Under a coding-harness CLI the whole trial
+        runs inside a single ``exec``, so the budget is the trial's agent
+        timeout.
+        """
+        if self.agent_harness == ENGINE_LOOP:
+            return _AGENT_TOOL_TIMEOUT_S
+        self._ensure_discovered()
+        return self._tasks[task_id].agent_timeout_sec
+
+    def _persistent_shell_tool_config(self, task_id: str) -> dict[str, Any]:
+        """``tool_config`` the persistent shell's compose backend reads.
+
+        ``service`` selects that backend over the local subprocess one, and
+        ``compose_project_prefix`` is what resolves the per-trial container
+        name — the same two values the one-shot tool carries on
+        ``ToolSource.extra``, so both tools exec into the same container.
+        """
+        return {
+            "service": self._environment(task_id).agent_service,
+            "compose_project_prefix": PROJECT_PREFIX,
+            "timeout_s": self._agent_tool_timeout_s(task_id),
+        }
+
+    def agent_tool_block(self, task_id: str) -> dict[str, Any]:
+        """The ``tools.agent`` block naming this run's agent tools.
+
+        Paired with :meth:`agent_tool_schemas` — the names enabled here are the
+        names of the schemas emitted there, and the persistent shell's per-tool
+        kwargs are the same dict its schema carries as ``tool_config``.
+
+        The shell is always enabled. ``agent_completion_tool`` adds the
+        completion tool beside it, which is the whole of what that param does.
+        """
+        if self.agent_tool == AGENT_TOOL_BASH:
+            block: dict[str, Any] = {"enabled": [AGENT_TOOL_BASH]}
+        else:
+            block = {
+                "enabled": [AGENT_TOOL_BASH_SESSION],
+                AGENT_TOOL_BASH_SESSION: self._persistent_shell_tool_config(task_id),
+            }
+        if self.agent_completion_tool:
+            block["enabled"] = [*block["enabled"], SUBMIT_TOOL_NAME]
+        return block
+
+    def agent_tool_schemas(self, task_id: str) -> list[ToolSchema]:
+        """Every agent tool this run offers, shell first.
+
+        One entry unless ``agent_completion_tool`` is set, which appends the
+        completion tool. Nothing downstream of the engine loop requires a
+        single agent tool: the ``!= 1`` guard that does live in the conductor
+        governs the coding-harness branch, which this param refuses to combine
+        with.
+        """
+        schemas = [self.agent_shell_tool_schema(task_id)]
+        if self.agent_completion_tool:
+            schemas.append(self.agent_completion_tool_schema())
+        return schemas
+
+    def agent_completion_tool_schema(self) -> ToolSchema:
+        """The completion tool, as the runner reconstructs it.
+
+        Sourceless like ``bash_session``: the runner's factory resolves the name
+        through the builtin registry. Its advertised parameters and description
+        come from the registered class, so the only thing the model is ever told
+        about this tool is what the tool itself declares — no prompt carries it.
+        """
+        tool = builtin_registry.get_class(SUBMIT_TOOL_NAME)()
+        function = tool.get_schema()["function"]
+        return ToolSchema(
+            name=SUBMIT_TOOL_NAME,
+            description=function["description"],
+            parameters=function["parameters"],
+            category="compute",
+            timeout_s=tool.policy.timeout_s,
+        )
+
+    def agent_shell_tool_schema(self, task_id: str) -> ToolSchema:
+        """This run's shell tool, as the runner reconstructs it.
+
+        ``bash`` carries a ``docker_compose_exec`` :class:`ToolSource`, which
+        the runner's factory routes to its compose-exec wrapper. ``bash_session``
+        carries no source at all: the factory dispatches a sourceless tool by
+        name through the builtin registry, where the name resolves to the
+        persistent shell. Its advertised parameters come from the registered
+        tool class rather than a copy, so the schema the model sees cannot
+        drift from the one the wrapper implements.
+        """
+        if self.agent_tool == AGENT_TOOL_BASH:
+            return ToolSchema(
+                **self.emit_harness_tool_schema(
+                    service=self._environment(task_id).agent_service,
+                    compose_project_prefix=PROJECT_PREFIX,
+                    # The runner-side compose-exec wrapper reads its subprocess
+                    # timeout off this field, so under harness mode it has to
+                    # carry the whole trial's agent budget: the CLI runs to
+                    # completion inside a single exec.
+                    timeout_s=self._agent_tool_timeout_s(task_id),
+                    toolset="terminal_bench",
+                )
+            )
+        tool_config = self._persistent_shell_tool_config(task_id)
+        function = builtin_registry.get_class(AGENT_TOOL_BASH_SESSION)(**tool_config).get_schema()[
+            "function"
+        ]
+        return ToolSchema(
+            name=AGENT_TOOL_BASH_SESSION,
+            description=function["description"],
+            parameters=function["parameters"],
+            category="compute",
+            timeout_s=tool_config["timeout_s"],
+            tool_config=tool_config,
+        )
+
     # -- prompts --------------------------------------------------------------
 
     def get_system_prompt(self, task_id: str) -> str:
@@ -446,9 +667,26 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             return self._agent_system_prompt
         return (
             "You are an expert developer working inside a Linux container. "
-            "Use the bash tool to execute commands. "
+            f"Use the {self.agent_tool} tool to execute commands. "
             "Fix the issues described in the user message."
         )
+
+    def _agent_policies(self, task_id: str) -> dict[str, Any]:
+        """The task's ``policies`` block, carrying a prompt only when one was asked for.
+
+        ``build_system_prompt`` returns ``policies["agent_system_prompt"]``
+        before it considers anything else, so writing the key decides the
+        prompt outright. It is written for a run that supplied a prompt file,
+        and for a run that named no contract — the latter is how a
+        terminal-bench task keeps the prompt the benchmark scores it against.
+        Only an explicit ``agent_prompt_contract`` leaves the key out and lets
+        the engine compose one.
+        """
+        if self._agent_system_prompt is not None:
+            return {"agent_system_prompt": self._agent_system_prompt}
+        if self._agent_prompt_contract is not None:
+            return {}
+        return {"agent_system_prompt": self.get_system_prompt(task_id)}
 
     # -- grading config -------------------------------------------------------
 
@@ -466,7 +704,6 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     def to_task_description(self, task_id: str) -> TaskDescription:
         self._ensure_discovered()
         meta = self._tasks[task_id]
-        env = self._environment(task_id)
         manifest = resolve_environment_patch(None, self._environment_patch(task_id))
 
         return TaskDescription(
@@ -477,28 +714,22 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             adapter_type=AdapterType.TERMINAL_BENCH,
             system_prompt=self.get_system_prompt(task_id),
             environment_manifest=manifest,
-            agent_tools=[
-                ToolSchema(
-                    **self.emit_harness_tool_schema(
-                        service=env.agent_service,
-                        compose_project_prefix=PROJECT_PREFIX,
-                        # The runner-side compose-exec wrapper reads its subprocess
-                        # timeout off this field, so under harness mode it has to
-                        # carry the whole trial's agent budget: the CLI runs to
-                        # completion inside a single exec.
-                        timeout_s=(
-                            _AGENT_TOOL_TIMEOUT_S
-                            if self.agent_harness == ENGINE_LOOP
-                            else meta.agent_timeout_sec
-                        ),
-                        toolset="terminal_bench",
-                    )
-                )
-            ],
+            agent_tools=self.agent_tool_schemas(task_id),
             user_tools=[],
             initial_state=RunnerInitialStateConfig(),
             user_simulator=RunnerUserSimulatorConfig(mode="scripted"),
-            grading=RunnerGradingConfig(**self.emit_test_execution_grading()),
+            grading=RunnerGradingConfig(
+                # The task's own ``[verifier] timeout_sec``, in both directions.
+                # 613 of the 974 delivered tasks ask for more than the grading
+                # kind's 300s default and 360 ask for less — commonly 180s. A
+                # task is the authority on how long its own suite needs, and
+                # substituting a longer budget would score it under a rule its
+                # author did not write. A suite killed by the clock is not
+                # silent: it reaches the grade as ``script_exec_error``, so
+                # ``grade.yaml`` says the verifier ran out of time rather than
+                # that the agent failed.
+                **self.emit_test_execution_grading(meta.verifier_timeout_sec)
+            ),
             metadata=self._metadata(meta),
         )
 
@@ -528,9 +759,10 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         metadata: dict[str, Any] = {
             "difficulty": meta.difficulty,
             "tags": meta.tags,
-            "verifier_timeout_sec": meta.verifier_timeout_sec,
             "agent_harness": self.agent_harness,
         }
+        if meta.verifier_timeout_sec is not None:
+            metadata["verifier_timeout_sec"] = meta.verifier_timeout_sec
         if self.harness_spec is not None:
             command = self.build_harness_command(
                 self.agent_harness,

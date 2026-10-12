@@ -1,0 +1,11 @@
+satisfying:
+  messages:
+    - role: assistant
+      content: "I have the card ending on file."
+  state: {}
+
+violating:
+  messages:
+    - role: assistant
+      content: "I have the card ending ٤ on file."
+  state: {}

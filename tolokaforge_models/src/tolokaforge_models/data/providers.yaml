@@ -23,8 +23,9 @@
 #                              classification. Inline (?i) flag = case-
 #                              insensitive; each pattern is compiled with
 #                              re.compile as-is.
-#   format_model_name_bare  — LLMClient._format_model_name returns the model
-#                              name without a "{provider}/" prefix. Nova only.
+#   format_model_name_bare  — litellm_model_id (the model string LLMClient
+#                              sends) returns the name without a
+#                              "{provider}/" prefix. Nova only.
 #   kwargs_pin_transport    — read endpoint + api_key_env fresh per attempt
 #                              and pin them into kwargs["api_base"] /
 #                              kwargs["api_key"]. Nova only.

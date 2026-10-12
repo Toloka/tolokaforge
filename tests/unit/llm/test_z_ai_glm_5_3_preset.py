@@ -13,10 +13,16 @@ while every offline suite stayed green. These tests lock four invariants:
    ``*`` (``fnmatch``'s ``*`` also matches ``.`` and ``-``);
 3. the 5.1 / 5.2 / 5 siblings stay on the shared preset (a future
    ``glm-5*`` broadening of the overlay would poach them);
-4. the overlay is a full copy of the shared recovery stack plus the codec swap
-   — ``_match_preset`` does first-match-wins with no fallback merge, so the
-   re-declared ``passthrough`` / ``json_coerce`` / ``dict_map_hints`` lines are
+4. the overlay is a full copy of the shared recovery stack — ``_match_preset``
+   does first-match-wins with no fallback merge, so the re-declared
+   ``passthrough`` / ``json_coerce`` / ``dict_map_hints`` lines are
    load-bearing, not duplicates.
+
+The codec that this overlay was carved out to supply is now on the shared
+preset as well: a 2026-09-30 probe of every preset found the plain ``openai``
+codec discarding readable reasoning on deepseek-v4-pro, mimo-v2.5-pro and both
+nemotron-3 sizes, the same defect 5.3 hit as an 0/15 ``UNSIGNED_THINKING_REPLAY``
+failure. The narrow fix here was right and too narrow.
 """
 
 from __future__ import annotations
@@ -32,7 +38,6 @@ from tolokaforge.core.llm import (
     build_capabilities,
 )
 from tolokaforge.core.llm.presets import resolve_effective_preset
-from tolokaforge.core.llm.reasoning_codec import OpenAIReasoningCodec
 
 pytestmark = pytest.mark.unit
 
@@ -71,13 +76,30 @@ def test_unmeasured_point_releases_are_not_claimed(model: str) -> None:
     ["z-ai/glm-5.1", "z-ai/glm-5.2", "z-ai/glm-5", "z-ai/glm-5-turbo", "z-ai/glm-5v-turbo"],
 )
 def test_the_rest_of_the_family_stays_on_the_shared_preset(model: str) -> None:
-    """The siblings' wire shapes were never measured under the replay codec."""
+    """The siblings keep routing to the shared preset, whatever it carries.
+
+    What that preset carries has since changed: a fleet-wide probe found the
+    plain ``openai`` codec discarding readable reasoning on four of its members,
+    so the shared stack now replays too. This assertion is about *routing* —
+    the overlay must not poach siblings — and no longer about the codec, which
+    the family and the overlay now agree on.
+    """
     assert resolve_effective_preset(model, "openrouter") == FAMILY_PRESET
-    assert type(build_capabilities(model, "openrouter").reasoning_codec) is OpenAIReasoningCodec
+    assert isinstance(
+        build_capabilities(model, "openrouter").reasoning_codec,
+        OpenAISummaryReplayReasoningCodec,
+    )
 
 
 def test_overlay_is_the_shared_stack_plus_the_codec_swap() -> None:
-    """Same adapters as 5.2 on every axis but the reasoning codec."""
+    """The overlay is a full copy of the shared stack, on every axis.
+
+    It was carved out for the codec alone, when the shared preset still dropped
+    reasoning on replay; the shared preset has since been fixed the same way, so
+    the two now agree there. The overlay still earns its place: it pins 5.3's
+    route explicitly, and ``_match_preset`` is first-match-wins with no fallback
+    merge, so every line it restates is load-bearing.
+    """
     glm53 = build_capabilities("z-ai/glm-5.3", "openrouter")
     glm52 = build_capabilities("z-ai/glm-5.2", "openrouter")
     for caps in (glm53, glm52):
@@ -85,5 +107,4 @@ def test_overlay_is_the_shared_stack_plus_the_codec_swap() -> None:
         assert isinstance(caps.response_policy, JsonCoerceResponse)
         assert isinstance(caps.prompt_policy, DictMapHints)
         assert isinstance(caps.content_policy, OpenAIContent)
-    assert isinstance(glm53.reasoning_codec, OpenAISummaryReplayReasoningCodec)
-    assert type(glm52.reasoning_codec) is OpenAIReasoningCodec
+        assert isinstance(caps.reasoning_codec, OpenAISummaryReplayReasoningCodec)

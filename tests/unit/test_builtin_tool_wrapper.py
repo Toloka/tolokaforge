@@ -37,6 +37,15 @@ class TestBuiltinToolSchemas:
         assert "content" in params.get("required", [])
 
     @pytest.mark.unit
+    def test_json_db_schemas_survive_and_name_jsonpath_for_the_update_path(self):
+        schemas = _builtin_tool_schemas(["db_query", "db_update"])
+        assert set(schemas) == {"db_query", "db_update"}
+        op_item = schemas["db_update"]["parameters"]["properties"]["ops"]["items"]
+        assert (
+            "JSONPath, e.g. `$.tickets[0].status`" in op_item["properties"]["path"]["description"]
+        )
+
+    @pytest.mark.unit
     def test_unknown_tool_is_skipped(self):
         schemas = _builtin_tool_schemas(["nonexistent_tool"])
         assert "nonexistent_tool" not in schemas

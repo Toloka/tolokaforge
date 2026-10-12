@@ -1,0 +1,58 @@
+# Graded by the state hash alone: the trial's final database against the state the
+# golden path below produces from initial_state.json. Both sides are read through
+# the comparison view first, so the hash compares what counts:
+#
+#   - the read tools log every lookup, which is no business state;
+#   - a document the agent filed and then superseded binds nothing;
+#   - a hold the agent placed and released binds nothing, unless a correction cites it;
+#   - documents are numbered in filing order, so a trajectory that drafted one first
+#     files the final document under another id. normalize_ids keys every new document
+#     by its content (client and source) and rewrites the corrections citing it, so the
+#     two ids compare equal while a correction citing the wrong document does not.
+#
+# fixtures/unstable_fields.json declares the generated ids and the timestamps. The
+# documents' id stays in the hash anyway: once re-keyed it is a function of content.
+combine:
+  method: weighted
+  weights:
+    state_checks: 1.0
+  pass_threshold: 0.5
+
+state_checks:
+  hash:
+    enabled: true
+    golden_actions:
+      # Files INV-2002 as DOC-002, the next id after the seeded DOC-001.
+      - name: file_document
+        kwargs:
+          client_id: "C-1"
+          source_id: "INV-2002"
+          kind: "invoice"
+      - name: file_correction
+        kwargs:
+          document_id: "DOC-002"
+          reason: "amount should be 1240.00"
+  comparison_view:
+    version: 1
+    rules:
+      - kind: exclude_tables
+        tables: [lookup_log]
+        reason: written by the read tools; not business state
+      - kind: exclude_records
+        table: documents
+        where: { status: superseded }
+        reason: a superseded draft binds nothing
+      - kind: exclude_records
+        table: holds
+        where: { status: released }
+        unless_referenced_by:
+          - { table: corrections, field: hold_ref }
+        reason: a released hold binds nothing, unless a correction cites it
+      # After the superseded drafts are gone, so a draft and its final version do not
+      # share one content key.
+      - kind: normalize_ids
+        table: documents
+        key: [client_id, source_id]
+        references:
+          - { table: corrections, field: document_ref }
+        reason: document ids are numbered in filing order

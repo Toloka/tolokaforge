@@ -21,9 +21,11 @@ from tolokaforge.runner.models import ToolSchema
 from tolokaforge.runner.tool_factory import (
     BuiltinFileToolWrapper,
     BuiltinGenericToolWrapper,
+    JsonDBToolWrapper,
     PersistentShellToolWrapper,
     StrReplaceEditorToolWrapper,
     ToolConfigurationError,
+    ToolExecutionError,
     ToolFactory,
 )
 
@@ -77,6 +79,33 @@ def test_str_replace_editor_routes_to_editor_wrapper(factory):
     wrapper = factory._create_wrapper(schema)
     assert isinstance(wrapper, StrReplaceEditorToolWrapper)
     assert wrapper.has_lifecycle is False
+
+
+@pytest.mark.parametrize("name", ["db_query", "db_update"])
+def test_json_db_builtins_route_to_the_json_db_wrapper(factory, name):
+    schema = ToolSchema(name=name, description="x", parameters={"type": "object"})
+    assert isinstance(factory._create_wrapper(schema), JsonDBToolWrapper)
+
+
+@pytest.mark.parametrize("arguments", [{}, {"jsonpath": "$", "limit": 5}])
+async def test_a_db_query_call_without_exactly_its_jsonpath_is_an_agent_correctable_error(
+    factory, arguments
+):
+    schema = ToolSchema(name="db_query", description="x", parameters={"type": "object"})
+    wrapper = factory._create_wrapper(schema)
+    with pytest.raises(ToolExecutionError, match="takes exactly one argument, 'jsonpath'"):
+        await wrapper.execute(arguments)
+
+
+def test_a_json_db_builtin_with_tool_config_is_refused_naming_the_keys(factory):
+    schema = ToolSchema(
+        name="db_query",
+        description="x",
+        parameters={"type": "object"},
+        tool_config={"db_url": "http://json-db:8000"},
+    )
+    with pytest.raises(ToolConfigurationError, match="db_url"):
+        factory._create_wrapper(schema)
 
 
 def test_mobile_end_to_end_through_native_adapter(factory):

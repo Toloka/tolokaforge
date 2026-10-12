@@ -4,7 +4,7 @@ A user-simulator reply is inspected by a list of :class:`ReplyDetector`
 implementations before it reaches the agent. A reply any of them flags is
 **discarded whole and regenerated** — no text is edited, excised, truncated or
 substituted, with one carve-out inside the guarded closure:
-:meth:`~tolokaforge.core.llm.client.UserSimulator._llm_reply` replaces an empty
+:meth:`~tolokaforge.core.llm.client.BuiltinUserSimulator._llm_reply` replaces an empty
 reply that carried tool calls with a fixed placeholder before the detectors see
 it. That placeholder is the only text the engine contributes to a user turn, and
 it is reachable in-tree — the conductor wires a ``user_tool_executor`` when the

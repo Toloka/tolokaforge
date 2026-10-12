@@ -113,6 +113,16 @@ Each adapter must subclass `BaseAdapter` and implement:
       whichever JSON-schema parameters the pack's own fixture or registry
       resolves for each.  See `NativeAdapter.grading_tool_inventory` for the
       native reading — the shape any adapter's return here must satisfy.
+      Its `json_db_builtins` names the declared tools your runtime serves as
+      the source-less JSON-DB builtins (`db_query` / `db_update`), which the
+      gate refuses on a task seeding no table; leave it `None` when you cannot
+      say, and the rule is reported unchecked for a task declaring either name.
+      Its `json_db_tool_config_keys` maps each of those builtins whose tool
+      block carries init kwargs to those keys, which the gate refuses as
+      `RegisterTrial` does; it names only tools in `json_db_builtins`, and
+      `{}` says none carries any.  Leave it `None` when you cannot say what
+      those blocks carry, and that rule too is reported unchecked for a task
+      declaring either name.
 
 15. `grading_replay_world(task: TaskConfig, task_dir: Path) -> ReplayWorld`
     — a **classmethod**
@@ -274,10 +284,10 @@ A declarative selector on the grading config that tells the runner *how* to grad
   rules / LLM judge per `weights` + `pass_threshold`. Most adapters want this and
   need do nothing.
 - **`"test_execution"`** — the runner runs a reference test suite inside the
-  trial's env container via an exec-capable lifecycle tool (today:
-  `DockerComposeExecToolWrapper`) and scores by reading a reward float written
-  by the suite. Requires such a tool in `TaskDescription.agent_tools`; otherwise
-  the runner returns a clear error at `GradeTrial` time. Used by the
+  trial's env container via a tool satisfying `SupportsEnvExec`
+  (`DockerComposeExecToolWrapper` in-tree) and scores by reading a reward float
+  written by the suite. Requires such a tool in `TaskDescription.agent_tools`;
+  otherwise the runner returns a clear error at `GradeTrial` time. Used by the
   `terminal_bench` adapter as a worked example.
 - `"hash"` / `"transcript"` / `"llm"` are reserved names for future
   single-method dispatch and currently behave as part of the default path.
@@ -291,11 +301,23 @@ Which plane serves the task's `documents_path`:
 
 - **`"typesense"`** — the runner registers a search client for the domain, and
   `search_policy` tools reach the collection the host-side indexer built.
-- **`"rag_service"`** — rag-service indexes the corpus bundled in
-  `tool_artifacts`, per trial. Set `enabled: true` alongside it; that flag is
-  what gates the indexing.
+- **`"rag_service"`** — the engine's rag-service search backend indexes the
+  corpus bundled in `tool_artifacts`, per trial. Set `enabled: true` alongside
+  it: that flag means "this task needs rag-service", an older runner reads only
+  it, and `enabled: false` switches the indexing off.
+- **`"bm25"`** — the engine's in-process Okapi BM25 backend indexes the bundled
+  corpus per trial in the runner, with no stack service; `search.backend_config`
+  carries its configuration. `enabled` stays `false`.
+- **any other name** — a search backend registered under the
+  `tolokaforge.search_backends` entry-point group (ADR-0054). The runner builds
+  the trial's index with it at `RegisterTrial`, binds the source-less tool named
+  `search.tool_name` (default `search_kb`) to that index, and refuses the trial
+  when nothing is registered under the name. `search.backend_config` reaches the
+  backend's factory verbatim. See
+  [TASK_DESCRIPTION_SCHEMA.md](TASK_DESCRIPTION_SCHEMA.md).
 - **`None`** *(default)* — the adapter did not declare one, and the runner
-  derives `typesense` from a task that carries `host` / `port` / `api_key`.
+  derives `typesense` from a task that carries `host` / `port` / `api_key`; a
+  task carrying `enabled: true` and no plane is served by `rag_service`.
 
 The address is the stack's, not the task's: the runner container is created
 knowing `TYPESENSE_HOST` / `TYPESENSE_PORT`, so an adapter has no Docker
@@ -326,7 +348,10 @@ class MyTool(ToolWrapper):
 ```
 
 The runner calls `start` / `stop` generically on every tool whose
-`has_lifecycle` is set — it doesn't need to know your tool by name.
+`has_lifecycle` is set — it doesn't need to know your tool by name. `stop()` and
+`cleanup()` must be idempotent: when one resource of a trial fails to tear down, the
+cleanup retry calls both again on every tool of that trial, including those already
+stopped.
 
 #### Current limitations of the lifecycle contract
 

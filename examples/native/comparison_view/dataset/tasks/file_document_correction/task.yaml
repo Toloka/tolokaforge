@@ -1,0 +1,41 @@
+task_id: "file_document_correction"
+name: "Document desk — file an invoice and correct its amount"
+category: "tool_use"
+description: >
+  The agent files client C-1's invoice INV-2002 as a document and files a
+  correction against it. The grade is a state hash against the golden path,
+  read through a comparison view: a draft the agent superseded, a hold it
+  released and the lookups its read tools logged do not count, and the
+  document's generated id is keyed by its content.
+
+initial_user_message: >
+  Hi, this is Dana from Northwind Traders (client C-1). Please file our invoice
+  INV-2002 and then file a correction against it: the amount should be 1240.00.
+
+initial_state:
+  json_db: "initial_state.json"
+
+tools:
+  agent:
+    mcp_server: "mcp_server.py"
+    enabled:
+      - find_client
+      - lookup_document
+      - file_document
+      - supersede_document
+      - place_hold
+      - release_hold
+      - file_correction
+  user:
+    enabled: []
+
+actors:
+  user:
+    backstory: >
+      You are Dana from Northwind Traders (client C-1). You want invoice INV-2002
+      filed and a correction filed against it saying the amount should be 1240.00.
+      Once the assistant confirms both, thank it and end the conversation with
+      ###STOP###.
+
+grading: "grading.yaml"
+system_prompt: "system_prompt.md"

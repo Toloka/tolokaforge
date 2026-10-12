@@ -444,7 +444,7 @@ For the full design see
 under `no_internet` and `limited_internet` share the harness-injected
 `tolokaforge_netpolicy_internal` network, so any service can DNS-resolve and
 dial any other on port paths the compose file exposes (e.g. an untrusted
-`bash` sibling could `curl http://db-service:8000/update` or
+`bash` sibling could `curl http://db-service:8000/trials/<trial_id>/update` or
 `grpcurl runner:50051 ExecuteTool`). When one sibling in the stack is
 untrusted — an agent-controlled shell whose only intended egress is a curated
 tool-bridge service, for example — mark it `network_access: restricted` in

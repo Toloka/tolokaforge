@@ -1,6 +1,6 @@
 """A generated user turn reaches the agent as written, or not at all.
 
-The guard is exercised through a real :class:`UserSimulator` in ``llm`` mode
+The guard is exercised through a real :class:`BuiltinUserSimulator` in ``llm`` mode
 with a fake wire client standing in for :class:`LLMClient`: the simulator, its
 ``_llm_reply`` and the guard are all real, only the network is not. A mocked
 simulator would assert that the harness called something, not that the words
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -37,7 +37,7 @@ from tolokaforge.core.actors.reply_guard import (
 )
 from tolokaforge.core.actors.scratchpad import ScratchpadDetector
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
-from tolokaforge.core.llm import GenerationResult, UserSimulator
+from tolokaforge.core.llm import BuiltinUserSimulator, GenerationResult
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
@@ -122,13 +122,13 @@ class _FakeWireClient:
         )
 
 
-def _llm_simulator(replies: list[str]) -> tuple[UserSimulator, _FakeWireClient]:
+def _llm_simulator(replies: list[str]) -> tuple[BuiltinUserSimulator, _FakeWireClient]:
     """A real LLM-mode simulator whose wire client returns *replies* in order.
 
     ``llm_config=None`` leaves ``llm_client`` unset, so the fake is assigned
     rather than replacing a constructed client.
     """
-    simulator = UserSimulator(mode="llm", llm_config=None)
+    simulator = BuiltinUserSimulator(mode="llm", llm_config=None)
     client = _FakeWireClient(replies)
     simulator.llm_client = client  # type: ignore[assignment]
     return simulator, client
@@ -140,7 +140,7 @@ def _agent_turn() -> list[Message]:
         Message(
             role=MessageRole.ASSISTANT,
             content=AGENT_GREETING,
-            ts=datetime.now(tz=timezone.utc),
+            ts=datetime.now(tz=UTC),
         )
     ]
 
@@ -335,7 +335,7 @@ class TestARefusedTurnCountsAsOurDefect:
         decision = classify_loop_error(excinfo.value, ())
         assert decision.reason is TerminationReason.ERROR
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         trajectory = Trajectory(
             task_id="t",
             trial_index=0,
@@ -433,7 +433,7 @@ class TestScriptedRepliesAreAuthoredContent:
         scripted_text = "This is a simulation of the task."
         assert FourthWallDetector().inspect(scripted_text) is not None
 
-        simulator = UserSimulator(mode="scripted", scripted_flow=[{"user": scripted_text}])
+        simulator = BuiltinUserSimulator(mode="scripted", scripted_flow=[{"user": scripted_text}])
 
         result = simulator.reply(_agent_turn())
 
@@ -443,7 +443,7 @@ class TestScriptedRepliesAreAuthoredContent:
 
 # ===================================================================
 # What the bundle records — a real TrialRunner driving a real
-# UserSimulator whose only stand-in is the wire client.
+# BuiltinUserSimulator whose only stand-in is the wire client.
 # ===================================================================
 
 PINNED_OPENER = "My router keeps dropping the 5GHz band."
@@ -492,6 +492,7 @@ def _run_trial(
     user_replies: list[str],
     agent_texts: list[str],
     opener: str = PINNED_OPENER,
+    first_agent_message: str | None = None,
 ) -> Trajectory:
     """One trial with a real runner, a real simulator, and scripted wires."""
     simulator, _ = _llm_simulator(user_replies)
@@ -505,6 +506,7 @@ def _run_trial(
         max_turns=4,
         turn_timeout_s=30,
         episode_timeout_s=600,
+        first_agent_message=first_agent_message,
     )
     return runner.run("System", opener)
 
@@ -581,6 +583,24 @@ class TestTheBundleRecordsWhatAUserTurnCost:
         assert event.outcome is UserReplyOutcome.REFUSED
         assert event.message_index == 0
         assert len(event.rejected) == USER_REPLY_MAX_ATTEMPTS
+
+    def test_a_refused_bootstrap_after_the_agents_opening_line_records_index_one(self) -> None:
+        """The agent's opening line takes index 0, so the opening the simulator was
+        refused at is dispatched at index 1, and the event says so."""
+        line = "Hi! How can I help you today?"
+        trajectory = _run_trial(
+            user_replies=[FOURTH_WALL_REPLY],
+            agent_texts=[AGENT_STOP],
+            opener="",
+            first_agent_message=line,
+        )
+
+        assert trajectory.status is TrialStatus.ERROR
+        assert trajectory.first_user_message_source is None
+        (event,) = trajectory.user_reply_guard_events
+        assert event.outcome is UserReplyOutcome.REFUSED
+        assert event.message_index == 1
+        assert [m.content for m in trajectory.messages if m.role is MessageRole.ASSISTANT] == [line]
 
     def test_a_bootstrap_turn_that_leaked_a_delimiter_records_index_zero(self) -> None:
         """The measured exposure is an *opening*-message rate, and turn 0 is a

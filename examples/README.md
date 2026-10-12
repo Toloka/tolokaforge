@@ -7,6 +7,7 @@ by adapter type.
     ├── native/                          # default `native` adapter
     │   ├── browser_task/                # browser tool + mock-web fixtures
     │   ├── coding/                      # file-write grading
+    │   ├── comparison_view/             # state hash read through a comparison view
     │   ├── mock_web_booking/            # http_request against the mock-web service
     │   ├── native_shared_domain/        # _shared/domain.yaml pattern (FastMCP)
     │   ├── rag_search/                  # search_kb against the rag-service
@@ -24,6 +25,9 @@ by adapter type.
 - **HTTP against a service**: see `native/mock_web_booking/` — `http_request`
   drives the mock-web service and grading locks a mock-web-issued token (needs
   Docker for mock-web).
+- **A state hash that tolerates drafts, released holds and generated ids**: see
+  `native/comparison_view/` — `state_checks.comparison_view` drops the records that do
+  not count and keys a generated id by its record's content before the hash.
 - **Knowledge-base retrieval**: see `native/rag_search/` — `search_kb` retrieves
   a planted fact from a per-trial rag-service index and grading locks that
   retrieval-only token (needs Docker with the full stack for the rag-service).

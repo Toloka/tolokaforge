@@ -58,12 +58,14 @@ Two wire-format invariants pinned by the canonical tests:
 from __future__ import annotations
 
 from enum import Enum
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from tolokaforge.core.failure_attribution import TrialOutcomeClass
-from tolokaforge.core.models import TerminationReason
+from tolokaforge.core.models import CostByRoleMetrics, TerminationReason
 
 __all__ = [
     "AGGREGATE_SCHEMA_VERSION",
@@ -75,23 +77,43 @@ __all__ = [
     "MetadataSlices",
     "OutcomeReasonCount",
     "PerTaskMetrics",
+    "ReasoningTransportRollup",
     "RunAggregate",
     "ServiceLogCaptureEntry",
     "ServiceLogCaptureSource",
 ]
 
-AGGREGATE_SCHEMA_VERSION = 3
+AGGREGATE_SCHEMA_VERSION = 4
 """The ``aggregate.json`` wire generation.
 
-Version 3 rates are over ``measured_trials`` — the trials that measured the
-agent, including the ones whose grading refused. Such a trial reaches
-``total_trials`` and ``measured_trials``, carries its own ``ungradeable`` count
-and its own ``ungradeable_<reason>`` row, and counts as a non-pass, so a
-consumer reading a file can tell which denominator produced
-``success_rate_micro``, ``avg_score_micro`` and ``pass@k_macro`` without
-inspecting the run that wrote it. The ``class`` vocabulary a consumer branches
-on has four members.
+Rates are over ``measured_trials`` — the trials that measured the agent,
+including the ones whose grading refused. Such a trial reaches ``total_trials``
+and ``measured_trials``, carries its own ``ungradeable`` count and its own
+``ungradeable_<reason>`` row, and counts as a non-pass, so a consumer reading a
+file can tell which denominator produced ``success_rate_micro``,
+``avg_score_micro`` and ``pass@k_macro`` without inspecting the run that wrote
+it. The ``class`` vocabulary a consumer branches on has four members.
+
+Version 4 adds the per-role spend plane: ``total_cost_by_role`` (agent + user
+summed from the trials' ``cost_by_role``, plus a synthesized ``judge`` row from
+``grade.judge_usage``) and the grand total ``total_cost_incl_all_usd``. Only
+agent, user and judge roles exist today, so ``total_cost_incl_all_usd`` equals
+the legacy ``total_cost_incl_judge_usd``.
 """
+
+
+def _engine_version() -> str:
+    """The installed tolokaforge version, or ``"unknown"`` off-distribution.
+
+    Read from distribution metadata rather than through ``tolokaforge``'s own
+    namespace: this module is imported during that package's initialisation,
+    and the metadata lookup is the same source ``tolokaforge.__version__``
+    uses, so the two cannot disagree.
+    """
+    try:
+        return _pkg_version("tolokaforge")
+    except PackageNotFoundError:  # pragma: no cover - source checkout, not installed
+        return "unknown"
 
 
 class OutcomeReasonCount(BaseModel):
@@ -206,6 +228,15 @@ class PerTaskMetrics(BaseModel):
     reporting the known half alone as if it were the run's total. It now
     carries whichever half is known and says so here."""
 
+    # Per-role spend plane. ``total_cost_by_role`` sums the trials'
+    # ``cost_by_role`` (agent + user) and carries a synthesized ``judge`` row
+    # from ``grade.judge_usage``; ``total_cost_incl_all_usd`` is the grand total
+    # across those rows, inheriting ``total_cost_incl_judge_usd``'s None semantics
+    # so an unpriced run (agent row present at ``0.0``, cost unknown) reports
+    # ``None`` rather than a false ``0.0``.
+    total_cost_by_role: list[CostByRoleMetrics] = Field(default_factory=list)
+    total_cost_incl_all_usd: int | float | None = None
+
     # Per-trial wall-time percentiles.
     latency_p50_s: int | float = 0
     latency_p90_s: int | float = 0
@@ -310,6 +341,14 @@ class AggregateMetrics(BaseModel):
     reporting the known half alone as if it were the run's total. It now
     carries whichever half is known and says so here."""
 
+    # Run-level per-role spend plane, merged from the per-task
+    # ``total_cost_by_role`` rows (one row per role, summed across tasks) with
+    # ``total_cost_incl_all_usd`` the grand total across every role, ``None`` on
+    # the same terms as ``total_cost_incl_judge_usd`` so an unpriced run is not
+    # reported as a definite ``0.0``.
+    total_cost_by_role: list[CostByRoleMetrics] = Field(default_factory=list)
+    total_cost_incl_all_usd: int | float | None = None
+
     latency_p50_s_macro: int | float = 0
     latency_p90_s_macro: int | float = 0
     latency_p99_s_macro: int | float = 0
@@ -368,6 +407,28 @@ class CapturedServiceLogsRollup(BaseModel):
     entries: list[ServiceLogCaptureEntry] = Field(default_factory=list)
 
 
+class ReasoningTransportRollup(BaseModel):
+    """How this run's reasoning travelled, over the trials that ran.
+
+    Two counts, because they ask for different work. Recovery says a preset
+    reads a narrower channel than its model uses: nothing was lost, and the fix
+    is a preset edit before the next model lands on the same glob. An unknown
+    channel says the provider billed for deliberation that arrived nowhere the
+    engine looks, which is the one remaining way to lose it and needs
+    ``scripts/analysis/probe_reasoning_transport.py`` to resolve.
+
+    An opaque ``reasoning.encrypted`` payload appears in neither: it arrived
+    somewhere known and holds no text anyone could keep.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    recovered_by_fallback_calls: int = 0
+    recovered_by_fallback_trials: int = 0
+    channel_unknown_calls: int = 0
+    channel_unknown_trials: int = 0
+
+
 class RunAggregate(AggregateMetrics):
     """The top-level ``aggregate.json`` shape — :class:`AggregateMetrics`
     plus the ``schema_version`` envelope field every downstream consumer
@@ -388,6 +449,19 @@ class RunAggregate(AggregateMetrics):
     """
 
     schema_version: int = AGGREGATE_SCHEMA_VERSION
+
+    tolokaforge_version: str = Field(default_factory=lambda: _engine_version())
+    """The engine version that produced this run.
+
+    A benchmark number is only reproducible against the code that made it, and
+    the version was the one component of a run the artifacts did not record —
+    reconstructing it afterwards means reading release dates and guessing.
+    Read from the installed distribution metadata, so it is the version that
+    actually ran rather than one a config declared.
+    """
+
+    reasoning_transport: ReasoningTransportRollup = Field(default_factory=ReasoningTransportRollup)
+    """Whether the run kept the reasoning it was billed for, and how."""
 
     captured_service_logs: CapturedServiceLogsRollup | None = None
 

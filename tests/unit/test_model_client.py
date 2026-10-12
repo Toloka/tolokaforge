@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import copy
 import os
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
+import litellm
+import openai
 import pytest
 import yaml
 
@@ -22,7 +26,9 @@ from tolokaforge.core.llm import (
     UnwrapInputResponse,
     build_capabilities,
 )
+from tolokaforge.core.llm.client import LLMApiTimeoutError
 from tolokaforge.core.llm.presets import _match_preset
+from tolokaforge.core.llm.providers import litellm_model_id
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 
@@ -52,6 +58,97 @@ def _make_client(**config_overrides: Any):
     with patch.dict("os.environ", {}, clear=False):
         client = LLMClient(cfg)
     return client
+
+
+@pytest.mark.unit
+class TestSingleAttemptPolicy:
+    def test_timeout_does_not_retry_at_any_layer(self) -> None:
+        client = _make_client()
+        with patch(
+            "tolokaforge.core.llm.client.completion",
+            side_effect=TimeoutError("read timed out"),
+        ) as completion:
+            with pytest.raises(LLMApiTimeoutError, match="after 1 attempts"):
+                client.generate(system="judge", retry_policy="single_attempt")
+        assert completion.call_count == 1
+        assert completion.call_args.kwargs["max_retries"] == 0
+        assert completion.call_args.kwargs["num_retries"] == 0
+
+    def test_quota_error_does_not_rotate_or_retry(self) -> None:
+        client = _make_client()
+        with patch.object(client, "_rotate_key", side_effect=AssertionError("rotated")):
+            with patch(
+                "tolokaforge.core.llm.client.completion",
+                side_effect=RuntimeError("Key limit exceeded"),
+            ) as completion:
+                with pytest.raises(RuntimeError, match="failed without retry"):
+                    client.generate(system="judge", retry_policy="single_attempt")
+        assert completion.call_count == 1
+
+    @pytest.mark.parametrize(
+        ("attribute", "value"),
+        [("num_retries", 3), ("model_fallbacks", [{"gpt-4": ["gpt-4o"]}])],
+        ids=["global-retries", "global-fallbacks"],
+    )
+    def test_global_litellm_retries_refuse_a_single_attempt(
+        self, monkeypatch: pytest.MonkeyPatch, attribute: str, value: object
+    ) -> None:
+        monkeypatch.setattr(litellm, attribute, value)
+        client = _make_client()
+        with patch("tolokaforge.core.llm.client.completion") as completion:
+            with pytest.raises(RuntimeError, match="single_attempt cannot run"):
+                client.generate(system="judge", retry_policy="single_attempt")
+        completion.assert_not_called()
+
+    def test_unknown_policy_fails_before_transport(self) -> None:
+        client = _make_client()
+        with pytest.raises(ValueError, match="Unknown LLM retry policy"):
+            client.generate(retry_policy="typo")  # type: ignore[arg-type]
+
+
+def _completion_response(text: str) -> MagicMock:
+    """The smallest ``ModelResponse`` shape :meth:`LLMClient.generate` reads."""
+    message = MagicMock()
+    message.content = text
+    message.tool_calls = None
+    message.reasoning_content = None
+    del message.thinking_blocks
+    choice = MagicMock()
+    choice.message = message
+    choice.finish_reason = "stop"
+    response = MagicMock()
+    response.choices = [choice]
+    response.usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    return response
+
+
+@pytest.mark.unit
+class TestResponseFormat:
+    def _sent(self, **call: Any) -> dict[str, Any]:
+        client = _make_client()
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                return_value=_completion_response('{"verdict": "pass"}'),
+            ) as completion,
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            result = client.generate(system="judge", **call)
+        assert completion.call_count == 1
+        assert result.text == '{"verdict": "pass"}'
+        return completion.call_args.kwargs
+
+    def test_it_reaches_the_transport(self) -> None:
+        sent = self._sent(response_format={"type": "json_object"})
+        assert sent["response_format"] == {"type": "json_object"}
+
+    def test_the_callers_mapping_is_not_handed_on(self) -> None:
+        requested = {"type": "json_object"}
+        sent = self._sent(response_format=requested)
+        assert sent["response_format"] is not requested
+
+    def test_without_it_the_request_carries_none(self) -> None:
+        assert "response_format" not in self._sent()
 
 
 # ===================================================================
@@ -87,6 +184,61 @@ class TestShouldRetryException:
         from tolokaforge.core.llm.client import _should_retry_exception
 
         assert _should_retry_exception(OSError("network")) is True
+
+    @pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "wrapped"])
+    @pytest.mark.parametrize(
+        "terminal",
+        [
+            litellm.UnsupportedParamsError(message="openai does not support parameters"),
+            litellm.AuthenticationError(message="bad key", llm_provider="openai", model="m"),
+            openai.AuthenticationError(
+                "bad key",
+                response=httpx.Response(401, request=httpx.Request("POST", "http://x")),
+                body=None,
+            ),
+            LLMApiTimeoutError("timed out"),
+        ],
+        ids=lambda exc: type(exc).__module__.split(".")[0] + "." + type(exc).__name__,
+    )
+    def test_returns_false_for_a_terminal_error_anywhere_in_the_cause_chain(
+        self, terminal: BaseException, wrapped: bool
+    ) -> None:
+        from tolokaforge.core.llm.client import _should_retry_exception
+
+        exc = terminal
+        if wrapped:
+            exc = RuntimeError(f"LLM API call failed: {terminal}")
+            exc.__cause__ = terminal
+        assert _should_retry_exception(exc) is False
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            litellm.BadRequestError(message="provider 400", model="m", llm_provider="openrouter"),
+            litellm.PermissionDeniedError(
+                message="provider 403",
+                model="m",
+                llm_provider="openrouter",
+                response=httpx.Response(403, request=httpx.Request("POST", "http://x")),
+            ),
+        ],
+        ids=lambda exc: type(exc).__name__,
+    )
+    def test_a_wrapped_provider_400_or_403_is_still_retried(self, refusal: BaseException) -> None:
+        """``UnsupportedParamsError`` subclasses ``BadRequestError``; only the subclass
+        is terminal. A provider's own 400 / 403 can be transient (a gateway's quota)."""
+        from tolokaforge.core.llm.client import _should_retry_exception
+
+        exc = RuntimeError(f"LLM API call failed: {refusal}")
+        exc.__cause__ = refusal
+        assert _should_retry_exception(exc) is True
+
+    def test_a_self_referencing_cause_chain_terminates(self) -> None:
+        from tolokaforge.core.llm.client import _should_retry_exception
+
+        exc = RuntimeError("loop")
+        exc.__cause__ = exc
+        assert _should_retry_exception(exc) is True
 
 
 # ===================================================================
@@ -150,13 +302,13 @@ class TestGenerationResult:
 
 
 # ===================================================================
-# LLMClient construction and _format_model_name
+# LLMClient construction and the litellm model id
 # ===================================================================
 
 
 @pytest.mark.unit
 class TestLLMClientConstruction:
-    """LLMClient initialisation and model name formatting."""
+    """LLMClient initialisation and the model id it sends litellm."""
 
     def test_basic_construction(self) -> None:
         client = _make_client(provider="openai", name="gpt-4")
@@ -164,18 +316,23 @@ class TestLLMClientConstruction:
         assert client.config.name == "gpt-4"
         assert client.model_name == "openai/gpt-4"
 
-    def test_format_model_name_already_prefixed(self) -> None:
-        client = _make_client(provider="openai", name="openai/gpt-4")
-        assert client.model_name == "openai/gpt-4"
-
-    def test_format_model_name_openrouter(self) -> None:
-        client = _make_client(provider="openrouter", name="google/gemini-2.5-flash")
-        assert client.model_name == "openrouter/google/gemini-2.5-flash"
-
-    def test_format_model_name_nova(self) -> None:
-        """Nova provider should use model name as-is without prefix."""
-        client = _make_client(provider="nova", name="nova-pro-v1")
-        assert client.model_name == "nova-pro-v1"
+    @pytest.mark.parametrize(
+        "provider, name, model_id",
+        [
+            ("openai", "openai/gpt-4", "openai/gpt-4"),
+            ("openrouter", "google/gemini-2.5-flash", "openrouter/google/gemini-2.5-flash"),
+            ("openai", "self-hosted/qwen3.6-35b-a3b", "openai/self-hosted/qwen3.6-35b-a3b"),
+            ("nova", "nova-pro-v1", "nova-pro-v1"),
+            ("openrouter/google", "gemini-2.5-flash", "openrouter/google/gemini-2.5-flash"),
+            ("OpenAI", "gpt-4", "OpenAI/gpt-4"),
+            ("OpenAI", "openai/gpt-4", "OpenAI/openai/gpt-4"),
+        ],
+    )
+    def test_model_id(self, provider: str, name: str, model_id: str) -> None:
+        """The provider is compared as written: only Nova's binding sends a bare name."""
+        client = _make_client(provider=provider, name=name)
+        assert client.model_name == model_id
+        assert client.model_name == litellm_model_id(provider, name)
 
     def test_provider_stored_lowercase(self) -> None:
         client = _make_client(provider="OpenAI", name="gpt-4")
@@ -885,50 +1042,50 @@ class TestRotateKey:
 
 
 # ===================================================================
-# UserSimulator construction and scripted replies
+# BuiltinUserSimulator construction and scripted replies
 # ===================================================================
 
 
 @pytest.mark.unit
 class TestUserSimulator:
-    """UserSimulator construction and scripted_reply logic."""
+    """BuiltinUserSimulator construction and scripted_reply logic."""
 
     def test_scripted_mode_construction(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="scripted")
+        sim = BuiltinUserSimulator(mode="scripted")
         assert sim.mode == "scripted"
         assert sim.llm_client is None
         assert sim.scripted_flow == []
 
     def test_llm_mode_without_config(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="llm", llm_config=None)
+        sim = BuiltinUserSimulator(mode="llm", llm_config=None)
         assert sim.llm_client is None
 
     def test_scripted_reply_empty_context(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="scripted")
+        sim = BuiltinUserSimulator(mode="scripted")
         result = sim.reply([])
         assert "help" in result.text.lower() or "task" in result.text.lower()
 
     def test_scripted_reply_unconditional_flow(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
         flow = [{"user": "I need to book a flight."}]
-        sim = UserSimulator(mode="scripted", scripted_flow=flow)
+        sim = BuiltinUserSimulator(mode="scripted", scripted_flow=flow)
         # Context with no matching prior user message
         ctx = [Message(role=MessageRole.ASSISTANT, content="How can I help?")]
         result = sim.reply(ctx)
         assert result.text == "I need to book a flight."
 
     def test_scripted_reply_conditional_match(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
         flow = [{"if_assistant_contains": "booking confirmed", "user": "Thank you!"}]
-        sim = UserSimulator(mode="scripted", scripted_flow=flow)
+        sim = BuiltinUserSimulator(mode="scripted", scripted_flow=flow)
         ctx = [Message(role=MessageRole.ASSISTANT, content="Your booking confirmed for tomorrow.")]
         result = sim.reply(ctx)
         assert result.text == "Thank you!"
@@ -940,43 +1097,43 @@ class TestUserSimulator:
         comparison so e.g. "BOOKING CONFIRMED" matches a "booking confirmed"
         rule.
         """
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
         flow = [{"if_assistant_contains": "booking confirmed", "user": "Thank you!"}]
-        sim = UserSimulator(mode="scripted", scripted_flow=flow)
+        sim = BuiltinUserSimulator(mode="scripted", scripted_flow=flow)
         ctx = [Message(role=MessageRole.ASSISTANT, content="Your BOOKING CONFIRMED for tomorrow.")]
         result = sim.reply(ctx)
         assert result.text == "Thank you!"
 
     def test_scripted_reply_default_fallback(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
         flow = [{"default": "I'm not sure."}]
-        sim = UserSimulator(mode="scripted", scripted_flow=flow)
+        sim = BuiltinUserSimulator(mode="scripted", scripted_flow=flow)
         ctx = [Message(role=MessageRole.ASSISTANT, content="Something unexpected.")]
         result = sim.reply(ctx)
         assert result.text == "I'm not sure."
 
     def test_scripted_reply_question_fallback(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="scripted")
+        sim = BuiltinUserSimulator(mode="scripted")
         ctx = [Message(role=MessageRole.ASSISTANT, content="Would you like to proceed?")]
         result = sim.reply(ctx)
         assert result.text == "Yes, please proceed."
 
     def test_scripted_reply_statement_fallback(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="scripted")
+        sim = BuiltinUserSimulator(mode="scripted")
         ctx = [Message(role=MessageRole.ASSISTANT, content="Done.")]
         result = sim.reply(ctx)
         assert result.text == "Okay."
 
     def test_reply_unknown_mode_raises(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="unknown")
+        sim = BuiltinUserSimulator(mode="unknown")
         with pytest.raises(ValueError, match="Unknown user simulator mode"):
             sim.reply([Message(role=MessageRole.ASSISTANT, content="Hi")])
 

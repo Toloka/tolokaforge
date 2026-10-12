@@ -26,22 +26,31 @@ Five outcome cells:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.core.grading.substrate import RunTestSuiteResult
+from tolokaforge.core.models import JudgeUsage
+from tolokaforge.core.trial_grader import GradingFailedError
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.service import RunnerServiceImpl
 
 pytestmark = pytest.mark.unit
 
 
-def _task(grading_method: str, weights: dict[str, float] | None = None) -> dict[str, Any]:
+def _task(
+    grading_method: str,
+    weights: dict[str, float] | None = None,
+    grading_method_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     grading: dict[str, Any] = {"grading_method": grading_method}
     if weights is not None:
         grading["weights"] = weights
+    if grading_method_config is not None:
+        grading["grading_method_config"] = grading_method_config
     return {
         "task_id": "dispatch_via_kind",
         "name": "dispatch_via_kind",
@@ -119,6 +128,23 @@ def test_tool_absent_maps_to_success_false_with_reason(
 
     assert response.success is False
     assert response.error == reason
+
+
+def test_grading_failure_carries_structured_judge_usage_on_runner_wire(
+    service: RunnerServiceImpl, mock_grpc_context: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trial_id = "failed_judge:0"
+    _register_and_return_trial_id(service, mock_grpc_context, trial_id, _task("test_execution"))
+
+    def fail(_awaitable: Any, *, timeout: float) -> Any:
+        _awaitable.close()
+        raise GradingFailedError("judge malformed", judge_usage=JudgeUsage(calls=1, cost_usd=0.03))
+
+    monkeypatch.setattr(service, "_run_async", fail)
+    response = service.GradeTrial(pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context)
+    assert response.success is False
+    assert response.error == "judge malformed"
+    assert json.loads(response.failure_evidence_json)["judge_usage"]["cost_usd"] == 0.03
 
 
 def test_script_exec_error_maps_to_success_true_with_execution_failed_reasons(
@@ -234,3 +260,77 @@ def test_composite_stays_on_runner_side_fold(
     # specific verdict depends on the runner's composite fold; the lock
     # here is that no AssertionError from ``raise_on_call`` propagated.
     assert response is not None
+
+
+def _capture_run_test_suite(service: RunnerServiceImpl, seen: dict[str, Any]) -> None:
+    """Record the arguments the kind hands ``substrate.run_test_suite``.
+
+    The stub in :func:`_script_run_test_suite` discards them; these two cases
+    are about the arguments themselves, so they are what gets asserted.
+    """
+
+    def stub(
+        script_path: str,
+        reward_path: str,
+        timeout_s: float,
+        reward_read_timeout_s: float,
+        *,
+        trial_id: str,  # noqa: ARG001
+    ) -> RunTestSuiteResult:
+        seen.update(
+            script_path=script_path,
+            reward_path=reward_path,
+            timeout_s=timeout_s,
+            reward_read_timeout_s=reward_read_timeout_s,
+        )
+        return RunTestSuiteResult(
+            exit_code=0,
+            reward_bytes=b"1.0\n",
+            stdout="",
+            tool_absent=False,
+            tool_absent_reason="",
+            script_exec_error="",
+        )
+
+    service._run_test_suite_via_agent_tools = stub  # type: ignore[method-assign]
+
+
+def test_declared_kind_config_reaches_the_kind(
+    service: RunnerServiceImpl, mock_grpc_context: Any
+) -> None:
+    """A task's ``grading_method_config`` survives the wire into the kind.
+
+    The verifier timeout is the one that matters in practice: a suite killed
+    at the kind's 300s default before the task's declared 600s writes no
+    reward and scores zero, which is indistinguishable from failing the task.
+    """
+    trial_id = "declared_kind_config:0"
+    _register_and_return_trial_id(
+        service,
+        mock_grpc_context,
+        trial_id,
+        _task("test_execution", grading_method_config={"timeout_s": 600.0}),
+    )
+    seen: dict[str, Any] = {}
+    _capture_run_test_suite(service, seen)
+
+    response = service.GradeTrial(pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context)
+
+    assert response.success is True, response.error
+    assert seen["timeout_s"] == pytest.approx(600.0)
+
+
+def test_absent_kind_config_leaves_the_kind_on_its_defaults(
+    service: RunnerServiceImpl, mock_grpc_context: Any
+) -> None:
+    """No ``grading_method_config`` means the kind's own defaults stand."""
+    trial_id = "absent_kind_config:0"
+    _register_and_return_trial_id(service, mock_grpc_context, trial_id, _task("test_execution"))
+    seen: dict[str, Any] = {}
+    _capture_run_test_suite(service, seen)
+
+    response = service.GradeTrial(pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context)
+
+    assert response.success is True, response.error
+    assert seen["timeout_s"] == pytest.approx(300.0)
+    assert seen["script_path"] == "/tests/test.sh"

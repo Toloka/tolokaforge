@@ -173,6 +173,7 @@ class ToolExecutionStatus(str, Enum):
     """
 
     SUCCESS = "success"
+    ENVIRONMENT_ERROR = "environment_error"
     ERROR = "error"
     TIMEOUT = "timeout"
     TOOL_NOT_FOUND = "tool_not_found"
@@ -208,7 +209,7 @@ class ToolPolicy(BaseModel):
     ``None``. ``None`` (the default) opts out of per-tool capping and defers to
     whatever the per-model cap says. The trial's tool-call record and the
     grader inputs run against the untruncated tool output — see
-    :meth:`~tolokaforge.core.loop.ToolCallingLoop._cap_tool_message_content`.
+    :meth:`~tolokaforge.core.loop.ToolCallFunnel.cap_tool_message_content`.
     """
 
 

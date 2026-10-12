@@ -151,7 +151,13 @@ and pushes the whole integration to needs-human.
    it passed NATIVELY in `findings.json` OR the reprobe shows it green under your overlay. Do NOT
    promote a capability to `required` on a mechanism that cannot support it: e.g. a summary-only
    (OpenAI-style) `reasoning_codec` carries no signed thinking blocks, so `THINKING_EMITS_BLOCKS`
-   and the `*_THINKING_REPLAY` caps stay `known_unsupported` under it; a `passthrough` schema that
+   and `THINKING_REPLAY_ROUNDTRIP` stay `known_unsupported` under it. `UNSIGNED_THINKING_REPLAY`
+   is the exception and now usually holds: `openai_summary_replay` replays the summary text, and
+   the plain `openai` codec is an allow-list for routes that genuinely refuse an echo — OpenAI's
+   own endpoints — not the default. `scripts/analysis/probe_reasoning_transport.py` answers which
+   one this route is for about a cent, and
+   `tests/canonical/test_reasoning_codec_preset_routing.py` rejects a non-replaying codec that
+   carries no written reason. A `passthrough` schema that
    only cleared a weak-assertion probe (no 500, args parse) is NOT evidence the emitted VALUE is
    correct. When the mechanism does not clearly support it or the evidence is a weak probe, prefer
    `known_unsupported` (an honest floor) over a `required` that inflates the leaderboard score -

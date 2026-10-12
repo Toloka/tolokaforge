@@ -9,7 +9,7 @@ Per-concern submodules hold the actual definitions:
 - :mod:`.docker_config` — :class:`DockerConfig`, the ``docker:`` block
   ``RunConfig`` carries
 - :mod:`.model_config` — :class:`ModelConfig` +
-  :class:`OpenRouterConfig`
+  :class:`ModelSessionConfig` + :class:`OpenRouterConfig`
 - :mod:`.docker_config` — :class:`DockerConfig`, the ``docker:`` block
   of ``run_config.yaml``
 - :mod:`.run_config` — :class:`RunConfig` and every orchestrator /
@@ -43,7 +43,12 @@ from tolokaforge.core.models.grade import (
     JudgeUsage,
 )
 from tolokaforge.core.models.grade_components import GradeComponents
-from tolokaforge.core.models.model_config import ModelConfig, OpenRouterConfig
+from tolokaforge.core.models.model_config import (
+    RESOLVED_RECORD_KEY,
+    ModelConfig,
+    ModelSessionConfig,
+    OpenRouterConfig,
+)
 from tolokaforge.core.models.run_config import (
     DOCKER_RUNTIME_ALIAS_TARGET,
     LEGACY_DOCKER_RUNTIME_ALIAS,
@@ -96,6 +101,8 @@ from tolokaforge.core.models.task_config import (
     InitialStateConfig,
     LLMJudgeDefaults,
     ProjectConfig,
+    RagConfig,
+    RagToolConfig,
     SeedKind,
     SeedRef,
     StateChecksConfig,
@@ -111,6 +118,8 @@ from tolokaforge.core.models.task_config import (
 )
 from tolokaforge.core.models.trajectory import (
     REPLY_DEFECT_EXCERPT_MAX_CHARS,
+    CostByRoleMetrics,
+    CostByRoleModelMetrics,
     FirstUserMessageSource,
     Message,
     MessageRole,
@@ -204,6 +213,8 @@ __all__ = [
     "JudgeUsage",
     # Trajectory concern
     "REPLY_DEFECT_EXCERPT_MAX_CHARS",
+    "CostByRoleMetrics",
+    "CostByRoleModelMetrics",
     "FirstUserMessageSource",
     "Message",
     "MessageRole",
@@ -222,7 +233,9 @@ __all__ = [
     "UserReplyGuardEvent",
     "UserReplyOutcome",
     # Model config
+    "RESOLVED_RECORD_KEY",
     "ModelConfig",
+    "ModelSessionConfig",
     "OpenRouterConfig",
     # Run config
     "BundleStoreBackend",
@@ -274,6 +287,8 @@ __all__ = [
     "LLMJudgeDefaults",
     "ProjectConfig",
     "RETIRED_STATE_CHECK_KEYS",
+    "RagConfig",
+    "RagToolConfig",
     "SEED_KIND_BY_EXTENSION",
     "SeedKind",
     "SeedRef",

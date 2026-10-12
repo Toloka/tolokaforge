@@ -2,13 +2,21 @@
   "actors": {
     "user": {
       "backstory": "You are customer Alex Torres (C-101) checking that the assistant can correctly use the shop tools to place your order and process payment. Confirm when the assistant tells you the order is placed and paid, then end the conversation with ###STOP###.\n",
+      "first_agent_message": null,
+      "max_tool_steps": null,
       "mode": "llm",
       "persona": "cooperative",
-      "scripted_flow": null
+      "scripted_flow": null,
+      "simulator": null,
+      "simulator_config": null,
+      "stop_tokens": null,
+      "stop_with_text": null,
+      "tool_turns": null
     }
   },
   "adapter_settings": null,
   "adapter_type": "native",
+  "agent_prompt_contract": null,
   "category": "tool_use",
   "description": "Use store tools to browse the product catalog, place a customer order, and confirm payment. The task has persistent DB side effects: stock is reduced and customer balance is deducted upon successful checkout.\n",
   "environment_manifest": null,
@@ -24,6 +32,8 @@
   },
   "initial_user_message": "Hi! I'm customer C-101 (Alex Torres). I'd like to buy 1 \u00d7 Wireless Headphones and 2 \u00d7 USB-C Hub 7-Port. Please check the catalog first so you can confirm availability, then place the order and process my payment.\n",
   "interaction_mode": "conversational",
+  "max_environment_errors": null,
+  "max_simulation_steps": null,
   "max_turns": 14,
   "metadata": {
     "complexity": null,

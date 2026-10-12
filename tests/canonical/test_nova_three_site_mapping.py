@@ -2,10 +2,10 @@
 
 Locks the *interpretation* of a :class:`ProviderBinding` at the three
 places the client applies it: constructor env-set of ``NOVA_API_BASE``,
-:meth:`LLMClient._format_model_name` bare-name return, and the per-attempt
-kwargs mutation in :meth:`LLMClient._call_with_key_rotation` (endpoint pin,
-``api_key`` from ``NOVA_API_KEY``, ``custom_llm_provider`` hint, slug
-rewrite). Drives a real :class:`LLMClient` and intercepts litellm's
+:func:`~tolokaforge.core.llm.providers.litellm_model_id` bare-name return,
+and the per-attempt kwargs mutation in
+:meth:`LLMClient._call_with_key_rotation` (endpoint pin, ``api_key`` from
+``NOVA_API_KEY``, ``custom_llm_provider`` hint, slug rewrite). Drives a real :class:`LLMClient` and intercepts litellm's
 ``completion`` to capture the exact kwargs the transport sees — a client
 refactor that breaks the client's application of the Nova binding cannot
 stay green by editing a hand-copied paraphrase.
@@ -80,7 +80,7 @@ def test_nova_three_site_mapping_drives_real_client(
     try:
         client = LLMClient(ModelConfig(provider="nova", name="busan-v1"))
         env_nova_api_base = os.environ.get("NOVA_API_BASE")
-        formatted_name = client._format_model_name()
+        formatted_name = client.model_name
         with pytest.raises(RuntimeError):
             client._call_with_key_rotation({"model": formatted_name, "messages": []})
     finally:
@@ -92,7 +92,7 @@ def test_nova_three_site_mapping_drives_real_client(
             "env_var": "NOVA_API_BASE",
             "value": env_nova_api_base,
         },
-        "site_2_format_model_name": {
+        "site_2_litellm_model_id": {
             "input_config_name": "busan-v1",
             "output": formatted_name,
         },

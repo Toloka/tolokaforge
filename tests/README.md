@@ -92,6 +92,18 @@ pins what the model is shown, this one pins that a real model shown it neither
 re-sends the opening nor re-introduces the customer. Costs one Sonnet call per
 integration run.
 
+### Live JSON-DB trial isolation
+
+`tests/integration/test_json_db_trial_isolation_e2e.py::test_live_run_with_three_workers_shows_each_trial_only_its_own_db`
+runs `tolokaforge run` with `workers: 3` and Claude Haiku via OpenRouter
+(key-gated on `OPENROUTER_API_KEY`) over the `tool_use` and `custom_checks`
+example packs, then reads each trial's `tool_log.yaml`: no successful `db_query`
+output carries another task's tables or seed rows, at least one trial made a
+successful `db_query`, and every trial with one saw its own seed's row id, as a
+quoted string, in some `db_query` output. It asserts on traces only, never on `binary_pass`. Costs about $0.05 per integration run. Its no-LLM sibling
+in the same file registers the three tasks on one Docker runner and locks the
+same isolation over concurrent `ExecuteTool` calls.
+
 ## Directory Structure
 
 ```
@@ -130,6 +142,7 @@ tests/
     ├── doc_anchors.py        # GitHub-style anchor + section extraction for the canonical doc locks
     ├── wheel_builds.py       # Subset / models wheels built from the tree under test, into a caller-supplied dir
     ├── mock_clients.py       # MockAsyncClient — canonical source
+    ├── loopback_asgi.py      # A real ASGI app under uvicorn on an ephemeral loopback port, for requests that must cross a real httpx transport
     ├── networks.py           # Docker network/volume fixtures
     ├── containers.py         # Docker container fixtures
     ├── docker_helpers.py     # Compose/daemon helpers for the Docker tiers
@@ -242,7 +255,7 @@ Compare output against committed golden snapshots in `snapshots/`.
   means both substrates' transcript rules are reading a trial the two views no
   longer agree on. One lock reads the ids as recorded, before any timeline: its
   failure means the loop stopped assigning episode-unique ids at ingestion
-  (`ToolCallingLoop._assign_call_ids`), not that a substrate drifted — the
+  (`ToolCallFunnel.assign_ids`), not that a substrate drifted — the
   runner half executes the ids the loop produced, as production does.
   Build a coherent message-view/record pair for a grading fixture
   with `tests/utils/timelines.py`; a record naming a call no message asked for is a
@@ -447,8 +460,7 @@ runs entirely from committed cassettes under
 or `ANTHROPIC_API_KEY` present, live mode drives every corpus entry against a
 real `LiteLLMJudgeModelProvider`-backed `RecordingLLMClient` for every kind
 under test, then rewrites the recorded script back into the originating
-fixture's `judge_scripts.<kind_name>` block (or `judge_scripts_per_chunk.
-<kind_name>` block for a multi-client kind) in place — every other key in
+fixture's `judge_scripts.<kind_name>` block in place — every other key in
 the fixture file is preserved byte-identical. The keyless `unit`-tier
 `tests/utils/test_recording_llm_client.py` and the canonical
 `test_writeback_rewrites_cassette_preserving_other_keys` lock this recording
@@ -587,8 +599,9 @@ All markers are enforced via `--strict-markers`.
 | `mock_env_state` | `utils/fixtures.py` | Unit tests for user tools |
 | `test_task_path` | `utils/fixtures.py` | Integration Docker service tests |
 | `temp_output_dir` | `utils/fixtures.py` | Integration Docker service tests |
+| `db_service_loopback_url` | `utils/fixtures.py` | Unit tests driving the real db-service over a real HTTP transport, which honours the per-request `timeout=` `MockAsyncClient` drops |
 | `canon_snapshot` | `canonical/conftest.py` | All canonical tests |
-| `food_delivery_2_*` | `canonical/conftest.py` | Canonical golden-set tests |
+| `serving_gateway` / `gateway` | `canonical/conftest.py` | Canonical tests against the loopback LLM gateway (`utils/recording_gateway.py`): `serving_gateway` is one server per module, `gateway` resets it per test with a cold catalog cache. A module overrides `installed_fake_secrets` to point the SecretManager at `serving_gateway.base_url` |
 | `json_db_container` | `utils/containers.py` | Integration security tests |
 | `rag_service_container` | `utils/containers.py` | Integration tests needing `search_kb` |
 | `runner_container` | `utils/containers.py` | Integration security tests |

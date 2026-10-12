@@ -25,23 +25,27 @@ from __future__ import annotations
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge_coding_harnesses.adapter_support import HARNESS_USAGE_LOG_METADATA_KEY
 
 from tolokaforge.adapters import BaseAdapter
+from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
+from tolokaforge.core.actors.user_simulator import UserSimulator, UserSimulatorContext
+from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
 from tolokaforge.core.env_state import EnvironmentState
 from tolokaforge.core.judge_prompt import effective_judge_system_prompt
-from tolokaforge.core.llm import LLMClient, UserSimulator, build_capabilities
+from tolokaforge.core.llm import LLMClient, build_capabilities
 from tolokaforge.core.llm.presets import (
     resolve_effective_preset,
     resolve_policy_names,
 )
 from tolokaforge.core.models import (
+    RESOLVED_RECORD_KEY,
     Grade,
     GradeComponents,
     Metrics,
@@ -55,6 +59,7 @@ from tolokaforge.core.models import (
     validate_rate_limit_probe_budget,
 )
 from tolokaforge.core.output.artifacts import TrialArtifactWriter
+from tolokaforge.core.plugin_registry import load_user_simulator
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
@@ -531,7 +536,7 @@ class InProcessConductor:
             self.trial_observer.trial_started,
             identity,
             models=self._model_refs(spec),
-            started_at=datetime.now(tz=timezone.utc),
+            started_at=datetime.now(tz=UTC),
         )
         trajectory: Trajectory | None = None
         try:
@@ -802,7 +807,7 @@ class InProcessConductor:
         spec: TrialSpec,
         task_config: TaskConfig,
         setup: _TrialSetup,
-        identity: TrialIdentity | None = None,
+        identity: TrialIdentity,
     ) -> tuple[Trajectory, TrialRunner, str]:
         """Build the user simulator, stuck detector, system prompt, and
         :class:`TrialRunner`, then execute the agent ↔ user-simulator loop.
@@ -836,8 +841,14 @@ class InProcessConductor:
         # ``AgentOnlyTurnPolicy`` factory ignores ``TurnPolicyContext.user_simulator``.
         rate_limit_probe = self.config.orchestrator.rate_limit_probe
         user_simulator: UserSimulator | None
+        user_stop = UserStopRule()
+        user_tool_turns = UserToolTurnRule()
+        first_agent_message: str | None = None
         if task.interaction_mode == "conversational":
             sim = task.resolve_user_simulator()
+            user_stop = UserStopRule.from_config(sim)
+            user_tool_turns = UserToolTurnRule.from_config(sim)
+            first_agent_message = sim.first_agent_message
             user_llm_config = user_config if sim.mode == "llm" else None
             # The simulator hits the same provider quota as the agent, so a probe
             # run has to cover it too — otherwise a simulator 429 kills the trial
@@ -845,14 +856,24 @@ class InProcessConductor:
             # simulator-scoped per-call budget: its throughput is not what the probe
             # measures, and one turn can spend the simulator's budget once per
             # reply-guard attempt, all inside one uninterruptible turn.
-            user_simulator = UserSimulator(
-                mode=sim.mode,
-                llm_config=user_llm_config,
-                persona=sim.persona,
-                backstory=sim.backstory,
-                scripted_flow=sim.scripted_flow,
-                tool_schemas=setup.user_tool_schemas or None,
-                rate_limit_probe=rate_limit_probe.for_simulator(),
+            # The concrete simulator is chosen per task by ``actors.user.simulator``
+            # (``builtin`` by default) and resolved through the
+            # ``tolokaforge.user_simulators`` registry; a non-built-in simulator
+            # reads its own fields from ``sim.simulator_config``, which the engine
+            # passes through untouched.
+            user_simulator = load_user_simulator(sim.simulator)(
+                UserSimulatorContext(
+                    mode=sim.mode,
+                    llm_config=user_llm_config,
+                    persona=sim.persona,
+                    backstory=sim.backstory,
+                    scripted_flow=sim.scripted_flow,
+                    tool_schemas=setup.user_tool_schemas or None,
+                    rate_limit_probe=rate_limit_probe.for_simulator(),
+                    tool_turns=sim.tool_turns,
+                    simulator_config=sim.simulator_config,
+                    task_dir=setup.task_dir,
+                )
             )
         else:
             user_simulator = None
@@ -906,6 +927,16 @@ class InProcessConductor:
             turn_timeout_s = run_turn_s
             episode_timeout_s = run_episode_s
 
+        # The probe's budget, checked next, allows one user reply per turn, and an
+        # isolated user turn asks its simulator once per tool step and again for the
+        # reply — so no budget fits it, and the combination is refused first.
+        if rate_limit_probe.enabled and user_tool_turns.isolated:
+            raise ValueError(
+                f"task {task.task_id}: actors.user.tool_turns is isolated, and "
+                "orchestrator.rate_limit_probe is enabled. The probe's per-turn budget covers "
+                "one user reply, while an isolated user turn asks its simulator up to "
+                f"{user_tool_turns.max_steps + 1} times. Disable the probe for this run."
+            )
         # Checked against the post-clamp value: a pack declaring trial_seconds
         # shrinks the ceiling the probe's per-call budget has to fit inside.
         validate_rate_limit_probe_budget(
@@ -922,6 +953,8 @@ class InProcessConductor:
             tool_executor=setup.tool_executor,
             tool_schemas=setup.tool_schemas,
             max_turns=max_turns,
+            max_simulation_steps=task.max_simulation_steps,
+            max_environment_errors=task.max_environment_errors,
             turn_timeout_s=turn_timeout_s,
             episode_timeout_s=episode_timeout_s,
             stuck_detector=stuck_detector,
@@ -932,12 +965,24 @@ class InProcessConductor:
             events=self.events,
             probe_stats=_build_probe_stats(rate_limit_probe),
             interaction_mode=task.interaction_mode,
+            agent_loop=self.config.orchestrator.agent_loop,
             tool_output_max_chars_by_tool=setup.tool_output_max_chars_by_tool or None,
-            loop_observer=(
-                LoopObserverBinding(self.trial_observer, identity, role="agent")
-                if identity is not None and not isinstance(self.trial_observer, NullTrialObserver)
-                else None
+            # The offered tools the runner reconstructs from the pack's own
+            # ``ToolSource`` rather than from the builtin registry. The runner
+            # reads it to tell a builtin completion tool from a pack tool that
+            # merely shares its name.
+            sourced_tool_names=frozenset(
+                tool.name for tool in spec.task.agent_tools if tool.source is not None
             ),
+            loop_observer=(
+                None
+                if isinstance(self.trial_observer, NullTrialObserver)
+                else LoopObserverBinding(self.trial_observer, identity, role="agent")
+            ),
+            user_stop=user_stop,
+            user_tool_turns=user_tool_turns,
+            first_agent_message=first_agent_message,
+            trace_id=identity.trace_id,
         )
 
         # "" is the runner's "caller supplied nothing" seed: turn 0 is routed
@@ -1156,6 +1201,10 @@ class InProcessConductor:
             grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)
         except GradingFailedError as e:
             trajectory.grading_error = str(e)
+            trajectory.grading_judge_usage = e.judge_usage
+            trajectory.grading_state_snapshots = e.state_snapshots
+            trajectory.grading_state_diff = e.state_diff
+            trajectory.grading_comparison_view = e.comparison_view
             self.logger.error(
                 "Trial could not be graded",
                 task_id=task_config.task_id,
@@ -1436,18 +1485,22 @@ class InProcessConductor:
 
         # Resolved fingerprint per role.
         if resolved_agent_config is not None:
-            result["agent"]["resolved"] = _build_resolved_block(resolved_agent_config)
+            result["agent"][RESOLVED_RECORD_KEY] = _build_resolved_block(resolved_agent_config)
         if resolved_user_config is not None and result.get("user"):
-            result["user"]["resolved"] = _build_resolved_block(resolved_user_config)
+            result["user"][RESOLVED_RECORD_KEY] = _build_resolved_block(resolved_user_config)
         if resolved_judge_config is not None and result.get("judge"):
-            result["judge"]["resolved"] = _build_resolved_block(resolved_judge_config)
+            result["judge"][RESOLVED_RECORD_KEY] = _build_resolved_block(resolved_judge_config)
 
         return result
 
     def _build_system_prompt(
         self, task: TaskConfig, tool_schemas: list[dict[str, Any]], task_dir: Path
     ) -> str:
-        return build_system_prompt(task=task, task_dir=task_dir)
+        return build_system_prompt(
+            task=task,
+            task_dir=task_dir,
+            default_prompt_contract=self.agent_client.capabilities.default_agent_prompt_contract,
+        )
 
 
 def in_process_conductor_factory(ctx: ConductorContext) -> InProcessConductor:

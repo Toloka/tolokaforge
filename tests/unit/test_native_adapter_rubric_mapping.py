@@ -8,12 +8,14 @@ arrives on ``TaskDescription.grading.llm_judge.rubric`` without loss.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.runner.models import JudgeCustomization, TaskDescription
 
 pytestmark = pytest.mark.unit
 
@@ -348,3 +350,55 @@ def test_include_agent_system_prompt_none_when_no_layer_sets_it(tmp_path: Path):
 
     assert judge.customization is not None
     assert judge.customization.include_agent_system_prompt is None
+
+
+# judge_snippet_chars (ADR-0054): not tri-state — ``null`` means whole documents.
+
+
+def test_judge_snippet_chars_project_figure_inherited_when_task_unset(tmp_path: Path):
+    """A project figure reaches a task that leaves the key out, and crosses the wire."""
+    adapter = _build_task(
+        tmp_path,
+        _rubric_grading(),
+        project_task_defaults=_judge_defaults({"judge_snippet_chars": 50}),
+    )
+    description = adapter.to_task_description("rubric_task")
+
+    assert description.grading.llm_judge.customization.judge_snippet_chars == 50
+    wire = json.loads(description.model_dump_json())
+    assert wire["grading"]["llm_judge"]["customization"]["judge_snippet_chars"] == 50
+
+
+def test_judge_snippet_chars_task_null_overrides_a_project_figure(tmp_path: Path):
+    """A task ``null`` is a value, whole documents, and wins over a project figure;
+    it rides the wire as ``null`` rather than being dropped as the default."""
+    adapter = _build_task(
+        tmp_path,
+        _rubric_grading({"judge_snippet_chars": None}),
+        project_task_defaults=_judge_defaults({"judge_snippet_chars": 50}),
+    )
+    description = adapter.to_task_description("rubric_task")
+
+    assert description.grading.llm_judge.customization.judge_snippet_chars is None
+    wire = json.loads(description.model_dump_json())
+    assert wire["grading"]["llm_judge"]["customization"]["judge_snippet_chars"] is None
+
+
+def test_judge_snippet_chars_is_off_the_wire_when_no_layer_sets_it(tmp_path: Path):
+    """A customization block without the key dumps without it, so an older image,
+    which forbids a key it does not declare, accepts the task."""
+    adapter = _build_task(tmp_path, _rubric_grading({"disable_knowledge_search": True}))
+    description = adapter.to_task_description("rubric_task")
+
+    assert description.grading.llm_judge.customization.judge_snippet_chars == 200
+    wire = json.loads(description.model_dump_json())
+    assert "judge_snippet_chars" not in wire["grading"]["llm_judge"]["customization"]
+
+
+def test_leaving_judge_snippet_chars_off_keeps_the_serialization_schema():
+    """The customization dump that drops the key at its default still describes
+    every field it can carry, and so does the task description holding it."""
+    serialization = JudgeCustomization.model_json_schema(mode="serialization")
+    assert set(serialization["properties"]) == set(JudgeCustomization.model_fields)
+    defs = TaskDescription.model_json_schema(mode="serialization")["$defs"]
+    assert set(defs["JudgeCustomization"]["properties"]) == set(JudgeCustomization.model_fields)

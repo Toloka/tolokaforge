@@ -21,6 +21,7 @@ import json
 from pathlib import Path
 
 from tolokaforge.core.grading.bundle import load_grade_bundle
+from tolokaforge.core.grading.judge_kinds import resolve_judge_trial_options
 from tolokaforge.core.grading.judge_kinds.parity import ParityCorpusEntry
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.transcript_wire import (
@@ -82,22 +83,14 @@ def corpus_entry_from_bundle(bundle_dir: Path) -> ParityCorpusEntry:
             initial_state, final_state, primary_keys=primary_keys, unstable_fields=unstable_fields
         )
 
-    customization = grading_config.llm_judge.customization
-
     return ParityCorpusEntry(
         entry_id=bundle.manifest.trial_id,
         rubric=grading_config.llm_judge.rubric,
         agent_system_prompt=agent_system_prompt,
         transcript=transcript,
         state_diff=state_diff,
-        disable_knowledge_search=bool(customization and customization.disable_knowledge_search),
-        custom_system_prompt=customization.system_prompt if customization else None,
-        include_agent_system_prompt=(
-            customization.include_agent_system_prompt
-            if customization and customization.include_agent_system_prompt is not None
-            else True
-        ),
         judge_scripts={},
+        options=resolve_judge_trial_options(grading_config.llm_judge.customization),
     )
 
 

@@ -1616,6 +1616,28 @@ def test_a_block_the_corpus_cannot_be_graded_against_stops_the_run(tmp_path: Pat
         _reconcile(_corpus(tmp_path), root)
 
 
+def test_a_block_holding_a_pattern_its_regex_engine_refuses_stops_the_run(tmp_path: Path) -> None:
+    """A lookahead in a block naming no engine is compiled under the linear default and refused.
+
+    Every bundle would be re-checked against that block, so the refusal is the run's, named
+    with the opt-in that makes the block re-checkable, before any trial is read.
+    """
+    root = tmp_path / "packs"
+    _write_pack(
+        root / "notes",
+        grading_text=_GRADING.replace("equals: list_notes", "regex: '(?=list_)list_notes'"),
+        task_id=_CORPUS_TASK_ID,
+        migration={"migrations": [_declared()]},
+    )
+
+    with pytest.raises(ReconcileError) as raised:
+        _reconcile(_corpus(tmp_path), root)
+
+    assert "cannot be used as written" in str(raised.value)
+    assert "'(?=list_)list_notes'" in str(raised.value)
+    assert "regex_engine: backtracking" in str(raised.value)
+
+
 def _patch_recorded_criterion(bundle: Path, **fields: Any) -> None:
     """Rewrite the criterion the bundle's own ``task.yaml`` records, in place."""
     task = yaml.safe_load((bundle / "task.yaml").read_text())

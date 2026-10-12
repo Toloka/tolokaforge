@@ -500,12 +500,15 @@ def text_matches_pattern(
     flags: int = re.IGNORECASE,
 ) -> bool:
     """
-    Check if text matches a regex pattern.
+    Check if text matches a regex pattern, searched by Python ``re``.
+
+    A code-authored helper, outside the grading regex engines a pack's
+    ``regex_engine`` selects: ``flags`` is ``re``'s own vocabulary.
 
     Args:
         text: Text to match
         pattern: Regex pattern
-        flags: Regex flags (default: case-insensitive)
+        flags: ``re`` flags (default: case-insensitive)
 
     Returns:
         True if pattern matches anywhere in text

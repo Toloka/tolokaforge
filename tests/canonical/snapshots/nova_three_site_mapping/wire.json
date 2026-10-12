@@ -3,7 +3,7 @@
     "env_var": "NOVA_API_BASE",
     "value": "https://api.nova.amazon.com/v1"
   },
-  "site_2_format_model_name": {
+  "site_2_litellm_model_id": {
     "input_config_name": "busan-v1",
     "output": "busan-v1"
   },

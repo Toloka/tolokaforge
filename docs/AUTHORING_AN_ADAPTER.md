@@ -31,7 +31,7 @@ build-backend = "hatchling.build"
 [project]
 name = "tolokaforge-adapter-my-benchmark"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = ["tolokaforge"]
 
 [project.entry-points."tolokaforge.adapters"]
@@ -126,7 +126,13 @@ declares exactly six methods, mapped to the numbered list in
 
 - `grading_tool_inventory(task, task_dir) -> ToolInventory` (item 14) — the
   tool set this adapter presents at runtime. Default:
-  `ToolInventory.unresolvable()`.
+  `ToolInventory.unresolvable()`. A concrete inventory may report
+  `json_db_builtins`, the declared tools its runtime serves as source-less
+  JSON-DB builtins, or leave it `None` when it cannot say; `None` skips the
+  rule refusing those tools on a task that seeds no table. It may likewise
+  report `json_db_tool_config_keys`, each of those builtins whose tool block
+  carries init kwargs mapped to the keys, which the gate refuses, with `{}`
+  for none; `None` says it cannot tell, and skips that rule.
 - `grading_replay_world(task, task_dir) -> ReplayWorld` (item 15) — the
   initial-state + `mcp_server` a golden-action replay executes against.
   Default: `ReplayWorld.unresolvable()`.
@@ -265,6 +271,47 @@ grader-kind registration rename) fails the adapter's CI on the next
 loosely (`tolokaforge>=X`) in `pyproject.toml` if you want to opt into fast
 drift signal, tightly (`tolokaforge==X.Y.Z`) if you would rather age the
 adapter alongside a specific engine cut.
+
+## Shipping a custom user simulator
+
+An adapter that must drive its own dialogue — a benchmark whose user has a
+task-authored system prompt, its own sampling, or a multi-step turn structure —
+does **not** add fields to the engine's built-in simulator. It registers a
+simulator under the `tolokaforge.user_simulators` entry-point group and a task
+(or the project's `task_defaults`) selects it with `actors.user.simulator`:
+
+1. **Implement the `UserSimulator` Protocol.** Satisfy the `Actor` reply
+   contract (`reply(context, *, observation) -> GenerationResult`) and expose
+   `last_system_prompt: str | None` (the runner writes it to `prompts.yaml`; leave
+   it `None` if you never dispatch an LLM turn). A simulator that calls its own
+   `LLMClient` passes `observation` on to `generate`: it carries the trial's
+   `session_id`, which keeps the user's conversation on one replica when the user
+   model declares `session` and the backend hashes that header.
+2. **Read your own config from `simulator_config`.** The engine passes
+   `actors.user.simulator_config` to your factory on the `UserSimulatorContext`
+   verbatim and never interprets it — validate that mapping into your own model.
+   Your benchmark's fields live there, not in the engine's `ActorSpec`. A file
+   the config names (a prompt template, say) stays a path relative to the task:
+   resolve it against `ctx.task_dir`, the task's directory, so the task records
+   no machine-specific path.
+3. **Register a factory.**
+
+   ```toml
+   [project.entry-points."tolokaforge.user_simulators"]
+   my_sim = "mypkg.simulator:my_simulator_factory"
+   ```
+
+   ```python
+   from tolokaforge.core.plugin_registry import UserSimulator, UserSimulatorContext
+
+   def my_simulator_factory(ctx: UserSimulatorContext) -> UserSimulator:
+       return MySimulator(ctx.simulator_config)
+   ```
+
+4. **Select it.** A task the adapter builds sets `actors.user.simulator: "my_sim"`
+   (and any `actors.user.simulator_config`); an unregistered name is refused at
+   run start. See [ADR-0051](adr/0051-user-simulator-protocol-and-registry.md) and
+   [docs/RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
 
 ## What lives elsewhere
 

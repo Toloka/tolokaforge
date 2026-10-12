@@ -1,17 +1,19 @@
 """Task-scope system prompt assembly — pure, side-effect-free, HTTP-free.
 
 Produces the agent system prompt (pre-policy) the first
-:meth:`LLMClient.generate` receives on ``system=``. The priority chain
-walks the task authoring surfaces from most specific to fallback:
+:meth:`LLMClient.generate` receives on ``system=``. An inline
+``task.policies["agent_system_prompt"]`` short-circuits everything and is
+returned verbatim. Otherwise the prompt is a reply contract — how to answer,
+from :mod:`tolokaforge.core.agent_prompt_contract`, present only when one is
+selected — followed by the task's own document, which the authoring chain
+walks from most specific to fallback:
 
-1. ``task.policies["agent_system_prompt"]`` — inline string, returned
-   verbatim.
-2. ``task.system_prompt`` names a file under *task_dir* — file contents
+1. ``task.system_prompt`` names a file under *task_dir* — file contents
    returned verbatim.
-3. Legacy ``main_policy.md`` alongside an additional-policy file —
+2. Legacy ``main_policy.md`` alongside an additional-policy file —
    composed under ``<main_policy>`` / ``<tech_support_policy>`` and
    wrapped in an ``<instructions>`` / ``<policy>`` envelope.
-4. Minimal default with ``policies["guidance"]`` bullets and, when
+3. Minimal default with ``policies["guidance"]`` bullets and, when
    present, ``tools.agent.browser.initial_url``.
 
 The only side effect is reading local files. The returned string is
@@ -22,6 +24,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from tolokaforge.core.agent_prompt_contract import resolve_agent_prompt_contract
 
 if TYPE_CHECKING:
     from tolokaforge.core.models import TaskConfig
@@ -68,8 +72,17 @@ def _build_single_file(domain_policy: str) -> str:
     return _wrap_policy_document(_AGENT_INSTRUCTION_NO_TRAILING_NEWLINE, domain_policy)
 
 
-def _build_minimal_default(task: TaskConfig) -> str:
-    parts = ["You are a helpful assistant."]
+_BARE_PERSONA = "You are a helpful assistant."
+
+
+def _build_minimal_default(task: TaskConfig, *, persona: bool = True) -> str:
+    """Guidance bullets and browser hint, under a generic persona.
+
+    *persona* is dropped when a reply contract already opened the prompt with
+    one of its own: two personas in one prompt contradict each other, and the
+    contract's is the specific one.
+    """
+    parts = [_BARE_PERSONA] if persona else []
 
     guidance = task.policies.get("guidance", []) if task.policies else []
     if guidance:
@@ -90,20 +103,34 @@ def _build_minimal_default(task: TaskConfig) -> str:
     return "\n".join(parts)
 
 
-def build_system_prompt(*, task: TaskConfig, task_dir: Path) -> str:
+def _compose_with_contract(contract: str, body: str | None) -> str:
+    """Put the reply contract first, the task's own prompt after it.
+
+    Order is deliberate: the contract describes how to answer every turn and
+    stays true for the whole episode, while the body describes this particular
+    job. A model reading top-down meets the standing rule before the specifics.
+    """
+    if body is None or not body.strip():
+        return contract
+    return f"{contract}\n\n{body}"
+
+
+def build_system_prompt(
+    *, task: TaskConfig, task_dir: Path, default_prompt_contract: str | None = None
+) -> str:
     """Assemble the pre-policy agent system prompt for *task*.
 
-    Priority (first-match-wins):
+    An inline ``task.policies["agent_system_prompt"]`` wins outright and is
+    returned verbatim. Otherwise the result is the selected reply contract,
+    if any, followed by the task's own document as resolved by
+    :func:`_build_task_body`.
 
-    1. ``task.policies["agent_system_prompt"]`` — inline string, returned
-       verbatim.
-    2. ``task.system_prompt`` as a filename in *task_dir* — file contents
-       returned verbatim.
-    3. Legacy ``main_policy.md`` alongside an additional-policy file —
-       composed into ``<main_policy>`` / ``<tech_support_policy>``
-       sections under an ``<instructions>`` / ``<policy>`` envelope.
-    4. Minimal default that lists any ``policies["guidance"]`` bullets
-       and, when present, ``tools.agent.browser.initial_url``.
+    *default_prompt_contract* is the model preset's
+    ``default_agent_prompt_contract``. ``task.agent_prompt_contract`` names a
+    contract over it, and it applies only under
+    ``interaction_mode: agent_only``: the shipped text tells an agent that a
+    tool-call-free message ends the task, which is true of the solo turn
+    policy and false of a conversation with a user.
 
     Deterministic. Only side effect is local-file reads. Never opens a
     network connection.
@@ -111,6 +138,24 @@ def build_system_prompt(*, task: TaskConfig, task_dir: Path) -> str:
     if "agent_system_prompt" in task.policies:
         return task.policies["agent_system_prompt"]
 
+    contract_selector = task.agent_prompt_contract
+    if contract_selector is None and task.interaction_mode == "agent_only":
+        contract_selector = default_prompt_contract
+    contract = (
+        resolve_agent_prompt_contract(contract_selector, task_dir=task_dir)
+        if contract_selector
+        else None
+    )
+
+    if contract is not None:
+        body = _build_task_body(task=task, task_dir=task_dir, persona=False)
+        return _compose_with_contract(contract, body)
+
+    return _build_task_body(task=task, task_dir=task_dir)
+
+
+def _build_task_body(*, task: TaskConfig, task_dir: Path, persona: bool = True) -> str:
+    """The task's own prompt, by the authoring chain that predates contracts."""
     if task.system_prompt:
         system_prompt_path = task_dir / task.system_prompt
         if system_prompt_path.exists():
@@ -138,4 +183,4 @@ def build_system_prompt(*, task: TaskConfig, task_dir: Path) -> str:
         if system_prompt_path.exists():
             return _build_single_file(system_prompt_path.read_text())
 
-    return _build_minimal_default(task)
+    return _build_minimal_default(task, persona=persona)

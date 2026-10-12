@@ -24,7 +24,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4.6"
-    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "openai/gpt-4.1-mini"

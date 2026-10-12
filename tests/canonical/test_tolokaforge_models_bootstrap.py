@@ -8,10 +8,10 @@ milestone's byte-identical acceptance test.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
-import tomllib
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
@@ -29,7 +29,7 @@ def test_models_wheel_constants_match_declared_contract() -> None:
     )
     assert tolokaforge_models.__version__ == models_pyproject["project"]["version"]
     assert tolokaforge_models.__api_version__ == 1
-    assert tolokaforge_models.minimum_engine_version == ">=0.17,<1.0"
+    assert tolokaforge_models.minimum_engine_version == ">=0.28,<1.0"
 
 
 def test_models_minimum_engine_version_contains_installed_engine() -> None:

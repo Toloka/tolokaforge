@@ -23,12 +23,17 @@ Run with:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.llm.client import UserSimulator
+from tolokaforge.core.llm import GenerationResult
+from tolokaforge.core.llm.client import BuiltinUserSimulator
+from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
+from tolokaforge.core.runner import TrialRunner
+from tolokaforge.tools.registry import ToolResult
 
 pytestmark = [
     pytest.mark.integration,
@@ -36,7 +41,7 @@ pytestmark = [
     pytest.mark.llm,
 ]
 
-_TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+_TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 _OPENING = (
     "Hi, this is Alex Quill, customer number 55001234. I just wanted to check "
@@ -67,12 +72,12 @@ _AGENT_ANSWER = (
 
 
 @pytest.fixture()
-def simulator() -> UserSimulator:
+def simulator() -> BuiltinUserSimulator:
     if not os.getenv("OPENROUTER_API_KEY"):
         pytest.skip("OPENROUTER_API_KEY not set — skipping live simulator test")
     # ``_llm_reply`` pins its own generation temperature; the config value is
     # not the control here, so none is claimed.
-    return UserSimulator(
+    return BuiltinUserSimulator(
         mode="llm",
         llm_config=ModelConfig(
             provider="openrouter",
@@ -83,7 +88,7 @@ def simulator() -> UserSimulator:
     )
 
 
-def test_simulator_does_not_restart_after_agent_answers(simulator: UserSimulator) -> None:
+def test_simulator_does_not_restart_after_agent_answers(simulator: BuiltinUserSimulator) -> None:
     """First live simulator turn after a full answer must continue, not reopen.
 
     The shared transcript is exactly the failure shape: seeded opening, an
@@ -118,3 +123,60 @@ def test_simulator_does_not_restart_after_agent_answers(simulator: UserSimulator
         or "55001234" in reply
     )
     assert not restarted, f"simulator restarted the conversation: {reply!r}"
+
+
+def _terminating_agent() -> MagicMock:
+    """A mock agent that ends the trial after one free turn.
+
+    Empty ``usage.calls`` and ``cost_usd=None`` mean the agent contributes no
+    spend, so the trial's cost is exactly the real user simulator's spend.
+    """
+    agent = MagicMock()
+    agent.model_name = "mock-agent"
+    agent.capabilities.max_context_tokens = None
+    agent.capabilities.context_watermark = None
+    agent.generate.return_value = GenerationResult(
+        text="Thanks, that's all I needed.",
+        tool_calls=[],
+        usage=Usage(),
+        cost_usd=None,
+    )
+    return agent
+
+
+def test_simulator_spend_lands_in_trial_metrics(simulator: BuiltinUserSimulator) -> None:
+    """A live conversational trial folds the user simulator's real spend into
+    the trial ``Metrics``, while the USER ``Message`` keeps no generation id.
+
+    Only the user side hits the wire (the agent is a free terminating mock), so
+    the trial's ``cost_usd`` is exactly the simulator's spend and the ``role``
+    stamped on ``usage.calls`` is provably the user's.
+    """
+    executor = MagicMock()
+    executor.execute.return_value = ToolResult(success=True, output="ok")
+    runner = TrialRunner(
+        task_id="live-user-spend",
+        trial_index=0,
+        agent_client=_terminating_agent(),
+        user_simulator=simulator,
+        tool_executor=executor,
+        tool_schemas=[{"type": "function", "function": {"name": "noop"}}],
+        max_turns=1,
+        turn_timeout_s=60,
+        episode_timeout_s=600,
+    )
+    # Empty initial message => turn 0 is bootstrapped by the real simulator,
+    # which is the only wire call in the trial.
+    trajectory = runner.run("You are a helpful support agent.", "")
+
+    metrics = trajectory.metrics
+    user_rows = [c for c in metrics.usage.calls if c.role == "user"]
+    assert user_rows, "no user-role call was recorded in the trial metrics"
+    assert metrics.cost_usd is not None and metrics.cost_usd > 0.0
+    gen_ids = [c.openrouter_generation_id for c in user_rows if c.openrouter_generation_id]
+    assert gen_ids, "the user call carried no OpenRouter generation id"
+    assert set(gen_ids) <= set(metrics.openrouter_generation_ids)
+
+    user_messages = [m for m in trajectory.messages if m.role == MessageRole.USER]
+    assert user_messages
+    assert all(m.openrouter_generation_id is None for m in user_messages)

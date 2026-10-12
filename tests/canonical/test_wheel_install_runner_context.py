@@ -40,12 +40,13 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 import textwrap
 import zipfile
 from pathlib import Path
 
 import pytest
+
+from tests.utils.wheel_builds import base_wheel_in, build_workspace_wheels, make_wheel_install_venv
 
 pytestmark = pytest.mark.canonical
 
@@ -61,12 +62,18 @@ _EXPECTED_FORCE_INCLUDES: tuple[str, ...] = (
     "tolokaforge/_subset_build/LICENSE",
     "tolokaforge/_subset_build/scripts/hatch/hatch_runner_subset_builder.py",
     "tolokaforge/_python_version.txt",
+    # The two workspace-sibling source trees the runner/grader/rag
+    # sibling-wheel-builder stages compile in-container. Their ``pyproject.toml``
+    # must ship on a wheel install, or ``hatchling build`` runs in a sibling dir
+    # with no pyproject and the build dies.
+    "tolokaforge/_subset_build/tolokaforge_models/pyproject.toml",
+    "tolokaforge/_subset_build/tolokaforge_coding_harnesses/pyproject.toml",
 )
 
-# Every file the runner Dockerfile ``COPY`` lines reference by name — the
-# assembled build context under a wheel install must land each one so
-# ``hatchling build --target custom`` inside the runner-image builder
-# stage finds its inputs.
+# Every file the runner (and grader — same full source set) Dockerfile ``COPY``
+# lines reference by name — the assembled build context under a wheel install
+# must land each one so ``hatchling build`` inside the image builder stage finds
+# its inputs.
 _EXPECTED_CONTEXT_ENTRIES: tuple[str, ...] = (
     "pyproject.toml",
     "README.md",
@@ -74,6 +81,16 @@ _EXPECTED_CONTEXT_ENTRIES: tuple[str, ...] = (
     ".python-version",
     "scripts/hatch",
     "tolokaforge",
+    "tolokaforge_models/pyproject.toml",
+    "tolokaforge_coding_harnesses/pyproject.toml",
+)
+
+# The rag-service build context does not compile the full engine; it copies the
+# resolved wheel, its own service dir, and only the two sibling trees.
+_EXPECTED_RAG_CONTEXT_ENTRIES: tuple[str, ...] = (
+    "tolokaforge/env/rag_service",
+    "tolokaforge_models/pyproject.toml",
+    "tolokaforge_coding_harnesses/pyproject.toml",
 )
 
 
@@ -81,49 +98,14 @@ _EXPECTED_CONTEXT_ENTRIES: tuple[str, ...] = (
 def built_wheels_dist(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Build the base tolokaforge wheel + every workspace-sibling wheel it
     depends on (tolokaforge-models, tolokaforge-coding-harnesses) into one
-    directory (returned).
-
-    Uses ``python -m hatchling`` rather than ``hatch build`` to avoid the
-    ``hatch`` CLI dep — matches ``test_runner_subset_install_smoke.py``'s
-    invocation for the same reason (compat with the ``uv`` version pin).
-    ``uv pip install --find-links <dist_dir>`` resolves the engine's deps
-    on the sibling wheels against this dir.
-    """
-    dist_dir = tmp_path_factory.mktemp("dist")
-    for project_dir, label in (
-        (REPO_ROOT, "engine"),
-        (REPO_ROOT / "tolokaforge_models", "models"),
-        (REPO_ROOT / "tolokaforge_coding_harnesses", "coding-harnesses"),
-    ):
-        result = subprocess.run(
-            [sys.executable, "-m", "hatchling", "build", "-t", "wheel", "-d", str(dist_dir)],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            pytest.fail(
-                f"{label} wheel build failed (exit {result.returncode}):\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-            )
-    return dist_dir
+    directory (returned)."""
+    return build_workspace_wheels(tmp_path_factory.mktemp("dist"))
 
 
 @pytest.fixture(scope="module")
 def built_base_wheel(built_wheels_dist: Path) -> Path:
     """Path to the engine ``tolokaforge-*.whl`` produced by :func:`built_wheels_dist`."""
-    wheels = list(built_wheels_dist.glob("*.whl"))
-    # Positive match on the base distribution name — ``tolokaforge-<version>``.
-    # A negative filter against one known sibling (e.g. ``tolokaforge_runner_
-    # subset``) would silently include a hypothetical third target with a
-    # different name; matching ``tolokaforge-`` (dash after the package name,
-    # not underscore) unambiguously picks the base wheel.
-    base_wheels = [w for w in wheels if w.name.startswith("tolokaforge-")]
-    assert len(base_wheels) == 1, (
-        f"expected exactly one base tolokaforge wheel in {built_wheels_dist}, "
-        f"got: {[w.name for w in wheels]}"
-    )
-    return base_wheels[0]
+    return base_wheel_in(built_wheels_dist)
 
 
 def test_base_wheel_ships_runner_context_via_force_include(built_base_wheel: Path) -> None:
@@ -172,54 +154,7 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
     would already be violated if the duplicate returned.
     """
     venv_dir = tmp_path_factory.mktemp("scratch_venv")
-    subprocess.run(
-        [sys.executable, "-m", "venv", str(venv_dir)],
-        check=True,
-        capture_output=True,
-    )
-    # POSIX layout first; fall back to Windows if the POSIX path is absent
-    # (CI runs on Linux, but the fallback keeps the fixture cross-platform).
-    venv_python = venv_dir / "bin" / "python"
-    if not venv_python.exists():
-        venv_python = venv_dir / "Scripts" / "python.exe"
-
-    # Prefer ``uv pip install`` for resolver speed (~4s vs ~120s with plain
-    # ``pip`` when the base wheel's ~140 transitive deps have to resolve).
-    # Falls back to the venv's own ``pip`` if ``uv`` is absent from PATH —
-    # matches the pattern in ``test_runner_subset_install_smoke.py`` which
-    # documents the same 30x speedup.
-    uv_on_path = subprocess.run(["uv", "--version"], capture_output=True, text=True).returncode == 0
-    if uv_on_path:
-        install_cmd = [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            str(venv_python),
-            "--quiet",
-            "--find-links",
-            str(built_wheels_dist),
-            str(built_base_wheel),
-        ]
-    else:
-        install_cmd = [
-            str(venv_python),
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "--find-links",
-            str(built_wheels_dist),
-            str(built_base_wheel),
-        ]
-
-    install_result = subprocess.run(install_cmd, capture_output=True, text=True)
-    if install_result.returncode != 0:
-        pytest.fail(
-            f"wheel install into scratch venv failed (exit {install_result.returncode}):\n"
-            f"cmd: {install_cmd}\n"
-            f"stdout:\n{install_result.stdout}\nstderr:\n{install_result.stderr}"
-        )
+    venv_python = make_wheel_install_venv(venv_dir, built_wheels_dist, built_base_wheel)
 
     # Run the probe from a CWD outside the repo — otherwise the scratch
     # venv's ``sys.path[0]`` prepends the CWD (repo root), and
@@ -235,6 +170,7 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
     # ``COPY`` lines expect.
     probe_prelude = (
         f"_EXPECTED_ENTRIES = {list(_EXPECTED_CONTEXT_ENTRIES)!r}\n"
+        f"_RAG_EXPECTED_ENTRIES = {list(_EXPECTED_RAG_CONTEXT_ENTRIES)!r}\n"
         f"_PYPROJECT_MARKER = {'[tool.hatch.build.targets.custom]'!r}\n"
     )
     probe_body = textwrap.dedent("""
@@ -246,6 +182,7 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         from tolokaforge.docker.builder import (
             assemble_build_context,
             get_image_definition,
+            rag_service_context_files,
             repo_root,
         )
         from tolokaforge.docker.image_source_policy import resolve_image_source
@@ -295,11 +232,40 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         finally:
             shutil.rmtree(build_dir, ignore_errors=True)
 
+        # Grader shares the runner's full source set and has no stack, so its
+        # production path is get_image_definition("grader"); on a wheel install
+        # it must resolve to the packaged copies, not repo-relative paths.
+        grader = get_image_definition("grader")
+        grader_dir = assemble_build_context(root, grader["dockerfile"], grader["context_files"])
+        try:
+            grader_present = {name: (grader_dir / name).exists() for name in _EXPECTED_ENTRIES}
+        finally:
+            shutil.rmtree(grader_dir, ignore_errors=True)
+
+        # rag-service remaps only its two sibling trees. rag_service_context_files
+        # is wheel/env-aware and takes the wheel path directly (no resolve_wheel),
+        # so a fake wheel exercises the sibling remap + assembly network-free; the
+        # real resolve_wheel + docker build is the integration gate's job.
+        fake_whl = root / "probe-fake-tolokaforge.whl"
+        fake_whl.write_bytes(b"PK\\x03\\x04")
+        rag_ctx = rag_service_context_files(str(fake_whl))
+        rag_dir = assemble_build_context(
+            root, "tolokaforge/docker/dockerfiles/rag.Dockerfile", rag_ctx
+        )
+        try:
+            rag_present = {name: (rag_dir / name).exists() for name in _RAG_EXPECTED_ENTRIES}
+            rag_wheel_present = bool(list(rag_dir.glob("*.whl")))
+        finally:
+            shutil.rmtree(rag_dir, ignore_errors=True)
+
         print(json.dumps({
             "repo_root": str(root),
             "wheel_install": wheel_install,
             "lists_equal": lists_equal,
             "files_present": files_present,
+            "grader_present": grader_present,
+            "rag_present": rag_present,
+            "rag_wheel_present": rag_wheel_present,
             "pyproject_has_custom_target": _PYPROJECT_MARKER in pyproject_text,
             "pyproject_size": len(pyproject_text),
             "runner_published_repo": svc.published_image_repo,
@@ -363,6 +329,30 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         "This is the exact v0.14.0/v0.14.1 failure mode; check that "
         "``core_stack()`` reads its context list from ``get_image_definition()`` "
         "and that the base wheel's ``force-include`` table ships every input."
+    )
+
+    # grader shares the runner's full source set; on a wheel install it must
+    # assemble the same inputs.
+    grader_missing = [
+        n for n in _EXPECTED_CONTEXT_ENTRIES if not probe_data["grader_present"].get(n)
+    ]
+    assert not grader_missing, (
+        "``get_image_definition('grader')`` did not land these inputs on a wheel "
+        f"install: {grader_missing}. grader must share the runner's packaged "
+        "``_subset_build`` mapping."
+    )
+
+    # rag-service remaps only its two sibling trees plus its own service dir;
+    # the resolved wheel is flat-copied for the Dockerfile's pip install.
+    rag_missing = [n for n in _EXPECTED_RAG_CONTEXT_ENTRIES if not probe_data["rag_present"].get(n)]
+    assert not rag_missing, (
+        "``rag_service_context_files`` did not land these inputs on a wheel "
+        f"install: {rag_missing}. The sibling trees must remap to the packaged "
+        "``_subset_build`` copies."
+    )
+    assert probe_data["rag_wheel_present"], (
+        "the rag-service build context did not land the engine wheel on a wheel "
+        "install — the Dockerfile's ``pip install ${WHEEL_FILENAME}`` would fail."
     )
 
     # Content-shape check on the shipped pyproject.toml. Presence alone is

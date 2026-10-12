@@ -5,7 +5,7 @@ It composes a :class:`~tolokaforge.core.llm.capabilities.ModelCapabilities`
 set (schema sanitizer, prompt enrichment, params, response, content,
 reasoning codec, cache) and delegates per-request adaptation to each policy.
 
-``UserSimulator`` wraps the same client for tau-bench-style user simulation.
+``BuiltinUserSimulator`` wraps the same client for tau-bench-style user simulation.
 """
 
 from __future__ import annotations
@@ -16,10 +16,11 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable, Iterable
+import uuid
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 if TYPE_CHECKING:
     from tolokaforge.core.loop import TerminationDecision
@@ -45,6 +46,8 @@ from tenacity.wait import wait_base
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyGuard
+from tolokaforge.core.actors.tool_turns import shared_view, simulator_view
+from tolokaforge.core.actors.user_simulator import UserSimulatorContext
 from tolokaforge.core.env_var import parse_env_non_negative_int, parse_env_positive_float
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.gateway_route import (
@@ -54,17 +57,31 @@ from tolokaforge.core.llm.gateway_route import (
     resolve_gateway_route,
 )
 from tolokaforge.core.llm.litellm_params import allowed_openai_params
+from tolokaforge.core.llm.openrouter_headers import (
+    configure_openrouter_default_headers,
+    is_openrouter_provider,
+)
 from tolokaforge.core.llm.params_policy import RuleAction
-from tolokaforge.core.llm.presets import build_capabilities
+from tolokaforge.core.llm.presets import build_capabilities, resolve_effective_preset
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
-from tolokaforge.core.llm.providers import compile_rate_limit_patterns, get_provider_binding
+from tolokaforge.core.llm.providers import (
+    compile_rate_limit_patterns,
+    get_provider_binding,
+    litellm_model_id,
+)
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
+from tolokaforge.core.llm.reasoning_transport import (
+    PermissiveReasoningReader,
+    arriving_reasoning,
+)
+from tolokaforge.core.llm.session_header import session_header_conflict
 from tolokaforge.core.llm.usage import (
     CostSource,
     Usage,
     UsageExtractor,
     extract_openrouter_generation_id,
+    extract_upstream_provider,
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
@@ -75,8 +92,9 @@ from tolokaforge.core.models import (
     ReplyDefect,
     ToolCall,
 )
+from tolokaforge.core.models.task_config import UserToolTurns
 from tolokaforge.core.pricing import estimate_cost, resolve_pricing
-from tolokaforge.core.run_display_events import LLMCallObservation
+from tolokaforge.core.run_display_events import LLMCallObservation, LLMCallRole
 
 # Silence litellm's stdout banners ("Provider List: https://docs.litellm.ai/docs/providers",
 # "LiteLLM completion() model= ...") - pure noise in probe/eval logs; no effect on behavior/results.
@@ -88,7 +106,7 @@ __all__ = [
     "LLMApiTimeoutError",
     "LLMClient",
     "ParserError",
-    "UserSimulator",
+    "BuiltinUserSimulator",
 ]
 
 # Bound on the raw-arguments excerpt carried by ``ParserError.raw_arguments``.
@@ -125,6 +143,9 @@ _module_logger = get_logger("llm_client_cost")
 
 DEFAULT_API_CALL_TIMEOUT_S = 120.0
 DEFAULT_API_TIMEOUT_RETRIES = 5
+# ``default`` runs every retry layer; ``single_attempt`` makes exactly one request.
+RetryPolicy = Literal["default", "single_attempt"]
+_RETRY_POLICIES: frozenset[str] = frozenset(get_args(RetryPolicy))
 # Hard wall-clock ceiling per upstream call. ``None`` keeps the wall-clock
 # abort disabled by default (backward-compatible); opt in per-model via the
 # preset or the ``TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S`` env var.
@@ -195,6 +216,12 @@ def _root_param_types_by_tool(
     For ``Optional[array | object]`` shapes (Pydantic ``anyOf``), pick the
     first non-null branch's ``type`` so empty-string coercion still fires
     for ``equipment: Optional[list[str]]``.
+
+    A union of ``string`` with a container (``str | list[str]``, whichever
+    branch comes first) is left unnamed when its first branch is the string:
+    naming it ``string`` would stop the JSON-string recovery for a parameter
+    that also takes the decoded container, and would make the result depend on
+    the order the branches were written in.
     """
     out: dict[str, dict[str, str]] = {}
     for tool in sanitized_tools or []:
@@ -213,6 +240,8 @@ def _root_param_types_by_tool(
             if not isinstance(prop_schema, dict):
                 continue
             declared = _resolve_declared_type(prop_schema)
+            if declared == "string" and _admits_a_container(prop_schema):
+                continue
             if declared is not None:
                 type_map[prop_name] = declared
         if type_map:
@@ -251,6 +280,17 @@ def _resolve_declared_type(schema: dict[str, Any]) -> str | None:
     return None
 
 
+_CONTAINER_TYPES = frozenset({"array", "object"})
+
+
+def _admits_a_container(schema: dict[str, Any]) -> bool:
+    """Whether one of *schema*'s ``anyOf`` branches is an array or an object."""
+    branches = schema.get("anyOf")
+    return isinstance(branches, list) and any(
+        isinstance(branch, dict) and branch.get("type") in _CONTAINER_TYPES for branch in branches
+    )
+
+
 # Synthetic key field that ``StrictSchema`` adds to items when converting
 # a dict-map (``additionalProperties: {schema}``) parameter to an array.
 # Kept here as a literal rather than importing from ``schema_sanitizer``
@@ -287,22 +327,54 @@ def _is_dict_map_array_shape(schema: dict[str, Any]) -> bool:
     return _STRICT_SCHEMA_KEY_FIELD in item_props
 
 
+_EXCEPTION_CAUSE_DEPTH = 4
+"""How far :func:`_cause_chain` walks ``__cause__``.
+
+``_call_with_key_rotation`` re-raises every non-timeout provider error as
+``RuntimeError(f"LLM API call failed: {e}") from e``, so the typed error the
+provider raised is one link down the chain by the time the outer controller
+sees it. Four links cover that wrap plus any future one.
+"""
+
+
+def _cause_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield *exc*, then its ``__cause__`` links, at most :data:`_EXCEPTION_CAUSE_DEPTH`."""
+    candidate: BaseException | None = exc
+    for _ in range(_EXCEPTION_CAUSE_DEPTH):
+        if candidate is None:
+            return
+        yield candidate
+        cause = candidate.__cause__
+        candidate = cause if cause is not candidate else None
+
+
+_NON_RETRIED_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    LLMApiTimeoutError,
+    openai.AuthenticationError,
+    litellm.UnsupportedParamsError,
+)
+
+
 def _should_retry_exception(exc: BaseException) -> bool:
     """Predicate for the outer :class:`tenacity.Retrying` controller in ``generate``.
 
-    Returns ``True`` for all transient errors, with two exclusions:
+    Returns ``True`` for all transient errors. It returns ``False`` when *exc*
+    or any link of its :func:`_cause_chain` is one of:
 
     - :class:`LLMApiTimeoutError` — already the result of an exhausted
       per-call retry budget inside
       :meth:`LLMClient._call_completion_with_timeout_retry`; must not
       cascade into another ``stop_after_attempt(5)`` multiplier.
-    - :class:`openai.AuthenticationError` — deterministic 401/403 that
-      does not become truthy by retrying. Litellm wraps provider auth
-      failures in this class regardless of the underlying vendor, so a
-      single ``isinstance`` check covers OpenAI, OpenRouter, Anthropic,
-      Google, and every other supported provider. Retrying wastes ~32s
-      of exponential-backoff wall time per trial and hides the actual
-      failure signal from the operator.
+    - :class:`openai.AuthenticationError` — a deterministic 401 that does not
+      become truthy by retrying. litellm's ``AuthenticationError`` subclasses
+      it for every provider it routes.
+    - :class:`litellm.UnsupportedParamsError` — litellm refuses the parameter
+      set in-process, before any request is sent, so every attempt is refused
+      identically.
+
+    The chain is walked because ``_call_with_key_rotation`` wraps every
+    provider error in a ``RuntimeError``, so the outer controller never sees
+    the provider's exception directly.
 
     Rate limits (429) ride the same outer exponential backoff as other
     transient errors — the long waits (up to 60s between attempts) give
@@ -310,22 +382,7 @@ def _should_retry_exception(exc: BaseException) -> bool:
     both controllers; rate-limit probe mode differentiates 429s in ``stop``
     and ``wait`` (see :meth:`LLMClient._build_probe_retrying`), not here.
     """
-    if isinstance(exc, LLMApiTimeoutError):
-        return False
-    if isinstance(exc, openai.AuthenticationError):
-        return False
-    return True
-
-
-_EXCEPTION_CAUSE_DEPTH = 4
-"""How far :meth:`LLMClient._is_rate_limit_exception` walks ``__cause__``.
-
-``_call_with_key_rotation`` re-raises every non-timeout provider error as
-``RuntimeError(f"LLM API call failed: {e}") from e``, so the typed 429 the
-provider raised is one link down the chain by the time the outer controller
-sees it. Four links cover that wrap plus any future one without risking an
-unbounded walk on a self-referencing chain.
-"""
+    return not any(isinstance(link, _NON_RETRIED_EXCEPTIONS) for link in _cause_chain(exc))
 
 
 def matches_rate_limit_text(text: str, patterns: Iterable[re.Pattern[str]]) -> bool:
@@ -361,8 +418,8 @@ class _RateLimitTypeEvidence(str, Enum):
 def _rate_limit_type_evidence(exc: BaseException) -> _RateLimitTypeEvidence:
     """Walk *exc* and its causes for 429 evidence carried by type or status.
 
-    The walk is bounded by :data:`_EXCEPTION_CAUSE_DEPTH` because the outer
-    controller never sees the provider's exception directly.
+    It walks :func:`_cause_chain` because the outer controller never sees the
+    provider's exception directly.
     ``litellm.exceptions.RateLimitError`` subclasses ``openai.RateLimitError``,
     so one ``isinstance`` covers every provider litellm routes, and
     ``status_code == 429`` catches a bare ``APIStatusError``.
@@ -372,11 +429,8 @@ def _rate_limit_type_evidence(exc: BaseException) -> _RateLimitTypeEvidence:
     :meth:`LLMClient._rotate_key` only ever advances its index, so the condition
     never clears.
     """
-    candidate: BaseException | None = exc
     saw_http_status = False
-    for _ in range(_EXCEPTION_CAUSE_DEPTH):
-        if candidate is None:
-            break
+    for candidate in _cause_chain(exc):
         if isinstance(candidate, openai.RateLimitError):
             return _RateLimitTypeEvidence.TYPED_429
         status = getattr(candidate, "status_code", None)
@@ -386,8 +440,6 @@ def _rate_limit_type_evidence(exc: BaseException) -> _RateLimitTypeEvidence:
             saw_http_status = True
         if isinstance(candidate, AllApiKeysExhaustedError):
             return _RateLimitTypeEvidence.TERMINAL_EXHAUSTION
-        cause = candidate.__cause__
-        candidate = cause if cause is not candidate else None
 
     if saw_http_status:
         return _RateLimitTypeEvidence.OTHER_HTTP_STATUS
@@ -540,6 +592,20 @@ def _litellm_response_cost(response: Any) -> float | None:
     return value if value > 0 else None
 
 
+#: ``provider/model`` pairs whose dropped-reasoning-replay warning has been
+#: emitted. Nothing reads it but the logger.
+_REPLAY_DROP_WARNED: set[str] = set()
+
+#: ``provider/model/upstream`` triples whose recovered-reasoning warning has
+#: been emitted. Keyed on the upstream too: one slug fans out across machines
+#: that disagree about where reasoning goes, so the same model is two claims.
+_RECOVERED_WARNED: set[str] = set()
+
+#: Reads any channel a provider uses, for when the preset's codec reads none
+#: of them. Stateless, so one instance serves every client.
+_PERMISSIVE_READER = PermissiveReasoningReader()
+
+
 class GenerationResult:
     """Result from LLM generation.
 
@@ -562,8 +628,21 @@ class GenerationResult:
         effective_system_prompt: str | None = None,
         openrouter_generation_id: str | None = None,
         finish_reason: str | None = None,
+        reasoning_recovered_by_fallback: bool = False,
+        reasoning_channel_unknown: bool = False,
+        reasoning_replay_dropped: bool = False,
     ):
         self.text = text
+        # Readable reasoning arrived in a channel this preset's codec does not
+        # read, and was kept by the permissive reader instead. Nothing was
+        # lost; the preset is routed too narrowly.
+        self.reasoning_recovered_by_fallback = reasoning_recovered_by_fallback
+        # The provider charged for reasoning and it arrived in no channel we
+        # know of. The only remaining way to actually lose it.
+        self.reasoning_channel_unknown = reasoning_channel_unknown
+        # The reasoning on an earlier turn of this request's history was
+        # extracted and then not replayed, so the model cannot see it.
+        self.reasoning_replay_dropped = reasoning_replay_dropped
         self.tool_calls = tool_calls or []
         # Full, normalised usage — default to the empty Usage() so callers
         # never have to None-check before reading prompt/completion counters.
@@ -588,8 +667,12 @@ class GenerationResult:
         # :attr:`ModelCapabilities.output_length_retry_count`). ``None`` when
         # the response carries no finish_reason at all.
         self.finish_reason = finish_reason
+        # The sampling subset actually handed to the transport. None means the
+        # producer did not observe a request (e.g. a scripted client); an empty
+        # mapping means model policy omitted all sampling parameters.
+        self.sent_sampling: dict[str, float] | None = None
         # Defects of the attempts discarded before this reply was accepted.
-        # Stamped only by ``UserSimulator._llm_reply``; every other producer
+        # Stamped only by ``BuiltinUserSimulator._llm_reply``; every other producer
         # of a result leaves it empty.
         self.guard_rejections: tuple[ReplyDefect, ...] = ()
         # One ``ParserError`` per ``tool_call.function.arguments`` string that
@@ -600,7 +683,7 @@ class GenerationResult:
         # append ``role=user`` parse-error feedback naming the failing tools,
         # and resample under ``LoopConfig.parser_error_retry_count``.
         self.parser_errors: tuple[ParserError, ...] = ()
-        # True iff ``UserSimulator._llm_reply`` substituted the fixed filler
+        # True iff ``BuiltinUserSimulator._llm_reply`` substituted the fixed filler
         # for a tool-call-only reply with no text. Callers whose downstream
         # semantics depend on the model having written the text (the
         # bootstrap seed the agent is graded against) refuse on this flag
@@ -627,10 +710,10 @@ class LLMClient:
         self.config = config
         self.provider = (config.provider or "").lower()
         self._provider_binding = get_provider_binding(self.provider)
-        self.model_name = self._format_model_name()
+        self.model_name = litellm_model_id(config.provider, config.name)
         # Parameters an overlay admits for a model litellm's map does not carry.
         # Empty for every model it does: the kwarg is then omitted entirely.
-        self.allowed_openai_params = allowed_openai_params(self.model_name, self.config.provider)
+        self.allowed_openai_params = allowed_openai_params(config.provider, config.name)
         self.capabilities = build_capabilities(
             self.config.name,
             self.config.provider,
@@ -657,6 +740,9 @@ class LLMClient:
         # scope for this provider, so downstream checks are a single
         # ``is None`` test. See ``tolokaforge/core/llm/proxy.py``.
         self._proxy = resolve_proxy_config()
+        conflict = session_header_conflict(config, self._proxy, header_path="session.header")
+        if conflict is not None:
+            raise conflict
         if self._proxy is not None and not self._proxy.applies_to(self.provider):
             if not self._provider_binding.unroutable:
                 # Warn rather than drop quietly: a deployment that configured a
@@ -715,7 +801,7 @@ class LLMClient:
                     self._proxy = None
 
         self._openrouter_headers = (
-            self._configure_openrouter_headers() if self.provider.startswith("openrouter") else {}
+            configure_openrouter_default_headers() if is_openrouter_provider(self.provider) else {}
         )
         if self._proxy is not None:
             self.logger.info(
@@ -732,7 +818,7 @@ class LLMClient:
                     "unless this gateway authenticates by network position.",
                     base_url=self._proxy.base_url,
                 )
-        elif self.provider.startswith("openrouter"):
+        elif is_openrouter_provider(self.provider):
             self._configure_openrouter_base_url()
         elif self._provider_binding.endpoint and self._provider_binding.api_base_env:
             os.environ.setdefault(
@@ -1028,25 +1114,6 @@ class LLMClient:
         )
         return configured
 
-    def _configure_openrouter_headers(self) -> dict[str, str]:
-        """Ensure OpenRouter requests include the required headers."""
-        existing_headers = dict(getattr(litellm, "openai_headers", {}) or {})
-
-        referer = os.getenv(
-            "TOLOKAFORGE_OPENROUTER_REFERER", "https://github.com/Toloka-F/tolokaforge"
-        )
-        title = os.getenv("TOLOKAFORGE_OPENROUTER_TITLE", "Tolokaforge Evaluation")
-
-        existing_headers.setdefault("HTTP-Referer", referer)
-        existing_headers.setdefault("X-Title", title)
-
-        opt_out_pref = os.getenv("TOLOKAFORGE_OPENROUTER_OPT_OUT", "true").lower()
-        if opt_out_pref in {"1", "true", "yes", "on"}:
-            existing_headers.setdefault("X-Data-Collection-Opt-Out", "true")
-
-        litellm.openai_headers = existing_headers
-        return existing_headers
-
     def _configure_openrouter_base_url(self) -> None:
         """Propagate OpenRouter base URL overrides to LiteLLM."""
         from tolokaforge.secrets import get_default
@@ -1061,16 +1128,6 @@ class LLMClient:
 
         os.environ.setdefault("OPENROUTER_API_BASE", base_url)
         self._openrouter_base_url = base_url
-
-    def _format_model_name(self) -> str:
-        """Format model name for LiteLLM."""
-        if self.config.name.startswith(f"{self.config.provider}/"):
-            return self.config.name
-
-        if self._provider_binding.format_model_name_bare:
-            return self.config.name
-
-        return f"{self.config.provider}/{self.config.name}"
 
     # ------------------------------------------------------------------
     # JSON/argument repair helpers
@@ -1315,6 +1372,97 @@ class LLMClient:
     # Message conversion
     # ------------------------------------------------------------------
 
+    def _warn_reasoning_replay_dropped(self) -> None:
+        """Say once per run that this model's reasoning is not reaching it back.
+
+        Keyed on the model rather than held on the client: a client is built
+        per trial per role, so an instance flag still repeats the sentence once
+        per trial across a whole eval. Same idiom as
+        :data:`~tolokaforge.core.llm.litellm_params._LOGGED`.
+
+        Not an error, and expected on a whole class of runs: every OpenAI
+        preset reaches this line on every trial that reasons, because those
+        routes refuse an echoed payload and the codec is right to emit none.
+        Only a live probe tells that apart from the case that cost
+        ``moonshotai/kimi-k2.7-code`` half its score —
+        ``scripts/analysis/probe_reasoning_transport.py``.
+
+        The preset rides the line so the answer is one lookup away:
+        ``tests/canonical/test_reasoning_codec_preset_routing.py`` holds the
+        presets permitted to replay nothing, each with its reason. A preset
+        named here and absent there has not been decided about.
+        """
+        key = f"{self.provider}/{self.model_name}"
+        if key in _REPLAY_DROP_WARNED:
+            return
+        _REPLAY_DROP_WARNED.add(key)
+        self.logger.warning(
+            "Reasoning extracted from this model is not being replayed to it: "
+            "its codec returns no replay payload, so each turn reads a history "
+            "in which it never reasoned",
+            model=self.model_name,
+            preset=resolve_effective_preset(self.model_name, self.provider),
+            codec=type(self.capabilities.reasoning_codec).__name__,
+        )
+
+    def _warn_reasoning_recovered(self, arrived: Any, response: Any) -> None:
+        """Say once per model and upstream that a preset is reading too little.
+
+        Nothing was lost — the reasoning is on the trajectory either way. What
+        this reports is that the preset's codec does not read the channel this
+        route uses, which is a configuration fact worth fixing before the next
+        model lands on the same preset.
+
+        Keyed on the upstream as well as the model: OpenRouter resolves one
+        slug to different machines per request, and they do not agree about
+        where reasoning goes.
+        """
+        upstream = extract_upstream_provider(response) or "-"
+        key = f"{self.provider}/{self.model_name}/{upstream}"
+        if key in _RECOVERED_WARNED:
+            return
+        _RECOVERED_WARNED.add(key)
+        self.logger.warning(
+            "Reasoning arrived in a channel this model's codec does not read; "
+            "recovered it, but the preset is routed too narrowly",
+            model=self.model_name,
+            upstream=upstream,
+            preset=resolve_effective_preset(self.model_name, self.provider),
+            codec=type(self.capabilities.reasoning_codec).__name__,
+            arrived_in=list(arrived.readable),
+        )
+
+    def _reasoning_replay_dropped_for(self, messages: list[Message]) -> bool:
+        """Whether this history carries reasoning the codec will not send back.
+
+        Computed per call and returned, never stored: one ``LLMClient`` serves
+        every concurrent trial in a run, so a per-request fact parked on
+        ``self`` is read by whichever trial reaches the result first. Cheap —
+        ``encode_for_replay`` is a pure rebuild of a payload the caller is
+        about to build anyway.
+
+        ``capture_only`` reasoning is skipped: a reader produced it, no codec
+        promised to encode it, and it was never going to be sent back. Counting
+        it would warn about the recovery that kept it.
+
+        ``is_empty`` is the load-bearing guard. A codec can return a
+        :class:`StructuredReasoning` carrying no text — Gemini builds one from
+        a summary-only response, and again from OpenRouter's no-real-thinking
+        placeholder — and then emit ``{}`` for it. Nothing was lost there, and
+        counting it would put a warning on the routes this engine classifies as
+        having nothing to keep.
+        """
+        codec = self.capabilities.reasoning_codec
+        for msg in messages:
+            if msg.role != MessageRole.ASSISTANT or msg.reasoning is None:
+                continue
+            if msg.reasoning.is_empty() or msg.reasoning.capture_only:
+                continue
+            if not codec.encode_for_replay(msg.reasoning):
+                self._warn_reasoning_replay_dropped()
+                return True
+        return False
+
     def _convert_messages(
         self,
         system: str | list[dict[str, Any]] | None,
@@ -1403,7 +1551,11 @@ class LLMClient:
             # P4b — splice reasoning-codec replay payload (e.g. Anthropic
             # ``thinking_blocks``) onto assistant dicts. Zero provider-specific
             # branching: the codec Protocol is the only abstraction.
-            if msg.role == MessageRole.ASSISTANT and msg.reasoning is not None:
+            if (
+                msg.role == MessageRole.ASSISTANT
+                and msg.reasoning is not None
+                and not msg.reasoning.capture_only
+            ):
                 replay_payload = self.capabilities.reasoning_codec.encode_for_replay(msg.reasoning)
                 if replay_payload:
                     litellm_msg.update(replay_payload)
@@ -1428,6 +1580,8 @@ class LLMClient:
         reasoning: ReasoningConfig | None = None,
         top_p: float | None = None,
         observation: LLMCallObservation | None = None,
+        response_format: dict[str, Any] | None = None,
+        retry_policy: RetryPolicy = "default",
     ) -> GenerationResult:
         """Generate completion from LLM.
 
@@ -1463,13 +1617,25 @@ class LLMClient:
 
         Returns a :class:`GenerationResult` with text, tool-calls, full
         :class:`Usage` counters, latency, cost, and structured reasoning.
+
+        ``retry_policy='single_attempt'`` is for callers such as a benchmark
+        judge whose reference transport makes exactly one request. It disables
+        outer, timeout, LiteLLM and key-rotation retries for this call only.
         """
+        if retry_policy not in _RETRY_POLICIES:
+            raise ValueError(f"Unknown LLM retry policy: {retry_policy}")
         messages = messages or []
 
         if self.provider == "mock":
             return self._mock_generate(messages, tools)
 
-        retrying = self._build_retrying(observation)
+        role: LLMCallRole = observation.role if observation is not None else "agent"
+        session_id = self._session_id_for_call(observation)
+        retrying = (
+            self._build_retrying(observation)
+            if retry_policy == "default"
+            else Retrying(stop=stop_after_attempt(1), reraise=True)
+        )
         for attempt in retrying:
             with attempt:
                 attempt_num = attempt.retry_state.attempt_number
@@ -1486,6 +1652,10 @@ class LLMClient:
                         reasoning=reasoning,
                         top_p=top_p,
                         max_tokens=max_tokens,
+                        role=role,
+                        session_id=session_id,
+                        response_format=response_format,
+                        single_attempt=retry_policy == "single_attempt",
                     )
                 except BaseException as exc:
                     self._fire_call_finished(
@@ -1497,6 +1667,18 @@ class LLMClient:
                 )
                 return result
         raise RuntimeError("Retrying controller exited without a result")
+
+    def _session_id_for_call(self, observation: LLMCallObservation | None) -> str | None:
+        """The session header value every attempt of one ``generate()`` call sends.
+
+        ``None`` when this model declares no session header. Otherwise the
+        observation's conversation id, or one UUID4 for this call alone.
+        """
+        if self.config.session is None:
+            return None
+        if observation is not None and observation.session_id is not None:
+            return observation.session_id
+        return str(uuid.uuid4())
 
     def _build_retrying(self, observation: LLMCallObservation | None) -> Retrying:
         """Build the per-call outer :class:`Retrying` controller.
@@ -1679,9 +1861,9 @@ class LLMClient:
 
         Keyed by this call's ``role`` and this client's model slug, both already
         in scope. That attribution is the gap this closes: ``Metrics.usage``
-        accumulates every role's calls into one object with no role field, so
-        counting log lines conflated the agent's model with the user
-        simulator's and inflated the number.
+        accumulates every role's calls into one object whose flat token scalars
+        are summed across roles, so counting from them conflated the agent's
+        model with the user simulator's and inflated the number.
 
         Recorded quantities and why:
 
@@ -1727,6 +1909,10 @@ class LLMClient:
         reasoning: ReasoningConfig | None,
         top_p: float | None,
         max_tokens: int | None,
+        role: LLMCallRole = "agent",
+        session_id: str | None,
+        response_format: dict[str, Any] | None = None,
+        single_attempt: bool = False,
     ) -> GenerationResult:
         """One outer-retry attempt: prepare → build → call → detect → assemble.
 
@@ -1747,9 +1933,13 @@ class LLMClient:
             reasoning=reasoning,
             top_p=top_p,
             max_tokens=max_tokens,
+            session_id=session_id,
         )
+        reasoning_replay_dropped = self._reasoning_replay_dropped_for(messages)
+        if response_format is not None:
+            kwargs["response_format"] = dict(response_format)
         start_time = time.time()
-        response = self._call_with_key_rotation(kwargs)
+        response = self._call_with_key_rotation(kwargs, single_attempt=single_attempt)
         latency = time.time() - start_time
         synthetic = _detect_synthetic_envelope(response)
         if synthetic is not None:
@@ -1763,12 +1953,18 @@ class LLMClient:
                 f"(native_finish_reason={synthetic!r}). Upstream provider "
                 f"produced an unrecoverable response; retrying."
             )
-        return self._assemble_result(
+        result = self._assemble_result(
             response=response,
             effective_system_prompt=effective_system_prompt,
             latency_s=latency,
             sanitized_tools=sanitized_tools,
+            role=role,
+            reasoning_replay_dropped=reasoning_replay_dropped,
         )
+        result.sent_sampling = {
+            key: kwargs[key] for key in ("temperature", "top_p", "top_k") if key in kwargs
+        }
+        return result
 
     # ------------------------------------------------------------------
     # generate() sub-phases
@@ -1849,14 +2045,18 @@ class LLMClient:
         reasoning: ReasoningConfig | None,
         top_p: float | None,
         max_tokens: int | None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Build the complete kwargs dict for the downstream litellm call.
 
         Composes four independent parameter sources: ``params_policy.adapt``
-        (temperature / seed / reasoning routing), explicit per-call overrides
+        (temperature / seed / reasoning routing, and dropping sampling keys,
+        ``top_p`` included), explicit per-call overrides
         (``top_p`` / ``max_tokens`` / ``tool_choice`` / ``tools``), provider
         routing (OpenRouter headers + ``custom_llm_provider``), and
         :meth:`_convert_messages` (content policy + reasoning-codec replay).
+        ``session_id`` is the value of this model's session header, required
+        when ``config.session`` is set (see :meth:`_session_id_for_call`).
         Providers whose binding declares ``kwargs_pin_transport`` defer their
         transport pinning to :meth:`_call_with_key_rotation` so the API key
         is read fresh per attempt.
@@ -1869,6 +2069,11 @@ class LLMClient:
             # still refused, so the declaration stays the boundary.
             kwargs["allowed_openai_params"] = list(self.allowed_openai_params)
 
+        # Attached before ``adapt`` so a policy that drops sampling sees it.
+        top_p_value = top_p if top_p is not None else self.config.top_p
+        if top_p_value is not None:
+            kwargs["top_p"] = top_p_value
+
         # Adapt model-specific parameters (temperature, seed, reasoning)
         kwargs = self.capabilities.params_policy.adapt(
             kwargs=kwargs,
@@ -1879,10 +2084,6 @@ class LLMClient:
             seed=seed,
             reasoning=reasoning,
         )
-
-        top_p_value = top_p if top_p is not None else self.config.top_p
-        if top_p_value is not None:
-            kwargs["top_p"] = top_p_value
 
         max_tokens_value = max_tokens if max_tokens is not None else self.config.max_tokens
         if max_tokens_value is not None:
@@ -1963,7 +2164,7 @@ class LLMClient:
             self._convert_messages(system, messages)
         )
 
-        if self.provider.startswith("openrouter"):
+        if is_openrouter_provider(self.provider):
             extra_headers = dict(self._openrouter_headers)
             existing_extra = kwargs.get("extra_headers")
             if isinstance(existing_extra, dict):
@@ -2039,7 +2240,24 @@ class LLMClient:
             merged_headers.update(self._proxy.request_headers())
             kwargs["extra_headers"] = merged_headers
 
+        self._apply_session_header(kwargs, session_id)
         return kwargs
+
+    def _apply_session_header(self, kwargs: dict[str, Any], session_id: str | None) -> None:
+        """Add this model's session header to ``kwargs['extra_headers']``, if it declares one."""
+        session = self.config.session
+        if session is None:
+            return
+        if session_id is None:
+            raise ValueError(
+                f"{self.model_name} declares session header {session.header!r} but the "
+                f"request was built without a session id"
+            )
+        # Construction refused a name the gateway or OpenRouter defaults set, so this adds.
+        kwargs["extra_headers"] = {
+            **(kwargs.get("extra_headers") or {}),
+            session.header: session_id,
+        }
 
     def _is_timeout_error(self, exc: BaseException) -> bool:
         """Detect transport-level timeout errors from the LLM client stack.
@@ -2083,7 +2301,9 @@ class LLMClient:
             timeout_s=self._api_call_timeout_s,
         )
 
-    def _call_completion_with_timeout_retry(self, kwargs: dict[str, Any]) -> Any:
+    def _call_completion_with_timeout_retry(
+        self, kwargs: dict[str, Any], *, single_attempt: bool = False
+    ) -> Any:
         """Call litellm ``completion`` with a bounded per-call timeout retry.
 
         Worst-case wait: ``stop_after_attempt(retries + 1)`` × ``timeout``
@@ -2102,7 +2322,7 @@ class LLMClient:
 
         @retry(
             retry=retry_if_exception(self._is_timeout_error),
-            stop=stop_after_attempt(self._api_timeout_retries + 1),
+            stop=stop_after_attempt(1 if single_attempt else self._api_timeout_retries + 1),
             wait=wait_exponential(multiplier=1, min=1, max=5),
             before_sleep=self._log_timeout_retry,
             reraise=True,  # surface the last TimeoutError, not RetryError
@@ -2148,15 +2368,17 @@ class LLMClient:
                 self.logger.warning(
                     "LLM API call timed out; retry limit exhausted",
                     event="api_call_timeout",
-                    attempts=self._api_timeout_retries + 1,
+                    attempts=1 if single_attempt else self._api_timeout_retries + 1,
                     timeout_s=self._api_call_timeout_s,
                 )
                 raise LLMApiTimeoutError(
-                    f"LLM API call timed out after {self._api_timeout_retries + 1} attempts (timeout={self._api_call_timeout_s}s)"
+                    f"LLM API call timed out after {1 if single_attempt else self._api_timeout_retries + 1} attempts (timeout={self._api_call_timeout_s}s)"
                 ) from e
             raise
 
-    def _call_with_key_rotation(self, kwargs: dict[str, Any]) -> Any:
+    def _call_with_key_rotation(
+        self, kwargs: dict[str, Any], *, single_attempt: bool = False
+    ) -> Any:
         """Call litellm ``completion`` with OpenRouter key rotation.
 
         Providers whose binding declares ``kwargs_pin_transport`` read the
@@ -2179,6 +2401,15 @@ class LLMClient:
         """
         kwargs = dict(kwargs)
         kwargs.setdefault("timeout", self._api_call_timeout_s)
+        if single_attempt:
+            # Reads the process-wide litellm.num_retries / model_fallbacks once, on the
+            # assumption they are set at startup and not mutated per call.
+            if litellm.num_retries not in (None, 0) or litellm.model_fallbacks is not None:
+                raise RuntimeError(
+                    "single_attempt cannot run with global LiteLLM retries or model fallbacks"
+                )
+            kwargs["max_retries"] = 0
+            kwargs["num_retries"] = 0
         binding = self._provider_binding
 
         while True:
@@ -2218,7 +2449,9 @@ class LLMClient:
                             model = rewrite.ensure_prefix + model
                         kwargs["model"] = model
 
-                return self._call_completion_with_timeout_retry(kwargs)
+                return self._call_completion_with_timeout_retry(
+                    kwargs, single_attempt=single_attempt
+                )
             except LLMApiTimeoutError:
                 # Pass through unchanged so ``_should_retry_exception`` can
                 # opt the outer ``Retrying`` controller out of re-attempting
@@ -2234,6 +2467,8 @@ class LLMClient:
                     or '"code":403' in error_str
                     or '"code":402' in error_str
                 ):
+                    if single_attempt:
+                        raise RuntimeError(f"LLM API call failed without retry: {e}") from e
                     if self._proxy is not None and self._proxy.api_key:
                         # Rotation cannot help *when a gateway key is pinned*:
                         # ``_rotate_key`` republishes the provider's
@@ -2272,6 +2507,8 @@ class LLMClient:
         effective_system_prompt: str | None,
         latency_s: float,
         sanitized_tools: list[dict[str, Any]] | None = None,
+        role: LLMCallRole = "agent",
+        reasoning_replay_dropped: bool = False,
     ) -> GenerationResult:
         """Convert a raw litellm response into a :class:`GenerationResult`.
 
@@ -2302,6 +2539,23 @@ class LLMClient:
         tool_calls: list[ToolCall] = []
 
         reasoning_result = self.capabilities.reasoning_codec.extract(message)
+        arrived = arriving_reasoning(message)
+        recovered_by_fallback = False
+        # ``is None``, not ``is_empty()``: a codec that returned an object owns
+        # the result, including one carrying no text. Gemini builds exactly that
+        # from an encrypted-only envelope, and its blocks hold the
+        # ``encrypted_data`` and the ``id`` ↔ ``tool_call.id`` binding the next
+        # turn needs. Replacing it with text read from the mirror field would
+        # trade a payload replay depends on for one that cannot be replayed.
+        if arrived.readable and reasoning_result is None:
+            # The provider sent deliberation this preset's codec does not read.
+            # Keep it: the result is marked ``capture_only`` and the replay
+            # splice skips it, so the only alternative is dropping text we were
+            # already billed for.
+            reasoning_result = _PERMISSIVE_READER.extract(message)
+            if reasoning_result is not None:
+                recovered_by_fallback = True
+                self._warn_reasoning_recovered(arrived, response)
 
         # Build per-tool root-level parameter type maps once per call so the
         # response policy's schema-aware coercions (currently: empty-container
@@ -2339,7 +2593,8 @@ class LLMClient:
 
         # Cost ladder (also pinned by tests/canonical/test_cost_extraction_canon.py):
         #   1. litellm `_hidden_params['response_cost']` / completion_cost
-        #      → cache-aware, provider-authoritative (cost_source="litellm").
+        #      → cache-aware (cost_source="litellm"); what the response states it
+        #      charged rides beside it as ProviderRawCall.billed_cost_usd.
         #   2. bundled pricing table fallback (cost_source="local").
         #   3. neither — cost_usd is None, cost_source="unknown".
         # The local fallback needs token counts, so we extract once just to
@@ -2383,6 +2638,8 @@ class LLMClient:
             # str subclass (asdict deepcopies every call record).
             gateway_route=str(self._gateway_route) if self._gateway_route is not None else None,
             gateway_route_kind=self._gateway_route_kind,
+            role=role,
+            model=self.model_name,
         )
 
         result = GenerationResult(
@@ -2397,6 +2654,13 @@ class LLMClient:
             # that returned no usage block contributes no call record, and the
             # routing decision is still worth recording for that turn.
             openrouter_generation_id=extract_openrouter_generation_id(response),
+            reasoning_recovered_by_fallback=recovered_by_fallback,
+            # Deliberately not "billed and nothing extracted": that is true of
+            # every encrypted-only call, where keeping nothing is correct, so
+            # it fired loudest on the presets that were right. A channel we do
+            # not know about is the one case the enumeration cannot reach.
+            reasoning_channel_unknown=(usage.reasoning_tokens > 0 and not arrived.anything),
+            reasoning_replay_dropped=reasoning_replay_dropped,
             # litellm post-maps every current provider's max-tokens truncation
             # to the OpenAI-compatible ``"length"`` on this field; a response
             # that carries no finish_reason at all lands as ``None``.
@@ -2460,19 +2724,24 @@ class LLMClient:
 
 # The canned agent-side greeting: dispatched by the runner when the simulator
 # bootstraps turn 0, and re-used to lead the simulator's flipped context when
-# the opening was caller-seeded (see ``_llm_reply``). One constant so the two
-# sites cannot diverge — the mid-conversation reconstruction must show the
-# simulator the same agent opening it answers at bootstrap.
+# the opening was caller-seeded (see ``_simulator_context``). One constant so the
+# two sites cannot diverge — the mid-conversation reconstruction must show the
+# simulator the same agent opening it answers at bootstrap. A task that declares
+# ``actors.user.first_agent_message`` has its own line in the transcript instead,
+# and neither site uses this one.
 SIMULATOR_GREETING = "Hi! How can I help you today?"
 
 
-class UserSimulator(Actor):
-    """User simulator for benchmarking.
+class BuiltinUserSimulator(Actor):
+    """The engine's built-in user simulator for benchmarking.
 
-    Declares :class:`~tolokaforge.core.actors.actor.Actor` conformance so
-    the turn-loop seam can accept any Protocol-satisfying actor kind, not
-    just this concrete simulator. Behaviour is unchanged — the existing
-    :meth:`reply` already matches the Protocol signature.
+    Declares :class:`~tolokaforge.core.actors.actor.Actor` conformance and
+    satisfies the :class:`~tolokaforge.core.actors.user_simulator.UserSimulator`
+    Protocol (``reply`` + ``last_system_prompt``). Registered as ``builtin`` in
+    the ``tolokaforge.user_simulators`` entry-point group via
+    :func:`_builtin_user_simulator_factory`; the conductor resolves it through
+    :func:`~tolokaforge.core.plugin_registry.load_user_simulator` like any
+    third-party simulator.
     """
 
     def __init__(
@@ -2485,8 +2754,10 @@ class UserSimulator(Actor):
         tool_schemas: list[dict[str, Any]] | None = None,
         *,
         rate_limit_probe: RateLimitProbeConfig | None = None,
+        tool_turns: UserToolTurns = "shared",
     ):
         self.mode = mode
+        self.tool_turns = tool_turns
         self.persona = persona
         self.backstory = backstory
         self.scripted_flow = scripted_flow or []
@@ -2607,6 +2878,59 @@ Rules:
 - Keep the conversation natural and stay in the personality your Instruction describes.
 - Never mention that this is a simulation, test, benchmark, prompt, or that you are an AI/model.{tool_guidance}"""
 
+    def _simulator_context(self, context: list[Message]) -> list[Message]:
+        """The request messages the simulator answers: *context* from the customer's seat.
+
+        Under ``shared`` tool turns it is
+        :func:`~tolokaforge.core.actors.tool_turns.shared_view`. Under
+        ``isolated`` the simulator's own tool steps stay in view as assistant tool
+        calls and tool results, and every agent message that calls tools is
+        dropped whole (:func:`~tolokaforge.core.actors.tool_turns.simulator_view`).
+
+        Raises:
+            RuntimeError: nothing in *context* is awaiting the simulator's reply.
+        """
+        sim_context = (
+            simulator_view(context) if self.tool_turns == "isolated" else shared_view(context)
+        )
+
+        # Providers require the first message to be user-role, and the trial's
+        # seeded opening flips to ``assistant`` at index 0. Prepend a synthetic
+        # agent-side greeting rather than dropping the opening: without its own
+        # opening in context the simulator believes it never asked and restarts
+        # the conversation verbatim after the agent has already answered. A
+        # transcript that opens with the agent's own line (``first_agent_message``)
+        # already leads with a user-role turn here, and gets none.
+        if sim_context and sim_context[0].role == MessageRole.ASSISTANT:
+            sim_context.insert(
+                0,
+                Message(
+                    role=MessageRole.USER,
+                    content=SIMULATOR_GREETING,
+                    ts=sim_context[0].ts,
+                ),
+            )
+
+        # The request must end on a user-role turn the simulator can answer.
+        # A trailing assistant-role message is a prefill of the simulator's
+        # own words (the provider continues it), and an empty list is
+        # unanswerable — both mean no agent dialogue turn is awaiting a
+        # reply, so surface that instead of letting the simulator improvise.
+        # A tool step's results are answerable too: the simulator reads them
+        # and goes on.
+        answerable = (
+            (MessageRole.USER, MessageRole.TOOL)
+            if self.tool_turns == "isolated"
+            else (MessageRole.USER,)
+        )
+        if not sim_context or sim_context[-1].role not in answerable:
+            raise RuntimeError(
+                "User simulator dispatched with no agent dialogue turn to answer "
+                f"(flipped context roles: {[m.role.value for m in sim_context]}; "
+                f"shared transcript roles: {[m.role.value for m in context]})."
+            )
+        return sim_context
+
     def _llm_reply(
         self,
         context: list[Message],
@@ -2627,59 +2951,7 @@ Rules:
             raise RuntimeError("LLM client not initialized for LLM mode")
         llm_client = self.llm_client
 
-        # The simulator converses from the customer's seat: its own past
-        # messages replay as ``assistant`` turns and the agent's as ``user``
-        # turns. Turns with no dialogue text (agent tool-call turns,
-        # whitespace-only replies) are skipped — replaying them as empty
-        # turns adds noise the simulator's provider may reject. The skip is
-        # text-only: a turn carrying ``content_blocks`` with no text would be
-        # dropped too, a latent gap no USER/ASSISTANT call site produces
-        # today (the flip has never carried blocks).
-        # Adjacent same-role turns are coalesced so the request alternates
-        # strictly — a skipped turn can leave two dialogue turns of the same
-        # party back to back, which strict-alternation providers reject.
-        sim_context: list[Message] = []
-        flip = {MessageRole.USER: MessageRole.ASSISTANT, MessageRole.ASSISTANT: MessageRole.USER}
-        for msg in context:
-            if not msg.content.strip():
-                continue
-            role = flip.get(msg.role)
-            if role is None:
-                continue
-            if sim_context and sim_context[-1].role == role:
-                previous = sim_context[-1]
-                sim_context[-1] = Message(
-                    role=role, content=f"{previous.content}\n\n{msg.content}", ts=msg.ts
-                )
-            else:
-                sim_context.append(Message(role=role, content=msg.content, ts=msg.ts))
-
-        # Providers require the first message to be user-role, and the trial's
-        # seeded opening flips to ``assistant`` at index 0. Prepend a synthetic
-        # agent-side greeting rather than dropping the opening: without its own
-        # opening in context the simulator believes it never asked and restarts
-        # the conversation verbatim after the agent has already answered.
-        if sim_context and sim_context[0].role == MessageRole.ASSISTANT:
-            sim_context.insert(
-                0,
-                Message(
-                    role=MessageRole.USER,
-                    content=SIMULATOR_GREETING,
-                    ts=sim_context[0].ts,
-                ),
-            )
-
-        # The request must end on a user-role turn the simulator can answer.
-        # A trailing assistant-role message is a prefill of the simulator's
-        # own words (the provider continues it), and an empty list is
-        # unanswerable — both mean no agent dialogue turn is awaiting a
-        # reply, so surface that instead of letting the simulator improvise.
-        if not sim_context or sim_context[-1].role != MessageRole.USER:
-            raise RuntimeError(
-                "User simulator dispatched with no agent dialogue turn to answer "
-                f"(flipped context roles: {[m.role.value for m in sim_context]}; "
-                f"shared transcript roles: {[m.role.value for m in context]})."
-            )
+        sim_context = self._simulator_context(context)
 
         # Captured only for a request that is actually dispatched, so the
         # runner persists into ``prompts.yaml`` a prompt that really drove a
@@ -2703,8 +2975,9 @@ Rules:
             # semantics need the model's own text (the bootstrap seed the agent
             # is graded against) read ``result.filler_substituted`` and refuse.
             # TODO(#1089): remove it — a universal filler is hazardous (AGENTS.md
-            # gotcha 23), so the removal carries its own analysis.
-            if result.tool_calls and not result.text.strip():
+            # gotcha 23), so the removal carries its own analysis. An isolated
+            # tool step is never a dialogue turn, so it keeps the model's own text.
+            if self.tool_turns == "shared" and result.tool_calls and not result.text.strip():
                 result.text = "Let me check that."
                 result.filler_substituted = True
             return result
@@ -2718,3 +2991,23 @@ Rules:
         )
         result.guard_rejections = rejected
         return result
+
+
+def _builtin_user_simulator_factory(context: UserSimulatorContext) -> BuiltinUserSimulator:
+    """Build the engine's built-in user simulator from the seam context.
+
+    Registered as ``builtin`` in the ``tolokaforge.user_simulators`` entry-point
+    group. Reads only the engine's own fields; a simulator that needs
+    task-declared configuration reads ``context.simulator_config``, which the
+    built-in ignores.
+    """
+    return BuiltinUserSimulator(
+        mode=context.mode,
+        llm_config=context.llm_config,
+        persona=context.persona,
+        backstory=context.backstory,
+        scripted_flow=context.scripted_flow,
+        tool_schemas=context.tool_schemas,
+        rate_limit_probe=context.rate_limit_probe,
+        tool_turns=context.tool_turns,
+    )

@@ -43,6 +43,7 @@ from litellm.exceptions import ContextWindowExceededError, RateLimitError
 
 from tests.canonical._factories import make_task_config, make_trajectory, make_trial_spec
 from tests.canonical.test_lost_trial_attribution import drive_lost_trial
+from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.failure_attribution import (
     EXCLUDED_TYPED_REASONS,
@@ -51,9 +52,9 @@ from tolokaforge.core.failure_attribution import (
 )
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import (
+    BuiltinUserSimulator,
     GenerationResult,
     LLMApiTimeoutError,
-    UserSimulator,
 )
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
@@ -72,20 +73,25 @@ from tolokaforge.core.runtime import InMemoryRuntimeBackend
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
-from tolokaforge.tools.registry import ToolExecutor, ToolRegistry
+from tolokaforge.tools.registry import ToolExecutionStatus, ToolExecutor, ToolRegistry, ToolResult
 
 pytestmark = pytest.mark.canonical
 
 # The reasons a trial can end with and still be graded by the runner. Each names
 # a trial the agent drove to an end the harness planned for: it had no further
-# action to take and no counterparty could ask for one, the simulated user closed
-# the dialogue, or the turn budget ran out. Task grading is meaningful for
-# exactly these.
+# action to take and no counterparty could ask for one, it called a completion
+# tool to say so itself, the simulated user closed the dialogue, or a turn or
+# simulation budget ran out. Task graders see these completed trials and
+# decide which termination reasons their grading contract accepts.
 GRADED_REASONS = frozenset(
     {
         TerminationReason.AGENT_DONE,
+        TerminationReason.AGENT_SUBMITTED,
         TerminationReason.USER_STOP,
         TerminationReason.MAX_TURNS,
+        TerminationReason.MAX_STEPS,
+        TerminationReason.TOO_MANY_ERRORS,
+        TerminationReason.USER_TOOL_LOOP_LIMIT,
     }
 )
 
@@ -100,6 +106,7 @@ UNGRADED_REASONS = frozenset(
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_TIMEOUT,
         TerminationReason.EMPTY_COMPLETION,
+        TerminationReason.REASONING_WITHOUT_ACTION,
         TerminationReason.PROVISION_ERROR,
         TerminationReason.TRIAL_LOST,
     }
@@ -121,6 +128,10 @@ PROSE_IMPOSTORS: dict[TerminationReason, Exception] = {
     ),
     TerminationReason.PROVISION_ERROR: RuntimeError(
         "provisioning failed: the substrate never came up (provision_error)"
+    ),
+    TerminationReason.REASONING_WITHOUT_ACTION: RuntimeError(
+        "LLM API call failed: the model spent its whole output budget on "
+        "reasoning and returned no action (reasoning_without_action)"
     ),
 }
 
@@ -173,6 +184,27 @@ def _text(body: str) -> GenerationResult:
     )
 
 
+def _completion_tool_schema() -> dict[str, Any]:
+    """The completion tool as the run actually offers it.
+
+    Built from the registered class rather than hand-written, so the name this
+    fixture drives termination with is the name the registry declares."""
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    name = sorted(builtin_registry.list_completion_tools())[0]
+    return builtin_registry.get_class(name)().get_schema()
+
+
+def _completion_call() -> GenerationResult:
+    """The agent ending its own episode: one call to the enabled completion tool."""
+    name = _completion_tool_schema()["function"]["name"]
+    return GenerationResult(
+        text="",
+        tool_calls=[ToolCall(id="completion", name=name, arguments={})],
+        usage=Usage(prompt_tokens=10, completion_tokens=5),
+    )
+
+
 def _repeated_call() -> GenerationResult:
     """The same call every turn — the agent behaviour the stuck detector reads
     as a loop. The queue repeats its last item, so one is enough."""
@@ -190,19 +222,78 @@ def _run_trial(
     episode_timeout_s: int = 1200,
     stuck_detector: StuckDetector | None = None,
     interaction_mode: InteractionMode = "conversational",
+    tool_schemas: list[dict[str, Any]] | None = None,
+    tool_executor: ToolExecutor | None = None,
+    max_simulation_steps: int | None = None,
+    max_environment_errors: int | None = None,
 ) -> Trajectory:
     """Drive one whole trial through :class:`TrialRunner` and return its trajectory."""
     return TrialRunner(
         task_id="reachability",
         trial_index=0,
         agent_client=_ScriptedAgent(*agent_items),
-        user_simulator=UserSimulator(mode="scripted", scripted_flow=[{"default": user_reply}]),
-        tool_executor=ToolExecutor(ToolRegistry()),
-        tool_schemas=[],
+        user_simulator=BuiltinUserSimulator(
+            mode="scripted", scripted_flow=[{"default": user_reply}]
+        ),
+        tool_executor=tool_executor or ToolExecutor(ToolRegistry()),
+        tool_schemas=tool_schemas or [],
         max_turns=max_turns,
         episode_timeout_s=episode_timeout_s,
         stuck_detector=stuck_detector,
         interaction_mode=interaction_mode,
+        user_tool_turns=UserToolTurnRule(
+            mode=(
+                "isolated"
+                if max_simulation_steps is not None or max_environment_errors is not None
+                else "shared"
+            )
+        ),
+        max_simulation_steps=max_simulation_steps,
+        max_environment_errors=max_environment_errors,
+    ).run("You are an agent.", "Do the task.")
+
+
+class _DeclaredEnvironmentError:
+    def execute(
+        self,
+        tool_name: str,
+        arguments: dict | None = None,
+        *,
+        call_id: str,
+        validation_schema: dict | None = None,
+    ) -> ToolResult:
+        return ToolResult(
+            success=True,
+            output="Error: declared by environment",
+            status=ToolExecutionStatus.ENVIRONMENT_ERROR,
+        )
+
+
+class _ToolStepUser(BuiltinUserSimulator):
+    """An isolated LLM-mode user whose every reply is a tool call and never text."""
+
+    def __init__(self) -> None:
+        super().__init__(mode="llm", tool_turns="isolated")
+
+    def reply(
+        self, context: list[Message], *, observation: LLMCallObservation | None = None
+    ) -> GenerationResult:
+        return GenerationResult(
+            text="", tool_calls=[ToolCall(id="look", name="lookup", arguments={})]
+        )
+
+
+def _user_tool_loop_trajectory() -> Trajectory:
+    """Drive a user whose isolated turn takes one tool step more than it may."""
+    return TrialRunner(
+        task_id="reachability",
+        trial_index=0,
+        agent_client=_ScriptedAgent(_text("How can I help?")),
+        user_simulator=_ToolStepUser(),
+        tool_executor=ToolExecutor(ToolRegistry()),
+        tool_schemas=[],
+        user_tool_executor=ToolExecutor(ToolRegistry()),
+        user_tool_turns=UserToolTurnRule(mode="isolated", max_steps=1),
     ).run("You are an agent.", "Do the task.")
 
 
@@ -224,19 +315,35 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
     trajectories = [
         _run_trial(_text("All set."), interaction_mode="agent_only"),
         _run_trial(_text("Anything else?"), user_reply="###STOP###"),
+        _run_trial(_completion_call(), max_turns=20, tool_schemas=[_completion_tool_schema()]),
         _run_trial(
             _repeated_call(),
             max_turns=20,
             stuck_detector=StuckDetector(max_repeated_tool_calls=5),
         ),
         _run_trial(_text("Still working."), max_turns=1),
+        _run_trial(_text("unreached"), max_simulation_steps=1),
+        _run_trial(
+            _repeated_call(),
+            max_environment_errors=1,
+            tool_executor=_DeclaredEnvironmentError(),
+        ),
         _run_trial(_text("unreached"), episode_timeout_s=0),
         _run_trial(LLMApiTimeoutError("upstream never answered")),
         _run_trial(_wrapped_rate_limit()),
         _run_trial(RuntimeError("OpenAI returned 500")),
         _run_trial(RuntimeError("something the classifier cannot name")),
         _run_trial(GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1))),
+        _run_trial(
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1, completion_tokens=15358, reasoning_tokens=15358),
+                finish_reason="length",
+            )
+        ),
         _run_trial(ContextWindowExceededError("input too large", "anthropic/claude", "anthropic")),
+        _user_tool_loop_trajectory(),
         _provision_failure_trajectory(),
         drive_lost_trial()[0],
     ]

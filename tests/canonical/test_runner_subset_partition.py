@@ -39,11 +39,19 @@ import ast
 import json
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
+from packaging.requirements import Requirement
 
+from scripts.hatch.hatch_runner_subset_builder import (
+    RequirementKey,
+    requirement_key,
+    select_subset_requirements,
+)
 from tests.utils.wheel_builds import build_subset_wheel
 from tolokaforge.core._runner_subset import (
     RUNNER_SUBSET_DATA_FILES,
@@ -74,8 +82,8 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         "tolokaforge/tools/builtin/files.py",
         "tolokaforge/tools/builtin/http_request.py",
         "tolokaforge/tools/builtin/mobile.py",
-        "tolokaforge/tools/builtin/rag_search.py",
         "tolokaforge/tools/builtin/registry.py",
+        "tolokaforge/tools/builtin/submit.py",
         # ``runner.proto`` is a source-level protobuf definition, not a
         # Python module — the compiled ``runner_pb2*.py`` files carry its
         # runtime surface. Kept in the subset for repro / regeneration.
@@ -102,6 +110,12 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         # time from ``judge.py``. Shipped in the subset because the runner
         # container calls each one on the grading path.
         "tolokaforge/core/grading/default_judge_model_provider.py",
+        # The built-in search backends, resolved through
+        # ``load_search_backend('rag_service' | 'bm25')`` at ``RegisterTrial`` for
+        # a task whose ``search.plane`` names one — an entry-point load, never a
+        # module-level import, so the boot closure does not observe them.
+        "tolokaforge/runner/rag_service_backend.py",
+        "tolokaforge/core/search/bm25.py",
         "tolokaforge/core/grading/default_rubric_evaluator.py",
         "tolokaforge/core/grading/default_state_check_backends.py",
         "tolokaforge/core/grading/default_transcript_rule_matcher.py",
@@ -385,19 +399,21 @@ def test_declared_excluded_files_exist() -> None:
     )
 
 
-def _load_pyproject_custom_target() -> dict[str, list[str]]:
-    """Read ``[tool.hatch.build.targets.custom]`` from ``pyproject.toml``.
-
-    Uses ``tomllib`` on 3.11+, ``tomli`` on 3.10 (already a transitive dev
-    dependency)."""
-    try:
-        import tomllib  # type: ignore[import-not-found]
-    except ModuleNotFoundError:  # Python 3.10 branch
-        import tomli as tomllib  # type: ignore[import-not-found,no-redef]
-
+def _load_pyproject() -> dict[str, Any]:
+    """Read the repo-root ``pyproject.toml``."""
     with (REPO_ROOT / "pyproject.toml").open("rb") as f:
-        data = tomllib.load(f)
-    return data["tool"]["hatch"]["build"]["targets"]["custom"]
+        return tomllib.load(f)
+
+
+def _load_pyproject_custom_target() -> dict[str, list[str]]:
+    """Read ``[tool.hatch.build.targets.custom]`` from ``pyproject.toml``."""
+    return _load_pyproject()["tool"]["hatch"]["build"]["targets"]["custom"]
+
+
+def _base_runner_requirements() -> list[str]:
+    """``[project.dependencies]`` plus ``[project.optional-dependencies].runner``."""
+    project = _load_pyproject()["project"]
+    return [*project["dependencies"], *project["optional-dependencies"]["runner"]]
 
 
 def test_pyproject_custom_target_mirrors_runner_subset_module() -> None:
@@ -656,6 +672,9 @@ _LOADER_TO_GROUP: dict[str, str] = {
     "load_conductor": "tolokaforge.conductors",
     "load_readiness_probe": "tolokaforge.service_readiness_probes",
     "load_turn_policy": "tolokaforge.turn_policies",
+    "load_agent_loop": "tolokaforge.agent_loops",
+    "load_user_simulator": "tolokaforge.user_simulators",
+    "load_search_backend": "tolokaforge.search_backends",
     "load_custom_check_executor": "tolokaforge.custom_check_executors",
     "load_judge_model_provider": "tolokaforge.judge_model_providers",
     "load_rubric_evaluator": "tolokaforge.rubric_evaluators",
@@ -666,6 +685,7 @@ _LOADER_TO_GROUP: dict[str, str] = {
     "load_grading_method": "tolokaforge.grading_methods",
     "load_grader_kind": "tolokaforge.grader_kinds",
     "load_judge_kind": "tolokaforge.judge_kinds",
+    "load_comparison_view_rule": "tolokaforge.comparison_view_rules",
 }
 
 
@@ -733,26 +753,117 @@ def test_subset_wheel_ships_cli_shim_module(subset_wheel_path: Path) -> None:
     )
 
 
-def test_subset_wheel_requires_tolokaforge_models(subset_wheel_path: Path) -> None:
-    """The runner container's pricing / preset / provider tables now ship
-    inside the :mod:`tolokaforge_models` wheel — the subset wheel resolves
-    them through ``Requires-Dist: tolokaforge-models`` at pip-install time.
-    Without this dep, the runner image would boot with an empty pricing
-    table (silent cost-tracking regression) and the preset registry would
-    raise at first grading-model resolution."""
-    metadata_txt = _wheel_read(subset_wheel_path, "*.dist-info/METADATA")
-    matches = [
-        line
+# The runner subset's dependency surface. Adding or removing a runtime
+# dependency of the subset is a deliberate edit to this set.
+EXPECTED_SUBSET_REQUIREMENT_KEYS: frozenset[RequirementKey] = frozenset(
+    {
+        RequirementKey("tolokaforge-models", frozenset()),
+        RequirementKey("litellm", frozenset()),
+        RequirementKey("pydantic", frozenset()),
+        RequirementKey("pydantic", frozenset({"email"})),
+        RequirementKey("jsonschema", frozenset()),
+        RequirementKey("packaging", frozenset()),
+        RequirementKey("pyyaml", frozenset()),
+        RequirementKey("python-dotenv", frozenset()),
+        RequirementKey("click", frozenset()),
+        RequirementKey("jsonpath-ng", frozenset()),
+        RequirementKey("httpx", frozenset()),
+        RequirementKey("tenacity", frozenset()),
+        RequirementKey("jinja2", frozenset()),
+        RequirementKey("loguru", frozenset()),
+        RequirementKey("docstring-parser", frozenset()),
+        RequirementKey("deepdiff", frozenset()),
+        RequirementKey("toml", frozenset()),
+        RequirementKey("addict", frozenset()),
+        RequirementKey("starlette", frozenset()),
+        RequirementKey("typesense", frozenset()),
+        RequirementKey("structlog", frozenset()),
+        RequirementKey("grpcio", frozenset()),
+        RequirementKey("grpcio-health-checking", frozenset()),
+        RequirementKey("protobuf", frozenset()),
+        RequirementKey("mcp", frozenset()),
+        RequirementKey("google-re2", frozenset()),
+        RequirementKey("asyncpg", frozenset()),
+        RequirementKey("psycopg2-binary", frozenset()),
+        RequirementKey("alembic", frozenset()),
+        RequirementKey("python-jose", frozenset()),
+        RequirementKey("fastapi", frozenset()),
+        RequirementKey("uvicorn", frozenset()),
+        RequirementKey("sqlalchemy", frozenset()),
+        RequirementKey("odata-query", frozenset()),
+    }
+)
+
+
+def _subset_wheel_requirements(wheel_path: Path) -> list[Requirement]:
+    metadata_txt = _wheel_read(wheel_path, "*.dist-info/METADATA")
+    prefix = "Requires-Dist: "
+    return [
+        Requirement(line.removeprefix(prefix))
         for line in metadata_txt.splitlines()
-        if line.startswith("Requires-Dist: tolokaforge-models")
+        if line.startswith(prefix)
     ]
-    assert matches, (
-        "subset wheel METADATA is missing a Requires-Dist entry for "
-        "tolokaforge-models — the runner image would install without the "
-        "data-file provider and boot with empty pricing / preset / provider "
-        "tables. Add the pin to scripts/hatch/hatch_runner_subset_builder.py "
-        "SUBSET_DEPENDENCIES."
+
+
+def test_subset_wheel_requires_exactly_the_runner_dependency_set(
+    subset_wheel_path: Path,
+) -> None:
+    """The subset wheel's ``Requires-Dist`` lines are exactly the runner's
+    dependency set, each once. ``tolokaforge-models`` supplies the runner's
+    pricing / preset / provider tables; ``docker`` and ``testcontainers`` are
+    orchestrator-side and must stay out of the runner image."""
+    keys = [requirement_key(req) for req in _subset_wheel_requirements(subset_wheel_path)]
+    duplicated = sorted({key.name for key in keys if keys.count(key) > 1})
+    assert not duplicated, f"subset wheel METADATA repeats Requires-Dist for {duplicated}"
+    assert set(keys) == EXPECTED_SUBSET_REQUIREMENT_KEYS, (
+        "subset wheel Requires-Dist set drifted from the locked runner "
+        f"dependency set:\n  unexpected: {sorted(set(keys) - EXPECTED_SUBSET_REQUIREMENT_KEYS)}"
+        f"\n  missing: {sorted(EXPECTED_SUBSET_REQUIREMENT_KEYS - set(keys))}"
     )
+
+
+def test_subset_wheel_requirements_carry_the_base_specifiers(
+    subset_wheel_path: Path,
+) -> None:
+    """Every subset ``Requires-Dist`` is the base project's requirement with
+    the same name and extras — specifier and marker included — so a range
+    raised in ``pyproject.toml`` is the range the runner image resolves."""
+    base_by_key = {
+        requirement_key(req): req for req in map(Requirement, _base_runner_requirements())
+    }
+    emitted_by_key = {
+        requirement_key(req): req for req in _subset_wheel_requirements(subset_wheel_path)
+    }
+    litellm = emitted_by_key[RequirementKey("litellm", frozenset())]
+    assert litellm == base_by_key[RequirementKey("litellm", frozenset())]
+    # 1.89.7 strips gateway cache markers and 1.92.2 imports fastapi on the
+    # tool-call path; the runner image must resolve neither.
+    assert [v for v in ("1.89.7", "1.92.2", "1.93.0") if litellm.specifier.contains(v)] == [
+        "1.93.0"
+    ], f"subset wheel admits the wrong litellm releases: {litellm}"
+    mismatched = {
+        key: (str(emitted), str(base_by_key.get(key)))
+        for key, emitted in emitted_by_key.items()
+        if emitted != base_by_key.get(key)
+    }
+    assert not mismatched, (
+        "subset wheel Requires-Dist differs from pyproject.toml " f"(emitted, base): {mismatched}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("selection", "message"),
+    [
+        ("not-a-declared-dependency", r"'not-a-declared-dependency' matches 0 requirements"),
+        ("litellm>=1.0", r"'litellm>=1\.0' must name a requirement without a specifier"),
+    ],
+)
+def test_subset_selection_refuses_what_pyproject_cannot_back(selection: str, message: str) -> None:
+    """A selected name that pyproject does not declare, or that carries its
+    own specifier, fails the build and names itself, so pyproject stays the
+    only source of the subset's ranges."""
+    with pytest.raises(ValueError, match=message):
+        select_subset_requirements(("mcp", selection), _base_runner_requirements())
 
 
 def test_subset_wheel_does_not_ship_engine_data_dir(subset_wheel_path: Path) -> None:

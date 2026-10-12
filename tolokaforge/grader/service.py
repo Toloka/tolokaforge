@@ -23,7 +23,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from tolokaforge.core.grading.chunk_boundaries_wire import encode_chunk_boundaries
 from tolokaforge.core.models import (
     Grade,
     JudgeStatus,
@@ -98,6 +97,11 @@ def _grade_to_wire(grade: Grade) -> grader_pb2.Grade:
         # runner.Grade.state_diff_json which the ``_parse_grade_result`` mapper
         # deserialises on receipt.
         wire.state_diff_json = json.dumps(grade.state_diff)
+    if grade.comparison_view is not None:
+        # The comparison view's record, JSON-encoded as on runner.Grade.
+        wire.comparison_view_json = json.dumps(grade.comparison_view)
+    if grade.state_snapshots is not None:
+        wire.state_snapshots_json = grade.state_snapshots.model_dump_json()
     if grade.components is not None:
         wire.components.state_checks = _sentinel(grade.components.state_checks)
         wire.components.transcript_rules = _sentinel(grade.components.transcript_rules)
@@ -144,7 +148,6 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
     transcript = grade.judge_transcript
     custom_prompt = grade.judge_custom_prompt
     include_agent_prompt = grade.judge_agent_prompt_included
-    chunk_boundaries = grade.judge_chunk_boundaries
     if all(
         value is None
         for value in (
@@ -154,7 +157,6 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
             transcript,
             custom_prompt,
             include_agent_prompt,
-            chunk_boundaries,
         )
     ):
         return
@@ -165,6 +167,8 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
         report.completion_tokens = usage.completion_tokens
         report.reasoning_tokens = usage.reasoning_tokens
         report.cost_usd = usage.cost_usd
+        if usage.billed_cost_usd is not None:
+            report.billed_cost_usd = usage.billed_cost_usd
         report.tool_calls = usage.tool_calls
         report.consistency_rejections = usage.consistency_rejections
     if transcript is not None:
@@ -181,10 +185,6 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
         report.custom_system_prompt = custom_prompt
     if include_agent_prompt is not None:
         report.include_agent_system_prompt = include_agent_prompt
-    if chunk_boundaries is not None:
-        report.chunk_boundaries_json = encode_chunk_boundaries(
-            tuple(tuple(chunk) for chunk in chunk_boundaries)
-        )
 
 
 def _trace_constraint_to_wire(r: TraceConstraintResult) -> grader_pb2.TraceConstraintResult:

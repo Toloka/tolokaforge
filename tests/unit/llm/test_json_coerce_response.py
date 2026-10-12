@@ -118,6 +118,39 @@ class TestJsonCoerceResponse:
         }
 
 
+class TestAStringParameterKeepsItsJsonText:
+    """A parameter the schema declares ``string`` carries text the tool parses itself.
+
+    A tool that takes JSON text in a string parameter runs ``json.loads`` on it;
+    decoding it here hands the tool a dict and fails every such call with "the JSON
+    object must be str, bytes or bytearray, not dict".
+    """
+
+    PAYLOAD = '{"account_id": "A-1"}'
+
+    @pytest.mark.parametrize("policy", [JsonCoerceResponse(), ArrayDictMapResponse()])
+    def test_a_string_parameter_is_not_decoded(self, policy) -> None:
+        out = policy.parse_arguments(
+            {"tool": "lookup_account", "payload": self.PAYLOAD},
+            param_types={"tool": "string", "payload": "string"},
+        )
+        assert out == {"tool": "lookup_account", "payload": self.PAYLOAD}
+
+    @pytest.mark.parametrize("policy", [JsonCoerceResponse(), ArrayDictMapResponse()])
+    def test_a_container_parameter_beside_it_is_still_decoded(self, policy) -> None:
+        out = policy.parse_arguments(
+            {"payload": self.PAYLOAD, "lines": '{"SKU-A": {"qty": 1}}'},
+            param_types={"payload": "string", "lines": "object"},
+        )
+        assert out == {"payload": self.PAYLOAD, "lines": {"SKU-A": {"qty": 1}}}
+
+    def test_a_parameter_the_types_do_not_name_is_decoded_as_before(self) -> None:
+        out = JsonCoerceResponse().parse_arguments(
+            {"lines": '{"SKU-A": {"qty": 1}}'}, param_types={"payload": "string"}
+        )
+        assert out == {"lines": {"SKU-A": {"qty": 1}}}
+
+
 class TestArrayDictMapResponseAlsoCoercesJsonStrings:
     """``ArrayDictMapResponse`` (used by GPT-5 / Grok with StrictSchema) must
     *also* JSON-decode stringified containers — otherwise a stringified array

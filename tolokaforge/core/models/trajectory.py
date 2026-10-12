@@ -10,7 +10,7 @@ census (:class:`RateLimitProbeRoleMetrics`,
 """
 
 import dataclasses
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal, Self, get_args
 
@@ -24,12 +24,15 @@ from pydantic import (
 
 from tolokaforge.core.llm.reasoning import StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
-from tolokaforge.core.models.grade import Grade
+from tolokaforge.core.models.grade import Grade, GradingStateSnapshots, JudgeUsage
 from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 from tolokaforge.runner.models import RecordedToolCall
+from tolokaforge.tools.registry import ToolExecutionStatus
 
 __all__ = [
     "REPLY_DEFECT_EXCERPT_MAX_CHARS",
+    "CostByRoleMetrics",
+    "CostByRoleModelMetrics",
     "FirstUserMessageSource",
     "Message",
     "MessageRole",
@@ -87,7 +90,11 @@ class MessageRole(str, Enum):
 
 
 class FirstUserMessageSource(str, Enum):
-    """Where message index 0 came from."""
+    """Where the transcript's first user message came from.
+
+    It is message index 0 unless the agent's opening line
+    (``actors.user.first_agent_message``) or a user tool step precedes it.
+    """
 
     PINNED = "pinned"  # The task's initial_user_message, delivered verbatim
     SIMULATOR = "simulator"  # A user-simulator dispatch produced it
@@ -187,6 +194,9 @@ class Message(BaseModel):
     content_blocks: list[dict[str, Any]] | None = None  # Multimodal content (screenshots)
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
+    # The completed tool outcome when known. Keeps a literal "Error: ..."
+    # returned by an environment distinct from the engine's error prefix.
+    tool_status: ToolExecutionStatus | None = None
     # Structured reasoning / thinking blocks. See tolokaforge.core.llm.reasoning.
     # Bare strings are rejected (Stage 0 migration); callers must pass
     # ``StructuredReasoning`` or a dict parsable by it.
@@ -196,7 +206,7 @@ class Message(BaseModel):
     # routing decision behind it. Set on assistant messages produced by an
     # OpenRouter-routed call; None on every other message and every other route.
     openrouter_generation_id: str | None = None
-    ts: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    ts: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
 
     @field_validator("reasoning", mode="before")
     @classmethod
@@ -253,9 +263,9 @@ class RateLimitProbeRoleMetrics(BaseModel):
     down rather than rejecting them, which only goodput and latency catch. See
     ``docs/OUTPUT_FORMAT.md`` § Field observations for the measurements.
 
-    ``Metrics.usage`` cannot answer the same question: ``usage.calls`` holds
-    agent calls only and carries no role field, so per-model goodput and latency
-    are not computable from it. These rows are the role-attributed record.
+    ``Metrics.usage`` cannot answer the same question: ``usage.calls`` records
+    only served responses, so the 429 / retry / wait census is absent from it.
+    These rows are the rate-limit record.
 
     ``model`` is the raw provider-qualified slug the client called
     (``openrouter/anthropic/claude-sonnet-4.6``). The engine deliberately does
@@ -342,6 +352,58 @@ class RateLimitProbeBucketMetrics(BaseModel):
     completion_tokens: int = 0
     retries: int = 0
     wait_s: float = 0.0
+
+
+class CostByRoleModelMetrics(BaseModel):
+    """One ``(role, model)`` row of a trial's cost / token spend.
+
+    The finest grain of the per-role rollup: a trial that runs the agent and the
+    user simulator on different models contributes one row per pair. ``model`` is
+    the client slug the calls were served by, ``None`` only for calls built
+    without a serving client (the reconciled residual always carries the agent
+    model, so ``None`` here means genuinely unattributed).
+
+    A dict keyed by the ``(role, model)`` tuple would not round-trip through
+    YAML/JSON, so the key is spread onto explicit fields, mirroring
+    :class:`RateLimitProbeRoleMetrics`.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    # Typed ``str`` (not the ``LLMCallRole`` Literal) so a bundle written by a
+    # future run with a new role member round-trips on read rather than raising.
+    role: str
+    model: str | None = None
+    cost_usd: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+
+class CostByRoleMetrics(BaseModel):
+    """One ``role`` row of a trial's cost / token spend, summed across models.
+
+    The per-role view of :class:`CostByRoleModelMetrics`. ``sum(cost_usd)`` over
+    these rows equals :attr:`Metrics.cost_usd` on every trial — LLM-loop,
+    conversational, and coding-harness — because the harness residual (whole
+    ``cost_usd``, empty ``usage.calls``) is reconciled onto the ``agent`` row.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    # Typed ``str`` (not the ``LLMCallRole`` Literal) so a bundle written by a
+    # future run with a new role member round-trips on read rather than raising.
+    role: str
+    cost_usd: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 _VALID_COST_SOURCES: frozenset[str] = frozenset(get_args(CostSource))
@@ -451,14 +513,14 @@ class Metrics(BaseModel):
     api_calls: int = 0
     usage: Usage = Field(default_factory=Usage)
     tool_output_chars_truncated: int = 0
-    """Cumulative characters clipped by ``ToolCallingLoop._cap_tool_message_content``
+    """Cumulative characters clipped by ``ToolCallFunnel.cap_tool_message_content``
     across every ``role=tool`` message on this trial.
 
     Non-zero means at least one tool result exceeded the effective cap
     (``min(ToolPolicy.output_max_chars, LoopConfig.tool_output_max_chars)``)
     and was middle-elided before append. Zero means either no cap fired or
     every raw output fit inside the cap. The recorder read at
-    :meth:`ToolCallingLoop._execute_tool_calls` runs earlier against the
+    :meth:`ToolCallFunnel.execute` runs earlier against the
     untruncated result, so grader inputs are unaffected."""
 
     parser_errors: list[ParserErrorRecord] = Field(default_factory=list)
@@ -586,8 +648,46 @@ class Metrics(BaseModel):
     marks the number unreliable rather than correcting it: the correction is
     the real rate, supplied via ``observability.pricing_overlay_path``.
 
-    ``False`` on every litellm-priced call (provider-authoritative, already
+    ``False`` on every litellm-priced call (litellm's figure, already
     cache-aware) and on every model whose row carries its cache rates."""
+
+    reasoning_recovered_by_fallback: int = 0
+    """Calls whose readable reasoning this preset's ``reasoning_codec`` does
+    not read, kept by the permissive reader instead.
+
+    Nothing was lost — the trajectory carries the reasoning either way. What
+    this counts is a preset routed too narrowly, which is worth fixing before
+    the next model lands on the same glob. Run
+    ``scripts/analysis/probe_reasoning_transport.py`` against the model and
+    route the preset at the channel it actually uses.
+
+    Independent of ``reasoning.mode``: the engine asks for reasoning only when
+    the mode says so, but a model may reason unasked, and one measured here
+    did so on every turn."""
+
+    reasoning_channel_unknown: int = 0
+    """Calls the provider charged reasoning tokens for while reasoning arrived
+    in no channel the engine knows about.
+
+    The one remaining way to actually lose reasoning, and the reason the token
+    count is still read: a channel nobody has seen reads as "nothing arrived"
+    to any enumeration, so it cannot be captured — but the bill still says the
+    deliberation happened.
+
+    An opaque ``reasoning.encrypted`` payload does **not** count here. It
+    arrived in a channel we know and holds no text anyone could keep, so
+    counting it would report a loss on most calls of the routes that are
+    behaving correctly."""
+
+    reasoning_replay_dropped: bool = False
+    """At least one request in this trial carried an earlier turn's reasoning
+    that the codec would not replay, so the model could not see it.
+
+    Correct for a route that refuses echoed reasoning, which is why this marks
+    the trial rather than failing it. It is also exactly what
+    ``moonshotai/kimi-k2.7-code`` looked like while it was scoring 0.38 instead
+    of 0.69: reasoning on turn 1 and none afterwards, because the model read a
+    history in which it had never reasoned."""
 
     tool_calls: int = 0
     tool_success_rate: float = 0.0
@@ -629,6 +729,20 @@ class Metrics(BaseModel):
     probe_buckets: list[RateLimitProbeBucketMetrics] = Field(default_factory=list)
     """Per-``(role, model, absolute window)`` throughput, sorted by window then
     role then model. See :class:`RateLimitProbeBucketMetrics`."""
+
+    cost_by_role: list[CostByRoleMetrics] = Field(default_factory=list)
+    """This trial's ``cost_usd`` / tokens attributed per actor role.
+
+    Derived from ``usage.calls`` and reconciled against ``cost_usd``, so
+    ``sum(row.cost_usd for row in cost_by_role) == cost_usd`` on every trial: a
+    coding-harness trial (``cost_usd > 0``, empty ``usage.calls``) lands its
+    whole cost on the ``agent`` row. Covers the in-trial actor roles only (agent
+    + user); judge cost lives in ``grade.judge_usage`` and appears only in
+    ``aggregate.json``. Rows are sorted by role."""
+
+    cost_by_role_model: list[CostByRoleModelMetrics] = Field(default_factory=list)
+    """The same spend resolved to ``(role, model)`` rows, sorted by role then
+    model. The per-model breakdown of :attr:`cost_by_role`."""
 
     @field_validator("usage", mode="before")
     @classmethod
@@ -801,11 +915,18 @@ class Trajectory(BaseModel):
     # executor. Persisted as the ``tool_log.yaml`` sidecar, not as a key on
     # ``trajectory.yaml`` — see docs/OUTPUT_FORMAT.md.
     tool_log: list[RecordedToolCall] = Field(default_factory=list)
+    simulation_steps: int | None = None
+    environment_errors: int | None = None
     grade: Grade | None = None
     # Grading ran for this trial and could not produce a verdict; this is the
     # reason it gave. ``None`` means grading either succeeded or was correctly
     # not attempted — it does not distinguish those two, ``grade`` does.
     grading_error: str | None = None
+    # Work completed before a grading failure, without inventing a verdict.
+    grading_judge_usage: JudgeUsage | None = None
+    grading_state_snapshots: GradingStateSnapshots | None = None
+    grading_state_diff: dict[str, Any] | None = None
+    grading_comparison_view: dict[str, Any] | None = None
     # Which point of the provisioning lifecycle raised ``ProvisionError``.
     # Non-``None`` iff ``termination_reason == PROVISION_ERROR``; ``None`` on
     # every other trial including bundles the executor writes for a failure
@@ -842,4 +963,14 @@ class Trajectory(BaseModel):
                 "grading_error records that no verdict could be computed, so a grade "
                 "alongside it describes a trial two different ways."
             )
+        if self.grading_error is None and any(
+            value is not None
+            for value in (
+                self.grading_judge_usage,
+                self.grading_state_snapshots,
+                self.grading_state_diff,
+                self.grading_comparison_view,
+            )
+        ):
+            raise ValueError("grading failure evidence requires grading_error")
         return self

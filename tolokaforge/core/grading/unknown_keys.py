@@ -1,11 +1,9 @@
 """What a typed ``grading.yaml`` block does with a key it does not declare.
 
-The refusal here is the authoring gate's, and it is the message an author reads: it
-names the file, the offending key, the closest declared field and the block's whole
-accepted set, where the model's own ``extra="forbid"`` refuses in one line carrying
-no address. The did-you-mean clause itself is
-:func:`tolokaforge.core.deprecations.suggest_closest_field`, shared with the
-Project-layer loader's warn-and-drop.
+The refusal an author reads is :func:`tolokaforge.core.unknown_keys.refuse_undeclared_keys`,
+shared with every block under ``models.<role>``: it names the offending key, the closest
+declared field and the block's whole accepted set. This module adds the file and the block's
+address, which the model's own one-line ``extra="forbid"`` refusal does not carry.
 """
 
 from __future__ import annotations
@@ -16,7 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from tolokaforge.core.deprecations import suggest_closest_field
+from tolokaforge.core.unknown_keys import refuse_undeclared_keys
 
 
 def refuse_unknown_grading_keys(
@@ -45,33 +43,15 @@ def refuse_unknown_grading_keys(
         ValueError: If *block* declares a key outside ``model.model_fields`` that
             *answered_elsewhere* does not hold, or a key that is not a string.
     """
-    unknown = [
-        key
-        for key in block
-        if not isinstance(key, str)
-        or (key not in model.model_fields and key not in answered_elsewhere)
-    ]
-    if not unknown:
-        return
-    written = "\n".join(f"  - {_refusal_clause(model, key)}" for key in unknown)
-    accepted = ", ".join(model.model_fields)
-    raise ValueError(
-        f"Grading file {grading_path}: the task's own {block_name} block was given a "
-        f"key it does not declare:\n{written}\n{block_name} accepts: {accepted}."
+    refuse_undeclared_keys(
+        {
+            key: value
+            for key, value in block.items()
+            if not isinstance(key, str) or key not in answered_elsewhere
+        },
+        model.model_fields,
+        owner=model.__name__,
+        subject=f"Grading file {grading_path}: the task's own {block_name} block",
+        accepted_by=block_name,
+        key_noun="grading",
     )
-
-
-def _refusal_clause(model: type[BaseModel], key: Any) -> str:
-    """The one line naming *key*, and what to do about it.
-
-    A non-string key gets no suggestion: YAML reads a bare ``on:`` / ``no:`` as a
-    boolean and a bare ``3:`` as an int, so the fix is quoting the key rather than
-    renaming it — and :func:`suggest_closest_field` would raise a ``TypeError``
-    naming neither the file nor the key if handed one.
-    """
-    if not isinstance(key, str):
-        return (
-            f"unknown key {key!r}, which YAML read as {type(key).__name__} — grading "
-            f"keys must be strings. Quote it to write it as one."
-        )
-    return f"unknown key '{key}'{suggest_closest_field(model, key)}".rstrip()

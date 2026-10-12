@@ -35,6 +35,7 @@ from typing import Any
 # and the matcher vocabulary that selects on it name one enum. This module cannot
 # own it: ``runner.models`` declares ``TraceMatcher`` and reaching in here for the
 # kind would close a cycle through ``core.models``.
+from tolokaforge.core.actors.tool_turns import is_user_tool_step, user_tool_step_call_ids
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind as TraceEventKind
 from tolokaforge.core.grading.transcript_wire import (
     decode_transcript_wire,
@@ -50,6 +51,7 @@ from tolokaforge.core.models import (
     ToolExecutorIdentity,
 )
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds, episode_unique_call_ids
+from tolokaforge.core.tool_message_format import TOOL_ERROR_MESSAGE_PREFIX
 
 __all__ = [
     "AttemptedCall",
@@ -155,14 +157,6 @@ _KIND_BY_ROLE = {
 }
 
 
-# The literal prefix ``core/loop.py`` writes onto a failed tool call's
-# message body. Stripping it in the message-only branch of trace-timeline
-# reconstruction is what keeps ``result:`` matchers reading the same on a
-# bundle carrying ``tool_log.yaml`` and on the same bundle re-graded from
-# messages alone (#977).
-_ERROR_MESSAGE_PREFIX = "Error: "
-
-
 @dataclass(frozen=True)
 class _DeclaredCall:
     """One call the message view asks for, under the key the trial joins it by."""
@@ -208,7 +202,7 @@ def build_trial_timeline(
     # The record wins wherever both views describe one call, so the message-side
     # results are read only in its absence.
     message_results = {} if records else _index_message_results(messages, declared)
-    builder = _TimelineBuilder(records, message_results)
+    builder = _TimelineBuilder(records, message_results, user_tool_step_call_ids(messages))
     if turns:
         builder.emit_message_view(turns, declared)
     else:
@@ -368,8 +362,8 @@ def _require_every_record_names_its_declared_tool(
 
 def _index_message_results(
     messages: Sequence[Message], declared: Sequence[Sequence[_DeclaredCall]]
-) -> dict[str, str]:
-    """The text each ``role: tool`` message carries, keyed by the call it answers.
+) -> dict[str, Message]:
+    """Each ``role: tool`` message, keyed by the call it answers.
 
     Read only when no record view was supplied. That text is on disk in every
     recorded bundle, so dropping it would hide a tool's own output from every
@@ -383,7 +377,7 @@ def _index_message_results(
     """
     declared_keys = set(_declarations_by_key(declared))
     assigner = EpisodeUniqueCallIds()
-    results: dict[str, str] = {}
+    results: dict[str, Message] = {}
     for index, message in enumerate(messages):
         if message.role is not MessageRole.TOOL:
             continue
@@ -395,7 +389,7 @@ def _index_message_results(
                 "only surviving evidence of what that tool returned, so it can be neither "
                 "joined to a call nor dropped."
             )
-        results[key] = message.content
+        results[key] = message
     return results
 
 
@@ -418,10 +412,14 @@ class _TimelineBuilder:
     """Accumulates events, assigning ``position`` and ``turn_index`` as it goes."""
 
     def __init__(
-        self, records: dict[str, RecordedToolCall], message_results: dict[str, str]
+        self,
+        records: dict[str, RecordedToolCall],
+        message_results: dict[str, Message],
+        user_tool_step_call_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._records = records
         self._message_results = message_results
+        self._user_tool_step_call_ids = user_tool_step_call_ids
         self._events: list[TraceEvent] = []
         self._generations = 0
 
@@ -449,7 +447,10 @@ class _TimelineBuilder:
     def _emit_turn(self, message: Message, declared: Sequence[_DeclaredCall]) -> None:
         if message.role is MessageRole.ASSISTANT:
             self._generations += 1
-        self._append(kind=_KIND_BY_ROLE[message.role], text=message.content)
+        # A user's isolated tool step is addressed to the environment and nobody
+        # in the dialogue reads it, so only its calls are events, not the message.
+        if not is_user_tool_step(message, self._user_tool_step_call_ids):
+            self._append(kind=_KIND_BY_ROLE[message.role], text=message.content)
         for entry in _execution_order(declared, self._records):
             self._emit_call(entry)
 
@@ -481,20 +482,30 @@ class _TimelineBuilder:
     def _append_message_result(self, declared: _DeclaredCall) -> None:
         """The result as the message view preserved it: text, and nothing a record carries.
 
-        Strips the ``"Error: "`` prefix ``core/loop.py:460`` writes onto the
-        message body for a failed call, so ``result:`` reads the same on
-        this branch as on ``_append_result`` (which pulls raw ``record.output``).
-        Without this, ``result: {regex: "^insufficient funds"}`` passed on a
-        bundle carrying ``tool_log.yaml`` and failed on the same bundle
-        re-graded without it — the "one text on both substrates" claim (#977)
-        would hold only for records, not for messages.
+        Strips
+        :data:`~tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX`
+        — what an :class:`~tolokaforge.core.loop.AgentLoop` writes onto the
+        message body of a failed call — so ``result:`` reads the same here as
+        on ``_append_result`` (which pulls raw ``record.output``). Without this,
+        ``result: {regex: "^insufficient funds"}`` passed on a bundle carrying
+        ``tool_log.yaml`` and failed on the same bundle re-graded without it —
+        the "one text on both substrates" claim (#977) would hold only for
+        records, not for messages.
         """
-        raw = self._message_results[declared.key]
-        result = raw[len(_ERROR_MESSAGE_PREFIX) :] if raw.startswith(_ERROR_MESSAGE_PREFIX) else raw
+        message = self._message_results[declared.key]
+        raw = message.content
+        result = (
+            raw[len(TOOL_ERROR_MESSAGE_PREFIX) :]
+            if raw.startswith(TOOL_ERROR_MESSAGE_PREFIX)
+            and message.tool_status
+            not in (ToolExecutionStatus.SUCCESS, ToolExecutionStatus.ENVIRONMENT_ERROR)
+            else raw
+        )
         self._append(
             kind=TraceEventKind.TOOL_RESULT,
             call_id=declared.key,
             tool_name=declared.call.name,
+            status=message.tool_status,
             result=result,
         )
 

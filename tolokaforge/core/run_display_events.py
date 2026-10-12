@@ -480,8 +480,8 @@ class RateLimitProbeStats:
     the user simulator is a fixed, unrelated one — so a single flat counter
     would blend a measured model's numbers with an unmeasured one's. The flat
     fields are kept as the sum across buckets for consumers that only want the
-    trial total. ``Metrics.usage.calls`` cannot substitute: it holds agent calls
-    only and carries no role, so per-model goodput is not derivable from it.
+    trial total. ``Metrics.usage.calls`` cannot substitute: it records only served
+    responses, so the 429 / retry / wait census is absent from it.
 
     **Two censuses, one recorder.** ``retries`` / ``wait_s`` are the FAILURE
     side; ``successes`` / ``success_duration_s`` / the token counts are the
@@ -698,12 +698,29 @@ class LLMCallObservation:
 
     ``probe_stats`` is the trial's shared :class:`RateLimitProbeStats`
     accumulator when rate-limit probe mode is on, ``None`` otherwise.
+
+    ``session_id`` is the conversation id a model's session header carries
+    (``ModelConfig.session``); ``None`` means the call has no conversation
+    identity, and the client then sends a fresh value per ``generate()`` call.
     """
 
     events: RunDisplayEvents
     trial_id: str
     role: LLMCallRole
     probe_stats: RateLimitProbeStats | None = None
+    session_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.session_id is not None and not self.session_id.strip():
+            raise ValueError(
+                f"LLMCallObservation.session_id must be a non-empty id or None, "
+                f"got {self.session_id!r}"
+            )
+
+
+def conversation_session_id(trace_id: str, role: LLMCallRole) -> str:
+    """The session id every call one trial's ``role`` makes carries."""
+    return f"{trace_id}-{role}"
 
 
 class _NullRunDisplayEvents:
@@ -751,4 +768,5 @@ __all__ = [
     "_NULL_EVENTS",
     "_NullRunDisplayEvents",
     "build_component_id",
+    "conversation_session_id",
 ]

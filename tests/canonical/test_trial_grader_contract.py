@@ -326,3 +326,120 @@ class TestJudgeInputsRoundTrip:
         parsed = _parse_grade_result(_grade_dict_from_proto(grade))
 
         assert parsed.judge_inputs is None
+
+
+class TestJudgeBilledCostRoundTrip:
+    """The judge's stated charge survives both wires into ``grade.yaml``'s
+    ``judge_usage``. Presence carries meaning: an absent field is "not every judge
+    call stated one" (or a runner predating field 17) and must read back ``None``,
+    never proto3's 0.0."""
+
+    def test_runner_wire_round_trips_the_charge(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        report = runner_pb2.JudgeReport(calls=2, cost_usd=0.002, billed_cost_usd=0.0021)
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_usage is not None
+        assert parsed.judge_usage.cost_usd == 0.002
+        assert parsed.judge_usage.billed_cost_usd == 0.0021
+
+    def test_a_zero_charge_is_present_not_absent(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        report = runner_pb2.JudgeReport(calls=1, billed_cost_usd=0.0)
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_usage is not None
+        assert parsed.judge_usage.billed_cost_usd == 0.0
+
+    def test_unset_fields_read_back_unknown(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        report = runner_pb2.JudgeReport(calls=1, cost_usd=0.001)  # field 17 left unset
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        grade_dict = _grade_dict_from_proto(grade)
+        assert "billed_cost_usd" not in grade_dict["judge_report"]
+        parsed = _parse_grade_result(grade_dict)
+
+        assert parsed.judge_usage is not None
+        assert parsed.judge_usage.billed_cost_usd is None
+
+    @pytest.mark.parametrize("billed", [0.0021, 0.0, None])
+    def test_grader_wire_round_trips_the_charge(self, billed: float | None) -> None:
+        from tolokaforge.core.models import JudgeUsage
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.grader.client import _grade_from_wire
+        from tolokaforge.grader.service import _grade_to_wire
+
+        source = Grade(
+            binary_pass=True,
+            score=1.0,
+            judge_usage=JudgeUsage(calls=2, cost_usd=0.002, billed_cost_usd=billed),
+        )
+
+        parsed = _parse_grade_result(_grade_from_wire(_grade_to_wire(source)))
+
+        assert parsed.judge_usage is not None
+        assert parsed.judge_usage.billed_cost_usd == billed
+
+    @pytest.mark.parametrize("billed", [0.0042, None])
+    def test_the_grader_dispatch_carries_the_charge_into_the_grade(
+        self, billed: float | None
+    ) -> None:
+        """The standalone grader's own assembly (``composite_dispatch._build_grade``) keeps
+        the judge's charge, so the grader wire above has something to carry."""
+        from tolokaforge.core.grading.composite_fold import CompositeFoldResult
+        from tolokaforge.core.grading.grade_components import CompositeGradeComponents
+        from tolokaforge.core.grading.judge_result import JudgeResult
+        from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
+        from tolokaforge.core.grading.judge_result import JudgeUsage as JudgeRunUsage
+        from tolokaforge.core.models import JudgeStatus
+        from tolokaforge.grader.composite_dispatch import _build_grade
+        from tolokaforge.runner.models import TraceChecksResult
+
+        grade = _build_grade(
+            fold_result=CompositeFoldResult(
+                score=1.0,
+                binary_pass=True,
+                verdict_reason=None,
+                judge_component=1.0,
+                state_checks_component=None,
+                inert_weight_reason=None,
+                reasons="ok",
+            ),
+            components=CompositeGradeComponents(),
+            custom_check_results=[],
+            trace_result=TraceChecksResult(),
+            judge_result=JudgeResult(
+                status=JudgeRunStatus.COMPLETED,
+                usage=JudgeRunUsage(calls=2, cost_usd=0.004, billed_cost_usd=billed),
+                reasons="ok",
+                score=1.0,
+            ),
+            judge_status=JudgeStatus.COMPLETED,
+        )
+
+        assert grade.judge_usage is not None
+        assert grade.judge_usage.cost_usd == 0.004
+        assert grade.judge_usage.billed_cost_usd == billed
+
+    def test_ondisk_grade_without_the_field_loads_as_unknown(self) -> None:
+        grade = Grade.model_validate(
+            {
+                "binary_pass": True,
+                "score": 1.0,
+                "judge_usage": {"calls": 1, "cost_usd": 0.001},
+            }
+        )
+
+        assert grade.judge_usage is not None
+        assert grade.judge_usage.billed_cost_usd is None

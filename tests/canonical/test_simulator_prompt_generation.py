@@ -15,6 +15,12 @@ The three renderings are the coverage boundary: between them they exercise the
 opening line, the ``Instruction:`` framing, the ``Rules:`` block and the
 tool-guidance block — every conditional segment ``_build_system_prompt`` has. A
 fourth conditional segment needs a fourth rendering here, or it moves unguarded.
+
+``actors.user.tool_turns: isolated`` builds the simulator's context by another
+function, which only an opted-in trial runs and ``user_actor.tool_turns``
+identifies; ``tests/unit/test_user_tool_turns.py`` pins that context. A
+non-built-in simulator (``actors.user.simulator``) writes its own prompt, which
+this stamp does not date.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ import hashlib
 
 import pytest
 
-from tolokaforge.core.llm import UserSimulator
+from tolokaforge.core.llm import BuiltinUserSimulator
 from tolokaforge.core.models import Trajectory
 
 pytestmark = pytest.mark.canonical
@@ -53,10 +59,10 @@ _PROMPT_DIGESTS: dict[int, dict[str, str]] = {
 # The rendering names live here alone: every generation's row carries exactly
 # these keys, and a row keyed by anything else names itself in the comparison
 # below rather than passing unread.
-_RENDERINGS: dict[str, UserSimulator] = {
-    "without_tools": UserSimulator(backstory=None, tool_schemas=None),
-    "with_tools": UserSimulator(backstory=None, tool_schemas=[{}]),
-    "with_backstory": UserSimulator(backstory="BACKSTORY", tool_schemas=None),
+_RENDERINGS: dict[str, BuiltinUserSimulator] = {
+    "without_tools": BuiltinUserSimulator(backstory=None, tool_schemas=None),
+    "with_tools": BuiltinUserSimulator(backstory=None, tool_schemas=[{}]),
+    "with_backstory": BuiltinUserSimulator(backstory="BACKSTORY", tool_schemas=None),
 }
 
 
@@ -92,7 +98,7 @@ def test_the_prompt_body_renders_what_its_generation_recorded() -> None:
     moved = sorted(name for name in names if expected.get(name) != actual.get(name))
 
     assert actual == expected, (
-        f"generation {_GENERATION} and UserSimulator._build_system_prompt disagree on "
+        f"generation {_GENERATION} and BuiltinUserSimulator._build_system_prompt disagree on "
         f"{', '.join(moved)} — a name only one of them carries is a manifest row keyed "
         "by a rendering nothing builds. Either the prompt-body edit was "
         "unintended and belongs reverted, or it opens a new generation — then "

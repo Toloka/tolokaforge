@@ -13,7 +13,7 @@ existing callers of this public API are untouched.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +63,7 @@ def checks_file(tmp_path: Path) -> Path:
 
 
 def _wire_payload() -> list[dict[str, Any]]:
-    ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, tzinfo=UTC)
     trajectory = Trajectory(
         task_id="wire_lock",
         trial_index=0,

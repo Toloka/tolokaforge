@@ -1,7 +1,8 @@
 # tolokaforge-langfuse
 
 Langfuse live tracing for [tolokaforge](../README.md): the OpenTelemetry trial observer that
-exports every generation and tool call of a trial as a span while the trial runs, and the
+exports every generation and tool call of a trial as a span while the trial runs (on a Langfuse
+v4 receiver only as opt-in previews, `LANGFUSE_TRACING_PREVIEWS`), and the
 trial-end pass that completes the trace from the persisted bundle (metadata, observations,
 gradings, scores, media, the attached files) under the id contract the offline
 `langfuse-connector` shares. The engine's own documentation of the behaviour is
@@ -60,24 +61,56 @@ run would trace under and exits 2 on a missing block, an undeclared environment 
 conflict (`docs/OBSERVABILITY.md`, "The deployment profile").
 
 `server_api` says which receiver family to write for: `auto` (the default) asks the receiver once
-at run start, by capability, and a Langfuse v4 receiver gets the **write-once layout** (declared
-preview rows while the trial runs, the record written once from the bundle, the root last); see
+at run start, by capability, and a Langfuse v4 receiver gets the **write-once layout** (the record
+written once from the bundle, the root last; declared preview rows while the trial runs only with
+`LANGFUSE_TRACING_PREVIEWS`); see
 `docs/OBSERVABILITY.md`, "The write-once layout", and ADR-0048. Two consequences worth knowing
 before configuring a run on that family: `projection` must be `full`, because the trace's root
 observation comes from the bundle, and the current verdict lives in the `scope: primary` scores
 (the trace metadata is frozen at its single write). `config.LangfuseConfig` also owns
 `project`, `project_id`, `environments`, `attach_api_base`, `attach_timeout_s`, `attach_budget_s`,
-`environment`, `model_name_normalizer` and `model_name_rules`. It rejects unknown keys and
+`retry`, `environment`, `model_name_normalizer` and `model_name_rules`. It rejects unknown keys and
 invalid values before any receiver work starts; other plugins' namespaces remain opaque.
 A receiver setting left at the engine's tracing top level is rejected, not silently ignored.
 Defaults and environment precedence are unchanged. A second backend need not declare any
 Langfuse fields.
+
+`retry` is the writes' retry policy (`retry.RetryPolicy`): a write is posted again only after a
+refusal that comes before the receiver reads it, by default a gateway's own 403 refusal page (a
+403 whose body carries one of `gateway_markers`, by default the Azure Application Gateway's), 429
+and 503 (a proxy may also answer 503 after forwarding; on a v4 receiver the second post is then an
+update with the same content), never after Langfuse's own JSON 403, a lost answer or a timeout;
+listing 500, 502 or 504 can re-send a body the receiver has already read. Every retried answer follows one schedule,
+`delays_s` (1, 3, 9, 20, 30 s, the last repeating) for at most `max_retries` (6) re-sends, 93 s of
+waiting that fits a trial's default `attach_budget_s`, a longer `Retry-After` honoured up to 60 s,
+and a jitter that only lengthens a wait. A breaker stops the waiting once two span batches in a
+row ran out their whole schedule still refused, since the gateway's page cannot tell its limit
+from a rule of its own. It covers the span export of the write-once
+layout, the trial-end calls (within the trial's `attach_budget_s`) and the agent transcripts; the
+run end may wait `flush_grace_s` (240 s) beyond `flush_timeout_s` while the receiver refuses, and
+the receipt counts every retry. Each default and its reason: `docs/OBSERVABILITY.md`, "Retries";
+when a re-send is safe: ADR-0048, amendment 2026-10-07.
+
+```yaml
+observability:
+  tracing:
+    options:
+      langfuse:
+        retry:
+          statuses: [403, 429, 503]     # 403: the gateway's page only; [] turns retries off
+          gateway_markers: [Microsoft-Azure-Application-Gateway]  # what marks that page
+          delays_s: [1, 3, 9, 20, 30]   # the last value repeats
+          max_retries: 6                # re-sends after the first post; 0 turns retries off
+          breaker_after: 2
+          flush_grace_s: 240
+```
 
 A launcher can also supply settings through these variables:
 
 | Variable | Meaning |
 |---|---|
 | `LANGFUSE_TRACING_ENABLED` | the one switch: trace this run even without a tracing block |
+| `LANGFUSE_TRACING_PREVIEWS` | on a v4 receiver, also send the live rows as declared previews while a trial runs; off by default |
 | `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_EXTRA_HEADERS`, `LANGFUSE_PROJECT` | the receiver, its credentials (read through the engine's `SecretManager`) and the project the keys must open |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` | the standard OpenTelemetry receiver variables, when a launcher owns the receiver |
 | `TOLOKAFORGE_TRACING_TAGS`, `TOLOKAFORGE_TRACING_EXPECT_PROJECT`, `TOLOKAFORGE_TRACING_SESSION_ID`, `TOLOKAFORGE_TRACING_LABEL` | the launcher's tags, project expectation, session and label |
@@ -115,11 +148,15 @@ profile".
 | `projection.py` | the default projection of a persisted trial bundle (the connector's `mapping.py` is the reference) |
 | `gradings.py` | the grading observation, its judge transcript and scores |
 | `otlp_spans.py` | the projection's ingestion bodies as OTLP spans (the write-once layout of a v4 receiver); engine-free, imported by the offline connector too |
+| `otlp_transport.py` | the OTLP/HTTP span exporter: the SDK's own for a v3 receiver, and for the write-once layout one that builds each request itself (the SDK's public OTLP encoder, one POST through its own `requests` session) and reads nothing the SDK keeps private; with a retrier it posts the same bytes again after a refusal the policy names; engine-free, imported by the offline connector too |
+| `retry.py` | the writes' retry policy (`options.langfuse.retry`): which refusals are posted again, the schedule of waits, the deadlines and the wait budget that bound them, the breaker that stops them, the counts for the receipt; engine-free |
 | `media.py` | the ingestion and media REST calls, the receiver-family probe, the budget and the breaker |
 | `attachments.py` | attachment manifest v2 and the data-safety scan |
 | `vocabulary.py` | the default trace vocabulary: prefixes, derived tags, the environment rule (shared with the offline uploader) |
 | `profile.py` | the deployment profile (schema 2; schema 1 still loads) and the launcher-input check |
 | `model_names.py` | model identity as configuration (raw, or `toloka-model-name-normalizer`) |
+| `transcripts.py` | coding-agent transcripts: `claude -p` output read through an allowlist (an unknown event or content block refuses the file), the tool input/output policy (`drop` by default, `scrub` behind a flag) and the projection to the trial projection's ingestion bodies, the id contract injected by the caller; engine-free |
+| `safety.py` | the outbound sentinel: the transcript uploaders scan every payload with it before a send, the observer every live span, trial-end pass and attachment; credential shapes and the values the process holds, by name; engine-free |
 
 ## Tests
 

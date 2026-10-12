@@ -17,6 +17,8 @@ External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.grading.state_check_backend.StateCheckBackend`,
 :data:`~tolokaforge.core.grading.trace_check_operator.TraceCheckOperator`,
 :class:`~tolokaforge.core.grading.bundle_store.BundleStore`,
+:class:`~tolokaforge.core.grading.comparison_view.ComparisonViewRule`,
+:class:`~tolokaforge.core.search.backend.SearchBackend`,
 :class:`~tolokaforge.core.composition_runtime.ComposeMaterialiser`,
 :class:`~tolokaforge.core.composition_runtime.ServiceLifecycleDispatcher`,
 and :class:`~tolokaforge.core.composition_runtime.SubstrateComposer`
@@ -37,6 +39,9 @@ class-typed idiom: each loader returns the impl *class* itself, and the
 caller instantiates with the class's own optional injection seams
 (``docker_compose_factory``, ``subprocess_runner``, ``materialiser``,
 ``dispatcher_registry``, ``runner_client_factory``, …).
+The comparison-view-rule loader resolves to the rule *class* as well: the view
+instantiates it per entry, and the rule's ``NAME`` / ``VERSION`` / ``config_model``
+are class attributes it reads before any instance exists.
 The trace-check-operator loader resolves directly to the operator callable
 — one operator per entry point, no factory wrapper, since the callable
 itself IS the seam contract.
@@ -52,6 +57,9 @@ The groups:
 * ``tolokaforge.conductors`` → :data:`~tolokaforge.core.conductor.ConductorFactory`
 * ``tolokaforge.service_readiness_probes`` → :data:`ReadinessProbeFactory`
 * ``tolokaforge.turn_policies`` → :data:`TurnPolicyFactory`
+* ``tolokaforge.agent_loops`` → :data:`AgentLoopFactory`
+* ``tolokaforge.user_simulators`` → :data:`UserSimulatorFactory`
+* ``tolokaforge.search_backends`` → :data:`SearchBackendFactory`
 * ``tolokaforge.grading_methods`` → ``type[GradingMethod]``
 * ``tolokaforge.grader_kinds`` → ``type[GraderKind]``
 * ``tolokaforge.judge_kinds`` → ``type[JudgeKind]``
@@ -66,6 +74,7 @@ The groups:
 * ``tolokaforge.transcript_rule_matchers`` → :data:`TranscriptRuleMatcherFactory`
 * ``tolokaforge.state_check_backends`` → :data:`StateCheckBackendFactory`
 * ``tolokaforge.trace_check_operators`` → :data:`TraceCheckOperator`
+* ``tolokaforge.comparison_view_rules`` → ``type[ComparisonViewRule]``
 * ``tolokaforge.bundle_stores`` → ``type[BundleStore]``
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
@@ -77,6 +86,12 @@ policy into two shapes:
 * **Broken import** fails only when its own name is requested; a broken
   plug-in never breaks resolution of a healthy sibling, and the import
   error propagates loudly rather than being swallowed.
+
+A group may also reserve a name the engine serves by other means
+(``tolokaforge.search_backends`` reserves ``typesense``, see
+:data:`RESERVED_SEARCH_BACKEND_NAMES`). A registration claiming it is the same
+unresolvable ambiguity as a duplicate and fails every lookup into the group the
+same way; a lookup *of* the reserved name fails on its own.
 
 External code and other engine registries reuse this fail-loud discovery
 through :func:`discover_entry_points`; see the § Fail-loud registry pattern
@@ -90,6 +105,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
+from tolokaforge.core.actors.user_simulator import (
+    UserSimulator,
+    UserSimulatorContext,
+    UserSimulatorFactory,
+)
 from tolokaforge.core.grading.check_runner import CheckExecutor
 from tolokaforge.core.grading.grading_method import GradingMethod
 from tolokaforge.core.grading.judge_kinds import JudgeKind
@@ -100,8 +120,25 @@ from tolokaforge.core.grading.state_check_backend import StateCheckBackendFactor
 from tolokaforge.core.grading.substrate import GradingSubstrate
 from tolokaforge.core.grading.trace_check_operator import TraceCheckOperator
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcherFactory
+from tolokaforge.core.loop import (
+    AgentLoop,
+    AgentLoopContext,
+    AgentLoopFactory,
+    ToolCallFunnel,
+    UnassignedToolCallError,
+)
 from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
+from tolokaforge.core.search.backend import (
+    RAG_SERVICE_STACK_SERVICE,
+    SearchBackend,
+    SearchBackendContext,
+    SearchBackendFactory,
+    SearchIndex,
+    SearchIndexBuildError,
+    SearchOutcome,
+)
+from tolokaforge.runner.models import SearchPlane
 
 if TYPE_CHECKING:
     from importlib.metadata import EntryPoint
@@ -116,6 +153,7 @@ if TYPE_CHECKING:
     )
     from tolokaforge.core.conductor import Conductor, ConductorContext
     from tolokaforge.core.grading.bundle_store import BundleStore
+    from tolokaforge.core.grading.comparison_view import ComparisonViewRule
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import SeedRef
     from tolokaforge.core.runtime import RuntimeBackend
@@ -133,24 +171,43 @@ if TYPE_CHECKING:
 # the concrete class.
 
 __all__ = [
+    "AgentLoop",
+    "AgentLoopContext",
+    "AgentLoopFactory",
     "ConductorFactory",
     "CustomCheckExecutorFactory",
     "DuplicateRegistrationError",
     "JudgeModelProviderFactory",
+    "RAG_SERVICE_STACK_SERVICE",
+    "RESERVED_SEARCH_BACKEND_NAMES",
     "ReadinessProbeFactory",
     "RegistryError",
+    "ReservedNameError",
     "RubricEvaluatorFactory",
     "RuntimeBackendBuildContext",
     "RuntimeBackendFactory",
+    "SearchBackend",
+    "SearchBackendContext",
+    "SearchBackendFactory",
+    "SearchIndex",
+    "SearchIndexBuildError",
+    "SearchOutcome",
     "StateCheckBackendFactory",
+    "ToolCallFunnel",
     "TraceCheckOperator",
     "TranscriptRuleMatcherFactory",
     "TrialGraderContext",
     "TrialGraderFactory",
     "TurnPolicyContext",
     "TurnPolicyFactory",
+    "UnassignedToolCallError",
     "UnknownImplementationError",
+    "UserSimulator",
+    "UserSimulatorContext",
+    "UserSimulatorFactory",
+    "available_agent_loops",
     "available_bundle_stores",
+    "available_comparison_view_rules",
     "available_compose_materialisers",
     "available_conductors",
     "available_custom_check_executors",
@@ -162,6 +219,7 @@ __all__ = [
     "available_readiness_probes",
     "available_rubric_evaluators",
     "available_runtime_backends",
+    "available_search_backends",
     "available_service_lifecycle_dispatchers",
     "available_state_check_backends",
     "available_substrate_composers",
@@ -169,8 +227,11 @@ __all__ = [
     "available_transcript_rule_matchers",
     "available_trial_graders",
     "available_turn_policies",
+    "available_user_simulators",
     "discover_entry_points",
+    "load_agent_loop",
     "load_bundle_store",
+    "load_comparison_view_rule",
     "load_compose_materialiser",
     "load_conductor",
     "load_custom_check_executor",
@@ -182,6 +243,7 @@ __all__ = [
     "load_readiness_probe",
     "load_rubric_evaluator",
     "load_runtime_backend",
+    "load_search_backend",
     "load_service_lifecycle_dispatcher",
     "load_state_check_backend",
     "load_substrate_composer",
@@ -189,6 +251,7 @@ __all__ = [
     "load_transcript_rule_matcher",
     "load_trial_grader",
     "load_turn_policy",
+    "load_user_simulator",
 ]
 
 RUNTIME_BACKENDS_GROUP = "tolokaforge.runtime_backends"
@@ -196,6 +259,9 @@ TRIAL_GRADERS_GROUP = "tolokaforge.trial_graders"
 CONDUCTORS_GROUP = "tolokaforge.conductors"
 SERVICE_READINESS_PROBES_GROUP = "tolokaforge.service_readiness_probes"
 TURN_POLICIES_GROUP = "tolokaforge.turn_policies"
+AGENT_LOOPS_GROUP = "tolokaforge.agent_loops"
+USER_SIMULATORS_GROUP = "tolokaforge.user_simulators"
+SEARCH_BACKENDS_GROUP = "tolokaforge.search_backends"
 GRADING_METHODS_GROUP = "tolokaforge.grading_methods"
 GRADER_KINDS_GROUP = "tolokaforge.grader_kinds"
 JUDGE_KINDS_GROUP = "tolokaforge.judge_kinds"
@@ -207,9 +273,28 @@ TRANSCRIPT_RULE_MATCHERS_GROUP = "tolokaforge.transcript_rule_matchers"
 STATE_CHECK_BACKENDS_GROUP = "tolokaforge.state_check_backends"
 TRACE_CHECK_OPERATORS_GROUP = "tolokaforge.trace_check_operators"
 BUNDLE_STORES_GROUP = "tolokaforge.bundle_stores"
+COMPARISON_VIEW_RULES_GROUP = "tolokaforge.comparison_view_rules"
 COMPOSE_MATERIALISERS_GROUP = "tolokaforge.compose_materialisers"
 SERVICE_LIFECYCLE_DISPATCHERS_GROUP = "tolokaforge.service_lifecycle_dispatchers"
 SUBSTRATE_COMPOSERS_GROUP = "tolokaforge.substrate_composers"
+
+_RESERVED_SEARCH_BACKEND_REASONS: Mapping[str, str] = {
+    SearchPlane.TYPESENSE.value: (
+        "the runner serves search.plane: typesense itself — an adapter indexes the corpus "
+        "host-side and the runner registers the TypeSense client for the trial — so no "
+        "search backend is loaded under that name."
+    ),
+}
+
+RESERVED_SEARCH_BACKEND_NAMES: frozenset[str] = frozenset(_RESERVED_SEARCH_BACKEND_REASONS)
+"""Names ``tolokaforge.search_backends`` refuses to resolve (ADR-0054).
+
+``typesense`` is the plane the runner serves itself: an adapter indexes the corpus
+host-side and declares ``search.plane: typesense``, and ``RegisterTrial`` registers
+mcp_core's TypeSense client for the trial. Until TypeSense moves onto the registry
+the name stays out of it, so a third-party backend cannot claim the plane an adapter
+already means by it.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +342,27 @@ class DuplicateRegistrationError(RegistryError):
             f"provided by both {first!r} and {second!r}. "
             "Uninstall or rename one to resolve the ambiguity."
         )
+
+
+class ReservedNameError(RegistryError):
+    """``name`` is reserved in ``group``: the engine serves it without the registry.
+
+    Raised for a lookup of the reserved name, and — naming the distribution — for
+    a registration claiming it. The registration is an ambiguity no lookup can
+    resolve, so it fails every lookup into the group, as a duplicate does.
+    """
+
+    def __init__(self, name: str, group: str, reason: str, distribution: str | None = None) -> None:
+        self.name = name
+        self.group = group
+        self.distribution = distribution
+        claimed = (
+            f"Distribution {distribution!r} registers the reserved name {name!r} "
+            f"in entry-point group {group!r}"
+            if distribution is not None
+            else f"{name!r} is a reserved name in entry-point group {group!r}"
+        )
+        super().__init__(f"{claimed}: {reason}")
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +590,77 @@ def load_turn_policy(name: str) -> TurnPolicyFactory:
     return cast(TurnPolicyFactory, _load(TURN_POLICIES_GROUP, name))
 
 
+def load_agent_loop(name: str) -> AgentLoopFactory:
+    """Resolve a registered agent-loop name to its factory callable.
+
+    The factory adapts an :class:`~tolokaforge.core.loop.AgentLoopContext` to
+    an :class:`~tolokaforge.core.loop.AgentLoop`; the runner constructs the
+    context from the trial's own dependencies. ``engine-loop`` — the built-in
+    :class:`~tolokaforge.core.loop.ToolCallingLoop` — resolves through this
+    loader like any other registration.
+
+    A loop routes every tool call it makes through
+    :class:`~tolokaforge.core.loop.ToolCallFunnel`, re-exported here, which
+    discharges the call-id and failed-call-wording obligations the
+    :class:`~tolokaforge.core.loop.AgentLoop` contract names.
+    """
+    return cast(AgentLoopFactory, _load(AGENT_LOOPS_GROUP, name))
+
+
+def load_user_simulator(name: str) -> UserSimulatorFactory:
+    """Resolve a registered user-simulator name to its factory callable.
+
+    The factory adapts a
+    :class:`~tolokaforge.core.actors.user_simulator.UserSimulatorContext` to a
+    :class:`~tolokaforge.core.actors.user_simulator.UserSimulator`; the conductor
+    builds the context from the trial's resolved ``actors.user`` config.
+    ``builtin`` — the engine's
+    :class:`~tolokaforge.core.llm.client.BuiltinUserSimulator` — resolves through
+    this loader like any other registration. Selected per task via
+    ``actors.user.simulator``; a non-built-in simulator reads its own
+    configuration from ``actors.user.simulator_config`` on the context.
+    """
+    return cast(UserSimulatorFactory, _load(USER_SIMULATORS_GROUP, name))
+
+
+def _refuse_a_reserved_search_backend_registration() -> None:
+    """Fail loud when any distribution registers a reserved search-backend name."""
+    mapping = discover_entry_points(SEARCH_BACKENDS_GROUP)
+    claimed = sorted(RESERVED_SEARCH_BACKEND_NAMES & mapping.keys())
+    if not claimed:
+        return
+    name = claimed[0]
+    raise ReservedNameError(
+        name,
+        SEARCH_BACKENDS_GROUP,
+        f"{_RESERVED_SEARCH_BACKEND_REASONS[name]} Uninstall or rename the registration.",
+        distribution=_distribution_name(mapping[name]),
+    )
+
+
+def load_search_backend(name: str) -> SearchBackendFactory:
+    """Resolve a registered search-backend name to its factory callable.
+
+    The factory adapts a
+    :class:`~tolokaforge.core.search.backend.SearchBackendContext` to a
+    :class:`~tolokaforge.core.search.backend.SearchBackend`. A task names its
+    backend in ``initial_state.rag.backend``, which the wire carries as
+    ``search.plane``; the runner builds the trial's context at ``RegisterTrial``,
+    and the orchestrator side builds a trial-less one to read what the backend
+    declares. ``rag_service`` — the engine's rag-service backend — resolves
+    through this loader like any other registration.
+
+    ``typesense`` (:data:`RESERVED_SEARCH_BACKEND_NAMES`) is refused with
+    :class:`ReservedNameError`, and so is every lookup while a distribution
+    registers it.
+    """
+    _refuse_a_reserved_search_backend_registration()
+    reason = _RESERVED_SEARCH_BACKEND_REASONS.get(name)
+    if reason is not None:
+        raise ReservedNameError(name, SEARCH_BACKENDS_GROUP, reason)
+    return cast(SearchBackendFactory, _load(SEARCH_BACKENDS_GROUP, name))
+
+
 def load_custom_check_executor(name: str) -> CustomCheckExecutorFactory:
     """Resolve a registered custom-check-executor name to its factory callable."""
     return cast(CustomCheckExecutorFactory, _load(CUSTOM_CHECK_EXECUTORS_GROUP, name))
@@ -570,11 +747,13 @@ def load_judge_kind(name: str) -> type[JudgeKind]:
     Returns the class object itself, matching :func:`load_grader_kind`.
     The runner-side composite dispatch resolves this loader to reach the
     LLM-judge implementation named by ``grading.llm_judge.judge_kind``.
-    Two built-ins ship under this group: ``single_shot_rubric`` (wraps
-    :class:`LLMJudge` byte-identically — the default) and ``chunked_rubric``
-    (one :class:`LLMJudge` invocation per fixed-K chunk of the rubric's
-    criteria). Downstream packages register alternative kinds (jury,
-    agentic, downstream-specific) under this group.
+    Five kinds ship under this group: three user-facing
+    (``single_shot_rubric``, ``multi_turn_rubric``, ``auto_rubric``) plus
+    two internal building blocks (``voted_rubric``, ``auto_anchored_rubric``)
+    that user code should not select via ``judge_kind:`` — the built-in
+    composite kinds compose them.
+    Downstream packages register alternative kinds (agentic,
+    downstream-specific) under this group.
 
     Fail-loud on unknown names via :class:`UnknownImplementationError`,
     matching every other loader in this module.
@@ -593,6 +772,29 @@ def load_bundle_store(name: str) -> type[BundleStore]:
     via :class:`UnknownImplementationError`.
     """
     return cast("type[BundleStore]", _load(BUNDLE_STORES_GROUP, name))
+
+
+def load_comparison_view_rule(name: str) -> type[ComparisonViewRule]:
+    """Resolve a registered comparison-view rule kind to its rule class.
+
+    Returns the class itself, matching :func:`load_judge_kind`: the ``kind`` of a
+    ``comparison_view`` entry is the registered name, and the view instantiates the
+    class for each entry naming it. The built-in ``exclude_records``,
+    ``exclude_tables`` and ``normalize_ids`` resolve through this loader like any
+    other registration.
+    :func:`tolokaforge.core.grading.comparison_view.resolve_comparison_view_rule`
+    is the caller: it holds the class to the rule contract. A registered rule
+    decides which states hash equal, the trust boundary
+    :class:`~tolokaforge.core.grading.comparison_view.ComparisonViewRule` states.
+
+    The :class:`ComparisonViewRule` Protocol is a TYPE_CHECKING-only forward
+    reference, as for :func:`load_compose_materialiser`: the view's module is not
+    imported until a kind resolves.
+
+    Fail-loud on unknown names via :class:`UnknownImplementationError`,
+    matching every other loader in this module.
+    """
+    return cast("type[ComparisonViewRule]", _load(COMPARISON_VIEW_RULES_GROUP, name))
 
 
 def load_grading_substrate(name: str) -> type[GradingSubstrate]:
@@ -669,6 +871,26 @@ def available_turn_policies() -> list[str]:
     return sorted(discover_entry_points(TURN_POLICIES_GROUP))
 
 
+def available_agent_loops() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.agent_loops`` group."""
+    return sorted(discover_entry_points(AGENT_LOOPS_GROUP))
+
+
+def available_user_simulators() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.user_simulators`` group."""
+    return sorted(discover_entry_points(USER_SIMULATORS_GROUP))
+
+
+def available_search_backends() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.search_backends`` group.
+
+    Raises :class:`ReservedNameError` while a distribution registers a reserved
+    name, as :func:`load_search_backend` does.
+    """
+    _refuse_a_reserved_search_backend_registration()
+    return sorted(discover_entry_points(SEARCH_BACKENDS_GROUP))
+
+
 def available_grading_methods() -> list[str]:
     """Sorted names registered in the ``tolokaforge.grading_methods`` group."""
     return sorted(discover_entry_points(GRADING_METHODS_GROUP))
@@ -722,6 +944,11 @@ def available_trace_check_operators() -> list[str]:
 def available_bundle_stores() -> list[str]:
     """Sorted names registered in the ``tolokaforge.bundle_stores`` group."""
     return sorted(discover_entry_points(BUNDLE_STORES_GROUP))
+
+
+def available_comparison_view_rules() -> list[str]:
+    """Sorted kinds registered in the ``tolokaforge.comparison_view_rules`` group."""
+    return sorted(discover_entry_points(COMPARISON_VIEW_RULES_GROUP))
 
 
 def available_compose_materialisers() -> list[str]:

@@ -200,6 +200,16 @@ def db_test_client():
 
 
 @pytest.fixture
+def db_service_loopback_url():
+    """The real db-service app served over HTTP on a loopback port; yields its base URL."""
+    from tests.utils.loopback_asgi import serve_asgi_on_loopback
+    from tolokaforge.env.json_db_service.app import app as db_app
+
+    with serve_asgi_on_loopback(db_app) as url:
+        yield url
+
+
+@pytest.fixture
 def db_client(db_test_client):
     """Create a DBServiceClient that uses the TestClient."""
     from tests.utils.mock_clients import MockAsyncClient

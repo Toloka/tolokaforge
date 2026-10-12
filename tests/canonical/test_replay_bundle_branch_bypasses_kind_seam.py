@@ -20,6 +20,7 @@ import pytest
 
 from tests.unit.grading.test_judge import ScriptedClient
 from tolokaforge.core.grading import replay as replay_mod
+from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
     FidelityMode,
@@ -68,7 +69,7 @@ def _provenance() -> ReplayProvenance:
         include_agent_system_prompt=True,
         agent_prompt_source=None,
         fidelity_mode=FidelityMode.FULL,
-        judge_kind="chunked_rubric",
+        judge_kind="single_shot_rubric",
         judge_kind_source=ProvenanceSource.RECORDED,
     )
 
@@ -80,12 +81,10 @@ def _inputs(*, explicit_system_prompt: str | None) -> ReplayInputs:
         transcript=[{"role": "user", "content": "Refund."}],
         state_diff=None,
         judge_model_config=_JUDGE_MODEL,
-        disable_knowledge_search=False,
-        custom_system_prompt=None,
+        options=JudgeTrialOptions(),
         explicit_system_prompt=explicit_system_prompt,
-        include_agent_system_prompt=True,
-        judge_kind="chunked_rubric",
-        kind_config={"chunk_size": 5},
+        judge_kind="single_shot_rubric",
+        kind_config=None,
         provenance=_provenance(),
     )
 
@@ -105,9 +104,6 @@ class TestEscapeHatchTaken:
 
         monkeypatch.setattr(replay_mod, "load_judge_kind", _raise)
 
-        # With chunk_size=5 and 2 criteria, single_shot semantics via direct
-        # LLMJudge produces one submit_report — the escape hatch bypasses the
-        # chunked kind entirely (that's the whole point of the short-circuit).
         client = ScriptedClient([_submit_report_step(("a", "b"))])
         result = replay_trial(
             _inputs(explicit_system_prompt="recorded composed prompt"),

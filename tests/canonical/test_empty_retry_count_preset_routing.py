@@ -1,8 +1,13 @@
 """Canonical test — preset → ``empty_retry_count`` routing.
 
-Pins the two model presets that opt into the engine's empty-completion
+Pins the model presets that opt into the engine's empty-completion
 resample budget:
 
+* ``moonshot_kimi_k2`` — the K2 line hits the same reasoning-budget
+  class as its K3 sibling: two trials on the 2026-09-25 T-Bench 10-task
+  sweep died on an empty completion. Unlike K3 this preset carries no
+  ``openrouter_defaults`` pin, so the resample lands wherever the
+  fan-out sends it — the pin is gated on issue #1286's filler repro.
 * ``moonshot_kimi_k3`` — Kimi K3 legitimately returns ``content: null``
   when the reasoning stage consumes its output budget
   (``native_finish_reason: "length"`` on the failing traces). One
@@ -35,6 +40,8 @@ pytestmark = pytest.mark.canonical
 
 _EMPTY_RETRY_OPT_IN_MODELS = [
     ("moonshotai/kimi-k3", "openrouter", 1),
+    ("moonshotai/kimi-k2.6", "openrouter", 1),
+    ("moonshotai/kimi-k2.7-code", "openrouter", 1),
     ("claude-opus-5", "anthropic", 1),
 ]
 
@@ -47,7 +54,6 @@ _EMPTY_RETRY_ZERO_MODELS = [
     "x-ai/grok-4",
     "qwen/qwen3-coder",
     "google/gemini-3.1-pro-preview",
-    "moonshotai/kimi-k2.6",
 ]
 
 

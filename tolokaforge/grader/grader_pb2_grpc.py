@@ -3,7 +3,7 @@
 
 import grpc
 
-from tolokaforge.grader import grader_pb2 as grader__pb2
+from tolokaforge.grader import grader_pb2 as tolokaforge_dot_grader_dot_grader__pb2
 
 GRPC_GENERATED_VERSION = "1.83.0"
 GRPC_VERSION = grpc.__version__
@@ -19,7 +19,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f"The grpc package installed is at version {GRPC_VERSION},"
-        + " but the generated code in grader_pb2_grpc.py depends on"
+        + " but the generated code in tolokaforge/grader/grader_pb2_grpc.py depends on"
         + f" grpcio>={GRPC_GENERATED_VERSION}."
         + f" Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}"
         + f" or downgrade your generated code using grpcio-tools<={GRPC_VERSION}."
@@ -41,14 +41,14 @@ class GraderServiceStub:
         """
         self.Grade = channel.unary_unary(
             "/tolokaforge.grader.GraderService/Grade",
-            request_serializer=grader__pb2.GradeRequest.SerializeToString,
-            response_deserializer=grader__pb2.GradeResponse.FromString,
+            request_serializer=tolokaforge_dot_grader_dot_grader__pb2.GradeRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_grader_dot_grader__pb2.GradeResponse.FromString,
             _registered_method=True,
         )
         self.HealthCheck = channel.unary_unary(
             "/tolokaforge.grader.GraderService/HealthCheck",
-            request_serializer=grader__pb2.HealthCheckRequest.SerializeToString,
-            response_deserializer=grader__pb2.HealthCheckResponse.FromString,
+            request_serializer=tolokaforge_dot_grader_dot_grader__pb2.HealthCheckRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_grader_dot_grader__pb2.HealthCheckResponse.FromString,
             _registered_method=True,
         )
 
@@ -86,13 +86,13 @@ def add_GraderServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
         "Grade": grpc.unary_unary_rpc_method_handler(
             servicer.Grade,
-            request_deserializer=grader__pb2.GradeRequest.FromString,
-            response_serializer=grader__pb2.GradeResponse.SerializeToString,
+            request_deserializer=tolokaforge_dot_grader_dot_grader__pb2.GradeRequest.FromString,
+            response_serializer=tolokaforge_dot_grader_dot_grader__pb2.GradeResponse.SerializeToString,
         ),
         "HealthCheck": grpc.unary_unary_rpc_method_handler(
             servicer.HealthCheck,
-            request_deserializer=grader__pb2.HealthCheckRequest.FromString,
-            response_serializer=grader__pb2.HealthCheckResponse.SerializeToString,
+            request_deserializer=tolokaforge_dot_grader_dot_grader__pb2.HealthCheckRequest.FromString,
+            response_serializer=tolokaforge_dot_grader_dot_grader__pb2.HealthCheckResponse.SerializeToString,
         ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -127,8 +127,8 @@ class GraderService:
             request,
             target,
             "/tolokaforge.grader.GraderService/Grade",
-            grader__pb2.GradeRequest.SerializeToString,
-            grader__pb2.GradeResponse.FromString,
+            tolokaforge_dot_grader_dot_grader__pb2.GradeRequest.SerializeToString,
+            tolokaforge_dot_grader_dot_grader__pb2.GradeResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -157,8 +157,8 @@ class GraderService:
             request,
             target,
             "/tolokaforge.grader.GraderService/HealthCheck",
-            grader__pb2.HealthCheckRequest.SerializeToString,
-            grader__pb2.HealthCheckResponse.FromString,
+            tolokaforge_dot_grader_dot_grader__pb2.HealthCheckRequest.SerializeToString,
+            tolokaforge_dot_grader_dot_grader__pb2.HealthCheckResponse.FromString,
             options,
             channel_credentials,
             insecure,

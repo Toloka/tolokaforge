@@ -189,6 +189,15 @@ class TestPresetWiring:
         assert isinstance(codec, OpenAISummaryReplayReasoningCodec)
 
     def test_siblings_keep_the_shared_preset(self) -> None:
+        """Routing, not codec: the shared preset now carries this codec too.
+
+        It was carved out per-route while the shared stack still replayed
+        nothing. A 2026-09-30 probe of every preset found the plain ``openai``
+        codec discarding readable reasoning on deepseek-v4-pro, mimo-v2.5-pro
+        and both nemotron-3 sizes, so the shared preset was fixed the same way
+        and the two now agree. What must still hold is that the carve-outs do
+        not poach their siblings.
+        """
         from tolokaforge.core.llm.presets import build_capabilities, resolve_effective_preset
 
         for sibling in ("deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"):
@@ -197,4 +206,4 @@ class TestPresetWiring:
                 == "openrouter_dict_stringify_recovery"
             )
             codec = build_capabilities(sibling, "openrouter").reasoning_codec
-            assert type(codec) is OpenAIReasoningCodec
+            assert isinstance(codec, OpenAISummaryReplayReasoningCodec)

@@ -79,6 +79,14 @@ four-key harness metadata handshake. The example pack in
 stack (Python 3.11), one small bug the agent fixes, a `tests/test.sh`
 verifier.
 
+Task-environment images choose their own Python. The engine's 3.12 floor
+applies to the engine's own interpreter, not to the sandbox: the example
+stays on `python:3.11-slim`, and its `environment/**` code is linted at
+`py311` through `[tool.ruff.per-file-target-version]` in the root
+`pyproject.toml`. The only engine code that runs inside a task image is the
+[middleware proxy](../tolokaforge_coding_harnesses/README.md#middleware-proxy--kimi-k27-provider-pinning),
+which supports `python3` 3.10 or newer.
+
 ### The terminal-bench adapter
 
 Ships out-of-tree as
@@ -106,8 +114,8 @@ Harness mode composes with **any** grading method. Two paths:
   `tests/canonical/snapshots/tbench_echo_hello_harness/`.
 - **`state_checks` / `transcript` / `rubric`** — assemble through the
   standard combiner. When a harness-mode trial's metadata carries both
-  `agent_harness_command` and `agent_visible_dir` AND a
-  `DockerComposeExecToolWrapper` is registered for it, the runner
+  `agent_harness_command` and `agent_visible_dir` AND a tool satisfying
+  `SupportsEnvExec` is registered for it, the runner
   snapshots the container's agent-visible directory into
   `state["filesystem"]` via
   [`tolokaforge/runner/harness_state.py`](../tolokaforge/runner/harness_state.py).

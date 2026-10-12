@@ -266,7 +266,7 @@ class TestKeyRotationPathPreservesGatewayDialect:
     ) -> None:
         captured: dict[str, Any] = {}
 
-        def _capture(self: LLMClient, kwargs: dict[str, Any]) -> Any:
+        def _capture(self: LLMClient, kwargs: dict[str, Any], *, single_attempt: bool) -> Any:
             captured.update(kwargs)
             return type("R", (), {"choices": []})()
 
@@ -282,7 +282,7 @@ class TestKeyRotationPathPreservesGatewayDialect:
     ) -> None:
         captured: dict[str, Any] = {}
 
-        def _capture(self: LLMClient, kwargs: dict[str, Any]) -> Any:
+        def _capture(self: LLMClient, kwargs: dict[str, Any], *, single_attempt: bool) -> Any:
             captured.update(kwargs)
             return type("R", (), {"choices": []})()
 

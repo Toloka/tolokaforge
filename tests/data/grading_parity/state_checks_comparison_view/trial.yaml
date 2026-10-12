@@ -1,0 +1,45 @@
+# The task asks for nothing to change. The satisfying trial changes only what the view
+# does not count: it re-filed document D1 as D9 and pointed the correction at the new
+# id, placed and released a hold, and its read tools logged a lookup. The violating
+# trial does the same and also rewrites the correction's reason, which the view keeps.
+satisfying:
+  messages:
+    - role: assistant
+      content: "I re-filed the document and left the correction as it was."
+  state:
+    db:
+      documents:
+        - id: D9
+          client_id: C1
+          source_id: S1
+          status: final
+      corrections:
+        - id: R1
+          document_ref: D9
+          reason: typo in the amount
+      holds:
+        - id: H1
+          status: released
+      lookup_log:
+        - document: D1
+
+violating:
+  messages:
+    - role: assistant
+      content: "I re-filed the document and left the correction as it was."
+  state:
+    db:
+      documents:
+        - id: D9
+          client_id: C1
+          source_id: S1
+          status: final
+      corrections:
+        - id: R1
+          document_ref: D9
+          reason: wrong client name
+      holds:
+        - id: H1
+          status: released
+      lookup_log:
+        - document: D1

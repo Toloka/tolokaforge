@@ -31,9 +31,12 @@ from __future__ import annotations
 import logging
 import re
 import shutil
-from typing import Any
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.core.run_display_events import build_component_id
@@ -48,6 +51,20 @@ from tolokaforge.docker.ports import PortConfig, resolve_ports
 from tolokaforge.docker.registry import ImageRegistry
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class BuildContextSpec:
+    """The build-path inputs a service's image build consumes.
+
+    Carries the two fields whose resolution a service may defer to build
+    time — ``context_files`` and ``build_args`` — so a service that pulls
+    its image never has to resolve them. See
+    :attr:`ServiceDefinition.build_context_provider`.
+    """
+
+    context_files: list[str | tuple[str, str]] = field(default_factory=list)
+    build_args: dict[str, str] = field(default_factory=dict)
 
 
 class ServiceDefinition(BaseModel):
@@ -177,11 +194,37 @@ class ServiceDefinition(BaseModel):
         default=False,
         description="Run in privileged mode (required for Docker-in-Docker).",
     )
+    build_context_provider: Annotated[Callable[[], BuildContextSpec] | None, SkipJsonSchema()] = (
+        Field(
+            default=None,
+            exclude=True,
+            repr=False,
+            description="When set, supplies the build path's context_files/build_args "
+            "lazily (called only when this service is actually built). The pull path "
+            "never invokes it. When None, the static context_files/build_args fields "
+            "are used. Mutually exclusive with static context_files/build_args. "
+            "SkipJsonSchema keeps the callable out of model_json_schema().",
+        )
+    )
 
     model_config = {
         "frozen": True,
         "extra": "forbid",
     }
+
+    @model_validator(mode="after")
+    def _build_context_is_static_or_lazy_not_both(self) -> ServiceDefinition:
+        """A service resolves its build context one way: statically via
+        ``context_files``/``build_args``, or lazily via ``build_context_provider``.
+        Setting both is a contradiction — the provider would silently shadow the
+        static fields — so reject it rather than pick a winner."""
+        if self.build_context_provider is not None and (self.context_files or self.build_args):
+            raise ValueError(
+                "build_context_provider is mutually exclusive with static "
+                "context_files/build_args; a service supplies its build context "
+                "lazily through the provider or statically, not both"
+            )
+        return self
 
 
 class ServiceStatus(BaseModel):
@@ -411,13 +454,24 @@ class EngineStack(BaseModel):
 
         logger.info("Building image for service '%s'", svc.name)
 
-        if svc.context_files:
+        # Resolve the build inputs only now that we are definitely building:
+        # a service may defer context_files/build_args to a provider so the
+        # pull path (which has already returned above) never resolves them.
+        if svc.build_context_provider is not None:
+            spec = svc.build_context_provider()
+            context_files = spec.context_files
+            build_args = spec.build_args
+        else:
+            context_files = svc.context_files
+            build_args = svc.build_args
+
+        if context_files:
             from tolokaforge.docker.builder import assemble_build_context, repo_root
 
             build_context = assemble_build_context(
                 repo_root=repo_root(),
                 dockerfile=svc.dockerfile,
-                context_files=svc.context_files,
+                context_files=context_files,
             )
             try:
                 build_dockerfile = str(build_context / svc.dockerfile)
@@ -426,14 +480,14 @@ class EngineStack(BaseModel):
                     return Image.build(
                         dockerfile=build_dockerfile,
                         context=build_context_str,
-                        build_args=svc.build_args,
+                        build_args=build_args,
                         name=svc.image_name,
                     )
                 return self._registry.get_or_build(
                     name=svc.image_name,
                     dockerfile=build_dockerfile,
                     context=build_context_str,
-                    build_args=svc.build_args,
+                    build_args=build_args,
                 )
             finally:
                 shutil.rmtree(build_context, ignore_errors=True)
@@ -442,14 +496,14 @@ class EngineStack(BaseModel):
             return Image.build(
                 dockerfile=svc.dockerfile,
                 context=svc.context,
-                build_args=svc.build_args,
+                build_args=build_args,
                 name=svc.image_name,
             )
         return self._registry.get_or_build(
             name=svc.image_name,
             dockerfile=svc.dockerfile,
             context=svc.context,
-            build_args=svc.build_args,
+            build_args=build_args,
         )
 
     def _maybe_pull_service_image(self, svc: ServiceDefinition) -> Image | None:

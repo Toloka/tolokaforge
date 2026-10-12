@@ -14,6 +14,7 @@ both report themselves unresolvable outside the native one.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from tolokaforge.adapters._task_loader import (
     replay_world_under_adapter,
     resolve_tool_schemas,
 )
+from tolokaforge.adapters.native import _actor_tool_schemas
 from tolokaforge.core.grading.config_validation import (
     ArgumentSchema,
     ReplayWorld,
@@ -223,6 +225,39 @@ def test_the_inventory_reports_each_actor_and_resolves_both_their_schemas(tmp_pa
     assert inventory.declared == frozenset({"read_file", "calculator"})
     assert inventory.strictness("calculator") is ArgumentSchema.CLOSED
     assert inventory.properties("calculator") == frozenset({"expression"})
+
+
+def test_a_user_block_with_no_server_of_its_own_resolves_the_agents(tmp_path: Path) -> None:
+    """The schema a user tool is handed is the one the tool it calls declares.
+
+    A user block naming no ``mcp_server`` is served by the agent's, so its ``db_query``
+    reaches the runner as that server's tool. Resolving its schema from the builtin
+    registry instead hands the simulator the builtin's ``jsonpath`` argument for a tool
+    that takes ``sql``, and files the name as a JSON-DB builtin needing a seed.
+    """
+    (tmp_path / "mcp_server.py").write_text("")
+    (tmp_path / "fixtures").mkdir()
+    served = {"type": "object", "properties": {"sql": {"type": "string"}}}
+    (tmp_path / "fixtures" / "tools.json").write_text(
+        json.dumps([{"name": "db_query", "description": "served", "parameters": served}])
+    )
+    task = TaskConfig(
+        task_id="user_fallback_probe",
+        description="a user tool served by the agent's MCP server",
+        tools={
+            "agent": {"enabled": ["db_query"], "mcp_server": "mcp_server.py"},
+            "user": {"enabled": ["db_query"]},
+        },
+    )
+
+    resolved = resolve_tool_schemas(task, tmp_path, ToolActor.USER, allow_subprocess=False)
+    (wire,) = _actor_tool_schemas(task, tmp_path, ToolActor.USER)
+    inventory = build_tool_inventory(task, tmp_path)
+
+    assert resolved["db_query"]["parameters"] == served
+    assert wire.source is not None
+    assert wire.parameters == served
+    assert inventory.json_db_builtins == frozenset()
 
 
 def test_a_task_that_declares_no_tools_is_known_and_empty() -> None:

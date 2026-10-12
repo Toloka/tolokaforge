@@ -18,7 +18,7 @@ so the fast composition lock lives in the canonical tier.
 from __future__ import annotations
 
 import importlib.metadata
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +53,7 @@ _RECORDING_GRADER_NAME = "recording_grader_e2e"
 _SENTINEL_SCORE = 0.4242
 _SENTINEL_REASON = "adapter-declared-grader-name sentinel"
 
-_FIXED_TS = datetime(2020, 1, 1, tzinfo=timezone.utc)
+_FIXED_TS = datetime(2020, 1, 1, tzinfo=UTC)
 
 
 class _RecordingGrader:

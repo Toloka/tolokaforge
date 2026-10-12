@@ -59,6 +59,9 @@ class DryRunSample:
     agent_model_line: str
     judge_model_line: str
     runtime_line: str
+    # ``actors.user.first_agent_message``: the agent's own first turn, which the
+    # first request carries ahead of the user's message. ``None`` when unset.
+    agent_opening_line: str | None = None
 
 
 def tool_schema_to_openai_dict(tool_schema: ToolSchema) -> dict[str, Any]:
@@ -217,10 +220,21 @@ def materialize_dry_run_sample(
     would pass on the first turn — system prompt, first user message,
     sanitized tool spec — plus the resolved model / judge / runtime
     identifiers used in the rendered summary. Pure Python + local file
-    reads. No LLM client is constructed; no socket is opened.
+    reads. No LLM client is constructed; no socket is opened. A task that
+    declares ``actors.user.first_agent_message`` also shows that line, which
+    the first request carries ahead of the user's message.
     """
     task_dir = adapter.get_task_dir(task.task_id)
-    system_prompt = build_system_prompt(task=task, task_dir=task_dir)
+    # The preset default is threaded here for the same reason the conductor
+    # threads it: a dry run that printed a different system prompt from the
+    # one the trial sends would be showing the wrong thing.
+    system_prompt = build_system_prompt(
+        task=task,
+        task_dir=task_dir,
+        default_prompt_contract=build_capabilities(
+            agent_config.name, agent_config.provider, overrides=agent_config.capabilities
+        ).default_agent_prompt_contract,
+    )
     user_prompt_text, user_prompt_is_literal = _resolve_user_prompt(task)
     tool_spec = _sanitized_tool_spec(
         adapter=adapter, task_id=task.task_id, agent_config=agent_config
@@ -236,4 +250,9 @@ def materialize_dry_run_sample(
         agent_model_line=_model_line(agent_config),
         judge_model_line=judge_line,
         runtime_line=runtime_choice,
+        agent_opening_line=(
+            task.resolve_user_simulator().first_agent_message
+            if task.interaction_mode == "conversational"
+            else None
+        ),
     )

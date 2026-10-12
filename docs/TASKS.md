@@ -97,18 +97,30 @@ which is the source the `grading` row above describes.
 
 ## Initial State
 
-- `json_db`: JSON file loaded into the JSON DB service. Use this for any task state that needs to be verified by grading.
+- `json_db`: the trial's JSON DB seed, either a JSON file path relative to the task
+  directory or an inline mapping of table name to a list of rows. A named file that
+  does not exist fails the trial. Use this for any task state that needs to be
+  verified by grading. A task enabling `db_query` or `db_update` as builtins — in a
+  `tools` block no `mcp_server` serves — must seed at least one table here; declare
+  an intentionally empty store as `json_db: {"<table>": []}`. `tolokaforge validate`
+  refuses a task that does not, at `tools`, and `RegisterTrial` refuses its trial.
 - `filesystem.copy`: files copied into `/env/fs/agent-visible`.
 - `mock_web.base_url`: base URL for mock web service (`http://mock-web:8080`).
-- `rag.corpus_dir`: directory of knowledge-base documents for per-trial RAG
-  indexing. The reader indexes the `.md` and `.txt` files sitting directly in
-  that directory (flat, non-recursive). Declaring `corpus_dir` requires
-  `search_kb` in `tools.agent.enabled` — the corpus files travel with the task,
-  the runner indexes them into the rag-service per trial, and the agent's
-  `search_kb` tool queries that index. The full stack must include the
-  rag-service (reached by DNS, like `db-service`/`mock-web`). Declaring
-  `corpus_dir` without `search_kb`, or pointing it at a directory that does not
-  exist, is rejected at validation time.
+- `rag.corpus_dir`: directory of knowledge-base documents for a per-trial
+  search index. The `.md`, `.txt` and `.json` files sitting directly in that
+  directory (flat, non-recursive) travel with the task, and the runner builds the
+  trial's index from them with the task's search backend (`rag.backend`, default
+  `rag_service`, which indexes the `.md` / `.txt` ones; `bm25` reads all three,
+  a `.json` file being one `{id, title, content}` document). Declaring
+  `corpus_dir` requires the search tool (`rag.tool.name`,
+  default `search_kb`) in an actor's `tools.<actor>.enabled`; that tool queries
+  the index. With the default backend the runner indexes into the rag-service,
+  so the run needs the full stack (reached by DNS, like `db-service`/`mock-web`),
+  which the orchestrator selects for such a task; `bm25` runs in the runner
+  process and keeps the core stack. Declaring `corpus_dir` without
+  the search tool, or pointing it at a directory that does not exist, is
+  rejected at validation time. `rag.backend_config` and `rag.tool.description`
+  are described in [CONFIG.md § `initial_state.rag:`](CONFIG.md#initial_staterag--the-knowledge-base-its-search-backend-and-the-agents-tool).
 
 ## Multi-container environments (`environment_manifest`)
 
@@ -263,6 +275,88 @@ actors:
 
 Scripted mode (`mode: "scripted"`) is available for simple deterministic flows but produces less realistic conversations.
 
+### User tool turns
+
+A user with tools of its own (`tools.user.enabled`) runs them one of two ways, set by
+`tool_turns`:
+
+```yaml
+actors:
+  user:
+    tool_turns: isolated   # default: shared
+    max_tool_steps: 10     # isolated only; this is the default
+```
+
+- **`shared`** (default) — the simulator gets one generation per turn. Its calls run,
+  and their results are appended to the text of its reply, which the agent reads. A
+  reply that is only calls is given the text "Let me check that." (#1089).
+- **`isolated`** — a reply that calls tools is a *tool step*. The calls, and a TOOL
+  message with each result, are recorded in the transcript but never sent to the
+  agent, and the simulator is asked again with the results in view, until it replies
+  with text alone. That text is the turn the agent reads. The simulator sees its own
+  steps and none of the agent's tool traffic: an agent message that calls tools is
+  left out of the simulator's view whole, text included: a message that calls tools
+  is addressed to the environment, not to the other party.
+  - A stop token inside a tool step is not a stop: a step is addressed to the
+    environment, and only a reply the agent would read can end the dialogue.
+  - A step beyond `max_tool_steps` ends the dialogue with `user_tool_loop_limit`, and
+    none of that step's calls run; the system message and the trial log name them. The
+    reason is graded, like `max_turns`.
+  - Between steps of a dialogue turn the episode timeout is checked.
+  - The opening turn records its steps ahead of the first message. Like the rest of
+    turn 0 it runs before the loop, so no timeout check interrupts it: `max_tool_steps`
+    bounds it, and a trial whose opening ran past the episode budget ends with
+    `timeout` on the loop's first turn. More than `max_tool_steps` steps before the
+    opening refuse the trial as an error rather than end it with
+    `user_tool_loop_limit`: the agent has not spoken yet, so there is nothing of its
+    to grade.
+  - A user tool that raises ends the trial as an error, after every call of the step
+    is answered with an `Error: …` result. A user-side environment that wants the
+    dialogue to go on after a failure returns the error as the tool's result instead
+    of raising.
+  - A run with `orchestrator.rate_limit_probe` enabled refuses `isolated` tasks: the
+    probe budgets one simulator reply per turn.
+
+`max_tool_steps` under `shared` is refused, since a shared turn never loops, and so is
+`isolated` on a `scripted` simulator, whose authored replies never call tools. Both are
+decided on what the task and its project declared: a task under a project that sets
+either key writes it as `null` to drop it. `isolated` without user tools loads, so an
+adapter can declare it on every task. In grading, a tool step's calls and results are
+timeline events and the step itself is not a `user_message` (see
+[GRADING.md § Trial event timeline](GRADING.md#trial-event-timeline)); the rubric
+judge's transcript labels the step and its results as the user's; a custom check's
+`transcript.user_messages` still lists it, as a user message carrying `tool_calls`.
+
+### Simulation step and environment-error budget
+
+Two optional top-level fields bound a trial by its transitions rather than by its
+turns:
+
+```yaml
+max_simulation_steps: 200     # absent: no step budget
+max_environment_errors: 10    # absent: no error budget
+```
+
+- Both are opt-in. A task that sets neither runs with no budget; `max_turns` applies
+  either way. Each value must be at least 1.
+- Steps are counted half-duplex. Every agent or user message is one step, and the
+  environment's reply to a message's tool calls is one more step, however many calls
+  that batch holds.
+- An environment error is a tool reply the environment completed with an error flag
+  (an MCP `isError: true` reply, recorded as `tool_status: environment_error`). Every
+  such reply in a batch counts, so one step can add several errors.
+- The budget is checked after a message that calls no tools and after each
+  environment batch, never between a message and its tool results: a message's calls
+  always run. The opening turn's steps count too.
+- Reaching the step limit ends the trial with `max_steps`, the error limit with
+  `too_many_errors`; when both are reached at once, `too_many_errors` wins. Like
+  `max_turns`, both endings are graded.
+- The budget needs `actors.user.tool_turns: isolated` and the built-in agent loop. A
+  trial that sets either field without them fails with an error before the dialogue
+  starts.
+- `trajectory.yaml` records the final counts as `simulation_steps` and
+  `environment_errors` (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)).
+
 ### Authoring the opening turn
 
 An opening line the task wants the agent to receive word-for-word belongs in
@@ -275,6 +369,40 @@ but a rule a model is asked to follow is still weaker than a turn the engine
 writes itself, and only `initial_user_message` is the guarantee. Leave the field
 unset when the opening turn should be improvised from the backstory; a blank
 value is refused at load.
+
+### The agent's opening line
+
+A transcript opens with the user's turn. `first_agent_message` puts a line of the
+agent's ahead of it, for a dialogue that must open with the agent's greeting:
+
+```yaml
+actors:
+  user:
+    first_agent_message: "Hi! How can I help you today?"   # default: none
+```
+
+- The line is written into the transcript as its first message, an assistant turn.
+  The agent reads it back as its own on every request, and the simulator answers it
+  in place of the built-in greeting it is otherwise shown. A pinned
+  `initial_user_message` follows the line; a user's `isolated` tool steps before its
+  opening follow it too.
+- The line is not a generation: it counts as no turn in `metrics.turns` and has no
+  usage. Grading reads the transcript as recorded, so the line is the agent's first
+  message there: the timeline's turn 0,
+  a text transcript rules read, and the first of a custom check's
+  `transcript.agent_messages` (see
+  [GRADING.md § Trial event timeline](GRADING.md#trial-event-timeline)). A rule that
+  should not credit the agent with it can say so, since the task wrote it.
+  Turning the line on for tasks written without it (through a project's
+  `task_defaults`, say) moves every generation one turn later on the timeline, so
+  a trace check's `first_turn` / `last_turn` window written for those tasks moves
+  by one too.
+- A summarize keeps the line and the user's opening on the wire.
+- The agent's first request opens with an assistant message. The engine adds
+  nothing ahead of it, so a provider or chat template that requires a user turn
+  first refuses that request with its own error and the trial ends as an error.
+- A blank line is refused, and so is the key under `interaction_mode: agent_only`,
+  where no user answers it. A task drops a project-level value with `null`.
 
 ### Specialised personas
 
@@ -315,14 +443,61 @@ policy corpus to derive it.
 The exit token belongs to the **user simulator**. The engine reads it from
 simulator output only — a dispatched user reply that is the bare token ends the
 trial with `TerminationReason.USER_STOP`, and one that glues substantive text to
-it delivers that text first and stops on the next turn. The opening turn is the
-exception: a bootstrap reply carrying the token seeds it literally, rather than
-ending a trial before the agent has spoken. Write it into the
+it delivers that text first and stops on the next turn (both are configurable, see
+[Declaring the stop tokens](#declaring-the-stop-tokens)). Under the default
+`stop_with_text: deliver` the opening turn is the exception: a bootstrap reply
+carrying the token seeds it literally, rather than ending a trial before the agent
+has spoken. Under `end` an opening reply carrying the token ends the trial with
+`user_stop` before the agent is called, and the reply is recorded verbatim as the
+last user message; a `shared` opening that calls tools is still seeded literally, as
+its text already carries the tool results the token could be read from. Write it into the
 `backstory` (or a scripted flow), never into a task's agent-facing prompt: the
 agent is never asked for the token and its output is never checked for it, so a
 prompt that instructed it would promise a signal nothing consumes.
 [`tests/canonical/test_agent_prompt_exit_token.py`](../tests/canonical/test_agent_prompt_exit_token.py)
 builds every example pack's agent system prompt and fails if one carries it.
+
+#### Declaring the stop tokens
+
+`actors.user` names the tokens the engine listens for and what happens to text
+written before one:
+
+```yaml
+actors:
+  user:
+    mode: llm
+    backstory: |
+      You want to move your booking to Friday. If the agent hands you over to a
+      person, reply ###TRANSFER###. If it cannot help with the request at all,
+      reply ###OUT-OF-SCOPE###.
+    stop_tokens: ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]  # default: ["###STOP###"]
+    stop_with_text: end    # default: deliver
+```
+
+- **`stop_tokens`** — the earliest listed token in a reply fires, and the
+  termination message names it (`User signaled stop (###TRANSFER###). Dialogue
+  ended.`). Under `stop_with_text: deliver` whatever the reply says after that
+  token is discarded; the trial log records how much. The reason is `USER_STOP`
+  for every token. The list must be
+  non-empty, without blank or repeated tokens, and no token may contain another.
+  The engine listens for the list and the model sends what its prompt tells it
+  to, so for an `llm` simulator the two must agree: on the built-in simulator
+  the list must contain `###STOP###`, which the built-in prompt instructs, and
+  every other listed token must be named in the backstory, which is where the
+  model learns when to send it. A `scripted` simulator may list any tokens, and
+  so may a non-`builtin` simulator (`actors.user.simulator`): it owns its prompt,
+  so checking that the prompt teaches the listed tokens is its own job.
+- **`stop_with_text`** — `deliver` hands the text before the token to the agent,
+  lets it answer, and ends the trial on the next user turn; a bare token ends the
+  trial at once. `end` records the reply as the simulator wrote it — the token,
+  the text around it, and a bare token alike — as the last user message and ends
+  the trial at once, so the agent never answers it. `end` is the shape for a
+  transcript that must keep the stop reply verbatim as its last user turn.
+- **A reply that also calls tools** still stops. The calls on a reply with text
+  run and are recorded on that message before the stop applies, and their
+  results are appended to its text, as on any user turn that calls tools, so
+  under `end` such a reply is recorded as written followed by those results; a
+  bare token ends the trial without running them.
 
 The agent's own completion is **structural**, not a phrase it emits: a trial ends
 with `TerminationReason.AGENT_DONE` when the agent takes a turn with no tool calls
@@ -335,6 +510,15 @@ That makes the exit condition load-bearing for cost as well as for grading. A
 conversational pack whose exit condition never fires now runs to `max_turns` every
 time — check the termination-reason distribution on a pack's first calibration
 run.
+
+An `agent_only` task can say so in the prompt without inventing a token, because
+the rule it describes is one the engine already enforces. That is part of what
+the shipped `reasoning_agent` reply contract does: it tells the agent that a
+message with no tool call ends the task — so a turn spent only thinking ends a
+trial before any work is done — and asks it to verify before making that reply.
+Select one with `agent_prompt_contract:`; see
+[CONFIG.md](CONFIG.md) § `agent_prompt_contract:` and
+[ADR-0052](adr/0052-agent-reply-contract.md).
 
 ## Browser vs Mobile Tool
 
@@ -389,7 +573,6 @@ models:
   user:
     provider: openrouter
     name: anthropic/claude-3.5-sonnet
-    temperature: 0.7
 
 evaluation:
   tasks_glob: "tasks/mobile/*/task.yaml"
@@ -413,6 +596,7 @@ To run a single task, change `tasks_glob` to its folder (e.g., `tasks/mobile/map
 
 - Prefer `state_checks.jsonpaths` for deterministic, objective checks — four operators, exactly one per assertion ([vocabulary](GRADING.md#the-jsonpaths-assertion-vocabulary)).
 - Use `transcript_rules` to enforce tool usage patterns.
+- When a correct trajectory can leave a state the golden path does not — a draft it superseded, a hold it released, rows its read tools logged, records numbered in another order with other tables citing them — declare a [`state_checks.comparison_view`](GRADING.md#comparison-view) so the hash compares what counts. Masking a cited id as `unstable_fields` instead loses the references to it. Worked pack: [`comparison_view`](../examples/native/comparison_view/README.md).
 - Use `trace_checks` when the condition is about **order, scoped absence, an argument the flat presence checks cannot express, a task with more than one correct route, or a condition that must hold without being scored** — see [Trace Checks](GRADING.md#trace-checks). Four worked packs: [`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md), whose constraints reach a nested request-body argument, an ordering, and a scoped absence; [`multi_service_cache_debug`](../examples/native/multi_service_cache_debug/README.md), which grades two alternative diagnostic routes behind one shared `severity: gate` check that a diagnose-only agent trips by mutating, and requires the note to quote the stale value the route's own read returned; [`multi_service_lot_ops`](../examples/native/multi_service_lot_ops/README.md), whose constraints [correlate arguments](GRADING.md#correlating-arguments-across-matchers) — the posted reason code has to have come back in a result the agent read, and the lot has to have been read first; and [`native_shared_domain`](../examples/native/native_shared_domain/README.md), where a shared `severity: gate` constraint and a `required` rubric criterion grade the two conjuncts of one policy, each holding the half it can see.
 - Use `llm_judge` only for genuinely subjective evaluation (not as a softener for weak state checks). Moving a mechanically checkable criterion out of the rubric and into `trace_checks` buys a verdict that does not vary between runs, and [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) is how that move is [declared](GRADING.md#declaring-a-migration-the-migrationyaml-sidecar) and checked against the judge's own recorded verdicts before it is trusted.
 - **Weight every component the pack configures.** A configured component missing from `combine.weights` is refused before the run, and a component a substrate scored anyway makes the fold raise on both substrates rather than being handed a share nobody declared.

@@ -49,7 +49,8 @@ All values are read through :class:`~tolokaforge.secrets.SecretManager`, so a
 ``LLM_PROXY_REQUEST_ID_HEADER``
     Optional header **name**. When set, each request gets that header with a
     fresh UUID4 value. Needed by gateways that want a per-request correlation
-    id; a static env var cannot express "new value per call".
+    id; a static env var cannot express "new value per call". A value stable
+    for a whole conversation is ``ModelConfig.session``'s header instead.
 
 ``LLM_PROXY_PROVIDERS``
     Optional comma-separated override of which ``provider`` values to route
@@ -62,8 +63,11 @@ Which providers can actually be routed
 --------------------------------------
 
 **Setting ``api_base`` does not make litellm speak OpenAI to that URL — it
-makes litellm speak that provider's native protocol to that URL.** Verified by
-capturing the wire (litellm 1.87.0):
+makes litellm speak that provider's native protocol to that URL.**
+``tests/canonical/test_llm_gateway_envelope_contract.py`` pins the
+chat-completions path of the first two rows against the installed litellm and
+checks that the other two stay off it. The last two rows are litellm's
+documented native routes, not a captured request:
 
 ===================  ==========================================================
 provider             request litellm sends to the gateway

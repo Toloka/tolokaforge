@@ -71,16 +71,24 @@ def _user_prompt_block(sample: DryRunSample) -> Text:
 def render_dry_run_sample(*, sample: DryRunSample, console: Console) -> None:
     """Emit one :class:`rich.panel.Panel` describing *sample* on *console*.
 
-    Panel body order: system prompt, blank, user prompt (literal or
-    placeholder), blank, tool spec (JSON or ``(no agent tools declared)``),
-    blank, model / judge / runtime one-liners. Under
-    ``console.quiet=True`` this is a no-op.
+    Panel body order: system prompt, blank, the agent's opening line when
+    the task declares one, user prompt (literal or placeholder), blank, tool
+    spec (JSON or ``(no agent tools declared)``), blank, model / judge /
+    runtime one-liners. Under ``console.quiet=True`` this is a no-op.
     """
     tools_count = len(sample.tool_spec)
+    opening: list[Text] = []
+    if sample.agent_opening_line is not None:
+        opening = [
+            Text.from_markup("[muted]Agent opening line:[/muted]"),
+            Text(sample.agent_opening_line),
+            Text(""),
+        ]
     body = Group(
         Text.from_markup("[muted]System prompt:[/muted]"),
         Text(sample.system_prompt),
         Text(""),
+        *opening,
         Text.from_markup("[muted]User prompt:[/muted]"),
         _user_prompt_block(sample),
         Text(""),

@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -130,7 +130,7 @@ class RunState(BaseModel):
         key = f"{task_id}:{trial_index}"
         if key in self.trials:
             self.trials[key].status = "completed"
-            self.trials[key].end_ts = datetime.now(tz=timezone.utc)
+            self.trials[key].end_ts = datetime.now(tz=UTC)
             self.trials[key].binary_pass = binary_pass
             self.trials[key].score = score
             self.completed_trials += 1
@@ -140,7 +140,7 @@ class RunState(BaseModel):
         key = f"{task_id}:{trial_index}"
         if key in self.trials:
             self.trials[key].status = "failed"
-            self.trials[key].end_ts = datetime.now(tz=timezone.utc)
+            self.trials[key].end_ts = datetime.now(tz=UTC)
             self.trials[key].error = error
             self.failed_trials += 1
 
@@ -149,7 +149,7 @@ class RunState(BaseModel):
         key = f"{task_id}:{trial_index}"
         if key in self.trials:
             self.trials[key].status = "running"
-            self.trials[key].start_ts = datetime.now(tz=timezone.utc)
+            self.trials[key].start_ts = datetime.now(tz=UTC)
 
 
 class RunStateManager:
@@ -195,8 +195,8 @@ class RunStateManager:
             run_id=run_id,
             config_path=self._normalize_to_relative(config_path),
             output_dir=self._normalize_to_relative(str(self.output_dir)),
-            start_ts=datetime.now(tz=timezone.utc),
-            last_updated=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            last_updated=datetime.now(tz=UTC),
             status="running",
             total_trials=len(trials),
             completed_trials=0,
@@ -223,7 +223,7 @@ class RunStateManager:
 
     def save_state(self, run_state: RunState):
         """Save run state to disk"""
-        run_state.last_updated = datetime.now(tz=timezone.utc)
+        run_state.last_updated = datetime.now(tz=UTC)
 
         with open(self.state_file, "w") as f:
             json.dump(run_state.model_dump(mode="json"), f, indent=2, default=str)
@@ -256,8 +256,14 @@ class RunStateManager:
 
         return False
 
-    def is_completed(self, task_id: str, trial_index: int) -> bool:
+    def is_completed(
+        self, task_id: str, trial_index: int, *, run_state: RunState | None = None
+    ) -> bool:
         """Check if trial is completed and should be skipped.
+
+        ``run_state`` is a state the caller already loaded; without it the state is
+        read from disk. A caller checking many trials passes it, so the state file
+        is parsed once rather than once per trial.
 
         Returns True if:
         - Trial passed successfully
@@ -268,7 +274,8 @@ class RunStateManager:
         - Trial has infrastructure errors (needs retry)
         - Trial status is not completed
         """
-        run_state = self.load_state()
+        if run_state is None:
+            run_state = self.load_state()
         if not run_state:
             return False
 
@@ -335,7 +342,7 @@ class RunStateManager:
         for trial in run_state.trials.values():
             if trial.status == "completed":
                 completed += 1
-            if self.is_completed(trial.task_id, trial.trial_index):
+            if self.is_completed(trial.task_id, trial.trial_index, run_state=run_state):
                 already_done += 1
 
         to_retry = run_state.total_trials - already_done

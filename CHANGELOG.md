@@ -2,6 +2,171 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.29.0 (2026-10-05)
+
+### BREAKING CHANGE
+
+- (a) ENGINE_PROTOCOL_VERSION is 4: an engine and a runner
+image on different sides of this release refuse each other at registration,
+for every pack — rebuild the image (make docker-build-core) with every engine
+upgrade. The grader image has no protocol gate of its own and is covered only
+through the runner it grades alongside, so keep the runner and grader on one
+image tag. (b) A trial with no events now raises on an uncompilable
+trace_checks pattern, where it used to return skipped. (c) A third-party
+tolokaforge.trace_check_operators operator is now reached only on events
+where the lazy matcher evaluates it, so an operator that raises is no longer
+reached on calls a cheaper predicate rejects.
+- grading regexes default to the linear engine (RE2). A pack
+declaring no regex_engine now grades trace_checks regex / not_regex /
+bind.values[*].pattern and transcript_rules.disallow_regex under RE2, which
+reads some patterns both engines compile differently: \d \w \s \b are ASCII
+only, $ without (?m) is end of text only, [[:alpha:]] is a POSIX class, a{,n}
+is literal text, and a lone surrogate is searched as U+FFFD. Patterns RE2
+cannot compile (lookaround, backreferences, possessive quantifiers, \Z,
+(?x), (?a), \N{...}, repeat counts over 1000, invalid repetition size,
+pattern too large) are now an authoring-gate advisory, fatal under the
+default fail_on, and raise at grade time when the gate is bypassed. Rewrite a
+lookahead conjunction as the list form (regex: [a, b], not_regex: [c]) or
+declare regex_engine: backtracking on the predicate, bound value or block.
+Older runner images refuse at RegisterTrial every trial whose pack declares
+trace_checks or transcript_rules, because regex_engine is always on the
+wire. The registered regex / not_regex trace-check operators receive a
+CompiledPatterns as expected, not the authored str.
+
+### Feat
+
+- **grading**: a linear-time regex engine by default, list-form regex, lazy trace matcher (#1780) (#1801)
+- **grading**: the judge's search_kb shows hit titles and reads judge_snippet_chars (ADR-0054 change 2) [TECHDEL-652] (#1708)
+- **search**: a built-in in-process bm25 backend (ADR-0054 change 2) [TECHDEL-652] (#1707)
+- **search**: the SearchBackend seam (ADR-0054), with rag-service on it [TECHDEL-652] (#1672)
+- **tau3**: preserve environment errors and native runtime limits (#1745)
+- **tau3**: single-attempt judge and grading evidence (#1744)
+- **grading**: state_checks.comparison_view on both substrates (ADR-0053) [TECHDEL-621] (#1712)
+- **grading**: normalize_ids in the comparison view (ADR-0053), with property tests [TECHDEL-654] (#1702)
+- **grading**: the comparison view module (ADR-0053), with exclude_records and exclude_tables [TECHDEL-654] (#1699)
+- **langfuse**: send live previews only when LANGFUSE_TRACING_PREVIEWS asks (#1774)
+
+### Fix
+
+- **grading**: runner protocol v4 — an older engine is refused, not silently graded under RE2 (#1780) (#1805)
+- review follow-ups from the comparison-view and search stacks (#1793)
+- **grading**: composite severity: gate constraints load as written — the gate advisory reads the model's own on_missing predicate (#1788)
+- **langfuse**: spell the project tag from a project name with spaces (#1779)
+- retain completed trial reports on resume (#1762)
+- honor opening stop and preserve evaluator failures (#1761)
+- close trial-owned MCP resources during cleanup (#1760)
+
+### Refactor
+
+- **grading**: one table answers which kinds each on_missing refuses; gate-advisory loader rows join the authoring-gate tests (#1789)
+
+## v0.28.3 (2026-10-04)
+
+### Feat
+
+- **langfuse**: type a trial's observations, name them without positions, clock each call (#1764)
+
+## v0.28.2 (2026-10-03)
+
+### Feat
+
+- **llm**: record what each LLM call was billed, and make a Langfuse trace's cost what the trial spent (#1759)
+- **automation**: send the prompt an agent was given as its transcript's trace input (#1743)
+
+### Fix
+
+- **docker**: resolve rag-service wheel lazily on the build path; LFS-free reinstall clone (#1747)
+- **docker**: build rag-service and grader on a wheel install; one build-context source of truth (#1741)
+- **langfuse**: build the single-attempt OTLP request without the SDK's exporter (#1740)
+
+## v0.28.1 (2026-10-02)
+
+### Feat
+
+- **observability**: read, gate and project coding-agent transcripts, and an uploader for them (#1624)
+
+### Fix
+
+- **core**: run every Terminal-Bench task, keep the reasoning models hand us, and stop losing trials to turns that reasoned without acting (#1727)
+- **models**: models wheel requires engine >=0.28 — the bundled presets set supports_sampling_params (#1737)
+
+## v0.28.0 (2026-10-01)
+
+### BREAKING CHANGE
+
+- db-service no longer serves the flat routes
+`POST /reset`, `POST /query`, `POST /update`, `GET /dump`, `POST /sql`
+and `GET /schema`; requests to them get 404. There is no implicit
+`__default__` trial. `SQLQueryTool` and `SQLSchemaToolDB` are removed
+from `tolokaforge.tools.builtin` and its `__all__`. Migration: init a
+trial with `POST /trials/{trial_id}/init` and address it by its
+`/trials/{trial_id}/...` equivalent (`/reset` -> `/init`, `/query`,
+`/update`, `/dump` -> `/state`, `/sql`, `/schema`); for SQL access use
+`DBServiceClient.sql_query` / `get_schema` against a trial id. The
+standalone compose recipe's mock-web no longer sets `JSON_DB_URL` or
+waits on db-service.
+- `DBQueryTool` and `DBUpdateTool`, still exported from
+`tolokaforge.tools.builtin`, take no `db_url` and carry only the
+LLM-facing schema and `ToolPolicy`; their `execute()` raises, because the
+runner's ToolFactory serves them per trial through `Dispatch.JSON_DB`.
+Migration: call `DBServiceClient.query(trial_id, jsonpath)` /
+`DBServiceClient.update(trial_id, ops)` against an inited trial.
+`tools.<actor>.db_query` / `db_update` accept no `tool_config`; validate
+and RegisterTrial refuse one. `POST /trials/{trial_id}/update` now
+answers 400 where it used to answer "ok" with no change: for an `add`
+whose parent matches nothing or is a scalar, an `add` path not ending in
+a key name, and a `replace` of `$`. A `remove $` that was a 500, and a
+state the SQL mirror cannot store that was a 500 with the write
+committed, are now 400 with nothing applied.
+- A task enabling `db_query`/`db_update` as builtins must seed
+at least one table: `initial_state.json_db`, or `json_db: {"<table>": []}` for
+an intentionally empty store. `tolokaforge validate`, the run pre-flight and
+`RegisterTrial` refuse it otherwise. `add` on a table (list parent) now
+requires the `.-` append form (`$.tickets.-`); any other key is refused.
+- an unknown key under `models.<role>` (including `fallbacks`,
+`openrouter`, `session`, `reasoning`) now fails the run config's load, naming
+the key and suggesting the closest field; delete or rename it. `gateway_route`
+was never read and must be deleted. Worker and grader images from this release
+refuse a model-config key they do not declare: roll images before the engine.
+A `tolokaforge` reading a bundle refuses one written by a later engine with a
+newer model-config field.
+
+### Feat
+
+- **core**: M51 — Gateway & self-hosted model parity (#1714)
+
+### Fix
+
+- **runtime**: db_query/db_update read and write only the trial's own seeded JSON DB (#1734)
+- **docker**: exclude nested build artifacts from Docker contexts (#1705)
+- **observability**: role-generic actor LLM-spend accounting — record user-simulator spend in metrics, aggregate, and budget (#1656)
+
+## v0.27.5 (2026-09-30)
+
+### Feat
+
+- **core**: hand a user-simulator factory the task directory (#1669)
+- **core**: nullable model temperature, and a warning on the ignored models.user.temperature [TECHDEL-621] (#1641)
+- **core**: open a dialogue with a line of the agent's [TECHDEL-621] (#1663)
+- **core**: isolated user tool turns [TECHDEL-621] (#1662)
+- **core**: configurable user stop tokens and an immediate-stop mode [TECHDEL-621] (#1630)
+- **core**: UserSimulator Protocol + entry-point registry seam (ADR-0051) (#1660)
+
+### Fix
+
+- **grading**: core drops unstable_fields before the compare_columns pipeline, as the runner does (#1671)
+- **core**: keep a string-declared tool argument as the JSON text it is [TECHDEL-621] (#1664)
+
+## v0.27.4 (2026-09-29)
+
+### Feat
+
+- **grading**: M50 — judge-kind variance reduction + rubric-authoring lint (#1621)
+
+### Fix
+
+- **judge-kind-ab**: update dry-run assertion to match tuple return type (#1659)
+
 ## v0.27.3 (2026-09-25)
 
 ### Feat

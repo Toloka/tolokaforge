@@ -28,6 +28,7 @@ as green, and the content assertions here catch on the first run.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import logging
 from dataclasses import dataclass
@@ -58,6 +59,7 @@ from tolokaforge.core.grading.config_validation import (
     _TOOL_EXPECTATION_HAZARDS,
     _TRANSCRIPT_RULE_KEYS,
     _UNCORRELATABLE_JSON_TYPES,
+    _UNRESOLVABLE_REASON,
     _WHAT_EACH_SECTION_MUST_DECLARE,
     UNRESOLVED_COMBINE_REASON,
     AdapterHashSource,
@@ -104,7 +106,11 @@ from tolokaforge.core.models import (
     ToolExpectations,
     TranscriptRulesConfig,
 )
+from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.models import TRACE_MATCHABLE_FIELDS_BY_KIND
+from tolokaforge.runner.service import _unseeded_json_db_tools_refusal
+from tolokaforge.runner.tool_factory import ToolConfigurationError, ToolFactory
+from tolokaforge.tools.builtin.registry import json_db_tool_config_refusal
 
 pytestmark = pytest.mark.unit
 
@@ -131,6 +137,8 @@ _CODING = _EXAMPLES / "coding/dataset/tasks/coding/coding_public_example_01/task
 _SHOP_ORDERS = _REPO / "tests/data/tasks/shop_orders_02/task.yaml"
 _MOBILE = _REPO / "tests/data/tasks/synth_mobile_01/task.yaml"
 _RAG = _EXAMPLES / "rag_search/dataset/tasks/kb_lookup_01/task.yaml"
+# Enables both JSON-DB builtins in a block naming no MCP server.
+_TOOL_USE = _EXAMPLES / "tool_use/dataset/tasks/tool_use/tool_use_public_example_01/task.yaml"
 
 
 @cache
@@ -159,6 +167,20 @@ def _tool_call(tool: str, **args: dict[str, Any]) -> dict[str, Any]:
     if args:
         match["args"] = args
     return match
+
+
+def _under_engine(grading: dict[str, Any], engine: str) -> dict[str, Any]:
+    """*grading* with its ``trace_checks`` block declaring ``regex_engine: engine``."""
+    return {**grading, "trace_checks": {**grading["trace_checks"], "regex_engine": engine}}
+
+
+def _captured_figure(pattern: str) -> dict[str, Any]:
+    """A binder capturing ``figure`` out of an assistant turn by *pattern*."""
+    return _bound_block(
+        {"kind": "assistant_message"},
+        {"figure": {"field": "text", "pattern": pattern}},
+        {"present": {"match": _tool_call("write_file", content={"contains_binding": "figure"})}},
+    )
 
 
 def _required_action(name: str, requestor: str) -> dict[str, Any]:
@@ -258,6 +280,29 @@ _NO_CALLER_READ_WHAT_THE_TASK_SEEDS = SeededTablesLayer.unresolvable()
 _THE_TASK_SEEDS_THESE_TABLES = SeededTablesLayer(tables=_TWO_ROWS_ONE_COMPONENT_CANNOT_KEY)
 _THE_TASK_SEEDS_NO_TABLES = SeededTablesLayer(tables={})
 
+# A comparison view is held to the same seeded state, and to the unstable fields the
+# task declares beside it: a view ranking documents by a column the unstable filter
+# drops is refused, and one declared where no hash reads it is a hint.
+_DOCUMENTS = {"documents": [{"id": "D1", "client_id": "C1", "filed_at": "2026-01-01"}]}
+_THE_TASK_SEEDS_DOCUMENTS_AND_MASKS_FILED_AT = SeededTablesLayer(
+    tables=_DOCUMENTS, unstable_fields=lambda: ("documents.filed_at",)
+)
+_A_VIEW_RANKED_BY_A_MASKED_COLUMN = {
+    "version": 1,
+    "rules": [
+        {
+            "kind": "normalize_ids",
+            "table": "documents",
+            "ordinal_by": ["client_id"],
+            "rank_by": ["filed_at"],
+        }
+    ],
+}
+_A_VIEW_OF_THE_DOCUMENTS = {
+    "version": 1,
+    "rules": [{"kind": "normalize_ids", "table": "documents", "key": ["client_id"]}],
+}
+
 _A_FILESYSTEM_ROOTED_ASSERTION = {
     "path": "$.filesystem['/env/fs/agent-visible/x.py']",
     "contains": "def divide",
@@ -295,7 +340,9 @@ class _Rule:
     authored block is the whole layer — so only the rows about the layer say who else
     may supply the source. ``seeded_tables`` defaults the other way, to unresolvable:
     no other row's fixture declares ``id_fields``, so the rows about the seeded tables
-    are the only ones that name what the task seeds.
+    are the only ones that name what the task seeds. ``inventory`` replaces the one
+    built from ``task`` for a defect no committed pack may carry, since every pack on
+    disk faces the whole gate in the corpus sweep.
     """
 
     label: str
@@ -308,9 +355,65 @@ class _Rule:
     world: ReplayWorld = ReplayWorld.unresolvable()
     hash_sources: HashSourceLayer = _THE_BLOCK_IS_THE_WHOLE_LAYER
     seeded_tables: SeededTablesLayer = _NO_CALLER_READ_WHAT_THE_TASK_SEEDS
+    inventory: ToolInventory | None = None
+
+    def tool_inventory(self) -> ToolInventory:
+        return self.inventory if self.inventory is not None else _inventory(self.task)
+
+
+_A_DB_QUERY_CARRYING_A_TOOL_CONFIG = dataclasses.replace(
+    _inventory(_TOOL_USE), json_db_tool_config_keys={"db_query": frozenset({"db_url"})}
+)
+
+
+# An anchored kind, so a gate over it draws the default-``on_missing`` advisory: its
+# anchor's tool can silently error. The matchers differ so the two-quantifier
+# validator accepts the shape.
+_HTTP_THEN_WRITE: dict[str, Any] = {
+    "before": {
+        "left": {"quantifier": "any", "match": _tool_call("http_request")},
+        "right": {"quantifier": "first", "match": _tool_call("write_file")},
+    }
+}
+
+
+def _a_gate_over(require: dict[str, Any]) -> dict[str, Any]:
+    """One ``severity: gate`` constraint over *require*, leaving ``on_missing`` defaulted."""
+    return {
+        "trace_checks": {
+            "constraints": [
+                {
+                    "id": "probe",
+                    "description": "a probe constraint",
+                    "severity": "gate",
+                    "require": require,
+                }
+            ]
+        }
+    }
 
 
 _RULES: tuple[_Rule, ...] = (
+    _Rule(
+        label="json_db_builtin_carrying_a_tool_config",
+        task=_TOOL_USE,
+        grading=_trace_block(_tool_call("db_query")),
+        checker="_check_json_db_builtins_take_no_tool_config",
+        channel="errors",
+        message="'db_query' reads the trial's own JSON DB and takes no tool_config; "
+        "got keys ['db_url']",
+        seeded_tables=SeededTablesLayer(tables={"tickets": []}),
+        inventory=_A_DB_QUERY_CARRYING_A_TOOL_CONFIG,
+    ),
+    _Rule(
+        label="json_db_builtins_on_a_task_that_seeds_no_table",
+        task=_TOOL_USE,
+        grading=_trace_block(_tool_call("db_query")),
+        checker="_check_json_db_builtins_have_a_seeded_store",
+        channel="errors",
+        message="enables the JSON-DB tools ['db_query', 'db_update']",
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    ),
     _Rule(
         label="state_read_on_a_task_that_seeds_no_database",
         task=_HELPDESK,
@@ -466,28 +569,124 @@ _RULES: tuple[_Rule, ...] = (
         message="Correlate two arguments the tools type the same way",
     ),
     _Rule(
-        label="matcher_regex_that_does_not_compile",
+        label="matcher_regex_the_backtracking_engine_does_not_compile",
         task=_HELPDESK,
-        grading=_trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}}),
+        grading=_under_engine(
+            _trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}}),
+            "backtracking",
+        ),
         checker="_check_regex_compiles",
         channel="errors",
-        message="does not compile",
+        message="raises out of the evaluator at grade time, once the trial is already paid for",
     ),
     _Rule(
-        label="matcher_not_regex_that_does_not_compile",
+        label="matcher_not_regex_the_backtracking_engine_does_not_compile",
         task=_HELPDESK,
-        grading=_trace_block({"kind": "tool_call", "tool": {"not_regex": "http_(request"}}),
+        grading=_under_engine(
+            _trace_block({"kind": "tool_call", "tool": {"not_regex": "http_(request"}}),
+            "backtracking",
+        ),
         checker="_check_regex_compiles",
         channel="errors",
-        message="does not compile",
+        message="does not compile under the backtracking regex engine",
     ),
     _Rule(
-        label="transcript_regex_that_does_not_compile",
+        label="transcript_regex_the_backtracking_engine_does_not_compile",
         task=_HELPDESK,
-        grading={"transcript_rules": {"disallow_regex": ["unterminated(["]}},
+        grading={
+            "transcript_rules": {
+                "disallow_regex": ["unterminated(["],
+                "regex_engine": "backtracking",
+            }
+        },
         checker="_check_regex_compiles",
         channel="errors",
-        message="does not compile",
+        message="fails its sub-check at grade time, once the trial is already paid for",
+    ),
+    _Rule(
+        label="matcher_lookahead_under_the_default_engine",
+        task=_HELPDESK,
+        grading=_trace_block({"kind": "tool_call", "tool": {"regex": "(?=http)http_request"}}),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="declares regex_engine: backtracking on the predicate or on the trace_checks block",
+    ),
+    _Rule(
+        label="matcher_lookahead_list_item_under_the_default_engine",
+        task=_HELPDESK,
+        grading=_trace_block({"kind": "tool_call", "tool": {"regex": ["^http", "(?=http)http_"]}}),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="A lookahead conjunction (?=…a)(?=…b) is the list form regex: [a, b]",
+    ),
+    _Rule(
+        label="matcher_lookahead_under_a_linear_predicate_in_a_backtracking_block",
+        task=_HELPDESK,
+        grading=_under_engine(
+            _trace_block(
+                {
+                    "kind": "tool_call",
+                    "tool": {"not_regex": "(?=http)ftp", "regex_engine": "linear"},
+                }
+            ),
+            "backtracking",
+        ),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="does not compile under the linear regex engine: invalid perl operator",
+    ),
+    _Rule(
+        label="unterminated_matcher_regex_under_a_backtracking_predicate",
+        task=_HELPDESK,
+        grading=_trace_block(
+            {
+                "kind": "tool_call",
+                "tool": {"regex": "http_(request", "regex_engine": "backtracking"},
+            }
+        ),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="raises out of the evaluator at grade time",
+    ),
+    _Rule(
+        label="capture_pattern_only_linear_compiles_with_no_group",
+        task=_CODING,
+        grading=_captured_figure(r"\pL+"),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="captures 0 groups, and a binding reads exactly one",
+    ),
+    _Rule(
+        label="capture_pattern_only_linear_compiles_with_two_groups",
+        task=_CODING,
+        grading=_captured_figure(r"(?<n>\d+)-(\d+)"),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="captures 2 groups, and a binding reads exactly one",
+    ),
+    _Rule(
+        label="capture_lookahead_under_the_default_engine",
+        task=_CODING,
+        grading=_captured_figure("(?=[0-9])([0-9]+)"),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="on the bound value or on the trace_checks block",
+    ),
+    _Rule(
+        label="transcript_lookahead_under_the_default_engine",
+        task=_HELPDESK,
+        grading={"transcript_rules": {"disallow_regex": ["(?=pass)password"]}},
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="declares regex_engine: backtracking on the transcript_rules block",
+    ),
+    _Rule(
+        label="transcript_lone_surrogate_under_the_default_engine",
+        task=_HELPDESK,
+        grading={"transcript_rules": {"disallow_regex": ["pass\ud800"]}},
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="a lone surrogate cannot be encoded as UTF-8",
     ),
     _Rule(
         label="hash_source_without_the_flag",
@@ -658,6 +857,47 @@ _RULES: tuple[_Rule, ...] = (
         seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     ),
     _Rule(
+        label="a_comparison_view_keyed_by_a_column_the_unstable_filter_drops",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {
+                "hash": {"enabled": True, "expect_initial_state": True},
+                "comparison_view": _A_VIEW_RANKED_BY_A_MASKED_COLUMN,
+            }
+        },
+        checker="_check_comparison_view_against_the_task",
+        channel="errors",
+        message="builds its key from documents.filed_at, which unstable_fields masks",
+        seeded_tables=_THE_TASK_SEEDS_DOCUMENTS_AND_MASKS_FILED_AT,
+    ),
+    _Rule(
+        label="a_comparison_view_no_hash_reads",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {
+                "jsonpaths": [{"path": "$.db.documents[0].client_id", "equals": "C1"}],
+                "comparison_view": _A_VIEW_OF_THE_DOCUMENTS,
+            }
+        },
+        checker="_check_comparison_view_against_the_task",
+        channel="hints",
+        message="state_checks.hash is not enabled, so no hash reads the view",
+        seeded_tables=_THE_TASK_SEEDS_DOCUMENTS_AND_MASKS_FILED_AT,
+    ),
+    _Rule(
+        label="a_comparison_view_nothing_resolved_the_seeded_tables_for",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {
+                "hash": {"enabled": True, "expect_initial_state": True},
+                "comparison_view": _A_VIEW_OF_THE_DOCUMENTS,
+            }
+        },
+        checker="_check_comparison_view_against_the_task",
+        channel="unchecked",
+        message="no caller resolved the tables this task seeds",
+    ),
+    _Rule(
         label="weight_naming_a_component_the_pack_never_configures",
         task=_HELPDESK,
         grading={},
@@ -669,40 +909,43 @@ _RULES: tuple[_Rule, ...] = (
     _Rule(
         label="severity_gate_with_defaulted_on_missing_is_risky",
         task=_HELPDESK,
-        grading={
-            "trace_checks": {
-                "constraints": [
-                    {
-                        "id": "probe",
-                        "description": "a probe constraint",
-                        "severity": "gate",
-                        # Anchored kind (``before``) so the advisory fires — the
-                        # advisory is scoped to constraints that read an anchor
-                        # whose tool can silently error. Two different matchers
-                        # so the two-quantifier validator accepts the shape.
-                        "require": {
-                            "before": {
-                                "left": {
-                                    "quantifier": "any",
-                                    "match": _tool_call("http_request"),
-                                },
-                                "right": {
-                                    "quantifier": "first",
-                                    "match": _tool_call("write_file"),
-                                },
-                            }
-                        },
-                    }
-                ]
-            }
-        },
+        grading=_a_gate_over(_HTTP_THEN_WRITE),
         checker="_check_severity_gate_default_on_missing_is_risky",
         channel="advisories",
         message="severity: gate with default on_missing: fail",
     ),
+    _Rule(
+        label="a_composite_gate_over_anchors_alone_keeps_the_advisory",
+        task=_HELPDESK,
+        grading=_a_gate_over({"all_of": [_HTTP_THEN_WRITE, _HTTP_THEN_WRITE]}),
+        checker="_check_severity_gate_default_on_missing_is_risky",
+        channel="advisories",
+        message="severity: gate with default on_missing: fail",
+    ),
+    _Rule(
+        label="a_graded_criterion_with_no_expected_anchor_is_a_hint",
+        task=_HELPDESK,
+        grading={
+            "llm_judge": {
+                "model": "claude-sonnet-5",
+                "rubric": {
+                    "criteria": [
+                        {
+                            "id": "clarity",
+                            "description": "the answer reads clearly",
+                            "kind": "graded",
+                        }
+                    ]
+                },
+            }
+        },
+        checker="_check_graded_criteria_have_expected_anchor",
+        channel="hints",
+        message="kind: graded with no 'expected:' anchor",
+    ),
 )
 
-_FINDING_CHANNELS = ("errors", "advisories")
+_FINDING_CHANNELS = ("errors", "advisories", "hints")
 
 
 def _texts(report: AuthoringReport, channel: str) -> list[str]:
@@ -722,7 +965,7 @@ def test_each_rule_is_reported_in_its_own_channel_naming_the_fix(rule: _Rule) ->
     """
     report = inspect_grading_authoring(
         rule.grading,
-        _inventory(rule.task),
+        rule.tool_inventory(),
         effective_combine=rule.combine,
         replay_world=rule.world,
         hash_sources=rule.hash_sources,
@@ -755,8 +998,8 @@ def test_every_checker_the_module_declares_is_provoked_by_a_rule(
     Provocation, not naming: each checker is wrapped and the whole table is run, so a
     row that stops reaching the checker it claims — because the dispatcher no longer
     calls it, say — fails here even though the row's own assertion still passes.
-    Two rows share ``_check_argument_paths``, one per severity, so the audit is
-    at-least-one rather than exactly-one.
+    Several checkers answer more than one row, so the audit is at-least-one rather
+    than exactly-one.
     """
     declared = _checker_names_in_source()
     assert {rule.checker for rule in _RULES} == declared
@@ -767,7 +1010,7 @@ def test_every_checker_the_module_declares_is_provoked_by_a_rule(
     for rule in _RULES:
         inspect_grading_authoring(
             rule.grading,
-            _inventory(rule.task),
+            rule.tool_inventory(),
             effective_combine=rule.combine,
             replay_world=rule.world,
             hash_sources=rule.hash_sources,
@@ -783,7 +1026,7 @@ def _recording(name: str, answered: set[str]):
 
     def wrapper(*args: Any, **kwargs: Any) -> AuthoringReport:
         report = original(*args, **kwargs)
-        if report.errors or report.advisories or report.unchecked:
+        if report.errors or report.advisories or report.unchecked or report.hints:
             answered.add(name)
         return report
 
@@ -858,7 +1101,9 @@ def test_an_uncompilable_regex_is_caught_before_the_tokens_are_spent(tmp_path: P
     """
     grading = _trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}})
 
-    with pytest.raises(ValueError, match="unterminated subpattern"):
+    with pytest.raises(
+        ValueError, match=r"does not compile under the linear regex engine: missing \)"
+    ):
         validate_grading_yaml(_write_grading(tmp_path, grading), inventory=_inventory(_HELPDESK))
 
 
@@ -942,6 +1187,46 @@ def test_an_anchorless_on_missing_is_refused_before_the_gate_at_any_depth(
     message = str(excinfo.value)
     assert "on_missing has nothing to decide over ['present']" in message, message
     assert "does not compile" not in message, message
+
+
+_A_REFUND_PROMISE = {
+    "absent": {"match": {"kind": "assistant_message", "text": {"contains": "refund"}}}
+}
+
+
+@pytest.mark.parametrize(
+    "require",
+    [
+        pytest.param(
+            {
+                "all_of": [
+                    {"present": {"match": _tool_call("http_request")}},
+                    {"present": {"match": _tool_call("write_file")}},
+                ]
+            },
+            id="present_only_all_of",
+        ),
+        pytest.param(
+            {
+                "all_of": [
+                    _A_REFUND_PROMISE,
+                    _HTTP_THEN_WRITE,
+                    {"present": {"match": _tool_call("http_request")}},
+                ]
+            },
+            id="absent_before_and_present_under_all_of",
+        ),
+    ],
+)
+def test_a_composite_gate_refusing_on_missing_fail_loads_with_none(
+    tmp_path: Path, require: dict[str, Any]
+) -> None:
+    """A composite gate holding present / absent loads at the default fail_on with no advisory."""
+    report = validate_grading_yaml(
+        _write_grading(tmp_path, _a_gate_over(require)), inventory=_inventory(_HELPDESK)
+    )
+
+    assert report.advisories == ()
 
 
 # ---------------------------------------------------------------------------
@@ -1525,6 +1810,257 @@ def test_an_unresolvable_hash_source_layer_may_not_carry_a_supplied_source() -> 
         )
 
     assert HashSourceLayer.unresolvable().supplied is None
+
+
+# ---------------------------------------------------------------------------
+# A JSON-DB builtin has a seeded store to read, at the gate and at RegisterTrial
+# ---------------------------------------------------------------------------
+
+_AN_MCP_FIXTURE = [{"name": "lookup", "description": "an MCP tool", "parameters": {}}]
+
+
+def _json_db_pack(tmp_path: Path, tools: dict[str, Any], json_db: Any) -> Path:
+    """A native pack declaring *tools* and *json_db*, with nothing else to refuse."""
+    task_dir = tmp_path / "tasks" / "json_db_probe"
+    (task_dir / "fixtures").mkdir(parents=True)
+    (task_dir / "mcp_server.py").write_text("")
+    (task_dir / "fixtures" / "tools.json").write_text(json.dumps(_AN_MCP_FIXTURE))
+    (task_dir / "grading.yaml").write_text("{}\n")
+    initial_state = {} if json_db is None else {"initial_state": {"json_db": json_db}}
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "json_db_probe",
+                "description": "enables JSON-DB tools",
+                "tools": tools,
+                "grading": "grading.yaml",
+                **initial_state,
+            }
+        )
+    )
+    return task_dir
+
+
+@pytest.mark.parametrize(
+    ("tools", "json_db", "refused"),
+    [
+        pytest.param(
+            {"agent": {"enabled": ["db_query"]}}, None, ["db_query"], id="builtin_no_json_db"
+        ),
+        pytest.param(
+            {"agent": {"enabled": []}, "user": {"enabled": ["db_update"]}},
+            None,
+            ["db_update"],
+            id="a_user_block_builtin",
+        ),
+        pytest.param({"agent": {"enabled": ["db_query"]}}, {}, ["db_query"], id="json_db_empty"),
+        pytest.param(
+            {"agent": {"enabled": ["db_query"]}}, {"t": []}, None, id="an_empty_table_is_a_seed"
+        ),
+        pytest.param(
+            {"agent": {"enabled": ["db_query"], "mcp_server": "mcp_server.py"}},
+            None,
+            None,
+            id="served_by_the_agents_mcp_server",
+        ),
+        pytest.param(
+            {
+                "agent": {"enabled": ["lookup"], "mcp_server": "mcp_server.py"},
+                "user": {"enabled": ["db_query"]},
+            },
+            None,
+            None,
+            id="a_user_block_falls_back_to_the_agents_server",
+        ),
+    ],
+)
+def test_the_gate_and_register_trial_refuse_the_same_unseeded_json_db_tools(
+    tmp_path: Path, tools: dict[str, Any], json_db: Any, refused: list[str] | None
+) -> None:
+    """``validate`` refuses exactly the packs ``RegisterTrial`` would, naming the same tools.
+
+    The two halves read the same two facts on their own substrates — the gate the
+    pack, the runner the task description built from it — so each row is decided by
+    both, from one pack on disk. The fallback row is the one a reading of the user
+    block's own ``mcp_server`` gets wrong: the runtime serves that ``db_query`` from
+    the agent's server, which needs no seed.
+    """
+    task_dir = _json_db_pack(tmp_path, tools, json_db)
+    task, effective_dir = load_task_yaml(task_dir / "task.yaml")
+    description = NativeAdapter(
+        {"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"}
+    ).to_task_description("json_db_probe")
+
+    runtime = _unseeded_json_db_tools_refusal(description)
+    try:
+        report = validate_grading_yaml(
+            task_dir / "grading.yaml",
+            inventory=build_tool_inventory(task, effective_dir),
+            seeded_tables=seeded_tables_under_adapter(task, effective_dir, task.adapter_type),
+        )
+    except ValueError as exc:
+        at_validate: str | None = str(exc)
+    else:
+        assert [skip for skip in report.unchecked if skip.where == "tools"] == []
+        at_validate = None
+
+    if refused is None:
+        assert runtime is None
+        assert at_validate is None
+        return
+    assert runtime is not None and f"JSON-DB tools {refused}" in runtime
+    assert at_validate is not None
+    assert f"tools: this task enables the JSON-DB tools {refused}" in at_validate
+    assert 'json_db: {"<table>": []}' in at_validate
+
+
+@pytest.mark.parametrize(
+    ("tools", "refused"),
+    [
+        pytest.param(
+            {"agent": {"enabled": ["db_query"], "db_query": {"db_url": "http://json-db:8000"}}},
+            ("db_query", ["db_url"]),
+            id="an_agent_block_builtin",
+        ),
+        pytest.param(
+            {"agent": {"enabled": []}, "user": {"enabled": ["db_update"], "db_update": {"x": 1}}},
+            ("db_update", ["x"]),
+            id="a_user_block_builtin",
+        ),
+        pytest.param(
+            {"agent": {"enabled": ["db_query"], "db_query": {"output_max_chars": 500}}},
+            None,
+            id="a_harness_side_key_is_not_a_tool_config",
+        ),
+        pytest.param(
+            {
+                "agent": {
+                    "enabled": ["db_query"],
+                    "mcp_server": "mcp_server.py",
+                    "db_query": {"db_url": "http://json-db:8000"},
+                }
+            },
+            None,
+            id="served_by_the_agents_mcp_server",
+        ),
+    ],
+)
+def test_the_gate_and_register_trial_refuse_the_same_json_db_tool_config(
+    tmp_path: Path, tools: dict[str, Any], refused: tuple[str, list[str]] | None
+) -> None:
+    """``validate`` refuses a JSON-DB builtin's ``tool_config`` with the runner's own message.
+
+    The runtime half is the production ``ToolFactory`` building the trial's tools from
+    the task description the native adapter emits for the same pack.
+    """
+    task_dir = _json_db_pack(tmp_path, tools, {"tickets": []})
+    task, effective_dir = load_task_yaml(task_dir / "task.yaml")
+    description = NativeAdapter(
+        {"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"}
+    ).to_task_description("json_db_probe")
+    wire_tools = [
+        tool.model_dump(mode="json") for tool in (*description.agent_tools, *description.user_tools)
+    ]
+
+    try:
+        ToolFactory(DBServiceClient("http://db-service.invalid"), "probe").reconstruct_tools(
+            wire_tools
+        )
+    except ToolConfigurationError as exc:
+        runtime: str | None = str(exc)
+    else:
+        runtime = None
+    try:
+        validate_grading_yaml(
+            task_dir / "grading.yaml",
+            inventory=build_tool_inventory(task, effective_dir),
+            seeded_tables=seeded_tables_under_adapter(task, effective_dir, task.adapter_type),
+        )
+    except ValueError as exc:
+        at_validate: str | None = str(exc)
+    else:
+        at_validate = None
+
+    if refused is None:
+        assert runtime is None
+        assert at_validate is None
+        return
+    reason = json_db_tool_config_refusal(*refused)
+    assert runtime is not None and reason in runtime
+    assert at_validate is not None and f"tools: {reason}" in at_validate
+
+
+def _json_db_inventory(**overrides: Any) -> ToolInventory:
+    fields: dict[str, Any] = {
+        "declared": frozenset({"db_query"}),
+        "agent_declared": frozenset({"db_query"}),
+        "user_declared": frozenset(),
+        "actor_split_known": True,
+        "parameters": {},
+        "known": True,
+    }
+    return ToolInventory(**(fields | overrides))
+
+
+@pytest.mark.parametrize(
+    ("inventory", "seeded_tables", "reason"),
+    [
+        pytest.param(
+            _json_db_inventory(),
+            _THE_TASK_SEEDS_NO_TABLES,
+            "does not say whether ['db_query'] are served as the source-less JSON-DB builtins",
+            id="an_inventory_built_without_the_field",
+        ),
+        pytest.param(
+            _json_db_inventory(json_db_builtins=frozenset({"db_query"})),
+            _THE_TASK_SEEDS_THESE_TABLES,
+            "does not say what the tool blocks of ['db_query'] carry",
+            id="tool_blocks_unresolved",
+        ),
+        pytest.param(
+            _json_db_inventory(
+                json_db_builtins=frozenset({"db_query"}), json_db_tool_config_keys={}
+            ),
+            _NO_CALLER_READ_WHAT_THE_TASK_SEEDS,
+            "no caller resolved the tables this task seeds",
+            id="seeded_tables_unresolved",
+        ),
+        pytest.param(
+            ToolInventory.unresolvable(),
+            _THE_TASK_SEEDS_NO_TABLES,
+            _UNRESOLVABLE_REASON,
+            id="an_unresolvable_inventory",
+        ),
+    ],
+)
+def test_a_json_db_tool_whose_facts_cannot_be_read_is_unchecked_not_refused(
+    inventory: ToolInventory, seeded_tables: SeededTablesLayer, reason: str
+) -> None:
+    """Any fact unknown, and the rule reports what it could not check and fails nothing.
+
+    ``None`` is what an adapter building :class:`ToolInventory` without the fields
+    reports, and what a recorded wire tool list reports, since neither can say which
+    of its tools are builtins nor what their tool blocks carry.
+    """
+    report = inspect_grading_authoring(
+        _trace_block(_tool_call("db_query")), inventory, seeded_tables=seeded_tables
+    )
+
+    assert report.errors == ()
+    assert any(reason in skip.reason for skip in report.unchecked), report.unchecked
+
+
+def test_an_inventory_without_the_fields_and_no_json_db_name_asks_nothing() -> None:
+    """A tool set naming no ``Dispatch.JSON_DB`` builtin has no store or tool block to ask about."""
+    report = inspect_grading_authoring(
+        _trace_block(_tool_call("http_request")),
+        _json_db_inventory(
+            declared=frozenset({"http_request"}), agent_declared=frozenset({"http_request"})
+        ),
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    )
+
+    assert report == AuthoringReport()
 
 
 # ---------------------------------------------------------------------------
@@ -2723,13 +3259,15 @@ def test_the_transcript_rules_the_gate_reads_are_the_ones_the_model_declares() -
     as nothing, refusing a pack that grades — the failure direction a list beside the
     model cannot catch. ``tool_expectations`` is the one field read a level down,
     through the two keys the tool-name rule already addresses, so its own key set is
-    held against ``ToolExpectations`` in the same breath.
+    held against ``ToolExpectations`` in the same breath. ``regex_engine`` declares
+    no rule: it names the engine ``disallow_regex`` runs on, so a block carrying it
+    alone asserts nothing.
 
     The author-facing sentence is checked against the same sets, since a message that
     named a key the predicate stopped reading would send the author to declare
     something the gate goes on refusing.
     """
-    assert set(_TRANSCRIPT_RULE_KEYS) | {"tool_expectations"} == set(
+    assert set(_TRANSCRIPT_RULE_KEYS) | {"tool_expectations", "regex_engine"} == set(
         TranscriptRulesConfig.model_fields
     )
     assert set(_TOOL_EXPECTATION_HAZARDS) == set(ToolExpectations.model_fields)
@@ -2765,7 +3303,66 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
             known=False,
         )
 
+    with pytest.raises(ValueError, match="which of its tools are JSON-DB builtins"):
+        ToolInventory(
+            declared=frozenset(),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            actor_split_known=False,
+            parameters={},
+            known=False,
+            json_db_builtins=frozenset(),
+        )
+
+    with pytest.raises(ValueError, match="what its JSON-DB builtins' tool blocks carry"):
+        ToolInventory(
+            declared=frozenset(),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            actor_split_known=False,
+            parameters={},
+            known=False,
+            json_db_tool_config_keys={},
+        )
+
     assert ToolInventory.unresolvable().known is False
+    assert ToolInventory.unresolvable().json_db_builtins is None
+    assert ToolInventory.unresolvable().json_db_tool_config_keys is None
+
+
+def test_the_json_db_builtins_are_declared_tools() -> None:
+    """A builtin the task does not declare is a refusal naming a tool no actor has."""
+    with pytest.raises(ValueError, match=r"JSON-DB builtins \['db_update'\] are not declared"):
+        ToolInventory(
+            declared=frozenset({"db_query"}),
+            agent_declared=frozenset({"db_query"}),
+            user_declared=frozenset(),
+            actor_split_known=True,
+            parameters={},
+            known=True,
+            json_db_builtins=frozenset({"db_query", "db_update"}),
+        )
+
+
+@pytest.mark.parametrize(
+    "json_db_builtins",
+    [pytest.param(None, id="builtins_unknown"), pytest.param(frozenset(), id="no_builtins")],
+)
+def test_a_tool_config_is_carried_only_for_a_json_db_builtin(
+    json_db_builtins: frozenset[str] | None,
+) -> None:
+    """Config keys on a tool the inventory does not call a JSON-DB builtin are a contradiction."""
+    with pytest.raises(ValueError, match=r"the tools \['db_query'\] carry JSON-DB builtin"):
+        ToolInventory(
+            declared=frozenset({"db_query"}),
+            agent_declared=frozenset({"db_query"}),
+            user_declared=frozenset(),
+            actor_split_known=True,
+            parameters={},
+            known=True,
+            json_db_builtins=json_db_builtins,
+            json_db_tool_config_keys={"db_query": frozenset({"db_url"})},
+        )
 
 
 def test_the_declared_set_is_the_union_of_the_two_actors() -> None:
@@ -3216,6 +3813,41 @@ def test_a_typo_inside_a_binder_is_reported_at_the_binders_own_matcher() -> None
     assert all("is not declared by this task" in finding.message for finding in report.errors)
 
 
+_LOOKAHEAD = "(?=http)http_request"
+
+
+@pytest.mark.parametrize(
+    "grading",
+    [
+        pytest.param(
+            _under_engine(
+                _trace_block({"kind": "tool_call", "tool": {"regex": _LOOKAHEAD}}), "backtracking"
+            ),
+            id="backtracking-block",
+        ),
+        pytest.param(
+            _trace_block(
+                {"kind": "tool_call", "tool": {"regex": _LOOKAHEAD, "regex_engine": "backtracking"}}
+            ),
+            id="backtracking-predicate",
+        ),
+        pytest.param(
+            {"transcript_rules": {"disallow_regex": [_LOOKAHEAD], "regex_engine": "backtracking"}},
+            id="backtracking-transcript-rules",
+        ),
+    ],
+)
+def test_a_lookahead_its_engine_compiles_draws_no_regex_finding(grading: dict[str, Any]) -> None:
+    """The gate compiles each pattern under the engine that runs it, not under one engine."""
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert not [
+        finding
+        for finding in report.errors + report.advisories
+        if "does not compile" in finding.message
+    ]
+
+
 def test_an_uncompilable_capture_pattern_is_reported_at_its_own_address() -> None:
     """A binder's pattern is compiled by the same evaluator a matcher's ``regex`` is.
 
@@ -3231,10 +3863,48 @@ def test_an_uncompilable_capture_pattern_is_reported_at_its_own_address() -> Non
 
     report = inspect_grading_authoring(grading, _inventory(_CODING))
 
-    assert [finding.where for finding in report.errors] == [
+    assert [finding.where for finding in report.advisories] == [
         "trace_checks.probe.bind.values.figure.pattern"
     ]
-    assert "does not compile" in report.errors[0].message
+    assert "does not compile" in report.advisories[0].message
+
+
+def test_each_pattern_of_a_list_is_reported_at_its_own_item() -> None:
+    """A list item's address carries its index; a single string keeps the operator's."""
+    grading = _trace_block(
+        {
+            "kind": "tool_call",
+            "tool": {"regex": ["^http", "(?=http)http_"], "not_regex": "(?!ftp)"},
+            "args": {"url": {"not_regex": ["(", "^ftp"], "regex_engine": "backtracking"}},
+        }
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.advisories] == [
+        "trace_checks.probe.present.match.tool.not_regex",
+        "trace_checks.probe.present.match.tool.regex[1]",
+    ]
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.present.match.args.url.not_regex[0]",
+    ]
+
+
+@pytest.mark.parametrize(
+    "grading",
+    [
+        pytest.param(_captured_figure("(?=[0-9])([0-9]+)"), id="capture-pattern"),
+        pytest.param({"transcript_rules": {"disallow_regex": ["(?=pass)password"]}}, id="disallow"),
+    ],
+)
+def test_the_list_form_is_named_only_where_a_list_is_accepted(grading: dict[str, Any]) -> None:
+    """A binder's capture and a ``disallow_regex`` entry are one pattern each, so the
+    remedy a matcher's refusal names would not load there."""
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    [finding] = report.advisories
+    assert "does not compile under the linear regex engine" in finding.message
+    assert "list form" not in finding.message
 
 
 _UNCHECKED_EXTRACTIONS = (
@@ -3447,9 +4117,10 @@ def test_an_uncompilable_pattern_over_a_non_string_argument_names_both_repairs()
 
     report = inspect_grading_authoring(grading, _inventory(_CODING))
 
-    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS, _PATTERN_ADDRESS]
-    assert "does not compile" in report.errors[0].message
-    assert "type 'integer'" in report.errors[1].message
+    assert [finding.where for finding in report.advisories] == [_PATTERN_ADDRESS]
+    assert "does not compile" in report.advisories[0].message
+    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS]
+    assert "type 'integer'" in report.errors[0].message
 
 
 def test_a_bound_integer_correlated_with_another_argument_is_not_flagged() -> None:
@@ -4220,3 +4891,79 @@ def test_the_types_no_reference_can_correlate_with_text_are_read_off_the_table()
     never_text = frozenset({"integer", "number", "boolean", "array", "object"})
 
     assert never_text == _UNCORRELATABLE_JSON_TYPES
+
+
+# ---------------------------------------------------------------------------
+# hints: kind: graded without an ``expected:`` anchor is the author's nudge
+# ---------------------------------------------------------------------------
+
+
+def _rubric_grading(*criteria: dict[str, Any]) -> dict[str, Any]:
+    """A grading block carrying one ``llm_judge`` rubric with the given criteria."""
+    return {
+        "llm_judge": {
+            "model": "claude-sonnet-5",
+            "rubric": {"criteria": list(criteria)},
+        }
+    }
+
+
+def test_a_graded_criterion_without_expected_is_a_hint() -> None:
+    """A ``kind: graded`` criterion with no ``expected:`` field reports one hint.
+
+    The hint names the criterion by its dotted address, cites the anchoring
+    guideline, and lands in :attr:`AuthoringReport.hints` — never in ``errors``
+    or ``advisories``, because a missing anchor is a judgement call the engine
+    cannot decide for the author and the pack still grades correctly.
+    """
+    grading = _rubric_grading(
+        {"id": "clarity", "description": "the answer reads clearly", "kind": "graded"}
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.hints] == ["llm_judge.rubric.criteria.clarity"]
+    assert "kind: graded with no 'expected:' anchor" in report.hints[0].message
+    assert "docs/GRADING.md" in report.hints[0].message
+    assert report.errors == ()
+    assert report.advisories == ()
+
+
+def test_a_graded_criterion_with_expected_is_silent() -> None:
+    """An ``expected:`` field on a ``graded`` criterion silences the hint.
+
+    Same rubric shape as the fired case, with an anchor added — the rule reads
+    the presence of a truthy ``expected`` and reports nothing.
+    """
+    grading = _rubric_grading(
+        {
+            "id": "clarity",
+            "description": "the answer reads clearly",
+            "kind": "graded",
+            "expected": "A short answer in one paragraph, plain English, no jargon.",
+        }
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert report.hints == ()
+    assert report.errors == ()
+    assert report.advisories == ()
+
+
+def test_a_binary_criterion_without_expected_is_silent() -> None:
+    """A ``kind: binary`` criterion is out of scope for the rule regardless of ``expected``.
+
+    Binary criteria are met/not-met with no gradient — the pass/fail semantics
+    are self-anchored and the AutoRubric-style variance the rule guards against
+    does not apply.
+    """
+    grading = _rubric_grading(
+        {"id": "returns_json", "description": "the answer is valid JSON", "kind": "binary"}
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert report.hints == ()
+    assert report.errors == ()
+    assert report.advisories == ()

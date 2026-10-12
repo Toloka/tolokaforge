@@ -3,14 +3,9 @@
 Locks that :func:`tolokaforge.core.grading.replay.replay_trial` reads
 the recorded ``judge_kind`` + ``kind_config`` off the bundle's
 ``task.yaml.grading_config.llm_judge`` and dispatches through
-``load_judge_kind(inputs.judge_kind)()`` — a recorded ``chunked_rubric``
-run replays through :class:`ChunkedRubricJudgeKind` (returned
-``JudgeResult.chunk_boundaries`` is non-empty and matches the recorded
-partition, and :func:`build_replay_grade` projects it onto
-``Grade.judge_chunk_boundaries``), while a legacy trial artifact
+``load_judge_kind(inputs.judge_kind)()``; a legacy trial artifact
 without the two fields defaults to ``single_shot_rubric`` (the
-byte-parity anchor). The composite-recompute populator lock lives at
-``tests/canonical/test_composite_recompute_carries_chunk_boundaries.py``.
+byte-parity anchor).
 """
 
 from __future__ import annotations
@@ -105,55 +100,11 @@ def _write_bundle(
 def _submit_report_step(chunk_ids: tuple[str, ...]) -> list[tuple[str, dict]]:
     """Build one scripted judge turn that emits ``submit_report`` marking
     every criterion in ``chunk_ids`` as MET."""
-    args: dict = {"reasons": "chunk verdicts"}
+    args: dict = {"reasons": "verdicts"}
     for cid in chunk_ids:
         args[cid] = True
         args[f"{cid}_justification"] = f"{cid}: VERDICT: MET"
     return [("submit_report", args)]
-
-
-class TestChunkedRubricReplaysThroughKindSeam:
-    """A recorded chunked_rubric trial replays through
-    :class:`ChunkedRubricJudgeKind`, and :func:`build_replay_grade`
-    projects the partition onto ``Grade.judge_chunk_boundaries``."""
-
-    def test_chunked_replay_carries_recorded_chunk_boundaries(self, tmp_path: Path) -> None:
-        trial_dir = tmp_path / "trials" / "refund_task" / "0"
-        _write_bundle(
-            trial_dir,
-            llm_judge_block={
-                "judge_kind": "chunked_rubric",
-                "kind_config": {"chunk_size": 2},
-                "rubric": {
-                    "reference": "Refund quotes $328.50.",
-                    "criteria": [
-                        {"id": "a", "description": "a", "kind": "binary"},
-                        {"id": "b", "description": "b", "kind": "binary"},
-                        {"id": "c", "description": "c", "kind": "binary"},
-                    ],
-                },
-            },
-        )
-
-        inputs = read_replay_inputs(trial_dir)
-
-        assert inputs.judge_kind == "chunked_rubric"
-        assert inputs.kind_config == {"chunk_size": 2}
-        assert inputs.provenance.judge_kind == "chunked_rubric"
-        assert inputs.provenance.judge_kind_source is ProvenanceSource.RECORDED
-
-        client = ScriptedClient(
-            [
-                _submit_report_step(("a", "b")),
-                _submit_report_step(("c",)),
-            ]
-        )
-        result = replay_trial(inputs, judge_client=client)
-
-        assert result.status is JudgeRunStatus.COMPLETED
-        assert result.chunk_boundaries == (("a", "b"), ("c",))
-        grade = build_replay_grade(result)
-        assert grade.judge_chunk_boundaries == [["a", "b"], ["c"]]
 
 
 class TestLegacyArtifactDefaultsToSingleShot:
@@ -187,5 +138,8 @@ class TestLegacyArtifactDefaultsToSingleShot:
         result = replay_trial(inputs, judge_client=client)
 
         assert result.status is JudgeRunStatus.COMPLETED
-        assert result.chunk_boundaries == ()
-        assert build_replay_grade(result).judge_chunk_boundaries is None
+        grade = build_replay_grade(result)
+        assert grade.judge_status is JudgeStatus.COMPLETED
+        assert grade.criterion_results is not None
+        assert [c.id for c in grade.criterion_results] == ["refund"]
+        assert grade.criterion_results[0].met is True

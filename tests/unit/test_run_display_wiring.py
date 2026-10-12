@@ -1,11 +1,11 @@
 """Wiring tests for :class:`RunDisplayEvents` propagation.
 
-Locks that every engine surface — per-trial (``_AgentMetricsSink``,
+Locks that every engine surface — per-trial (``_TrialMetricsSink``,
 ``InProcessConductor._grade``, ``ProvisioningTrialExecutor.execute``)
 and run-level (``Orchestrator``) — fires the RunDisplayEvents seam
 events it owns:
 
-- ``_AgentMetricsSink.record_generation`` fires ``trial_progress`` after
+- ``_TrialMetricsSink.record_generation`` fires ``trial_progress`` after
   internal metrics accumulation.
 - ``InProcessConductor._grade`` fires ``judgment_scored`` right after
   ``trajectory.grade`` is populated.
@@ -112,7 +112,7 @@ def test_recording_events_satisfies_protocol() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _AgentMetricsSink — fires `trial_progress` from `record_generation`
+# _TrialMetricsSink — fires `trial_progress` from `record_generation`
 # ---------------------------------------------------------------------------
 
 
@@ -127,10 +127,10 @@ def _make_generation_result(
 
 
 def test_agent_metrics_sink_fires_trial_progress_with_deltas() -> None:
-    from tolokaforge.core.runner import _AgentMetricsSink
+    from tolokaforge.core.runner import _TrialMetricsSink
 
     events = _RecordingEvents()
-    sink = _AgentMetricsSink(Metrics(), events=events, trial_id="taskA:0")
+    sink = _TrialMetricsSink(Metrics(), events=events, trial_id="taskA:0")
 
     sink.record_generation(_make_generation_result(prompt=1000, completion=200, cost=0.005))
 
@@ -145,10 +145,10 @@ def test_agent_metrics_sink_fires_trial_progress_with_deltas() -> None:
 
 
 def test_agent_metrics_sink_treats_none_cost_as_zero_delta() -> None:
-    from tolokaforge.core.runner import _AgentMetricsSink
+    from tolokaforge.core.runner import _TrialMetricsSink
 
     events = _RecordingEvents()
-    sink = _AgentMetricsSink(Metrics(), events=events, trial_id="taskA:0")
+    sink = _TrialMetricsSink(Metrics(), events=events, trial_id="taskA:0")
 
     sink.record_generation(_make_generation_result(cost=None))
 
@@ -159,11 +159,11 @@ def test_agent_metrics_sink_treats_none_cost_as_zero_delta() -> None:
 def test_agent_metrics_sink_accumulates_metrics_before_emitting() -> None:
     """Metrics accumulate first; two record_generation calls yield two
     ``trial_progress`` emissions with the per-call deltas."""
-    from tolokaforge.core.runner import _AgentMetricsSink
+    from tolokaforge.core.runner import _TrialMetricsSink
 
     events = _RecordingEvents()
     metrics = Metrics()
-    sink = _AgentMetricsSink(metrics, events=events, trial_id="taskA:0")
+    sink = _TrialMetricsSink(metrics, events=events, trial_id="taskA:0")
 
     sink.record_generation(_make_generation_result(prompt=500, completion=100, cost=0.002))
     sink.record_generation(_make_generation_result(prompt=300, completion=50, cost=0.001))
@@ -178,9 +178,9 @@ def test_agent_metrics_sink_accumulates_metrics_before_emitting() -> None:
 def test_agent_metrics_sink_default_events_is_null_and_never_raises() -> None:
     """Existing callers that omit ``events`` keep working — the default sink
     silently accepts every call."""
-    from tolokaforge.core.runner import _AgentMetricsSink
+    from tolokaforge.core.runner import _TrialMetricsSink
 
-    sink = _AgentMetricsSink(Metrics())
+    sink = _TrialMetricsSink(Metrics())
     sink.record_generation(_make_generation_result())
 
 
@@ -792,6 +792,7 @@ def _adapter_for_run(task_dir: Path) -> Any:
     )
     adapter = MagicMock()
     adapter.to_task_description.side_effect = _make_task_description_for_run
+    adapter.requires_judge_model.return_value = False
     adapter.docker_stack_requirements.return_value = None
     adapter.trial_grader_name = "runner_rpc"
     adapter.get_task_dir.return_value = task_dir
@@ -962,7 +963,7 @@ def _run_agent_loop_with(events: _RecordingEvents, *, call_observation: Any) -> 
         classify_loop_error,
     )
     from tolokaforge.core.models import Message
-    from tolokaforge.core.runner import _AgentMetricsSink
+    from tolokaforge.core.runner import _TrialMetricsSink
     from tolokaforge.tools.registry import ToolResult
 
     client = _ObservationCapturingClient(
@@ -998,7 +999,7 @@ def _run_agent_loop_with(events: _RecordingEvents, *, call_observation: Any) -> 
         tool_executor=_NoopExecutor(),
         tool_schemas=[],
         config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
-        metrics=_AgentMetricsSink(Metrics(), events=events, trial_id="taskA:0"),
+        metrics=_TrialMetricsSink(Metrics(), events=events, trial_id="taskA:0"),
         should_terminate=_stop_first_turn,
         classify_error=_classify,
         logger=get_logger("test-wiring", strict=False),
@@ -1040,14 +1041,14 @@ def test_tool_calling_loop_forwards_none_observation_when_unset() -> None:
 
 
 def test_user_simulator_llm_reply_forwards_observation_to_generate() -> None:
-    """User path: :meth:`UserSimulator.reply` in llm mode forwards
+    """User path: :meth:`BuiltinUserSimulator.reply` in llm mode forwards
     ``observation`` verbatim to the inner ``LLMClient.generate`` — so the
     user simulator surfaces as ``role="user"`` LLM-call events."""
-    from tolokaforge.core.llm import UserSimulator
+    from tolokaforge.core.llm import BuiltinUserSimulator
     from tolokaforge.core.models import Message, MessageRole, ModelConfig
     from tolokaforge.core.run_display_events import LLMCallObservation
 
-    simulator = UserSimulator(
+    simulator = BuiltinUserSimulator(
         mode="llm",
         llm_config=ModelConfig(provider="openai", name="gpt-4"),
         backstory="do a thing",
@@ -1071,11 +1072,11 @@ def test_user_simulator_llm_reply_forwards_observation_to_generate() -> None:
 def test_user_simulator_scripted_reply_ignores_observation() -> None:
     """Scripted mode never touches the wire — passing an observation is a
     no-op, not a raise. Keeps the reply signature uniform between modes."""
-    from tolokaforge.core.llm import UserSimulator
+    from tolokaforge.core.llm import BuiltinUserSimulator
     from tolokaforge.core.models import Message, MessageRole
     from tolokaforge.core.run_display_events import LLMCallObservation
 
-    simulator = UserSimulator(mode="scripted")
+    simulator = BuiltinUserSimulator(mode="scripted")
     events = _RecordingEvents()
     observation = LLMCallObservation(events=events, trial_id="taskA:0", role="user")
 

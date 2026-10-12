@@ -221,9 +221,10 @@ def test_result_comes_from_the_record_not_the_message() -> None:
 
 def test_a_message_only_failure_carries_the_same_text_a_record_would() -> None:
     """A bundle re-graded without ``tool_log.yaml`` reconstructs the failure text
-    identically: the ``Error: `` prefix ``core/loop.py`` writes onto the
-    message body is stripped so ``result:`` matchers see one text on both
-    substrates (#977).
+    identically: the
+    :data:`~tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX` an
+    agent loop writes onto the message body is stripped so ``result:`` matchers
+    see one text on both substrates (#977).
 
     Without the strip, ``result: {regex: "^already refunded"}`` would pass on
     a bundle carrying the log and fail on the same bundle re-graded from
@@ -238,6 +239,80 @@ def test_a_message_only_failure_carries_the_same_text_a_record_would() -> None:
 
     (result,) = _of_kind(timeline, TraceEventKind.TOOL_RESULT)
     assert result.result == "already refunded"
+
+
+def test_a_raw_repeated_id_executed_out_of_order_is_refused() -> None:
+    """Agreeing on a raw provider id is not enough to join the two views.
+
+    Each view derives its own keys by occurrence — declaration order for the
+    messages, ``sequence`` (execution) order for the records — so a loop that
+    declares and records a provider's *raw* repeated id, consistently, still
+    hands the two derivations different pairings when parallel calls finish out
+    of declaration order. This is why the :class:`~tolokaforge.core.loop.AgentLoop`
+    contract requires the id to come from ``context.call_ids.assign(...)``: a
+    pre-assigned id is already episode-unique, both derivations are the
+    identity, and execution order cannot matter.
+    """
+    messages = [
+        _assistant(
+            "",
+            _call("get_employee:1", "refund", order_id="42"),
+            _call("get_employee:1", "cancel", order_id="42"),
+        ),
+        _tool_message("get_employee:1", "refunded"),
+        _tool_message("get_employee:1", "cancelled"),
+    ]
+    records = [
+        recorded_call("cancel", sequence=0, call_id="get_employee:1", output="cancelled"),
+        recorded_call("refund", sequence=1, call_id="get_employee:1", output="refunded"),
+    ]
+
+    with pytest.raises(TimelineInconsistencyError):
+        build_trial_timeline(messages, records, None)
+
+
+def test_a_raw_repeated_id_on_one_tool_mis_joins_silently() -> None:
+    """The same mis-pairing with one tool name raises nothing — it grades wrong.
+
+    ``_require_records_reconcile`` can only see a record naming a tool its
+    declaration did not. Two calls to the same tool leave nothing to catch, so
+    the second call's result is attached to the first and a ``result:`` matcher
+    reads the wrong text with no error anywhere.
+    """
+    messages = [
+        _assistant(
+            "",
+            _call("get_employee:1", "refund", order_id="42"),
+            _call("get_employee:1", "refund", order_id="77"),
+        ),
+        _tool_message("get_employee:1", "refunded 42"),
+        _tool_message("get_employee:1", "refunded 77"),
+    ]
+    records = [
+        recorded_call(
+            "refund",
+            sequence=0,
+            call_id="get_employee:1",
+            arguments={"order_id": "77"},
+            output="refunded 77",
+        ),
+        recorded_call(
+            "refund",
+            sequence=1,
+            call_id="get_employee:1",
+            arguments={"order_id": "42"},
+            output="refunded 42",
+        ),
+    ]
+
+    timeline = build_trial_timeline(messages, records, None)
+
+    assert [
+        (call.arguments["order_id"], result.result) for call, result in _answered_calls(timeline)
+    ] == [("42", "refunded 77"), ("77", "refunded 42")], (
+        "the documented mis-join is what this locks; if the builder ever pairs "
+        "these correctly the AgentLoop contract can drop the assigner requirement"
+    )
 
 
 def test_turn_index_follows_assistant_generations() -> None:
@@ -773,6 +848,55 @@ def test_a_user_executed_call_pairs_with_the_record_not_a_tool_message() -> None
         for event in timeline.events
         if event.kind in _TOOL_EVENT_KINDS
     )
+
+
+def _isolated_user_step_trial() -> list[Message]:
+    """An ``isolated`` user checking its balance in one tool step, then replying."""
+    return [
+        _user("My card was declined."),
+        _assistant("Can you check your balance?"),
+        _user("", _call("call_U", "check_balance")),
+        _tool_message("call_U", "balance: 12.50"),
+        _user("It says 12.50."),
+    ]
+
+
+def test_an_isolated_user_tool_step_is_calls_not_a_message() -> None:
+    """Nobody in the dialogue reads a tool step, so a ``messages`` ordering that
+    counts turns must not count it; its call and result are still events."""
+    records = [
+        recorded_call(
+            "check_balance",
+            call_id="call_U",
+            executor=ToolExecutorIdentity.USER,
+            output="balance: 12.50",
+        )
+    ]
+
+    timeline = build_trial_timeline(_isolated_user_step_trial(), records, None)
+
+    assert _kinds(timeline) == [
+        TraceEventKind.USER_MESSAGE,
+        TraceEventKind.ASSISTANT_MESSAGE,
+        TraceEventKind.TOOL_CALL,
+        TraceEventKind.TOOL_RESULT,
+        TraceEventKind.USER_MESSAGE,
+    ]
+    assert [e.text for e in _of_kind(timeline, TraceEventKind.USER_MESSAGE)] == [
+        "My card was declined.",
+        "It says 12.50.",
+    ]
+    assert {e.executor for e in timeline.events if e.kind in _TOOL_EVENT_KINDS} == {
+        ToolExecutorIdentity.USER
+    }
+
+
+def test_a_bundle_takes_an_isolated_steps_result_from_its_tool_message() -> None:
+    timeline = build_trial_timeline(_isolated_user_step_trial(), [], None)
+
+    (result,) = _of_kind(timeline, TraceEventKind.TOOL_RESULT)
+    assert result.result == "balance: 12.50"
+    assert TraceEventKind.USER_MESSAGE not in _kinds(timeline)[2:4]
 
 
 def test_an_empty_trial_has_no_events_and_neither_view() -> None:

@@ -19,7 +19,9 @@ import time
 import pytest
 from litellm.exceptions import RateLimitError
 
+from tolokaforge.core.actors.tool_turns import agent_view
 from tolokaforge.core.llm.client import GenerationResult, LLMApiTimeoutError, ParserError
+from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.loop import (
@@ -361,6 +363,142 @@ def test_empty_completion_terminates_before_appending():
     )
     assert messages[-1].role == MessageRole.SYSTEM
     assert "empty completion" in messages[-1].content
+
+
+def test_reasoning_only_truncation_is_not_an_empty_completion():
+    """Billed reasoning with no action is a truncated turn, not an absent one.
+
+    The same provider event carrying one token of text falls through to
+    accept-and-continue; reporting this one as an empty completion named the
+    provider for a budget we set, and cost the whole trial.
+    """
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1, completion_tokens=15358, reasoning_tokens=15358),
+                finish_reason="length",
+            )
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, reasoning_stall_retry_count=0),
+    ).run("sys", messages, time.time())
+
+    assert outcome.termination_reason == TerminationReason.REASONING_WITHOUT_ACTION
+    assert outcome.status == TrialStatus.FAILED
+    assert messages[-1].role == MessageRole.SYSTEM
+    assert "reasoning" in messages[-1].content
+
+
+def test_reasoning_only_truncation_resamples_by_default():
+    """Out of the box, with no preset opt-in: the stall costs a sample, not the trial.
+
+    The budget defaults to 1 because the evidence is positive — the provider
+    billed output tokens, so a next sample is worth drawing. A model that
+    never stalls never pays for it."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1, completion_tokens=900, reasoning_tokens=900),
+                finish_reason="length",
+            ),
+            GenerationResult(text="recovered", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2
+    assert outcome.termination_reason != TerminationReason.REASONING_WITHOUT_ACTION
+    assert any(m.role == MessageRole.ASSISTANT and m.content == "recovered" for m in messages)
+    # The actionless result is still never appended, so the next request's tail
+    # is not an empty ``role=model`` turn.
+    assert not any(
+        m.role == MessageRole.ASSISTANT and m.content == "" and not m.tool_calls for m in messages
+    )
+
+
+def test_reasoning_only_truncation_carries_its_token_counts():
+    """The terminal evidence states the observation, not a conclusion."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1, completion_tokens=15358, reasoning_tokens=15358),
+                finish_reason="length",
+            )
+        ]
+    )
+    loop = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, reasoning_stall_retry_count=0),
+    )
+    loop.run("sys", [], time.time())
+
+    evidence = loop._excluding_reason_evidence
+    assert "15358" in evidence
+    assert "length" in evidence
+
+
+def test_a_genuinely_empty_completion_still_terminates_one_shot():
+    """No reasoning billed and no length signal: resampling buys nothing."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="", tool_calls=[], usage=Usage(prompt_tokens=1), finish_reason="stop"
+            )
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, output_length_retry_count=3),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 1
+    assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
+
+
+def test_reasoning_only_without_a_length_signal_is_still_a_stall():
+    """A model can stop mid-deliberation without reaching the ceiling.
+
+    The commoner of the two shapes in practice. Observed live on
+    ``openai/gpt-oss-120b`` across a 10-trial sweep: six actionless turns, each
+    ``finish_reason="stop"`` with 220-414 reasoning tokens — nowhere near the
+    16384 ceiling that produced the shape this branch was first written for.
+    Gating on ``finish_reason == "length"`` alone would have missed every one.
+    """
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1, completion_tokens=400, reasoning_tokens=400),
+                finish_reason="stop",
+            )
+        ]
+    )
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, reasoning_stall_retry_count=0),
+    ).run("sys", [], time.time())
+
+    assert outcome.termination_reason == TerminationReason.REASONING_WITHOUT_ACTION
 
 
 def test_empty_completion_still_records_generation_usage():
@@ -822,11 +960,17 @@ def test_length_retry_does_not_advance_turn_counter():
     assert outcome.termination_reason == TerminationReason.MAX_TURNS
 
 
-def test_length_finish_reason_with_empty_content_uses_empty_path():
-    """A ``finish_reason=='length'`` result with no text / no tool_calls
-    routes through the empty-completion branch, not the length-retry branch.
-    Locks the disjoint-path invariant against a future refactor that flattens
-    the current nesting under ``if result.text or result.tool_calls:``."""
+def test_length_finish_reason_with_empty_content_takes_the_stall_path():
+    """A ``finish_reason=='length'`` result with no text / no tool_calls is a
+    truncation, so it routes to the reasoning-stall branch — not to the
+    empty-completion branch, and not to the content-carrying length retry
+    whose feedback assumes an action was produced.
+
+    Locks the three-way split against a refactor that collapses any two of
+    them. It once collapsed the other way: an actionless truncation was
+    reported as a completion the provider never sent, which named the provider
+    for a budget we set and ended the trial instead of resampling it.
+    """
     client = _ScriptedClient(
         [
             GenerationResult(
@@ -844,13 +988,15 @@ def test_length_finish_reason_with_empty_content_uses_empty_path():
             max_turns=1,
             episode_timeout_s=10_000,
             empty_retry_count=0,
-            output_length_retry_count=1,
+            output_length_retry_count=0,
+            reasoning_stall_retry_count=0,
         ),
     ).run("sys", messages, time.time())
 
     assert client.calls == 1
-    assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
-    # Length-retry did NOT fire — no user feedback marker was inserted.
+    assert outcome.termination_reason == TerminationReason.REASONING_WITHOUT_ACTION
+    # The content-carrying length retry did NOT fire — its feedback tells the
+    # model to split an action it did not produce.
     assert not any(
         m.role == MessageRole.USER and "truncated at max_tokens" in (m.content or "")
         for m in messages
@@ -1395,7 +1541,7 @@ def test_tool_output_cap_takes_tighter_of_tool_and_capability(
 
     Pairs with the ``capability_set`` and ``capability_none`` cases upstream:
     together they exercise every ``(tool_cap, cap_cap)`` combination
-    :meth:`ToolCallingLoop._cap_tool_message_content` distinguishes.
+    :meth:`ToolCallFunnel.cap_tool_message_content` distinguishes.
     """
     recorder = _RecordingRecorder()
     huge = "X" * 4_000
@@ -1487,7 +1633,7 @@ class _ScriptedSummarizer:
 class _WatermarkSink(MetricsSink):
     """Metrics sink that returns a scripted ``last_prompt_tokens``.
 
-    Real ``_AgentMetricsSink`` derives the value from ``result.usage``; this
+    Real ``_TrialMetricsSink`` derives the value from ``result.usage``; this
     fake lets a test set the exact watermark trigger without threading a
     ``GenerationResult`` through it.
     """
@@ -1592,6 +1738,109 @@ def test_summarize_fires_at_watermark_before_generate():
         (MessageRole.ASSISTANT, "reach for a tool"),
     ]
     assert any(m.role is MessageRole.SYSTEM and "Context summarized" in m.content for m in messages)
+
+
+def test_summarize_keeps_the_agent_opening_line_with_the_first_user_turn():
+    """A transcript that opens with the agent's own line (``first_agent_message``)
+    keeps that line and the user's opening on the wire across a summarize: the
+    recap replaces what came after them, not the user's first message."""
+    summarizer = _ScriptedSummarizer(["compact-recap"])
+    client = _RecordingClient(
+        [
+            GenerationResult(
+                text="reach for a tool",
+                tool_calls=[ToolCall(id="t1", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=950),
+            ),
+            GenerationResult(text="all done", usage=Usage(prompt_tokens=100)),
+        ]
+    )
+    opening_line = Message(role=MessageRole.ASSISTANT, content="Hi! How can I help you today?")
+    messages: list[Message] = [opening_line, _first_user()]
+    _summarize_loop(
+        client,
+        sink=_WatermarkSink([950, 100]),
+        summarizer=summarizer,
+        config=_summarize_config(
+            max_context_tokens=1000,
+            context_watermark=100,
+            summarize_policy=summarizer,
+            max_turns=2,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.wire_snapshots[0] == messages[:2]
+    assert [(m.role, m.content) for m in client.wire_snapshots[1][:3]] == [
+        (MessageRole.ASSISTANT, "Hi! How can I help you today?"),
+        (MessageRole.USER, "the original task"),
+        (MessageRole.USER, "compact-recap"),
+    ]
+    assert client.wire_snapshots[1][3].role is MessageRole.SYSTEM
+
+
+class _RequestRecordingObserver:
+    """Loop observer keeping what each generation was reported to have been sent."""
+
+    def __init__(self) -> None:
+        self.requests: list[list[Message]] = []
+
+    def generation(self, *, index, turn, request, result, started_at, ended_at) -> None:
+        self.requests.append(list(request))
+
+    def tool_call(self, *, index, call, result, started_at, ended_at) -> None:
+        pass
+
+
+def test_agent_view_shapes_every_input_the_loop_builds_from_the_record():
+    """An isolated user's tool step sits in the recorded transcript ahead of the
+    opening; the agent's first wire, the summarizer's input and the observer's view
+    of a request all leave it out, while the record keeps it."""
+    user_step = Message(
+        role=MessageRole.USER,
+        content="",
+        tool_calls=[ToolCall(id="u1", name="check_balance", arguments={})],
+    )
+    user_result = Message(role=MessageRole.TOOL, content="balance: 12.50", tool_call_id="u1")
+    summarizer = _ScriptedSummarizer(["compact-recap"])
+    client = _RecordingClient(
+        [
+            GenerationResult(
+                text="reach for a tool",
+                tool_calls=[ToolCall(id="t1", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=950),
+            ),
+            GenerationResult(text="all done", usage=Usage(prompt_tokens=100)),
+        ]
+    )
+    observer = _RequestRecordingObserver()
+    opening = _first_user()
+    messages: list[Message] = [user_step, user_result, opening]
+    ToolCallingLoop(
+        llm_client=client,
+        tool_executor=_RecordingExecutor(),
+        tool_schemas=[],
+        config=_summarize_config(
+            max_context_tokens=1000,
+            context_watermark=100,
+            summarize_policy=summarizer,
+            max_turns=2,
+        ),
+        metrics=_WatermarkSink([950, 100]),
+        should_terminate=_never_terminate,
+        classify_error=_classify_no_patterns,
+        logger=_logger(),
+        retry_sleep=lambda _s: None,
+        observer=observer,
+        agent_view=agent_view,
+    ).run("sys", messages, time.time())
+
+    assert client.wire_snapshots[0] == [opening]
+    assert client.wire_snapshots[1][0] == opening
+    assert user_step not in summarizer.received_messages[0]
+    assert user_result not in summarizer.received_messages[0]
+    assert [m.tool_call_id for m in summarizer.received_messages[0] if m.tool_call_id] == ["t1"]
+    assert all(user_step not in request for request in observer.requests)
+    assert messages[:2] == [user_step, user_result]
 
 
 def test_no_summarize_when_below_watermark():
@@ -1961,3 +2210,127 @@ def test_summarize_call_is_billed_through_metrics():
     assert len(billing.generations) == 1
     assert billing.generations[0].usage.prompt_tokens == 100_000
     assert billing.generations[0].cost_usd == 0.42
+
+
+def _reasoning(text: str) -> StructuredReasoning:
+    return StructuredReasoning(blocks=(ReasoningBlock(type="thinking", text=text),))
+
+
+def _stall(tokens: int = 400) -> GenerationResult:
+    return GenerationResult(
+        text="",
+        tool_calls=[],
+        usage=Usage(prompt_tokens=1, completion_tokens=tokens, reasoning_tokens=tokens),
+        finish_reason="stop",
+    )
+
+
+def test_the_stall_resample_does_not_replay_the_reasoning():
+    """The resample sends the history with prior deliberation stripped.
+
+    Replaying the reasoning that just produced an actionless turn re-rolls the
+    same dice. Measured on openai/gpt-oss-120b: enabling replay took actionless
+    turns from 6 to 32 across ten trials and cost four of them.
+    """
+    client = _ScriptedClient(
+        [_stall(), GenerationResult(text="acted", usage=Usage(prompt_tokens=1))]
+    )
+    messages: list[Message] = [
+        Message(role=MessageRole.ASSISTANT, content="earlier", reasoning=_reasoning("deliberation"))
+    ]
+    _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2
+    first_sent, resample_sent = client.messages_history[0], client.messages_history[1]
+    assert any(m.reasoning is not None for m in first_sent), "the first call replays normally"
+    assert all(m.reasoning is None for m in resample_sent), "the resample strips it"
+    # Only the wire copy is stripped; the grader still reads the reasoning.
+    assert messages[0].reasoning is not None
+
+
+def test_a_turn_that_does_not_stall_still_replays():
+    client = _ScriptedClient([GenerationResult(text="acted", usage=Usage(prompt_tokens=1))])
+    messages: list[Message] = [
+        Message(role=MessageRole.ASSISTANT, content="earlier", reasoning=_reasoning("deliberation"))
+    ]
+    _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
+    ).run("sys", messages, time.time())
+
+    assert any(m.reasoning is not None for m in client.messages_history[0])
+
+
+def test_consecutive_stalling_turns_end_the_trial_at_the_limit():
+    """Counts only turns the typed stall predicate fired on.
+
+    That gate is what separates this from the bare "N tool-call-free turns"
+    rule ADR-0035 measured and rejected, which would have killed 23 of 34 real
+    trajectories at a threshold of 2.
+    """
+    client = _ScriptedClient(
+        [
+            _stall(),
+            GenerationResult(text="a", usage=Usage(prompt_tokens=1)),
+            _stall(),
+            GenerationResult(text="b", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, reasoning_stall_turn_limit=2),
+    ).run("sys", messages, time.time())
+
+    assert outcome.termination_reason == TerminationReason.REASONING_WITHOUT_ACTION
+    assert "2 consecutive" in messages[-1].content
+
+
+def test_a_productive_turn_resets_the_consecutive_count():
+    """The run has to be unbroken — one clean turn clears it."""
+    client = _ScriptedClient(
+        [
+            _stall(),
+            GenerationResult(text="a", usage=Usage(prompt_tokens=1)),
+            GenerationResult(text="clean", usage=Usage(prompt_tokens=1)),
+            _stall(),
+            GenerationResult(text="b", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=3, episode_timeout_s=10_000, reasoning_stall_turn_limit=2),
+    ).run("sys", [], time.time())
+
+    assert outcome.termination_reason != TerminationReason.REASONING_WITHOUT_ACTION
+
+
+def test_the_turn_limit_is_off_by_default():
+    """Shipping it off is what keeps ADR-0035's defect from recurring: the
+    threshold is the part that needs evidence, and none has been taken yet."""
+    assert LoopConfig(max_turns=1, episode_timeout_s=1).reasoning_stall_turn_limit == 0
+
+    client = _ScriptedClient(
+        [
+            _stall(),
+            GenerationResult(text="a", usage=Usage(prompt_tokens=1)),
+            _stall(),
+            GenerationResult(text="b", usage=Usage(prompt_tokens=1)),
+            _stall(),
+            GenerationResult(text="c", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=3, episode_timeout_s=10_000),
+    ).run("sys", [], time.time())
+
+    assert outcome.termination_reason != TerminationReason.REASONING_WITHOUT_ACTION

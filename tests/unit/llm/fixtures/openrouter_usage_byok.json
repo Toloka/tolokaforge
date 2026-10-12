@@ -1,0 +1,17 @@
+{
+  "_comment": "usage block of an OpenRouter BYOK call, in the shape recorded in a trial bundle's provider_raw (values rounded): OpenRouter's own fee is cost (0 inside its free BYOK allowance) and the upstream bills the inference to the key's owner, stated as cost_details.upstream_inference_cost.",
+  "usage": {
+    "completion_tokens": 189,
+    "completion_tokens_details": {"reasoning_tokens": 0},
+    "cost": 0,
+    "cost_details": {
+      "upstream_inference_cost": 0.027,
+      "upstream_inference_prompt_cost": 0.0223,
+      "upstream_inference_completions_cost": 0.0047
+    },
+    "is_byok": true,
+    "prompt_tokens": 41517,
+    "prompt_tokens_details": {"cached_tokens": 41249, "cache_write_tokens": 266},
+    "total_tokens": 41706
+  }
+}

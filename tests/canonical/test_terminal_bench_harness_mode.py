@@ -3,12 +3,12 @@
 A task whose ``TaskDescription.metadata`` carries ``agent_harness_command``
 brings its own agent — a vendor coding-harness CLI that plans and edits
 inside the trial's container. The conductor runs that command once instead
-of driving :class:`~tolokaforge.core.loop.ToolCallingLoop`.
+of resolving an :class:`~tolokaforge.core.loop.AgentLoop`.
 
 The three properties locked here are what make that safe:
 
-* no ``ToolCallingLoop`` is constructed — the CLI is the only agent, and a
-  second one on top of it would spend LLM budget re-solving the task;
+* no agent loop is resolved — the CLI is the only agent, and a second one
+  on top of it would spend LLM budget re-solving the task;
 * exactly one tool call reaches the runtime, carrying the adapter-built
   command and the harness deadline;
 * the grading phase still fires, because it reads the trajectory and the
@@ -26,7 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core import runner as runner_module
+from tolokaforge.core import plugin_registry
 from tolokaforge.core.conductor import InProcessConductor
 from tolokaforge.core.loop import classify_loop_error
 from tolokaforge.core.models import (
@@ -172,11 +172,11 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
         def _no_loop(*args: Any, **kwargs: Any):
             raise AssertionError(
-                "ToolCallingLoop was constructed on the harness path — the CLI is "
+                "an agent loop was resolved on the harness path — the CLI is "
                 "the only agent the trial may run"
             )
 
-        monkeypatch.setattr(runner_module, "ToolCallingLoop", _no_loop)
+        monkeypatch.setattr(plugin_registry, "load_agent_loop", _no_loop)
 
         adapter = MagicMock()
         adapter.get_task_dir.return_value = tmp_path
@@ -196,6 +196,9 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         config.grader = None
 
         runtime = _RecordingRuntime(tools)
+        # Exposed on the fixture callable so a case whose conductor call raises
+        # can still assert what did (and did not) reach the runtime.
+        _run.runtime = runtime
         grader = _RecordingGrader()
         agent_client = MagicMock()
         agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
@@ -301,21 +304,34 @@ class TestHarnessModeSelection:
     def test_a_task_without_the_command_keeps_the_turn_loop(self, harness_trial):
         """No ``agent_harness_command`` routes to the turn loop, as before.
 
-        The sentinel loop raises, which ``TrialRunner.run`` records as an
-        initialization error — that recorded message is the evidence the
-        branch was taken, and the run-level default stays the LLM path.
+        The sentinel raises when the trial resolves its agent loop, and that
+        raise reaching the caller is the evidence the branch was taken: the
+        run-level default stays the LLM path. Nothing reaches the runtime,
+        because the turn loop never ran the harness command.
         """
-        result, runtime, _ = harness_trial(metadata={"agent_harness": "engine-loop"})
-        assert result.trajectory.status is TrialStatus.ERROR
-        assert any(
-            "ToolCallingLoop was constructed" in (m.content or "")
-            for m in result.trajectory.messages
-        )
-        assert runtime.executed_tools == []
+        with pytest.raises(AssertionError, match="an agent loop was resolved"):
+            harness_trial(metadata={"agent_harness": "engine-loop"})
+
+        assert harness_trial.runtime.executed_tools == []
 
     def test_multiple_agent_tools_are_refused(self, harness_trial):
         with pytest.raises(RuntimeError, match="runs through exactly one"):
             harness_trial(tools=[_bash_tool(), _bash_tool(name="bash2")])
+
+    def test_the_one_tool_rule_is_the_harness_branch_alone(self, harness_trial):
+        """The turn loop drives whatever tool surface the task registered.
+
+        The ``exactly one`` rule above is a property of running a CLI inside a
+        single ``exec``, not of the adapter that emitted the task. Scoping it to
+        the harness branch is what lets an engine-loop run offer a second agent
+        tool — a completion signal beside the shell — and the sentinel raise is
+        the evidence the trial reached the loop rather than the refusal.
+        """
+        with pytest.raises(AssertionError, match="an agent loop was resolved"):
+            harness_trial(
+                metadata={"agent_harness": "engine-loop"},
+                tools=[_bash_tool(), _bash_tool(name="submit")],
+            )
 
 
 class TestTheMetadataTheConductorReadsIsAlwaysAMapping:

@@ -414,9 +414,6 @@ def _reassemble_grade_from_composite(
             substrate=substrate,
             judge_kind=judge_kind,
             judge_model_provider=runner._judge_model_provider,
-            disable_knowledge_search=False,
-            custom_system_prompt=None,
-            include_agent_system_prompt=True,
             kind_config=None,
             llm_messages=llm_messages,
             judge_model_config=_JUDGE_MODEL,
@@ -433,6 +430,7 @@ def _reassemble_grade_from_composite(
             completion_tokens=judge_result.usage.completion_tokens,
             reasoning_tokens=judge_result.usage.reasoning_tokens,
             cost_usd=judge_result.usage.cost_usd,
+            billed_cost_usd=judge_result.usage.billed_cost_usd,
             tool_calls=judge_result.usage.tool_calls,
             consistency_rejections=judge_result.usage.consistency_rejections,
             transcript_json=json.dumps(list(judge_result.transcript)),
@@ -619,7 +617,10 @@ def test_grade_trial_refuses_when_a_hash_pack_golden_replay_errors(
         GoldenActionFailure,
         GoldenReplayRecord,
     )
-    from tolokaforge.runner.models import HashComparisonBasis, HashGradingResult
+    from tolokaforge.core.grading.hash_grading_result import (
+        HashComparisonBasis,
+        HashGradingResult,
+    )
 
     trial_id = "hash_replay_errors_dispatch:0"
     task_dict = simple_task_description()

@@ -46,6 +46,10 @@ class JudgeUsage:
     ``consistency_rejections`` counts ``submit_report`` attempts rejected for a
     verdict/justification marker mismatch (a ``VerdictConsistencyError``) on
     this trial — distinct from generic schema rejections, which are not counted.
+
+    ``billed_cost_usd`` sums the charge each judge call's ``ProviderRawCall``
+    states, and is ``None`` unless every call stated one; ``cost_usd`` stays the
+    eval's own figure.
     """
 
     calls: int = 0
@@ -55,6 +59,7 @@ class JudgeUsage:
     cost_usd: float = 0.0
     tool_calls: int = 0
     consistency_rejections: int = 0
+    billed_cost_usd: float | None = None
 
 
 @dataclass(frozen=True)
@@ -115,9 +120,3 @@ class JudgeResult:
     # both COMPLETED and ERRORED runs — an errored judge's partial transcript is
     # the most useful artifact for debugging WHY it failed.
     transcript: tuple[dict[str, Any], ...] = ()
-    # Criterion ids per chunk in original rubric order, populated by chunking
-    # kinds (e.g. ``chunked_rubric``). One inner tuple per chunk. Empty tuple for
-    # kinds that do not chunk. Populated even on a whole-trial ERRORED chunked
-    # run so an offline replay can retry the failing chunk without re-planning
-    # boundaries.
-    chunk_boundaries: tuple[tuple[str, ...], ...] = ()

@@ -68,6 +68,28 @@ def _make_grader(backend: _StubBackend | None = None) -> tuple[RunnerRPCTrialGra
     return grader, logger
 
 
+def test_grpc_client_decodes_failure_evidence_without_a_grade() -> None:
+    import json
+    from types import SimpleNamespace
+
+    from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
+    from tolokaforge.runner import runner_pb2 as pb2
+
+    client = GrpcRunnerClient.__new__(GrpcRunnerClient)
+    client.stub = SimpleNamespace(
+        GradeTrial=lambda request: pb2.GradeTrialResponse(
+            success=False,
+            error="judge malformed",
+            failure_evidence_json=json.dumps(
+                {"judge_usage": {"calls": 1, "cost_usd": 0.03}, "state_snapshots": None}
+            ),
+        )
+    )
+    result = client.grade_trial("task-1:0")
+    assert result["grade"] is None
+    assert result["failure_evidence"]["judge_usage"]["cost_usd"] == 0.03
+
+
 class TestAutoFailBranches:
     """Trajectories that never reach the runner produce a synthesised
     fail-`Grade` without calling ``grade_trial`` — and log the auto-fail.
@@ -351,6 +373,33 @@ class TestRunnerRPCBranch:
         logger.error.assert_called_once()
         assert logger.error.call_args.args[0] == "Grading RPC failed"
         assert logger.error.call_args.kwargs["error"] == "runner exploded"
+
+    def test_failed_judge_evidence_remains_structured(self) -> None:
+        evidence = {
+            "judge_usage": {"calls": 1, "prompt_tokens": 12, "cost_usd": 0.03},
+            "state_snapshots": {
+                "source": "environment replay",
+                "initial": {"agent": {}},
+                "golden": {"agent": {"x": 1}},
+                "final": {"agent": {"x": 1}},
+            },
+            "state_diff": {"modified": []},
+            "comparison_view": None,
+        }
+        backend = _StubBackend(
+            grade_result={
+                "success": False,
+                "grade": None,
+                "error": "judge malformed",
+                "failure_evidence": evidence,
+            }
+        )
+        grader, _ = _make_grader(backend)
+        with pytest.raises(GradingFailedError, match="judge malformed") as raised:
+            grader.grade(make_trial_spec(), make_trajectory(), "sysprompt")
+        assert raised.value.judge_usage.cost_usd == 0.03
+        assert raised.value.state_snapshots.final == {"agent": {"x": 1}}
+        assert raised.value.state_diff == {"modified": []}
 
     def test_a_successful_rpc_carrying_no_grade_also_raises(self) -> None:
         backend = _StubBackend(grade_result={"success": True, "grade": None})

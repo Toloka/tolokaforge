@@ -34,7 +34,7 @@ import re
 import warnings
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 import yaml
 from pydantic import BaseModel
@@ -44,7 +44,6 @@ from tolokaforge.core.deprecations import (
     POST_M9_STRICT_FLIP_ISSUE,
     canonicalize_actor_config,
     source_context,
-    suggest_closest_field,
     warn_deprecated,
     warn_legacy_run_config_dir,
 )
@@ -57,15 +56,14 @@ from tolokaforge.core.models import (
     ServiceSpec,
     TaskDefaults,
 )
+from tolokaforge.core.unknown_keys import suggest_closest_field
 
 # ── Config construction ─────────────────────────────────────────────────
 
-_ConfigT = TypeVar("_ConfigT", bound=BaseModel)
 
-
-def construct_config(
-    model: type[_ConfigT], data: dict[str, Any], *, source: Path, section: str = ""
-) -> _ConfigT:
+def construct_config[ConfigT: BaseModel](
+    model: type[ConfigT], data: dict[str, Any], *, source: Path, section: str = ""
+) -> ConfigT:
     """Construct a Project-layer config model, warning on each unknown
     top-level key before the model's ``extra="ignore"`` config drops it.
 
@@ -97,7 +95,7 @@ def _unknown_key_line(model: type[BaseModel], key: str, source: Path, section: s
     where = source.name + (f" ({section})" if section else "")
     return (
         f"unknown key '{key}' in {where}"
-        f"{suggest_closest_field(model, key)}"
+        f"{suggest_closest_field(model.model_fields, key, owner=model.__name__)}"
         f"(tracked in #{POST_M9_STRICT_FLIP_ISSUE})"
     )
 

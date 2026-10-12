@@ -264,17 +264,17 @@ class TestHashGrading:
         """Test matching hash"""
         state = {"status": "completed", "value": 42}
         expected_hash = consistent_hash(to_hashable(state))
-        score, reason = checker.check_hash(state, expected_hash)
-        assert score == 1.0
-        assert "matches" in reason.lower()
+        result = checker.check_hash(state, expected_hash)
+        assert result.hash_score == 1.0
+        assert "matches" in str(result.reason).lower()
 
     def test_hash_mismatch(self, checker):
         """Test mismatching hash"""
         state = {"status": "completed", "value": 42}
         wrong_hash = "0" * 64
-        score, reason = checker.check_hash(state, wrong_hash)
-        assert score == 0.0
-        assert "mismatch" in reason.lower()
+        result = checker.check_hash(state, wrong_hash)
+        assert result.hash_score == 0.0
+        assert "mismatch" in str(result.reason).lower()
 
     def test_hash_different_states(self, checker):
         """Test different states produce different hashes"""

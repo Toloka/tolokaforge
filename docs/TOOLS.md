@@ -12,19 +12,42 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
 - `read_file`: Read from `/env/fs/agent-visible`.
 - `write_file`: Write to `/env/fs/agent-visible`.
 - `list_dir`: List files in `/env/fs/agent-visible`.
-- `db_query`: JSONPath query against JSON DB service.
-- `db_update`: JSONPath updates against JSON DB service.
-- `sql_query`: SQL query against JSON DB service.
-- `get_db_schema`: SQL schema inspection for JSON DB tables.
-- `search_kb`: RAG search over a per-trial corpus index. Functional for native
-  tasks — declare `initial_state.rag.corpus_dir` and the runner indexes that
-  corpus into the rag-service per trial (see `docs/TASKS.md`). Each search is
-  bounded at the tool's own 15 s, on both substrates, rather than inheriting
-  whatever the shared RAG client was constructed with.
+- `db_query`: JSONPath query against the trial's own JSON DB, seeded from
+  `initial_state.json_db`.
+- `db_update`: `add` / `replace` / `remove` ops against the trial's own JSON DB,
+  applied all or nothing. Paths are JSONPath (`$.tickets[0].status`); a JSON
+  Pointer path (`/tickets/0/status`) is refused with an error the agent can
+  correct from. Its writes are the state that grading reads.
+
+  A task enabling `db_query` or `db_update` must seed at least one table under
+  `initial_state.json_db`; an intentionally empty store is declared as
+  `json_db: {"<table>": []}`. A trial that seeds no table is refused at
+  registration. Neither tool takes a per-tool config: a
+  `tools.<actor>.db_query` or `db_update` block naming an init kwarg is
+  refused at `validate` and at registration.
+
+  `add` sets a named key on the object the path's parent matches
+  (`$.tickets[0].note`) or appends to a list parent (`$.tickets.-`). An op that
+  would change nothing it names is refused rather than reported as a success:
+  an `add` whose parent matches nothing or holds a scalar, an `add` path ending
+  in an index or filter, an `add` naming a key on a list (`$.tickets.extra`;
+  `.-` is the only form a list takes), and a `replace` or `remove` of the root
+  `$`. Each match of a multi-match write gets its own copy of the value. A
+  `remove` matching nothing is a no-op. The full op table is in
+  [DB_SERVICE_API.md § Update State](DB_SERVICE_API.md#11-update-state-jsonpath).
+- `search_kb`: search over a per-trial corpus index. Not a builtin: it is the
+  default name of the task's declared search tool — declare
+  `initial_state.rag.corpus_dir` and the runner builds the trial's index with
+  the task's search backend (default `rag_service`, which indexes the corpus into
+  the rag-service); `initial_state.rag.tool` renames it (see `docs/TASKS.md`).
+  Each search is bounded at the tool's own 15 s budget, which the runner hands
+  the backend, rather than inheriting whatever the shared RAG client was
+  constructed with.
 - `http_request`: Restricted HTTP client for mock web services.
 - `build_check`: Zero-argument peer-service HTTP probe (compile / interface
   check). See [`build_check`](#build_check) below.
 - `calculator`: Safe arithmetic calculator.
+- `submit`: The agent's completion signal — see [Ending an episode](#ending-an-episode).
 
 ## Browser and Mobile Action Reference
 
@@ -246,6 +269,34 @@ tools:
       path: /build_check
 ```
 
+## Ending an episode
+
+A conversational task ends when the user simulator closes the dialogue, which
+it can only do on a turn the agent spent saying something rather than calling a
+tool. That makes termination depend on how the model writes: one that narrates
+and signs off reaches it, one that answers every turn with a bare tool call
+runs to the turn budget instead.
+
+`submit` gives the agent the other option. Calling it ends the trial
+immediately with termination reason `agent_submitted` — distinct from
+`user_stop` and from `agent_done`, so a trajectory can be asked whether the
+agent ended its own episode. Termination is decided before any tool on that
+turn runs, so a call made alongside `submit` does not execute.
+
+It is off unless a task lists it, and nothing but the tool's own schema tells
+the agent it exists — no system prompt mentions it. Enable it beside whatever
+the task's real tools are:
+
+```yaml
+tools:
+  agent:
+    enabled: ["bash_session", "submit"]
+```
+
+Leave it out for any task whose user simulator is meant to decide when the
+conversation is over: an agent that can stop the trial itself can stop it
+before the simulator has asked for everything it was going to ask for.
+
 ## Enabling Tools
 
 ```yaml
@@ -254,6 +305,8 @@ tools:
     enabled: ["browser", "db_query", "db_update", "search_kb"]
   user:
     enabled: []
+initial_state:
+  json_db: initial_state.json   # db_query / db_update read and write this seed
 ```
 
 ### Persistent shell and editor

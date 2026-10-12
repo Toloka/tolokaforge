@@ -173,6 +173,39 @@ class TestValidateCommand:
         assert "0 valid, 1 invalid" in result.stderr
 
     @pytest.mark.parametrize(
+        ("initial_state", "exit_code", "summary"),
+        [({}, 1, "0 valid, 1 invalid"), ({"json_db": {"tickets": []}}, 0, "1 valid, 0 invalid")],
+        ids=["no_json_db", "an_empty_table"],
+    )
+    def test_validate_refuses_json_db_builtins_with_no_seeded_table(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        initial_state: dict,
+        exit_code: int,
+        summary: str,
+    ) -> None:
+        """A pack whose ``db_query`` would read an empty store fails before a trial is run."""
+        task_file = _write_task_pack(tmp_path / "unseeded")
+        task_file.write_text(
+            yaml.dump(
+                {
+                    "task_id": "unseeded",
+                    "description": "A task.",
+                    "tools": {"agent": {"enabled": ["db_query"]}},
+                    "initial_state": initial_state,
+                }
+            )
+        )
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)], env={"COLUMNS": "400"})
+
+        assert result.exit_code == exit_code, result.stderr
+        assert summary in result.stderr
+        refusal = "enables the JSON-DB tools ['db_query']"
+        assert (refusal in result.stderr) is (exit_code == 1)
+
+    @pytest.mark.parametrize(
         ("adapter_type", "exit_code", "summary"),
         [("tau", 0, "1 valid, 0 invalid"), ("native", 1, "0 valid, 1 invalid")],
         ids=["adapter_validate_cannot_read", "the_native_reading_validate_owns"],
@@ -330,6 +363,60 @@ class TestValidateCommand:
         else:
             assert directory.name in result.stderr
             assert "create that file" in result.stderr
+
+    @pytest.mark.parametrize(
+        ("declared", "exit_code", "summary"),
+        [
+            ({}, 1, "0 valid, 1 invalid"),
+            ({"regex_engine": "backtracking"}, 0, "1 valid, 0 invalid"),
+        ],
+        ids=["the_default_engine", "the_backtracking_opt_in"],
+    )
+    def test_validate_refuses_a_lookahead_the_default_regex_engine_cannot_compile(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        declared: dict,
+        exit_code: int,
+        summary: str,
+    ) -> None:
+        """The advisory is fatal to ``validate``, and the opt-in it names clears it."""
+        task_file = _write_task_pack(tmp_path / "lookahead")
+        lookahead = r'(?=[\s\S]*"account_id":\s*"ACC-6")(?=[\s\S]*"email":\s*"x@y\.z")'
+        (task_file.parent / "grading.yaml").write_text(
+            yaml.dump(
+                {
+                    "combine": {"weights": {"trace_checks": 1.0}},
+                    "trace_checks": {
+                        **declared,
+                        "constraints": [
+                            {
+                                "id": "quoted",
+                                "description": "the agent quoted the account",
+                                "require": {
+                                    "present": {
+                                        "match": {
+                                            "kind": "assistant_message",
+                                            "text": {"regex": lookahead},
+                                        }
+                                    }
+                                },
+                            }
+                        ],
+                    },
+                }
+            )
+        )
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)], env={"COLUMNS": "400"})
+
+        assert result.exit_code == exit_code, result.stderr
+        assert summary in result.stderr
+        advisory = "does not compile under the linear regex engine"
+        assert (advisory in result.stderr) is (exit_code == 1)
+        if exit_code == 1:
+            assert "the list form regex: [a, b]" in result.stderr
+            assert "regex_engine: backtracking" in result.stderr
 
 
 # ===================================================================

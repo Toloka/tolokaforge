@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from tolokaforge.core.grading.regex_engine import RegexEngineKind
 from tolokaforge.core.grading.trace_checks.matcher import MatcherOutcome, select_events
 from tolokaforge.core.grading.trace_checks.truth import _Truth
 from tolokaforge.core.grading.trace_timeline import TraceEvent, TrialTimeline
@@ -46,15 +47,20 @@ class _Resolver:
         within: TurnWindow | None,
         visited_kinds: set[TraceConstraintKind],
         bindings: Mapping[str, Any],
+        regex_engine: RegexEngineKind,
     ) -> None:
         self.timeline = timeline
         self.visited_kinds = visited_kinds
         self._within = within
         self._bindings = bindings
+        self._regex_engine = regex_engine
         self._resolved: list[_Resolved] = []
 
     def resolve(self, label: str, matcher: TraceMatcher, *, anchor: bool) -> MatcherOutcome:
-        outcome = _restricted(select_events(self.timeline, matcher, self._bindings), self._within)
+        selected = select_events(
+            self.timeline, matcher, self._bindings, regex_engine=self._regex_engine
+        )
+        outcome = _restricted(selected, self._within)
         self._resolved.append(_Resolved(label, outcome, anchor))
         return outcome
 

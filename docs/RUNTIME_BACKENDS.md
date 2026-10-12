@@ -332,7 +332,7 @@ Where each URL comes from:
 
 Each source and port is a **convention default the task author overrides from the manifest's `stack:` block** — `runner_port`, `db_service`, `db_port`, `rag_service`, `rag_port`. A task whose runner listens on a non-standard port, or whose state backend is a differently-named service, points the engine at it without touching this backend. An explicitly-set `db_service` or `rag_service` naming a service absent from the compose file raises `ValidationError` at manifest load. See [`MULTI_CONTAINER_GUIDE.md`](MULTI_CONTAINER_GUIDE.md#endpoint-overrides) for the authoring surface and [ADR-0009](adr/0009-environment-manifest.md) for the design.
 
-`db_url` is best-effort because the runner-side `DBServiceClient` binds to `DB_SERVICE_URL` from its own container env (task compose files set it on the `runner` service), and `db_json.py` tools fall back to the same env var when constructed without a URL. A task compose file that omits `db-service` still provisions; the `db_url` field on the wire is populated only for callers that need to reach the state backend from outside the runner container.
+`db_url` is best-effort because the runner-side `DBServiceClient` binds to `DB_SERVICE_URL` from its own container env (task compose files set it on the `runner` service), and the `db_query` / `db_update` builtins reach db-service through that client. A task compose file that omits `db-service` still provisions; the `db_url` field on the wire is populated only for callers that need to reach the state backend from outside the runner container.
 
 All three are resolved via `compose.get_service_host_and_port(name, port)`, which returns the host-assigned port that maps to a service's container port. Two concurrent trials of the same task get **different** host-assigned ports for the same container port — that is what makes concurrent stacks not clash.
 
@@ -696,7 +696,7 @@ The isolation axis (shared vs per-trial) and the substrate axis (docker compose 
 
 ## Plug-in extension points
 
-Eight swappable seams are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. An entry point resolves in one of two shapes, one per seam: a **factory callable** that adapts divergent constructors behind a factory (four seams pass a per-group frozen-dataclass context, `Callable[[<Context>], <Impl>]`; the readiness probe seam is arg-less, `Callable[[], ServiceReadinessProbe]`), or the **impl class** itself — the three composition-plan adapter seams (ADR-0044) are arg-less-constructible with their own optional injection seams, so the caller instantiates the returned class. tolokaforge's own built-ins register through the same mechanism.
+Eleven swappable seams are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. An entry point resolves in one of two shapes, one per seam: a **factory callable** that adapts divergent constructors behind a factory (seven seams pass a per-group frozen-dataclass context, `Callable[[<Context>], <Impl>]`; the readiness probe seam is arg-less, `Callable[[], ServiceReadinessProbe]`), or the **impl class** itself — the three composition-plan adapter seams (ADR-0044) are arg-less-constructible with their own optional injection seams, so the caller instantiates the returned class. tolokaforge's own built-ins register through the same mechanism.
 
 | Group | Factory type | Context |
 | --- | --- | --- |
@@ -705,11 +705,14 @@ Eight swappable seams are each exposed as an `importlib.metadata` entry-point gr
 | `tolokaforge.conductors` | `Callable[[ConductorContext], Conductor]` | per-run deps (adapter, writer, config, agent client, runtime backend, grader, …) |
 | `tolokaforge.service_readiness_probes` | `Callable[[], ServiceReadinessProbe]` | *no context* |
 | `tolokaforge.turn_policies` | `Callable[[TurnPolicyContext], TurnPolicy]` | `user_simulator` (the resolved user :class:`Actor`; ``None`` for policies that dispatch no user) |
+| `tolokaforge.agent_loops` | `Callable[[AgentLoopContext], AgentLoop]` | the trial's loop dependencies (LLM client, tool executor + schemas, loop budget, metrics sink, termination + user-turn seams, tool-call recorder, call-id assigner, logger, observation sinks) |
+| `tolokaforge.user_simulators` | `Callable[[UserSimulatorContext], UserSimulator]` | the resolved `actors.user` fields (`mode`, `persona`, `backstory`, `scripted_flow`), the trial deps the built-in needs (`tool_schemas`, `llm_config`, `rate_limit_probe`), the opaque `simulator_config` mapping the engine passes through untouched for a non-built-in simulator to read, and `task_dir`, the task's directory that paths in `simulator_config` resolve against |
+| `tolokaforge.search_backends` | `Callable[[SearchBackendContext], SearchBackend]` | the task's opaque `backend_config`, its declared search tool (`tool_name`, `tool_description`), a `logger`, and — at `RegisterTrial` only — the `trial_id`, the knowledge base's `domain_name` and the runner's handles on the declared stack services it reaches (`stack_services`, a `StackServices`) |
 | `tolokaforge.compose_materialisers` | `type[ComposeMaterialiser]` | *no context* — class is instantiated by the composer |
 | `tolokaforge.service_lifecycle_dispatchers` | `type[ServiceLifecycleDispatcher]` | *no context* — one class per `ServiceIsolation` label; the class's `isolation` ClassVar names the label the composer looks it up by |
 | `tolokaforge.substrate_composers` | `type[SubstrateComposer]` | *no context* — the backend instantiates the composer and injects its own materialiser + dispatcher registry |
 
-A factory is free to ignore context fields it does not need. The runtime-backend, trial-grader, and readiness-probe context/factory types are imported from `tolokaforge.core.plugin_registry`; the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
+A factory ignores the context fields its implementation does not read — except where a seam's own contract names a field as an obligation (the agent-loop seam does; see `AgentLoopContext`). The runtime-backend, trial-grader, readiness-probe, turn-policy, and agent-loop context/factory types are imported from `tolokaforge.core.plugin_registry` (`AgentLoop`, `AgentLoopContext` and `AgentLoopFactory` are re-exported there from `tolokaforge.core.loop`, which is also importable directly); the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
 
 **Runtime backend** — `mypkg/runtime.py`:
 
@@ -775,7 +778,7 @@ mykind = "mypkg.readiness:my_probe_factory"
 
 tolokaforge ships `grpc`, `http`, and `tcp` built-ins under this group.
 
-**Turn policy** — `mypkg/turn_policy.py`. A turn policy choreographs the loop's turn cycle: `bootstrap` decides how message index 0 is delivered, and `next_actor` picks the actor to speak next (or returns `None` to end the turn cycle for an agent-monologue task). The policy is looked up by `TaskConfig.interaction_mode`, so a policy name in this group is a valid `interaction_mode` value:
+**Turn policy** — `mypkg/turn_policy.py`. A turn policy choreographs the loop's turn cycle: `bootstrap` decides how the dialogue's opening user message is delivered, and `next_actor` picks the actor to speak next (or returns `None` to end the turn cycle for an agent-monologue task). The policy is looked up by `TaskConfig.interaction_mode`, so a policy name in this group is a valid `interaction_mode` value:
 
 ```python
 from tolokaforge.core.plugin_registry import TurnPolicyContext
@@ -790,6 +793,125 @@ my_shape = "mypkg.turn_policy:my_policy_factory"
 ```
 
 tolokaforge ships `conversational` (two-party user-plus-agent) as a built-in under this group.
+
+**Agent loop** — `mypkg/loop.py`. An agent loop drives one trial's turn cycle: generate, act, observe, decide whether to continue. It appends to the caller-owned `messages` list in place and returns a `LoopOutcome`. The loop is looked up by `orchestrator.agent_loop`:
+
+```python
+from tolokaforge.core.plugin_registry import AgentLoopContext
+from tolokaforge.core.loop import LoopOutcome
+from tolokaforge.core.models import Message
+
+class MyAgentLoop:
+    def __init__(self, context: AgentLoopContext) -> None:
+        self.context = context
+
+    def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
+        ...
+
+def my_loop_factory(ctx: AgentLoopContext) -> MyAgentLoop:
+    return MyAgentLoop(ctx)
+```
+
+```toml
+[project.entry-points."tolokaforge.agent_loops"]
+my_loop = "mypkg.loop:my_loop_factory"
+```
+
+The `AgentLoop` docstring carries the four obligations the type checker does not: every call id comes from `context.call_ids.assign(...)` and is used identically on the assistant `Message`, in `recorder.record(...)` and in `tool_executor.execute(...)`; a failed tool call's message content carries `tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX`; `metrics`, `should_terminate` and a supplied `user_turn` are fed, not optional; and a termination reason that excludes the trial from the measured denominator (`RATE_LIMIT`, `API_TIMEOUT`, `EMPTY_COMPLETION`, `PROVISION_ERROR`) is emitted only with typed evidence named in `LoopOutcome.excluding_reason_evidence` — otherwise the loop emits `ERROR`, which is counted, and an unevidenced claim is downgraded to `ERROR` by the caller. Routing the exception through `context.classify_error` discharges this: the `TerminationDecision` it returns carries `excluding_reason_evidence` on exactly the typed branches, so a loop copies it onto the outcome beside the reason it takes from the same decision. A loop with a text action format normalises each parsed action into a `ToolCall` before appending. See [ADR-0050](adr/0050-agent-loop-protocol-and-registry.md).
+
+When the trial's user takes isolated tool steps (`actors.user.tool_turns: isolated`), `context.agent_view` is set. The user turn records those steps in `messages`, and they are not the agent's to read, so a loop that builds its request from `messages` passes them through `context.agent_view` first.
+
+Route every tool call through `ToolCallFunnel` and the first two are discharged for you — it is the same implementation the built-in loop runs on:
+
+```python
+from tolokaforge.core.plugin_registry import AgentLoopContext, ToolCallFunnel
+
+class MyAgentLoop:
+    def __init__(self, context: AgentLoopContext) -> None:
+        self.context = context
+        self.funnel = ToolCallFunnel.from_context(context)
+
+    def _turn(self, result, messages: list[Message]) -> None:
+        # Key the turn's calls, then append the assistant message carrying them.
+        calls = self.funnel.assign_ids(result.tool_calls)
+        messages.append(assistant_message_with(calls))
+
+        def append_tool_message(message: Message) -> int:
+            messages.append(message)
+            return len(messages) - 1
+
+        self.funnel.execute_all(calls, append_tool_message, result.text)
+```
+
+`assign_ids` returns the calls the assistant message must carry; `execute` / `execute_all` run each one, record it, word a failure with the error prefix, cap the output, tick metrics and notify the observer. `execute` raises `UnassignedToolCallError` on a call whose id did not come from `assign_ids`, so the two steps cannot be inverted and the id cannot be minted elsewhere.
+
+tolokaforge ships `engine-loop` (the built-in `ToolCallingLoop`) as a built-in under this group; it resolves through the registry like any third-party loop.
+
+**Run the conformance suite against your factory.** Breaking one of those obligations does not raise — it produces a complete, plausible trajectory and a wrong grade. `tolokaforge.testing.agent_loops` ships the suite that catches it, plus `InMemoryAgentLoop`, the shortest loop that satisfies every obligation and the worked example to copy — it routes every honoured tool call through `ToolCallFunnel` and carries the classifier's evidence onto its outcome, which is what makes copying it safe. Subclass and supply one fixture:
+
+```python
+import pytest
+from tolokaforge.testing.agent_loops import AgentLoopConformanceSuite
+
+class TestMyLoopConformance(AgentLoopConformanceSuite):
+    @pytest.fixture
+    def loop_factory(self):
+        return my_loop_factory
+```
+
+The suite drives scripted episodes through your factory and asserts on what grading reads: the id join holds and `build_trial_timeline` builds; two calls to the *same* tool with different arguments keep their own results; a failed call's `role: tool` message carries the error prefix and round-trips identically with and without a `tool_log.yaml` sidecar; every generation reaches `metrics`; `should_terminate` runs once per turn, after the assistant message is appended and before the tools execute; a supplied `user_turn` runs on a tool-call-free turn; and `config.max_turns` and `config.episode_timeout_s` both bound the episode — nothing outside the loop enforces either.
+
+**Termination honesty is a rule, not just an assertion.** The reasons in `tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` (`API_TIMEOUT`, `EMPTY_COMPLETION`, `PROVISION_ERROR`, `RATE_LIMIT`) remove the trial from the measured denominator. A loop may emit one only on **typed** evidence — an exception type, an HTTP status, or a typed empty-completion observation (`GenerationResult` with empty `text` and no `tool_calls`). Never from matching prose against an exception message: a context-window overflow and a malformed tool schema both read as "an API error", and excluding a trial the agent actually failed inflates every benchmark number with nothing in the output to show it. Route raised exceptions through `context.classify_error` rather than naming a reason yourself. The suite pins the half it can see — a clean episode must not claim an excluded reason, and a raised exception must be classified by the context — but a loop that reaches its own provider and classifies by text is beyond what any in-process suite can check.
+
+**User simulator** — `mypkg/simulator.py`. A user simulator produces the user's turns in a `conversational` trial: it satisfies the `Actor` reply contract and adds `last_system_prompt`. It is looked up per task by `actors.user.simulator`, and reads any configuration of its own from the opaque `actors.user.simulator_config` mapping the engine passes through untouched:
+
+```python
+from tolokaforge.core.plugin_registry import UserSimulatorContext, UserSimulator
+
+def my_simulator_factory(ctx: UserSimulatorContext) -> UserSimulator:
+    return MySimulator(ctx.simulator_config)  # validate the mapping into your own model
+```
+
+```toml
+[project.entry-points."tolokaforge.user_simulators"]
+my_sim = "mypkg.simulator:my_simulator_factory"
+```
+
+tolokaforge ships `builtin` (the `BuiltinUserSimulator`) under this group; it resolves through the registry like any third-party simulator, and ignores `simulator_config`. An unregistered name is refused at run start, naming the registered simulators and the task that asked for it. See [ADR-0051](adr/0051-user-simulator-protocol-and-registry.md).
+
+**Search backend** — `mypkg/search.py`. A search backend is the retrieval behind a task's knowledge-base search tool. It is looked up per task by `initial_state.rag.backend` (carried on the wire as `search.plane`) and reads its own configuration from the opaque `initial_state.rag.backend_config` mapping:
+
+```python
+from tolokaforge.core.plugin_registry import SearchBackend, SearchBackendContext
+
+class MyBackend:
+    name = "my_search"
+    stack_service = None                      # or the stack service it needs, e.g. "rag_service"
+
+    def __init__(self, ctx: SearchBackendContext):
+        self.config = MyConfig.model_validate(ctx.backend_config)   # your own model
+        self.ctx = ctx
+
+    def tool_parameters(self):                # the agent tool's JSON-schema `parameters`; must declare `query`
+        return {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+
+    async def build_index(self, corpus_dir):  # the trial's work; a corpus with no documents raises SearchIndexBuildError
+        return MyIndex(load(corpus_dir), self.config)   # search(query, arguments, *, budget_s) -> SearchOutcome; knowledge_search()
+
+def my_backend_factory(ctx: SearchBackendContext) -> SearchBackend:
+    return MyBackend(ctx)
+```
+
+```toml
+[project.entry-points."tolokaforge.search_backends"]
+my_search = "mypkg.search:my_backend_factory"
+```
+
+The factory is called in two places: orchestrator-side with a trial-less context (no `trial_id`, no stack-service handles) so the native adapter can build the agent's schema from `tool_parameters()` and the stack rule can read `stack_service`, and by the runner at `RegisterTrial` with the trial's context, before `build_index`. So a factory does no trial work, and `tool_parameters()` / `stack_service` may depend on `backend_config` but not on the trial. The index's `search` returns a `SearchOutcome`: the hits (`SearchHit`) and the text the agent reads, which the backend renders itself; a failed search raises. `knowledge_search()` hands the judge a `KnowledgeSearch` over the same index, or `None` to give it nothing — the runner binds it only when an agent tool searched that index.
+
+A backend that needs a stack service declares one of the names `tolokaforge.core.search.stack_services` declares (`DECLARED_STACK_SERVICES`; today `"rag_service"`) and reads the runner's handle with `ctx.stack_services.get(RAG_SERVICE)`, typed by the service's Protocol (`RagServiceHandle`: `base_url`, `timeout`, `index_documents`, `search` — the only members a backend may use). That surface is versioned by `STACK_SERVICES_API_VERSION`: every change to the declared names or a handle's members bumps it and is recorded in ADR-0054 § Stack services, and a canonical test pins the surface to the version. A backend declaring an undeclared name is refused at run start, and the runner builds a trial's index only when it reaches the declared service, refusing the trial otherwise with the service's name and how a runner reaches it.
+
+tolokaforge ships two backends, each resolving through the registry like any third-party backend: `rag_service` (the hybrid rag-service, `stack_service = RAG_SERVICE_STACK_SERVICE` (`"rag_service"`), which takes no `backend_config`) and `bm25` (Okapi BM25 in the runner process, `stack_service = None`, so its tasks keep the core stack; pure Python, bit-identical to `rank_bm25` 0.2.2; `backend_config` selects the document format, tokenizer, BM25 constants, fixed top-k with corpus-order ties, the blank-query rule, a JSON or templated-text rendering and which parameters the agent sees — see [CONFIG.md § `backend: bm25`](CONFIG.md#backend-bm25--backend_config)). `typesense` is reserved — the runner serves that plane itself — so a registration under it fails every lookup into the group. At run start each searching task's backend is built from the trial-less context, so an unregistered name or a factory refusing the task's `backend_config` is one refusal naming the task and the backend; `RegisterTrial` refuses again for a trial whose backend fails to build. The context hands a backend a read-only deep copy of `backend_config`. A backend runs in the runner process: the runner image installs only the subset wheel, so a backend the engine does not ship reaches a containerised runner only through a runner image built with the package. `tolokaforge.testing.search_backends` ships the conformance suite (`SearchBackendConformanceSuite`: subclass it and supply the factory and `make_searches_fail`, how your search fails in production) and the in-memory reference to copy; the suite runs a backend the way the runner does, calling the judge's synchronous search from another thread while the event loop keeps running, so a judge search that bridges to a coroutine is certified either way it bridges. See [ADR-0054](adr/0054-search-backend-protocol-and-registry.md).
 
 **Composition-plan adapter seams** — `mypkg/k8s.py`. ADR-0044 splits the compose-mode runtime into three detachable adapter Protocols (see [Composition-plan seams](#composition-plan-seams) above for the shape). Each entry-point group targets an impl class directly; the caller instantiates with the class's own optional injection seams:
 

@@ -270,6 +270,7 @@ def build_grade_reasons(
     trace_checks_result: dict[str, Any] | None = None,
     golden_replay: GoldenReplayRecord | None = None,
     custom_checks_reasons: str | None = None,
+    comparison_view_reason: str | None = None,
 ) -> str:
     """
     Build human-readable reasons string for the grade.
@@ -287,6 +288,10 @@ def build_grade_reasons(
             Passed on the strength of the evaluator having something to say rather
             than on the component's score, so a suite that failed to run says why
             even though it scored nothing.
+        comparison_view_reason: What the comparison view says beside a hash verdict
+            reached through it — the view diff's summary, or the error that kept the
+            trial's state from being viewed — rendered by
+            :func:`~tolokaforge.core.grading.pre_hash.comparison_view_reason`.
 
     Returns:
         The scored components' segments, joined — and empty where the trial scored
@@ -307,6 +312,9 @@ def build_grade_reasons(
                 reasons.append(f"State: {state_diff['summary']}")
             else:
                 reasons.append("State: hash mismatch")
+
+    if comparison_view_reason and hash_score >= 0:
+        reasons.append(comparison_view_reason)
 
     replay_reason = incomplete_replay_reason(golden_replay) if golden_replay is not None else None
     if replay_reason:
@@ -444,6 +452,7 @@ class CompositeFold:
         custom_checks_reasons: str | None = None,
         judge_errored: bool = False,
         ledger_skip_notes: list[str] | None = None,
+        comparison_view_reason: str | None = None,
     ) -> CompositeFoldResult:
         """Fold verdict + state-checks slot + reasons in one call.
 
@@ -495,6 +504,7 @@ class CompositeFold:
             trace_checks_result=trace_checks_result_dict,
             golden_replay=golden_replay,
             custom_checks_reasons=custom_checks_reasons,
+            comparison_view_reason=comparison_view_reason,
         )
         segments = [base_reasons]
         if judge_errored:

@@ -24,6 +24,15 @@ Tolokaforge supports two queue backends:
 2. `worker`: leases attempts, executes them, and marks `completed`/`failed`/`requeued`.
 3. `status`: shows queue counts, ETA, estimated cost, and token totals from artifacts.
 
+The runner's `CleanupTrial` RPC stops the trial's tool resources before removing
+its registration and artifacts. MCP wrappers created by one `ToolFactory` share
+a subprocess pool; another trial owns a separate pool, even for the same script.
+Cleanup reaps children and closes their pipes, including a child waiting on a
+tool response. Repeated or concurrent cleanup for the same registration is
+idempotent. Teardown and DB deletion failures are reported, with the registration
+retained for a cleanup retry. A lifecycle tool failing during registration also
+triggers cleanup of that attempt's resources.
+
 ### The pre-run gate
 
 Before a single trial is scheduled — by `run`, and by `prepare` so a distributed
@@ -125,6 +134,32 @@ should either configure authenticated pulls via the daemon's standard
 build` to skip pull entirely. A 429 in `auto` mode surfaces as a
 `WARNING` line naming `rate_limited` before the fallback build starts.
 
+**Building on a wheel install.** `build` — and the `auto` fallback — work
+identically whether the engine is a source checkout or a `pip install`. On a
+wheel install `repo_root()` is `site-packages`, so an image whose Dockerfile
+compiles the workspace sources in-container (`runner`, `rag-service`, and the
+standalone `grader`) assembles its build context from the copies the base wheel
+force-includes under `tolokaforge/_subset_build/` — both workspace siblings'
+`pyproject.toml` + `src/` ride along there. All three resolve their sibling
+sources through the same packaged-copy mapping, so none depends on a repo
+checkout being present; a wheel missing those force-included inputs fails loud
+at build-context assembly, naming `_subset_build`.
+
+The build-context spec for every first-party service — its Dockerfile, context,
+`context_files`, and `build_args` — has one source of truth: the builder's image
+definitions (`tolokaforge.docker.builder.get_image_definition`). `core_stack` /
+`full_stack` read each service's spec from there rather than re-declaring it, so
+the images the stack builds and the images `make docker-build` builds hash the
+same inputs and cannot drift.
+
+rag-service's wheel-dependent fields — the `context_files` entry carrying the
+resolved tolokaforge wheel and the `WHEEL_FILENAME` build arg — resolve lazily,
+on the build path only, through its `ServiceDefinition.build_context_provider`.
+The provider is invoked by `EngineStack._build_one_image` only once a service is
+definitely being built; a run that resolves rag-service to **pull** never
+invokes it and so never resolves a wheel. The stack and `make docker-build`
+hash the same inputs on the build path.
+
 ### Runner readiness contract
 
 The runner is gated for readiness at two independent layers, and they answer
@@ -224,17 +259,15 @@ runner **refuses to register a trial from an engine below its own version**,
 naming the skew in `RegisterTrialResponse.error`. The orchestrator already treats a
 registration failure as fatal, so a skewed pair fails before any tokens are spent.
 
-**This gate's bound is one-sided, and the unprotected direction is the quieter one.**
-An **older** engine against a newer image fails every trial at registration, loudly —
-for the field it cannot send (`call_id`) and, from protocol version 2 on, for the two
-`user_simulator` keys it still emits into the trial spec that the current image no
-longer declares. A **newer** engine against an older image passes *this* gate — the
-older runner does not know the `engine_protocol_version` field, and proto3 drops
-unknown fields on a proto message rather than erroring — so the version skew itself
-surfaces later and less clearly: that engine sends a `call_id` on every `ExecuteTool`
-which the older runner also ignores, so calls are recorded without the id grading
-joins on. Each version and what it first changed is listed in
-[`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#version-lock) § Version lock; refusing an
+**The runner's gate is one-sided; the engine closes the other direction.**
+An **older** engine against a newer image fails every trial at registration, loudly.
+A **newer** engine against an older image passes the runner's gate — proto3 drops an
+unknown field such as `engine_protocol_version` rather than erroring — so the engine
+checks the image instead: from protocol version 3 on, a successful registration
+returns `runner_protocol_version`, and the engine refuses an image below its own
+version before the trial starts. An image predating version 3 returns nothing there,
+which reads as `0` and is refused the same way. Each version and what it first
+changed is listed in [`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#version-lock) § Version lock; refusing an
 engine below the bound at the gate, rather than at model validation, is what a bump
 buys.
 
@@ -244,8 +277,16 @@ parsed by `extra="forbid"` Pydantic models, so a field the older image does not
 declare is a validation error rather than a dropped byte. Several grading keys are
 emitted on **every** pack, so a newer engine against an older image is rejected at
 `RegisterTrial` for any pack at all, with a Pydantic `extra_forbidden` error naming
-the field. Which keys bite, from which release, and in which direction is one table:
+the field. Which grading keys bite, from which release, and in which direction is one table:
 [`GRADING.md`](GRADING.md#runner-engine-version-lock) § Runner-engine version lock.
+The model configs inside the trial spec are held to the same `extra="forbid"` rule,
+and every model-config field is emitted on every trial: the spec carries each model
+config's full dump, defaults included. A new model-config field therefore locks every
+pack's trials to an image that declares it, and the refusal reads `Value error,
+ModelConfig was given a key it does not declare` rather than `extra_forbidden`; those
+keys are not on the GRADING.md table (see its § Runner-engine version lock). Images
+released before this engine version drop a model-config key they do not declare
+instead of refusing it.
 
 **So the order matters: rebuild the image before rolling the engine.** Upgrading
 the engine first leaves you inside the one window this gate cannot close, and — for
@@ -285,7 +326,9 @@ section of [`pyproject.toml`](../pyproject.toml) declares the subset build
 target; the custom builder at
 [`scripts/hatch/hatch_runner_subset_builder.py`](../scripts/hatch/hatch_runner_subset_builder.py)
 renames the distribution to `tolokaforge-runner-subset`, replaces the base
-wheel's dependency list with the runner-runtime deps, and binds the
+wheel's dependency list with the runner-runtime deps (it names which
+requirements the subset carries; each specifier is read from `pyproject.toml`
+at build time, and the canonical partition test locks the set), and binds the
 subset-native CLI shim
 ([ADR-0027](adr/0027-subset-native-cli-shim.md)) — `tolokaforge =
 tolokaforge.runner._cli:main` — as the subset wheel's `[console_scripts]`
@@ -294,7 +337,10 @@ entry, and carries every runner-reachable seam group verbatim from
 `tolokaforge.judge_model_providers`, `tolokaforge.rubric_evaluators`,
 `tolokaforge.transcript_rule_matchers`, `tolokaforge.state_check_backends`,
 `tolokaforge.trace_check_operators`, `tolokaforge.grading_methods`,
-`tolokaforge.grader_kinds`, and `tolokaforge.judge_kinds`. Without these, the runner boots
+`tolokaforge.grader_kinds`, `tolokaforge.judge_kinds`, `tolokaforge.comparison_view_rules`
+(the trial spec's `state_checks.comparison_view` resolves its rules at `RegisterTrial`) and
+`tolokaforge.search_backends` (the backend a task's `search.plane` names, resolved at
+`RegisterTrial`). Without these, the runner boots
 then crashes at first seam load with "Unknown implementation …". The
 canonical enumeration lives at
 `scripts/hatch/hatch_runner_subset_builder.py::RUNNER_REACHABLE_ENTRY_POINT_GROUPS`
@@ -304,10 +350,14 @@ asserts each group's rows target modules the subset ships, and
 `load_*` seam call reachable from the subset partition and asserts its
 group is in the allowlist. The other groups (`runtime_backends`,
 `trial_graders`, `conductors`, `service_readiness_probes`,
-`turn_policies`, `grading_substrates`) point at modules the subset does
-not ship — their loaders are called from `tolokaforge.core.runner` /
-`tolokaforge.grader.composite_dispatch`, which live outside the subset
-partition — and are deliberately excluded from the subset wheel.
+`turn_policies`, `agent_loops`, `grading_substrates`) are deliberately
+excluded from the subset wheel because their **loaders** are called only
+from modules outside the subset partition — `tolokaforge.core.runner` /
+`tolokaforge.grader.composite_dispatch` — so the runner container never
+resolves them. Whether the registered rows target modules the subset
+ships is not the criterion: `agent_loops`' only row points at
+`tolokaforge/core/loop.py`, which is in `RUNNER_SUBSET_LOOSE_FILES` and
+does ship.
 
 ```bash
 uv run hatch build --target custom
@@ -330,6 +380,7 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 | `tolokaforge/core/models/` | Wire types the gRPC surface serialises, plus the run-config blocks `RunConfig` is typed by — `docker_config.py` rides along because `RunConfig` carries it; the runner does not read it. |
 | `tolokaforge/core/llm/` | LLM client + policies; the runner runs LLM-as-judge in-container. (One file excluded — see below.) |
 | `tolokaforge/core/grading/` | Grading substrate — check runner, checks helpers, judge, key manifest, state composition, state diff, trace timeline, transcript wire. (Eleven files excluded — see below.) |
+| `tolokaforge/core/search/` | The search-backend seam (ADR-0054): the `SearchBackend` Protocols, the declared stack-service surface (`stack_services.py`) and the built-in `bm25` backend (`bm25.py`), beside the TypeSense client interfaces. (One file excluded — see below.) |
 
 **Loose files in the subset:**
 
@@ -339,10 +390,10 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
   reads them.
 - `tolokaforge/core/__init__.py`, `tolokaforge/core/_runner_subset.py` —
   the subset's own audit artifact and the `core/` package init.
-- `tolokaforge/core/deprecations.py`, `hash.py`, `logging.py`, `loop.py`,
-  `netpolicy_constants.py`, `pricing.py`, `run_display_events.py`, `trial.py`
-  — the shared-spine files at the root of `core/` the runner closure reaches
-  directly.
+- The shared-spine files at the root of `core/` the runner closure reaches
+  directly — `RUNNER_SUBSET_LOOSE_FILES` in `tolokaforge/core/_runner_subset.py`
+  is the list (`plugin_registry.py` among them, for the `load_*` calls of the
+  runner-reachable seams).
 
 **Data files in the subset:**
 
@@ -389,14 +440,15 @@ canonical test rejects drift between them and the pyproject mirror.
 | `tolokaforge/core/grading/trace_replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
 | `tolokaforge/core/grading/unknown_keys.py` | Shared-spine imports only; consumed by the pre-run authoring gate. |
 | `tolokaforge/core/llm/fallback_client.py` | Consumed only by `dx/cli/main.py`. |
+| `tolokaforge/core/search/typesense_server.py` | Docker lifecycle of a local TypeSense server; only the orchestrator starts one. |
 
 **Not in the subset:** everything at the `tolokaforge/core/` root not listed above
 (the `Orchestrator` class, dry-run, output writer, config validator, compose
 materialisation, engine run state, backend capabilities, the `RuntimeBackend` /
 `Conductor` / `TrialGrader` Protocol definitions and their factories, the
-`run_trial` library entry, run queue, resume, project loader, plugin registry,
-metrics, budgets, and the remaining utility modules);
-`tolokaforge/core/output/`; `tolokaforge/core/search/`; `tolokaforge/core/utils/`;
+`run_trial` library entry, run queue, resume, project loader, metrics, budgets,
+and the remaining utility modules);
+`tolokaforge/core/output/`; `tolokaforge/core/utils/`;
 `tolokaforge/core/schema/`; `tolokaforge/adapters/`; `tolokaforge/dx/`;
 `tolokaforge/docker/`; `tolokaforge/env/`; `tolokaforge/runtime/`;
 `tolokaforge/_entry.py`.
@@ -407,8 +459,11 @@ Some tools own per-trial resources — a compose stack, a long-lived
 subprocess — that must be provisioned when a trial starts and torn down when
 it resets. The runner manages this generically off a single capability, never
 off adapter identity: a `ToolWrapper` sets `has_lifecycle = True`, and the
-runner calls `start()` on `RegisterTrial` and `stop()` on `ResetTrial` for
-every tool that declares it. Tools without the capability are untouched.
+runner calls `start()` on `RegisterTrial` and `stop()` on `ResetTrial` and
+`CleanupTrial` for every tool that declares it. Tools without the capability are
+untouched. `stop()` and `cleanup()` must be idempotent: a cleanup retried after one
+resource failed to tear down calls them again on every tool of the trial, the ones
+already stopped included. The built-in lifecycle tools are.
 
 `start()` receives a `ToolLifecycleContext`:
 

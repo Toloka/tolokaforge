@@ -32,11 +32,12 @@ def test_list_builtins_covers_every_consumer_today():
         "db_update",
         # executor side (was builtin_tool_factories, 10 entries)
         "list_dir",
-        "search_kb",
         # session-lifetime persistent shell (#566)
         "bash_session",
         # str-replace editor (#567)
         "str_replace_editor",
+        # agent completion signal
+        "submit",
     }
     assert expected == set(registry.list_builtins())
 
@@ -44,16 +45,17 @@ def test_list_builtins_covers_every_consumer_today():
 def test_dispatch_groups_are_disjoint_and_exhaustive():
     generic = registry.list_for_dispatch(registry.Dispatch.GENERIC)
     files = registry.list_for_dispatch(registry.Dispatch.FILES)
-    rag = registry.list_for_dispatch(registry.Dispatch.RAG)
     shell = registry.list_for_dispatch(registry.Dispatch.PERSISTENT_SHELL)
     editor = registry.list_for_dispatch(registry.Dispatch.EDITOR)
-    groups = [generic, files, rag, shell, editor]
+    json_db = registry.list_for_dispatch(registry.Dispatch.JSON_DB)
+    groups = [generic, files, shell, editor, json_db]
     # Disjoint
     for i, a in enumerate(groups):
         for b in groups[i + 1 :]:
             assert a.isdisjoint(b)
     # Exhaustive
-    assert generic | files | rag | shell | editor == registry.list_builtins()
+    assert generic | files | shell | editor | json_db == registry.list_builtins()
+    assert json_db == {"db_query", "db_update"}
 
 
 def test_bash_session_routes_to_persistent_shell_dispatch():
@@ -70,6 +72,31 @@ def test_str_replace_editor_routes_to_editor_dispatch():
     assert registry.get_class("str_replace_editor") is StrReplaceEditorTool
 
 
+def test_submit_is_a_completion_tool_reconstructed_like_any_other_builtin():
+    """Completion is a property the registry declares, orthogonal to dispatch.
+
+    The runner needs no wrapper of its own for it: a completion call terminates
+    the loop before any tool executes, and if one ever were executed the generic
+    builtin wrapper answers it like every other stateless builtin."""
+    from tolokaforge.tools.builtin.submit import SubmitTool
+
+    assert registry.is_completion("submit")
+    assert registry.list_completion_tools() == frozenset({"submit"})
+    assert registry.get_dispatch("submit") is registry.Dispatch.GENERIC
+    assert registry.get_class("submit") is SubmitTool
+
+
+def test_no_other_builtin_ends_an_episode():
+    """Every other builtin is an action inside the episode, not the end of it.
+
+    A tool silently acquiring completion status would terminate trials that
+    enable it, so the set is asserted whole rather than per-member."""
+    assert registry.list_completion_tools() < registry.list_builtins()
+    assert registry.list_builtins() - registry.list_completion_tools() == {
+        name for name in registry.list_builtins() if not registry.is_completion(name)
+    }
+
+
 def test_bash_is_generic_not_files():
     """Bash was previously listed in both adapter and runner registries.
     The unified registry resolves the dual-listing — bash routes to
@@ -82,8 +109,11 @@ def test_file_tools_route_to_files_dispatch():
         assert registry.get_dispatch(name) is registry.Dispatch.FILES
 
 
-def test_search_kb_routes_to_rag_dispatch():
-    assert registry.get_dispatch("search_kb") is registry.Dispatch.RAG
+def test_the_knowledge_base_search_tool_is_not_a_builtin():
+    """``search_kb`` is the task's declared search tool, bound by the runner to the
+    trial's search index (ADR-0054) — not a name this registry dispatches."""
+    assert not registry.is_builtin("search_kb")
+    assert "RAG" not in registry.Dispatch.__members__
 
 
 def test_get_class_imports_real_classes():

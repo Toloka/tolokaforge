@@ -7,13 +7,23 @@ and both inherit :class:`TaskDefaults` from ``project.yaml``.
 """
 
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, ClassVar, Literal, Self
 
-from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from tolokaforge.core.deprecations import canonicalize_actor_config, drop_retired_max_idle_turns
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
+from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
 from tolokaforge.core.grading.state_composition import (
     AUTHORED_HASH_WEIGHT_CONTEXT,
     StateHashConfig,
@@ -23,9 +33,11 @@ from tolokaforge.core.grading.state_composition import (
 from tolokaforge.core.hash import ColumnCompareRule
 from tolokaforge.core.models.run_config import RunDefaults
 from tolokaforge.runner.models import (
+    DEFAULT_SEARCH_TOOL_NAME,
     EnvironmentPatch,
     JudgeCustomization,
     LLMJudgeConfig,
+    SearchPlane,
     TraceChecksConfig,
     TranscriptRulesConfig,
 )
@@ -33,6 +45,8 @@ from tolokaforge.runner.models import (
 __all__ = [
     "ActorSpec",
     "AssetsConfig",
+    "DEFAULT_MAX_USER_TOOL_STEPS",
+    "DEFAULT_SEARCH_TOOL_DESCRIPTION",
     "GradingCombineConfig",
     "GradingConfig",
     "GradingDefaults",
@@ -42,7 +56,10 @@ __all__ = [
     "LLMJudgeDefaults",
     "ProjectConfig",
     "RETIRED_STATE_CHECK_KEYS",
+    "RagConfig",
+    "RagToolConfig",
     "SEED_KIND_BY_EXTENSION",
+    "SIMULATOR_STOP_TOKEN",
     "SeedKind",
     "SeedRef",
     "StateChecksConfig",
@@ -55,6 +72,9 @@ __all__ = [
     "TimeoutDefaults",
     "ToolsConfig",
     "UserSimulatorConfig",
+    "UserStopWithText",
+    "UserToolTurns",
+    "validate_stop_tokens",
 ]
 
 
@@ -88,6 +108,81 @@ class InitializationAction(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+DEFAULT_SEARCH_TOOL_DESCRIPTION = (
+    "Search the knowledge base for relevant information. Use this to find policies, "
+    "procedures, FAQs, and other documentation."
+)
+"""The agent's search-tool description when ``initial_state.rag.tool`` names none."""
+
+
+def _dump_declared_fields_only(
+    model: BaseModel, handler: SerializerFunctionWrapHandler
+) -> dict[str, Any]:
+    """Dump only the fields the author wrote, so a default never materialises.
+
+    ``TaskConfig`` is dumped whole by the canonical snapshots and the round-trip
+    paths. A typed block would otherwise dump its defaults as if the author had
+    written them — a task declaring ``corpus_dir`` alone would grow a backend, a
+    config and a tool block. A default an author writes out is kept. Plain
+    pydantic 2.x (``Field(exclude_if=...)`` needs 2.11; the engine allows 2.0).
+
+    A plain mapping stored in the field without validation — ``model_copy(update=…)``
+    or assignment — has no fields set to read, so it dumps as the mapping it is, as
+    the untyped block did.
+    """
+    if not isinstance(model, BaseModel):
+        return handler(model)
+    data = handler(model)
+    for name in type(model).model_fields.keys() - model.model_fields_set:
+        data.pop(name, None)
+    return data
+
+
+class RagToolConfig(BaseModel):
+    """``initial_state.rag.tool``: the agent's search tool over the corpus.
+
+    Which actor gets the tool is not declared here: the tool goes to the actor
+    whose ``tools.<actor>.enabled`` names it, as every tool does.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str = DEFAULT_SEARCH_TOOL_NAME
+    description: str = DEFAULT_SEARCH_TOOL_DESCRIPTION
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _declared_only(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _dump_declared_fields_only(self, handler)
+
+
+class RagConfig(BaseModel):
+    """``initial_state.rag``: the corpus, the search backend serving it, and its tool.
+
+    ``backend`` names a backend registered under ``tolokaforge.search_backends``
+    (ADR-0054; ``rag_service`` is the engine's rag-service) and travels on the wire
+    as ``search.plane``. ``backend_config`` is handed to that backend's factory
+    verbatim — the engine never reads its keys. The dump carries only the fields
+    the author wrote (see :func:`_dump_declared_fields_only`).
+
+    Unknown keys are refused: a misspelt ``backend`` or ``tool.name`` would
+    otherwise select the default silently. Every pack declaring a ``rag`` block
+    when this became typed carried ``corpus_dir`` alone.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    corpus_dir: str | None = None
+    backend: str = SearchPlane.RAG_SERVICE.value
+    backend_config: dict[str, Any] = Field(default_factory=dict)
+    tool: RagToolConfig = Field(default_factory=RagToolConfig)
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _declared_only(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _dump_declared_fields_only(self, handler)
+
+
 class InitialStateConfig(BaseModel):
     """Initial environment state configuration"""
 
@@ -97,7 +192,7 @@ class InitialStateConfig(BaseModel):
     device_overrides: dict[str, Any] | None = None  # Per-task device state overrides
     filesystem: dict[str, Any] | None = None
     mock_web: dict[str, Any] | None = None
-    rag: dict[str, Any] | None = None
+    rag: RagConfig | None = None
     system_prompt: str | None = None  # Path to system prompt file (e.g., wiki.md)
     initialization_actions: list[InitializationAction] | None = None
 
@@ -124,11 +219,93 @@ def _refuse_first_message(data: Any) -> Any:
     """
     if isinstance(data, dict) and "first_message" in data:
         raise ValueError(
-            "first_message is not a field on the user actor. A task's opening turn is declared "
-            "task-level as initial_user_message, whose text is delivered verbatim as "
-            "the first user message — move the value there."
+            "first_message is not a field on the user actor. A task's opening user turn is "
+            "declared task-level as initial_user_message, whose text is delivered verbatim as "
+            "the first user message — move the value there. An opening line of the agent's "
+            "own, ahead of that turn, is actors.user.first_agent_message."
         )
     return data
+
+
+def _refuse_a_blank_first_agent_message(value: str | None) -> str | None:
+    """Reject a declared agent opening that carries no text.
+
+    The opening is written into the transcript as the agent's first turn, so a blank
+    one would open the dialogue with an empty agent message that both parties read.
+    """
+    if value is None or value.strip():
+        return value
+    raise ValueError(
+        f"first_agent_message is {value!r}. It is written into the transcript as the "
+        "agent's first turn, so a blank one would open the dialogue with an empty agent "
+        "message. Give it text, or drop the key (declared in a project's task_defaults, "
+        "write first_agent_message: null in the task)."
+    )
+
+
+SIMULATOR_STOP_TOKEN = "###STOP###"
+"""The exit token the built-in simulator prompt instructs the model to send."""
+
+UserStopWithText = Literal["deliver", "end"]
+"""What a user reply carrying a stop token does.
+
+``deliver`` hands the text before the token to the agent, lets the agent answer
+it, and ends the dialogue on the next user turn; a bare token ends it at once.
+``end`` records the reply as written, token included, as the dialogue's last
+user turn and ends the dialogue at once, so the agent never answers it. A reply
+that also calls tools gets its calls' results appended after the text, as any
+user turn that calls tools does."""
+
+
+UserToolTurns = Literal["shared", "isolated"]
+"""How a user simulator's own tool calls take part in the dialogue.
+
+``shared`` runs a reply's calls and appends their results to the reply's text,
+which the agent reads; the simulator gets one generation per turn. ``isolated``
+records each call and its results as a step only the simulator sees, then asks
+it again, until it replies with text alone; that reply is all the agent reads.
+"""
+
+DEFAULT_MAX_USER_TOOL_STEPS = 10
+"""Tool steps one ``isolated`` user turn may take before the dialogue ends."""
+
+
+def validate_stop_tokens(tokens: list[str]) -> list[str]:
+    """Reject a stop-token list that cannot end a dialogue the way it reads.
+
+    An empty list leaves the simulator no way to end the dialogue, so every trial
+    would run to its turn budget. A blank token matches every reply, and a
+    repeated one says nothing the first spelling did not. A token that contains
+    another fires the shorter one wherever it fires itself, so which token ended
+    the dialogue would depend on a tie-break rather than on what the model wrote;
+    refusing the pair also leaves no two tokens that can start at one position.
+    """
+    if not tokens:
+        raise ValueError(
+            "stop_tokens is empty, so no user reply can end the dialogue and every trial "
+            f"would run to its turn budget. Omit the key to keep {SIMULATOR_STOP_TOKEN!r}, "
+            "or list the tokens the simulator is told to send."
+        )
+    blank = [token for token in tokens if not token.strip()]
+    if blank:
+        raise ValueError(
+            f"stop_tokens carries blank token(s) {blank!r}; a blank token is found in "
+            "every reply and would end the dialogue on the first user turn."
+        )
+    repeated = sorted({token for token in tokens if tokens.count(token) > 1})
+    if repeated:
+        raise ValueError(f"stop_tokens lists {repeated!r} more than once.")
+    nested = sorted(
+        (inner, outer) for inner in tokens for outer in tokens if inner != outer and inner in outer
+    )
+    if nested:
+        pairs = ", ".join(f"{inner!r} inside {outer!r}" for inner, outer in nested)
+        raise ValueError(
+            f"stop_tokens has a token inside another ({pairs}): a reply carrying the longer "
+            "one also carries the shorter, so the two cannot be told apart. List tokens "
+            "that do not contain each other."
+        )
+    return tokens
 
 
 class UserSimulatorConfig(BaseModel):
@@ -140,11 +317,76 @@ class UserSimulatorConfig(BaseModel):
     persona: str = "cooperative"
     backstory: str | None = None  # User instruction for tau-bench parity
     scripted_flow: list[dict[str, str]] | None = None
+    simulator: str = "builtin"
+    simulator_config: dict[str, Any] = Field(default_factory=dict)
+    stop_tokens: list[str] = Field(default_factory=lambda: [SIMULATOR_STOP_TOKEN])
+    """Substrings that end the dialogue when a user reply carries one."""
+    stop_with_text: UserStopWithText = "deliver"
+    """See :data:`UserStopWithText`."""
+    tool_turns: UserToolTurns = "shared"
+    """See :data:`UserToolTurns`."""
+    max_tool_steps: int = Field(default=DEFAULT_MAX_USER_TOOL_STEPS, ge=1)
+    """Tool steps an ``isolated`` user turn may take; one more ends the dialogue
+    with ``USER_TOOL_LOOP_LIMIT`` and runs none of that step's calls. A ``shared``
+    config carries the default and ignores it; whether a task *declared* a limit
+    nothing loops under is decided in :meth:`TaskConfig.resolve_user_simulator`, so
+    this resolved config re-validates from its own dump."""
+    first_agent_message: str | None = None
+    """The agent's opening line, written into the transcript as its first turn before
+    the user speaks. The agent reads it back as its own, and the simulator answers it
+    in place of the built-in greeting. ``None`` keeps today's shape: the transcript
+    opens with the user's turn."""
 
     @model_validator(mode="before")
     @classmethod
     def _reject_first_message(cls, data: Any) -> Any:
         return _refuse_first_message(data)
+
+    @field_validator("stop_tokens")
+    @classmethod
+    def _refuse_unusable_stop_tokens(cls, value: list[str]) -> list[str]:
+        return validate_stop_tokens(value)
+
+    @field_validator("first_agent_message")
+    @classmethod
+    def _refuse_a_blank_first_agent_message(cls, value: str | None) -> str | None:
+        return _refuse_a_blank_first_agent_message(value)
+
+    @model_validator(mode="after")
+    def _refuse_stop_tokens_the_prompt_does_not_match(self) -> Self:
+        """An LLM simulator's stop tokens and its prompt must name the same tokens.
+
+        The engine listens for ``stop_tokens``; the model sends what its prompt tells
+        it to. The built-in prompt tells it to send ``###STOP###``, so a list without
+        that token lets the model's stop pass as ordinary text to the agent and the
+        dialogue go on. Any other listed token can only be taught by the backstory,
+        and one the backstory never names can never fire. Scripted replies are
+        authored text, so a scripted simulator may use any token. A non-built-in
+        simulator (``actors.user.simulator``) owns its prompt, so it is the one
+        that knows which tokens the prompt teaches; these two rules describe the
+        built-in prompt only.
+        """
+        if self.mode != "llm" or self.simulator != "builtin":
+            return self
+        if SIMULATOR_STOP_TOKEN not in self.stop_tokens:
+            raise ValueError(
+                f"stop_tokens is {self.stop_tokens!r}, but the built-in user-simulator prompt "
+                f"instructs the model to end the dialogue with {SIMULATOR_STOP_TOKEN!r}, so "
+                "that stop would reach the agent as ordinary text. Add "
+                f"{SIMULATOR_STOP_TOKEN!r} to the list."
+            )
+        unprompted = [
+            token
+            for token in self.stop_tokens
+            if token != SIMULATOR_STOP_TOKEN and token not in (self.backstory or "")
+        ]
+        if unprompted:
+            raise ValueError(
+                f"stop_tokens lists {unprompted!r}, which neither the built-in user-simulator "
+                "prompt nor the backstory names, so the model is never told to send them. "
+                "Say in the backstory when to send each one, or drop them from the list."
+            )
+        return self
 
 
 _RESERVED_ACTOR_NAMES = frozenset({"agent", "judge"})
@@ -171,6 +413,13 @@ class ActorSpec(BaseModel):
     persona: str | None = None
     backstory: str | None = None
     scripted_flow: list[dict[str, str]] | None = None
+    simulator: str | None = None
+    simulator_config: dict[str, Any] | None = None
+    stop_tokens: list[str] | None = None
+    stop_with_text: UserStopWithText | None = None
+    tool_turns: UserToolTurns | None = None
+    max_tool_steps: int | None = Field(default=None, ge=1)
+    first_agent_message: str | None = None
 
     model_config = {"extra": "ignore"}
 
@@ -178,6 +427,16 @@ class ActorSpec(BaseModel):
     @classmethod
     def _reject_first_message(cls, data: Any) -> Any:
         return _refuse_first_message(data)
+
+    @field_validator("stop_tokens")
+    @classmethod
+    def _refuse_unusable_stop_tokens(cls, value: list[str] | None) -> list[str] | None:
+        return value if value is None else validate_stop_tokens(value)
+
+    @field_validator("first_agent_message")
+    @classmethod
+    def _refuse_a_blank_first_agent_message(cls, value: str | None) -> str | None:
+        return _refuse_a_blank_first_agent_message(value)
 
 
 def _validate_actors_map(
@@ -313,6 +572,8 @@ class TaskConfig(BaseModel):
     description: str
     adapter_type: str = "native"  # Adapter runtime type (native, tlk_mcp_core, tau, …)
     max_turns: int | None = None  # Optional per-task turn cap override
+    max_simulation_steps: int | None = Field(default=None, ge=1)
+    max_environment_errors: int | None = Field(default=None, ge=1)
     initial_user_message: str | None = None
     """The task's pinned opener. When set, this exact text — whitespace
     included — is message index 0, and no simulator dispatch produces the
@@ -341,6 +602,18 @@ class TaskConfig(BaseModel):
     )  # Can contain guidance list or agent_system_prompt string
     grading: str | None = None  # Path to grading.yaml; sibling grading.yaml auto-picked when unset
     system_prompt: str | None = None  # Path to system prompt file (e.g., wiki.md)
+    agent_prompt_contract: str | None = None
+    """How the agent should reply, distinct from what the task is.
+
+    A name from :data:`~tolokaforge.core.agent_prompt_contract.CONTRACTS`, or a
+    path to a file beside the task. Composed ahead of the task's own policy
+    document rather than replacing it, so a pack keeps its domain text and
+    gains a reply contract.
+
+    Left unset, a model preset may still supply one — see
+    ``ModelCapabilities.default_agent_prompt_contract``. An explicit
+    ``policies["agent_system_prompt"]`` overrides both, because that surface
+    exists to reproduce a prompt byte for byte."""
     adapter_settings: dict[str, Any] | None = None  # Opaque dict parsed by each adapter type
 
     stuck_heuristics: StuckHeuristicsDefaults | None = None
@@ -416,6 +689,38 @@ class TaskConfig(BaseModel):
         )
 
     @model_validator(mode="after")
+    def _refuse_an_unresolvable_user_actor(self) -> Self:
+        """Resolve ``actors.user`` at load, so a contradiction fails ``validate``.
+
+        Some rules need the resolved actor rather than one layer's spec — the
+        stop tokens an LLM simulator can send depend on its mode, which another
+        layer may set — so without this they would surface only when the first
+        trial builds its simulator.
+        """
+        if self.actors and "user" in self.actors:
+            self.resolve_user_simulator()
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_an_agent_opening_no_user_answers(self) -> Self:
+        """Refuse ``actors.user.first_agent_message`` where no user turn follows it.
+
+        ``agent_only`` never resolves the user actor, so the opening would be dropped
+        without a word; it is a line addressed to a user, and there is none.
+        """
+        spec = (self.actors or {}).get("user")
+        if self.interaction_mode != "agent_only" or spec is None:
+            return self
+        if spec.first_agent_message is None:
+            return self
+        raise ValueError(
+            f"actors.user.first_agent_message is {spec.first_agent_message!r}, and "
+            f"{_AGENT_ONLY_DISPATCHES_NO_USER_TURN}, so the opening would never be sent. "
+            f"{_TO_DISPATCH_A_USER_TURN}, or drop first_agent_message (declared in a "
+            "project's task_defaults, write first_agent_message: null in the task)."
+        )
+
+    @model_validator(mode="after")
     def _refuse_user_tools_no_turn_can_call(self) -> Self:
         """Refuse a ``tools.user.enabled`` no user turn of this task can ever call.
 
@@ -466,11 +771,55 @@ class TaskConfig(BaseModel):
         spec = (self.actors or {}).get("user")
         if spec is None:
             return UserSimulatorConfig()
+        mode = spec.mode or "llm"
+        _refuse_a_declaration_the_mode_ignores(spec, mode)
+        # Passed only when declared, so the simulator config keeps its own defaults
+        # and knows which fields the task set.
+        declared = {
+            name: value
+            for name, value in (
+                ("stop_tokens", spec.stop_tokens),
+                ("stop_with_text", spec.stop_with_text),
+                ("tool_turns", spec.tool_turns),
+                ("max_tool_steps", spec.max_tool_steps),
+            )
+            if value is not None
+        }
         return UserSimulatorConfig(
-            mode=spec.mode or "llm",
+            mode=mode,
             persona=spec.persona or "cooperative",
             backstory=spec.backstory,
             scripted_flow=spec.scripted_flow,
+            simulator=spec.simulator or "builtin",
+            simulator_config=spec.simulator_config or {},
+            first_agent_message=spec.first_agent_message,
+            **declared,
+        )
+
+
+def _refuse_a_declaration_the_mode_ignores(spec: ActorSpec, mode: str) -> None:
+    """Refuse an ``actors.user`` key the resolved simulator would never read.
+
+    Decided on the merged actor spec, where a declared key is still told apart
+    from a default, rather than on the resolved :class:`UserSimulatorConfig`,
+    which carries every default and must re-validate from its own dump. A key a
+    project's ``task_defaults`` set reaches the task too; the task writes the key
+    as ``null`` to drop it.
+    """
+    tool_turns = spec.tool_turns or "shared"
+    if mode == "scripted" and tool_turns == "isolated":
+        raise ValueError(
+            "tool_turns is isolated, but the user simulator resolves to mode scripted, whose "
+            "replies are authored text and never call tools. Write mode: llm, or drop "
+            "tool_turns (declared in a project's task_defaults, write tool_turns: null in "
+            "the task)."
+        )
+    if tool_turns == "shared" and spec.max_tool_steps is not None:
+        raise ValueError(
+            f"max_tool_steps is {spec.max_tool_steps}, but tool_turns resolves to shared, "
+            "where a user turn is one generation and never loops. Write tool_turns: "
+            "isolated, or drop max_tool_steps (declared in a project's task_defaults, write "
+            "max_tool_steps: null in the task)."
         )
 
 
@@ -541,6 +890,28 @@ class StateChecksConfig(BaseModel):
     # Applied symmetrically to both trial and golden. See
     # :func:`tolokaforge.core.hash.apply_global_nullable_normalize`.
     auto_normalize_nullables: bool = False
+    # Opt-in: a one-sided transform each side's full state goes through before every
+    # other step of the hash — records that do not count dropped, generated ids
+    # re-keyed together with the references to them (ADR-0053). Validated by its own
+    # model; checked against the task when it loads. Absent, the hash reads the states
+    # as written, and the key is left out of every dump.
+    comparison_view: ComparisonViewConfig | None = None
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"comparison_view"})
+    """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_an_absent_comparison_view(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Leave ``comparison_view`` out of a dump that has none.
+
+        So a block declaring no view dumps byte-identically to one written before the
+        key existed: recorded ``grading_config.json`` parts and canonical snapshots keep
+        their bytes.
+        """
+        return leave_out_absent_fields(self, handler)
 
     @model_validator(mode="before")
     @classmethod

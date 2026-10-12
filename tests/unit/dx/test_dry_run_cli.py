@@ -27,7 +27,9 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
+from tolokaforge.core.llm.presets import ignored_sampling_params
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
+from tolokaforge.core.models import RunConfig
 from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
@@ -233,6 +235,43 @@ class TestDryRunPresetOverlay:
 
         assert result.exit_code == 0, result.stderr
         assert overlay_preset_name in result.stderr
+
+
+class TestDryRunJudgeModel:
+    def test_the_judge_flag_writes_no_temperature(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A judge model whose preset sends no sampling earns no ignored-value
+        warning, because the flag never writes a temperature the user did not."""
+        overlay_path = tmp_path / "overlay.yaml"
+        preset = {"match": ["acme/judge*"], "params": {"supports_sampling_params": False}}
+        overlay_path.write_text(yaml.safe_dump({"presets": {"acme_judge": preset}}))
+        dataset = _write_task_pack(tmp_path, ["fixture_01"])
+        config = _write_run_config(tmp_path, dataset)
+        built: list[RunConfig] = []
+        monkeypatch.setattr(
+            "tolokaforge.dx.cli.main._run_dry_run",
+            lambda *, run_config, **_: built.append(run_config),
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "--config",
+                str(config),
+                "--presets-file",
+                str(overlay_path),
+                "--judge-model",
+                "acme/judge-1",
+                "--dry-run",
+            ],
+        )
+
+        assert result.exit_code == 0, result.stderr
+        [run_config] = built
+        assert "temperature" not in run_config.models["judge"].model_fields_set
+        assert ignored_sampling_params(run_config.models) == []
 
 
 class TestDryRunDisplayNone:

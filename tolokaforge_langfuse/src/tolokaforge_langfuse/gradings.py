@@ -23,13 +23,22 @@ import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
 from tolokaforge.observability import ids
+from tolokaforge_langfuse.costs import judge_cost
+from tolokaforge_langfuse.vocabulary import (
+    EVENT_EVALUATOR,
+    EVENT_TOOL,
+    NAME_GRADING,
+    NAME_JUDGE,
+    NAME_USER_SIMULATOR,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -86,11 +95,11 @@ def _normalize_ts(value: object) -> str | None:
     if not value:
         return None
     if isinstance(value, datetime):
-        aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-        return aware.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return aware.astimezone(UTC).isoformat().replace("+00:00", "Z")
     if isinstance(value, date):
         return (
-            datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+            datetime(value.year, value.month, value.day, tzinfo=UTC)
             .isoformat()
             .replace("+00:00", "Z")
         )
@@ -100,6 +109,23 @@ def _normalize_ts(value: object) -> str | None:
 
 _ZONE_SUFFIX = re.compile(r"[+-]\d{2}:?\d{2}$")
 _clock = _normalize_ts
+
+
+def message_window(
+    messages: Sequence[Mapping[str, Any]], index: int, *, start: str | None
+) -> tuple[str | None, str | None]:
+    """(start, end) of what produced message ``index``: a message's clock is when it was
+    recorded, so its model call (or tool execution) ran from the message before it to its own
+    clock. The first message's work started with the trial. A missing clock collapses the window
+    onto the clock there is, never stretches it."""
+    own = _clock_of(messages[index])
+    previous = _clock_of(messages[index - 1]) if index > 0 else start
+    started = previous or own or start
+    return started, own or started
+
+
+def _clock_of(message: object) -> str | None:
+    return _normalize_ts(message.get("ts")) if isinstance(message, Mapping) else None
 
 
 def content_fingerprint(grade: Mapping[str, Any]) -> str:
@@ -302,6 +328,7 @@ def _aggregate_judge_generation(
     out: list[tuple[str, dict[str, Any]]] = []
     if judge_usage and int(judge_usage.get("calls") or 0) > 0:
         details, usage_metadata = _judge_usage_fields(judge_usage)
+        cost, basis = judge_cost(judge_usage)
         body: dict[str, Any] = {
             "id": ids.observation_id(trace_id, "jgen", grading_id, 0),
             **common,
@@ -314,9 +341,10 @@ def _aggregate_judge_generation(
                 "grading_id": grading_id,
                 "message_index": 0,
                 **usage_metadata,
+                "cost_basis": basis,
             },
             "usageDetails": details,
-            "costDetails": {"total": judge_usage.get("cost_usd") or 0},
+            "costDetails": {"total": cost or 0},
         }
         if judge_model_name:
             body["model"] = judge_model_name
@@ -367,7 +395,7 @@ def _judge_observations(
             body = {
                 "id": ids.observation_id(trace_id, "jgen", grading_id, index),
                 **common,
-                "name": f"judge turn {index}",
+                "name": NAME_JUDGE,
                 "startTime": at,
                 "endTime": at,
                 "input": context[-CONTEXT_MESSAGES:],
@@ -381,6 +409,7 @@ def _judge_observations(
                     "grading_id": grading_id,
                     "message_index": index,
                     "usage_source": NONE,
+                    "cost_basis": NONE,
                 },
                 "usageDetails": {"input": 0, "output": 0, "total": 0},
                 "costDetails": {"total": 0},
@@ -390,9 +419,11 @@ def _judge_observations(
             if index == assistant_indexes[-1] and judge_usage:
                 details, usage_metadata = _judge_usage_fields(judge_usage)
                 body["usageDetails"] = details
-                if judge_usage.get("cost_usd") is not None:
-                    body["costDetails"] = {"total": judge_usage["cost_usd"]}
+                cost, basis = judge_cost(judge_usage)
+                if cost is not None:
+                    body["costDetails"] = {"total": cost}
                 body["metadata"].update(usage_metadata)
+                body["metadata"]["cost_basis"] = basis
             out.append(("generation-create", body))
         elif role == "tool":
             call_id = message.get("tool_call_id")
@@ -401,7 +432,7 @@ def _judge_observations(
             name, arguments = calls_by_id.get(call_id, (None, None))
             out.append(
                 (
-                    "span-create",
+                    EVENT_TOOL,
                     {
                         "id": ids.observation_id(trace_id, "jtool", grading_id, key),
                         **common,
@@ -425,10 +456,14 @@ def _judge_observations(
 
 
 def _is_simulated_user(
-    message: Mapping[str, Any], index: int, trajectory: Mapping[str, Any], task: Mapping[str, Any]
+    message: Mapping[str, Any],
+    first_user_turn: bool,
+    trajectory: Mapping[str, Any],
+    task: Mapping[str, Any],
 ) -> bool:
     """The connector's rule: a ``role: user`` message the user simulator wrote, not the task's
-    pinned opener."""
+    pinned opener — the transcript's first user message, which the agent's opening line
+    (``first_agent_message``) moves off index 0."""
     if message.get("openrouter_generation_id"):
         return True
     user_block = (task.get("model_config") or {}).get("user") if isinstance(task, Mapping) else None
@@ -436,7 +471,7 @@ def _is_simulated_user(
         return False
     if task.get("interaction_mode") == "agent_only":
         return False
-    if index == 0:
+    if first_user_turn:
         return trajectory.get("first_user_message_source") == "simulator"
     return True
 
@@ -451,28 +486,45 @@ def _user_generations(
 ) -> list[tuple[str, dict[str, Any]]]:
     out: list[tuple[str, dict[str, Any]]] = []
     context: list[dict[str, Any]] = []
-    for index, message in enumerate(trajectory.get("messages") or []):
+    messages = trajectory.get("messages") or []
+    start = _clock(trajectory.get("start_ts"))
+    # A user tool step (``tool_turns: isolated``) carries calls and usually no text,
+    # so its output shows the calls, as the live projection's does.
+    steps = user_tool_step_positions_of([m if isinstance(m, Mapping) else {} for m in messages])
+    first_user = next(
+        (i for i, m in enumerate(messages) if isinstance(m, Mapping) and m.get("role") == "user"),
+        None,
+    )
+    for index, message in enumerate(messages):
         if not isinstance(message, Mapping):
             continue
         role = message.get("role")
-        if role == "user" and _is_simulated_user(message, index, trajectory, task):
-            at = _clock(message.get("ts"))
+        if role == "user" and _is_simulated_user(message, index == first_user, trajectory, task):
+            started, ended = message_window(messages, index, start=start)
+            output: dict[str, Any] = {"content": message.get("content")}
+            if index in steps:
+                output["tool_calls"] = message.get("tool_calls")
             body: dict[str, Any] = {
                 "id": ids.observation_id(trace_id, "ugen", index),
                 "traceId": trace_id,
                 "parentObservationId": root_id,
-                "name": f"user turn {index}",
-                "startTime": at,
-                "endTime": at,
+                "name": NAME_USER_SIMULATOR,
+                "startTime": started,
+                "endTime": ended,
                 "input": context[-CONTEXT_MESSAGES:],
-                "output": {"content": message.get("content")},
+                "output": output,
                 "level": "DEFAULT",
                 "metadata": {
                     "role": "user",
                     "actor": "user_simulator",
                     "message_index": index,
                     "openrouter_generation_id": _text(message.get("openrouter_generation_id")),
+                    "cost_basis": NONE,
                 },
+                # this pass reads no call records, so the turn states it carries no figure;
+                # the default projection pairs it with the simulator's call
+                "usageDetails": {"input": 0, "output": 0, "total": 0},
+                "costDetails": {"total": 0},
             }
             if user_model_name:
                 body["model"] = user_model_name
@@ -563,12 +615,12 @@ def build_grading_observations(
     }
     typed: list[tuple[str, dict[str, Any]]] = [
         (
-            "span-create",
+            EVENT_EVALUATOR,
             {
                 "id": observation_id,
                 "traceId": trace_id,
                 "parentObservationId": root_id,
-                "name": f"grading:{grading_id}",
+                "name": NAME_GRADING,
                 "startTime": at,
                 "endTime": at,
                 "input": _grading_input(task, grading_id),
@@ -651,7 +703,7 @@ def build_grading_events(
         result.scores = sum(kind == "score-create" for kind, _ in grading_typed) + len(mirror)
         result.judge_observations = sum(kind != "score-create" for kind, _ in grading_typed) - 1
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     result.events = [
         {"id": uuid.uuid4().hex, "type": kind, "timestamp": now, "body": body}
         for kind, body in typed

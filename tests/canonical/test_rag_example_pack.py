@@ -54,7 +54,8 @@ def test_task_loads_and_enables_search_kb_with_a_corpus() -> None:
     # No per-task manifest — the rag-service is reached by DNS on the full stack.
     assert task.environment_manifest is None, "pack must not declare an environment_manifest"
 
-    corpus_dir = (task.initial_state.rag or {}).get("corpus_dir")
+    rag = task.initial_state.rag
+    corpus_dir = rag.corpus_dir if rag is not None else None
     assert corpus_dir == "rag/corpus", f"corpus_dir must be 'rag/corpus', got: {corpus_dir!r}"
     files = _corpus_files(task_dir, corpus_dir)
     assert files, f"corpus at {task_dir / corpus_dir} must be non-empty"

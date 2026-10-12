@@ -16,6 +16,7 @@ from tolokaforge_langfuse.profile import (
     check_environment,
     profile_from_mapping,
 )
+from tolokaforge_langfuse.retry import RetryPolicy
 
 ACCEPTS_TRIAL = "trial"
 ACCEPTS_TRANSCRIPT = "transcript"
@@ -60,13 +61,17 @@ class LangfuseConfig(BaseModel):
     server_api: Literal["auto", "v3", "v4"] = "auto"
     """Which receiver family to write for; ``auto`` asks the receiver once, at run start
     (``GET /api/public/v2/observations``: a v4 server answers it in every write mode, a v3 one
-    404s). ``v4`` writes every observation once, the live rows as declared previews."""
+    404s). ``v4`` writes every observation once, from the persisted bundle; the live rows go out
+    as declared previews only with ``LANGFUSE_TRACING_PREVIEWS``."""
     attach_api_base: str | None = None
     """REST base URL; by default strip ``/api/public/otel/v1/traces`` from the endpoint."""
     attach_timeout_s: float = Field(default=60.0, gt=0)
     """Per-request timeout of the attachment step and project check."""
     attach_budget_s: float = Field(default=120.0, gt=0)
     """Whole-trial attachment budget; three consecutive unreachable trials open the breaker."""
+    retry: RetryPolicy = Field(default_factory=RetryPolicy)
+    """Which refusals of a write are waited out and posted again: the span export of the
+    write-once layout and the trial-end calls (``tolokaforge_langfuse.retry``)."""
     profile: str | dict[str, Any] | None = None
     """The deployment profile: a TOML or YAML path, or the profile itself inline; defaults to
     ``TOLOKAFORGE_TRACING_PROFILE``. Relative paths anchor to the supplying ``project.yaml``."""

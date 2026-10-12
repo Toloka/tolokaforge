@@ -2,12 +2,15 @@
 Tool Factory for Runner
 
 This module provides tool reconstruction from ToolSource definitions.
-It creates callable wrappers for four invocation styles:
+It creates callable wrappers for the invocation styles:
 
 1. tau_sync - Tau environment tools (synchronous invoke())
 2. mcp_async - TlkMcpCore MCP tools (async run_with_validation())
 3. mcp_server - Native MCP server tools (subprocess JSON-RPC)
-4. rag_search - RAG service search tools (HTTP API)
+4. docker_compose_exec - a command run in a sibling compose service
+
+and, for a source-less schema, a builtin tool by name — or the task's search
+tool, bound to the trial's search index (``SearchToolWrapper``, ADR-0054).
 
 Each wrapper produces a callable with the same interface:
     async def execute(arguments: dict[str, Any]) -> str
@@ -21,6 +24,7 @@ Usage:
 """
 
 import asyncio
+import functools
 import importlib
 import json
 import logging
@@ -28,19 +32,28 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
+from tolokaforge.core.search.backend import SearchIndex
 from tolokaforge.runner.compose_naming import compose_container_name
-from tolokaforge.runner.db_client import DBServiceClient
+from tolokaforge.runner.db_client import (
+    DBServiceClient,
+    InvalidOperationError,
+)
+from tolokaforge.runner.db_client import (
+    ValidationError as DBRequestValidationError,
+)
 from tolokaforge.runner.db_proxy import DBServiceProxy, SyncDBServiceProxy
 from tolokaforge.runner.id_resolution import TableKey, compute_diff_ops, table_key
 from tolokaforge.runner.models import (
+    DEFAULT_SEARCH_TOOL_NAME,
     InvocationStyle,
 )
 from tolokaforge.runner.models import (
@@ -48,11 +61,6 @@ from tolokaforge.runner.models import (
 )
 from tolokaforge.runner.models import (
     ToolSource as ToolSourceModel,
-)
-from tolokaforge.runner.rag_client import (
-    RAGServiceClient,
-    RAGServiceError,
-    SearchResponse,
 )
 from tolokaforge.tools.persistent_shell import (
     BashSession,
@@ -274,11 +282,16 @@ class ToolWrapper(ABC):
         pass
 
     def stop(self) -> None:  # noqa: B027
-        """Tear down resources provisioned by start() (override if needed)."""
+        """Tear down resources provisioned by start() (override if needed).
+
+        Must be idempotent, as must :meth:`cleanup`: a cleanup retried after another
+        resource failed to tear down calls both again on every tool of the trial,
+        including those whose first call succeeded.
+        """
         pass
 
     def cleanup(self) -> None:  # noqa: B027
-        """Clean up any resources (override in subclasses if needed)."""
+        """Clean up any resources (override in subclasses if needed); idempotent, see :meth:`stop`."""
         pass
 
 
@@ -517,10 +530,24 @@ class MCPServerProcess(BaseModel):
     script_path: str
     process: Any | None = None  # subprocess.Popen - can't type properly
     request_id: int = 0
+    _start_lock: Any = PrivateAttr(default_factory=threading.Lock)
+    _request_lock: Any = PrivateAttr(default_factory=threading.Lock)
+    _stop_lock: Any = PrivateAttr(default_factory=threading.Lock)
+    _closed: bool = PrivateAttr(default=False)
 
     model_config = {"arbitrary_types_allowed": True}
 
     def start(self) -> None:
+        with self._start_lock:
+            if self._closed:
+                raise RuntimeError("MCP server has been closed")
+            try:
+                self._start()
+            except BaseException:
+                self.stop()
+                raise
+
+    def _start(self) -> None:
         """Start the MCP server subprocess and perform MCP protocol handshake.
 
         MCP requires an initialize / notifications/initialized exchange before
@@ -537,6 +564,9 @@ class MCPServerProcess(BaseModel):
             stderr=subprocess.PIPE,
             text=True,
         )
+        if self._closed:
+            self.stop()
+            raise RuntimeError("MCP server closed during startup")
 
         # MCP initialization handshake
         self.send_request(
@@ -556,16 +586,34 @@ class MCPServerProcess(BaseModel):
 
     def stop(self) -> None:
         """Stop the MCP server subprocess."""
-        if self.process is not None:
-            self.process.terminate()
+        # Do not take the request lock: terminating the child must unblock a
+        # request whose worker survived a timeout/cancellation.
+        with self._stop_lock:
+            self._stop()
+
+    def _stop(self) -> None:
+        self._closed = True
+        process = self.process
+        if process is not None:
+            process.terminate()
             try:
-                self.process.wait(timeout=5)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.process.kill()
+                process.kill()
+                process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
             self.process = None
             logger.info(f"Stopped MCP server: {self.script_path}")
 
     def send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        # One stdio connection has one ordered response stream. Different tool
+        # workers must not consume each other's response.
+        with self._request_lock:
+            return self._send_request(method, params)
+
+    def _send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """
         Send a JSON-RPC request to the MCP server.
 
@@ -578,6 +626,7 @@ class MCPServerProcess(BaseModel):
         """
         if self.process is None:
             raise RuntimeError("MCP server not started")
+        process = self.process
 
         self.request_id += 1
         request = {
@@ -589,28 +638,32 @@ class MCPServerProcess(BaseModel):
 
         # Send request
         request_line = json.dumps(request) + "\n"
-        self.process.stdin.write(request_line)
-        self.process.stdin.flush()
+        process.stdin.write(request_line)
+        process.stdin.flush()
 
         # Read response
-        response_line = self.process.stdout.readline()
+        response_line = process.stdout.readline()
         if not response_line:
             # Drain stderr so the actual subprocess crash reason is visible.
             # Without this the only signal is the empty-stdout symptom and the
             # real cause (import error, lifespan crash, …) is lost in the pipe.
             stderr_tail = ""
-            if self.process.stderr is not None:
+            if process.stderr is not None:
                 try:
-                    stderr_tail = self.process.stderr.read() or ""
+                    stderr_tail = process.stderr.read() or ""
                 except Exception:
                     pass
-            exit_code = self.process.poll()
+            exit_code = process.poll()
             raise RuntimeError(
                 f"MCP server closed connection (script={self.script_path}, "
                 f"exit_code={exit_code}, stderr_tail={stderr_tail[-2000:]!r})"
             )
 
         response = json.loads(response_line)
+        if response.get("id") != request["id"]:
+            raise RuntimeError(
+                f"MCP response id {response.get('id')!r} does not match request {request['id']}"
+            )
 
         if "error" in response:
             error = response["error"]
@@ -655,6 +708,46 @@ class MCPServerProcess(BaseModel):
         )
 
 
+class MCPServerPool:
+    """Lazy MCP processes owned by one trial's reconstructed tools."""
+
+    def __init__(self) -> None:
+        self._servers: dict[str, MCPServerProcess] = {}
+        self._lock = threading.Lock()
+        self._cleanup_lock = threading.Lock()
+        self._closed = False
+
+    def get_server(self, script: str) -> MCPServerProcess:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Trial MCP servers have been closed")
+            if script not in self._servers:
+                self._servers[script] = MCPServerProcess(script_path=script)
+            server = self._servers[script]
+        server.start()
+        return server
+
+    def cleanup(self) -> None:
+        with self._cleanup_lock:
+            self._cleanup()
+
+    def _cleanup(self) -> None:
+        with self._lock:
+            self._closed = True
+            servers = list(self._servers.items())
+        errors = []
+        for script, server in servers:
+            try:
+                server.stop()
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                with self._lock:
+                    del self._servers[script]
+        if errors:
+            raise RuntimeError(f"Trial MCP server cleanup failed: {errors!r}") from errors[0]
+
+
 class MCPServerToolWrapper(ToolWrapper):
     """
     Wrapper for Native MCP server tools.
@@ -664,28 +757,23 @@ class MCPServerToolWrapper(ToolWrapper):
     JSON-RPC requests.
     """
 
-    # Shared server processes (one per script)
-    _servers: dict[str, MCPServerProcess] = {}
-
     def __init__(
         self,
         tool_schema: ToolSchemaModel,
         server_script: str,
         db_client: DBServiceClient,
         trial_id: str,
+        server_pool: MCPServerPool | None = None,
     ):
         super().__init__(tool_schema)
         self.server_script = server_script
         self.db_client = db_client
         self.trial_id = trial_id
+        self._server_pool = server_pool if server_pool is not None else MCPServerPool()
 
     def _get_server(self) -> MCPServerProcess:
         """Get or create the MCP server process."""
-        if self.server_script not in self._servers:
-            server = MCPServerProcess(script_path=self.server_script)
-            server.start()
-            self._servers[self.server_script] = server
-        return self._servers[self.server_script]
+        return self._server_pool.get_server(self.server_script)
 
     async def execute(self, arguments: dict[str, Any]) -> str:
         """Return the tool call's output text; ``execute_call`` carries the flag too."""
@@ -760,17 +848,8 @@ class MCPServerToolWrapper(ToolWrapper):
         self._get_server().reset_state(initial_state)
 
     def cleanup(self) -> None:
-        """Stop the MCP server if this is the last tool using it."""
-        # Note: In practice, we'd track usage count and only stop
-        # when no tools are using the server
-        pass
-
-    @classmethod
-    def cleanup_all_servers(cls) -> None:
-        """Stop all MCP server processes."""
-        for server in cls._servers.values():
-            server.stop()
-        cls._servers.clear()
+        """Close this trial's pool; repeated cleanup by sibling tools is safe."""
+        self._server_pool.cleanup()
 
 
 # =============================================================================
@@ -897,139 +976,113 @@ class BuiltinGenericToolWrapper(ToolWrapper):
 
 
 # =============================================================================
-# RAG Search Tool Wrapper
+# JSON DB Tool Wrapper
 # =============================================================================
 
 
-class RAGSearchToolWrapper(ToolWrapper):
+@functools.cache
+def _json_db_argument_by_tool() -> dict[str, str]:
+    """Each ``JSON_DB`` builtin's one required argument, read off its own LLM-facing schema."""
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    arguments: dict[str, str] = {}
+    for name in builtin_registry.list_for_dispatch(builtin_registry.Dispatch.JSON_DB):
+        schema = builtin_registry.get_class(name)().get_schema()
+        (arguments[name],) = schema["function"]["parameters"]["required"]
+    return arguments
+
+
+class JsonDBToolWrapper(ToolWrapper):
+    """Serves ``db_query`` / ``db_update`` against the trial's own store on db-service.
+
+    A db-service 400 or 422 is a fault in the agent's arguments and becomes a
+    :class:`ToolExecutionError` carrying the service's own message, which names no
+    service URL. Every other ``DBServiceError`` (unknown trial, connection, 5xx)
+    propagates.
     """
-    Wrapper for RAG service search tools.
 
-    This wrapper provides search_kb functionality by calling the RAG service
-    HTTP API. It handles:
-    - Query execution via RAG service
-    - Result formatting for LLM consumption
-    - Error handling with fail-fast behavior
+    def __init__(self, tool_schema: ToolSchemaModel, db_client: DBServiceClient, trial_id: str):
+        from tolokaforge.tools.builtin.registry import json_db_tool_config_refusal
 
-    The RAG service must be initialized with documents before search works.
-    """
-
-    def __init__(
-        self,
-        tool_schema: ToolSchemaModel,
-        rag_client: RAGServiceClient,
-        trial_id: str,
-    ):
         super().__init__(tool_schema)
-        self.rag_client = rag_client
+        arguments = _json_db_argument_by_tool()
+        if tool_schema.name not in arguments:
+            raise ToolConfigurationError(
+                tool_schema.name,
+                f"JsonDBToolWrapper serves {sorted(arguments)}, not '{tool_schema.name}'",
+            )
+        if tool_schema.tool_config:
+            raise ToolConfigurationError(
+                tool_schema.name,
+                json_db_tool_config_refusal(tool_schema.name, tool_schema.tool_config),
+            )
+        self.db_client = db_client
         self.trial_id = trial_id
+        self._argument = arguments[tool_schema.name]
 
     @property
     def own_budget_s(self) -> float:
-        """The declared budget, which this wrapper hands to the RAG request.
+        """The declared budget, which this wrapper hands to the db-service request."""
+        return self.timeout_s
 
-        The same shape the in-process ``search_kb`` uses
-        (:mod:`tolokaforge.tools.builtin.rag_search` passes its declared budget
-        to ``httpx``), so the two substrates bound the same call the same way
-        rather than one inheriting whatever the shared client was built with.
+    async def execute(self, arguments: dict[str, Any]) -> str:
+        if set(arguments) != {self._argument}:
+            raise ToolExecutionError(
+                self.name,
+                f"{self.name} takes exactly one argument, '{self._argument}'; "
+                f"got {sorted(arguments)}",
+            )
+        value = arguments[self._argument]
+        try:
+            if self.name == "db_query":
+                queried = await self.db_client.query(
+                    self.trial_id, value, timeout=self.own_budget_s
+                )
+                return json.dumps(queried.results, indent=2)
+            updated = await self.db_client.update(self.trial_id, value, timeout=self.own_budget_s)
+            return f"Database updated successfully. Version: {updated.version}"
+        except (InvalidOperationError, DBRequestValidationError) as exc:
+            raise ToolExecutionError(self.name, exc.message) from exc
+
+
+# =============================================================================
+# Search Tool Wrapper
+# =============================================================================
+
+
+class SearchToolWrapper(ToolWrapper):
+    """The task's search tool, answering from the trial's :class:`SearchIndex`.
+
+    The index is what the task's search backend (``search.plane``, ADR-0054)
+    built for this trial at ``RegisterTrial``; this wrapper hands it the call's
+    ``query`` and arguments and returns the text the backend rendered, so what
+    the agent reads is the backend's own output. A failed search raises out of
+    ``execute`` like any other tool failure.
+
+    The judge's knowledge search is bound by instance of this class over the
+    trial's index — never by the tool's name — so a renamed tool keeps the
+    judge's search and a same-named tool of another kind cannot claim it.
+    """
+
+    def __init__(self, tool_schema: ToolSchemaModel, index: SearchIndex):
+        super().__init__(tool_schema)
+        self.index = index
+
+    @property
+    def own_budget_s(self) -> float:
+        """The declared budget, which this wrapper hands to every search.
+
+        A backend whose search is a bounded call bounds it by this value —
+        rag-service's HTTP request does — so the runner's backstop sits
+        :data:`BACKSTOP_GRACE_S` above it rather than racing it.
         """
         return self.timeout_s
 
     async def execute(self, arguments: dict[str, Any]) -> str:
-        """
-        Execute RAG search.
-
-        Args:
-            arguments: Dict with 'query' (required), 'top_k' (optional), 'alpha' (optional)
-
-        Returns:
-            JSON string with search results
-
-        Raises:
-            RAGServiceError: If search fails (fail fast)
-        """
-        start_time = time.perf_counter()
-        logger.debug(
-            f"RAGSearchToolWrapper.execute() ENTRY: tool={self.name}, arguments={arguments}"
+        outcome = await self.index.search(
+            arguments.get("query", ""), arguments, budget_s=self.own_budget_s
         )
-        # RAG search is read-only, never changes state
-        state_changed = False
-
-        query = arguments.get("query", "")
-        if not query:
-            latency_ms = (time.perf_counter() - start_time) * 1000
-            logger.debug(
-                f"RAGSearchToolWrapper.execute() EXIT: tool={self.name}, "
-                f"success=True, state_changed={state_changed}, latency_ms={latency_ms:.2f}"
-            )
-            return json.dumps({"error": "Query is required", "results": []})
-
-        top_k = arguments.get("top_k", arguments.get("limit", 5))
-        alpha = arguments.get("alpha", 0.5)
-
-        logger.debug(f"RAG search: trial={self.trial_id}, query={query[:50]}..., top_k={top_k}")
-
-        try:
-            response: SearchResponse = await self.rag_client.search(
-                trial_id=self.trial_id,
-                query=query,
-                limit=top_k,
-                alpha=alpha,
-                timeout=self.own_budget_s,
-            )
-
-            # Format results for LLM consumption
-            if not response.results:
-                output = json.dumps(
-                    {
-                        "message": "No relevant documents found.",
-                        "results": [],
-                        "query": query,
-                    }
-                )
-            else:
-                # Build formatted output
-                results = []
-                for result in response.results:
-                    results.append(
-                        {
-                            "doc_id": result.doc_id,
-                            "source": result.source,
-                            "score": result.score,
-                            "text": result.text,
-                            "retrieval_method": result.retrieval_method,
-                        }
-                    )
-
-                output = json.dumps(
-                    {
-                        "results": results,
-                        "total": len(results),
-                        "query": query,
-                    }
-                )
-
-            latency_ms = (time.perf_counter() - start_time) * 1000
-            logger.debug(
-                f"RAGSearchToolWrapper.execute() EXIT: tool={self.name}, "
-                f"success=True, state_changed={state_changed}, latency_ms={latency_ms:.2f}"
-            )
-            return output
-
-        except RAGServiceError as e:
-            latency_ms = (time.perf_counter() - start_time) * 1000
-            logger.debug(
-                f"RAGSearchToolWrapper.execute() EXIT: tool={self.name}, "
-                f"success=False, state_changed={state_changed}, latency_ms={latency_ms:.2f}"
-            )
-            # FAIL FAST: RAG errors should be visible
-            logger.error(f"RAG search failed: {e}")
-            raise
-
-    def cleanup(self) -> None:
-        """Clean up RAG client resources."""
-        # RAG client cleanup is handled at factory level
-        pass
+        return outcome.rendered
 
 
 # =============================================================================
@@ -1052,53 +1105,34 @@ class ReconstructedTools(BaseModel):
         return self.agent_tools.get(name)
 
     def cleanup(self) -> None:
-        """Clean up all tool resources."""
-        for tool in self.agent_tools.values():
-            if hasattr(tool, "cleanup"):
-                tool.cleanup()
-        for tool in self.user_tools.values():
-            if hasattr(tool, "cleanup"):
-                tool.cleanup()
-        MCPServerToolWrapper.cleanup_all_servers()
+        """Clean up all tool resources (see :func:`cleanup_tools`)."""
+        cleanup_tools(self.agent_tools, self.user_tools)
 
 
-# =============================================================================
-# Search Tool Schema (for search_kb tool)
-# =============================================================================
+def cleanup_tools(agent_tools: dict[str, Any], user_tools: dict[str, Any]) -> None:
+    """Stop and clean up every tool in both registries, once per instance.
 
-
-def create_search_kb_schema() -> ToolSchemaModel:
-    """Create the schema for the search_kb tool."""
-    return ToolSchemaModel(
-        name="search_kb",
-        description="Search the knowledge base for relevant information. Use this to find policies, procedures, FAQs, and other documentation.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query to find relevant documents",
-                },
-                "top_k": {
-                    "type": "integer",
-                    "description": "Number of results to return (default: 5)",
-                    "default": 5,
-                },
-                "alpha": {
-                    "type": "number",
-                    "description": "Weight for hybrid search: 0.0=keyword only, 1.0=semantic only, 0.5=balanced (default: 0.5)",
-                    "default": 0.5,
-                    "minimum": 0.0,
-                    "maximum": 1.0,
-                },
-            },
-            "required": ["query"],
-            "additionalProperties": False,
-        },
-        category="read",
-        timeout_s=15.0,
-        source=None,  # RAG tools don't have a source - they're built-in
-    )
+    Every tool is attempted even when an earlier one fails; the failures are
+    raised together afterwards.
+    """
+    errors = []
+    seen = set()
+    for tool in (*agent_tools.values(), *user_tools.values()):
+        if id(tool) in seen:
+            continue
+        seen.add(id(tool))
+        callbacks = []
+        if getattr(tool, "has_lifecycle", False):
+            callbacks.append(tool.stop)
+        if hasattr(tool, "cleanup"):
+            callbacks.append(tool.cleanup)
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception as exc:
+                errors.append(exc)
+    if errors:
+        raise RuntimeError(f"Trial tool cleanup failed: {errors!r}") from errors[0]
 
 
 # =============================================================================
@@ -1121,6 +1155,88 @@ def _decode_partial_output(buf: bytes | str | None) -> str:
     if isinstance(buf, bytes):
         return buf.decode("utf-8", errors="replace")
     return buf
+
+
+def _run_argv_preserving_partial_output(argv: list[str], timeout_s: float) -> str:
+    """Run *argv* and return its output, never raising on a deadline overrun.
+
+    Body of :meth:`~tolokaforge.runner.env_exec.SupportsEnvExec.exec_in_env`,
+    shared by every wrapper that offers the capability.
+
+    Popen + ``communicate(timeout=…)`` so a timeout kills the process AND
+    surfaces whatever the child had already written. ``subprocess.run``'s
+    capture_output path discards buffered stdout on ``TimeoutExpired``, which
+    turns a slow-agent run into an opaque "nothing happened".
+    """
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        # subprocess.TimeoutExpired.stdout/stderr carry the raw bytes the
+        # child had buffered when the deadline hit, even under text=True —
+        # Popen only decodes at the point of a clean communicate() return.
+        # _decode_partial_output normalises to str so the footer
+        # concatenation below is str+str, not str+bytes (a TypeError there
+        # would hide the output this path exists to preserve).
+        stdout = _decode_partial_output(exc.stdout)
+        stderr = _decode_partial_output(exc.stderr)
+        # communicate() after kill drains whatever else the child buffered.
+        try:
+            more_out, more_err = proc.communicate(timeout=5)
+            stdout += _decode_partial_output(more_out)
+            stderr += _decode_partial_output(more_err)
+        except subprocess.TimeoutExpired:
+            # Best-effort drain; the primary timeout is already surfaced in
+            # the timed-out footer below.
+            pass
+        timed_out = True
+    output = stdout
+    if timed_out:
+        output += f"\n[timed out after {timeout_s}s; partial output preserved]\n{stderr}"
+    elif proc.returncode != 0:
+        output += f"\n[exit code: {proc.returncode}]\n{stderr}"
+    return output
+
+
+def _run_argv_with_exit_code(argv: list[str], timeout_s: float) -> tuple[int, str]:
+    """Run *argv* and return ``(returncode, stdout+stderr_merged)``.
+
+    Body of
+    :meth:`~tolokaforge.runner.env_exec.SupportsEnvExec.exec_in_env_with_exit_code`,
+    shared by every wrapper that offers the capability. rc=0 → the merged
+    output is just stdout; rc≠0 → the same ``\\n[exit code: N]\\n{stderr}``
+    suffix :func:`_run_argv_preserving_partial_output` uses is appended, so
+    callers that render the merged string in a grade's reasons block see the
+    exit-code marker in the same place. A deadline overrun raises
+    :class:`subprocess.TimeoutExpired` rather than returning partial output —
+    the callers render that as its own grade outcome.
+    """
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s)
+    merged = proc.stdout
+    if proc.returncode != 0:
+        merged += f"\n[exit code: {proc.returncode}]\n{proc.stderr}"
+    return proc.returncode, merged
+
+
+def _docker_exec_argv(container: str, command: str, user: str | None = None) -> list[str]:
+    """``docker exec`` argv running *command* under bash inside *container*.
+
+    ``--user`` before ``-i``: matches ``docker exec --help`` order and the argv
+    :class:`~tolokaforge.tools.persistent_shell.DockerComposeBashSession` builds
+    for the same container.
+    """
+    argv = ["docker", "exec"]
+    if user is not None:
+        argv.extend(["--user", user])
+    argv.extend(["-i", container, "bash", "-c", command])
+    return argv
 
 
 class DockerComposeExecToolWrapper(ToolWrapper):
@@ -1169,81 +1285,33 @@ class DockerComposeExecToolWrapper(ToolWrapper):
     async def execute(self, arguments: dict[str, Any]) -> str:
         command = arguments.get("command", "")
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._exec_sync, command, self.own_budget_s)
+        return await loop.run_in_executor(None, self.exec_in_env, command, self.own_budget_s)
 
-    def _exec_sync(self, command: str, timeout: float) -> str:
-        if self._container is None:
-            raise ToolExecutionError(
-                self.name,
-                "docker_compose_exec tool executed before start() — container name unresolved",
-            )
-        # Popen + communicate(timeout=…) so a timeout kills the process AND
-        # surfaces whatever the CLI had already written. subprocess.run's
-        # capture_output path discards buffered stdout on TimeoutExpired,
-        # which turns a slow-agent run into an opaque "nothing happened".
-        proc = subprocess.Popen(
-            ["docker", "exec", "-i", self._container, "bash", "-c", command],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-            timed_out = False
-        except subprocess.TimeoutExpired as exc:
-            proc.kill()
-            # subprocess.TimeoutExpired.stdout/stderr carry the raw bytes
-            # the child had buffered when the deadline hit, even under
-            # text=True — Popen only decodes at the point of a clean
-            # communicate() return. _decode_partial_output normalises to
-            # str so the footer concatenation below is str+str, not
-            # str+bytes (a TypeError there would hide the CLI output the
-            # whole rewrite exists to preserve).
-            stdout = _decode_partial_output(exc.stdout)
-            stderr = _decode_partial_output(exc.stderr)
-            # communicate() after kill drains whatever else the child buffered.
-            try:
-                more_out, more_err = proc.communicate(timeout=5)
-                stdout += _decode_partial_output(more_out)
-                stderr += _decode_partial_output(more_err)
-            except subprocess.TimeoutExpired:
-                # Best-effort drain; the primary timeout is already surfaced
-                # in the wrapper's timed-out footer below.
-                pass
-            timed_out = True
-        output = stdout
-        if timed_out:
-            output += f"\n[timed out after {timeout}s; partial output preserved]\n{stderr}"
-        elif proc.returncode != 0:
-            output += f"\n[exit code: {proc.returncode}]\n{stderr}"
-        return output
+    def exec_in_env(self, command: str, timeout_s: float) -> str:
+        """Run ``command`` in the trial container and return its output.
 
-    def _exec_sync_with_rc(self, command: str, timeout: float) -> tuple[int, str]:
+        Satisfies :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`.
+        """
+        return _run_argv_preserving_partial_output(self._exec_argv(command), timeout_s)
+
+    def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
         """Run ``command`` and return ``(returncode, stdout+stderr_merged)``.
 
-        Sibling of :meth:`_exec_sync`. The two-arg-tuple return exposes the
-        returncode to callers that need to render it (e.g. the substrate's
-        test-suite RPC that ships the exit code on the wire) without gating on
-        it. rc=0 → merged output is just stdout; rc≠0 → the same
-        ``\\n[exit code: N]\\n{stderr}`` suffix :meth:`_exec_sync` uses is
-        appended so callers that render the merged string in a grade's reasons
-        block see the exit-code marker in the same place.
+        Sibling of :meth:`exec_in_env`, and the second half of
+        :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`. The two-arg-tuple
+        return exposes the returncode to callers that need to render it (e.g.
+        the substrate's test-suite RPC that ships the exit code on the wire)
+        without gating on it.
         """
+        return _run_argv_with_exit_code(self._exec_argv(command), timeout_s)
+
+    def _exec_argv(self, command: str) -> list[str]:
         if self._container is None:
             raise ToolExecutionError(
                 self.name,
                 "docker_compose_exec tool executed before start() — container name unresolved",
             )
-        proc = subprocess.run(
-            ["docker", "exec", "-i", self._container, "bash", "-c", command],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        merged = proc.stdout
-        if proc.returncode != 0:
-            merged += f"\n[exit code: {proc.returncode}]\n{proc.stderr}"
-        return proc.returncode, merged
+        return _docker_exec_argv(self._container, command)
 
 
 # =============================================================================
@@ -1324,6 +1392,50 @@ class PersistentShellToolWrapper(ToolWrapper):
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, self._session.run, command, self._timeout_s)
         return self._format_result(result)
+
+    def exec_in_env(self, command: str, timeout_s: float) -> str:
+        """Run ``command`` in the trial's environment and return its output.
+
+        First half of :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`, so
+        a trial whose only agent tool is this one is still gradeable: the three
+        grading consumers pick their executor out of ``agent_tools`` by that
+        capability, and a trial that ran on the session-lifetime shell would
+        otherwise present no executor at all.
+        """
+        return _run_argv_preserving_partial_output(self._exec_argv(command), timeout_s)
+
+    def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
+        """Run ``command`` and return ``(returncode, stdout+stderr_merged)``.
+
+        Second half of :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`.
+        """
+        return _run_argv_with_exit_code(self._exec_argv(command), timeout_s)
+
+    def _exec_argv(self, command: str) -> list[str]:
+        """Argv for a fresh one-shot exec into the environment the session targets.
+
+        Deliberately not routed through :attr:`_session`. Grading runs after an
+        agent has had the shell for a whole trial, and that shell carries the
+        agent's cwd, exported environment and any traps or shell functions it
+        defined; a verifier run inside it would be graded against a mutated
+        shell rather than against the environment. A timed-out command also
+        leaves the session needing a restart, which would make grading's
+        success depend on the agent's last command. Both hazards go away by
+        exec'ing into the same container (or the same host, for the local
+        backend) afresh — which is exactly what the compose-exec wrapper this
+        tool replaces did.
+        """
+        if self._service is None:
+            return ["bash", "-c", command]
+        if self._trial_id is None or self._project_prefix is None:
+            raise ToolExecutionError(
+                self.name,
+                "bash_session executed before start() — container name unresolved",
+            )
+        container = self._resolve_container_name(
+            self._trial_id, self._service, self._project_prefix
+        )
+        return _docker_exec_argv(container, command, user=self._user)
 
     def _new_session(self) -> BashSession:
         """Construct (but do not open) the backend session from config."""
@@ -1488,7 +1600,10 @@ class ToolFactory:
     - tau_sync: TauSyncToolWrapper
     - mcp_async: MCPAsyncToolWrapper
     - mcp_server: MCPServerToolWrapper
-    - rag_search: RAGSearchToolWrapper (for search_kb tool)
+    - docker_compose_exec: DockerComposeExecToolWrapper
+    - source-less, the task's search tool: SearchToolWrapper over the trial's index
+    - db_query / db_update: JsonDBToolWrapper, bound to the trial's own JSON DB
+    - any other source-less schema: the builtin its name selects
 
     FAIL FAST: If any tool cannot be reconstructed, raises ToolReconstructionError.
     """
@@ -1497,10 +1612,12 @@ class ToolFactory:
         self,
         db_client: DBServiceClient,
         trial_id: str,
-        rag_client: RAGServiceClient | None = None,
         db_table_names: list[str] | None = None,
         initial_state_data: dict[str, list[dict]] | None = None,
         id_fields: Mapping[str, str | list[str]] | None = None,
+        *,
+        search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
+        search_index: SearchIndex | None = None,
     ):
         """
         Initialize the tool factory.
@@ -1508,7 +1625,6 @@ class ToolFactory:
         Args:
             db_client: HTTP client for DB Service communication
             trial_id: Unique trial identifier
-            rag_client: Optional RAG service client for search tools
             db_table_names: Optional list of actual table names from initial_state.
                            These are the source of truth for table name registration.
             initial_state_data: Optional dict mapping table names to their records.
@@ -1520,14 +1636,21 @@ class ToolFactory:
                        model registration and is forwarded to the DB proxy and to
                        TauSyncToolWrapper diff-sync so key resolution is
                        data-driven; a table absent resolves to ``"id"``.
+            search_tool_name: The task's search tool (``search.tool_name``). A
+                              source-less schema of this name is bound to
+                              ``search_index`` rather than looked up as a builtin.
+            search_index: The trial's search index, built by the backend
+                          ``search.plane`` names; ``None`` when the trial has none.
         """
         self.db_client = db_client
         self.trial_id = trial_id
-        self.rag_client = rag_client
+        self.search_tool_name = search_tool_name
+        self.search_index = search_index
         self.db_table_names = db_table_names or []
         self._initial_state_data = initial_state_data or {}
         self.id_fields: dict[str, str | list[str]] = dict(id_fields or {})
         self._claimed_tables: set[str] = set()
+        self._mcp_server_pool = MCPServerPool()
 
         # Create DB proxies for tools
         # Pass db_table_names so the proxy can resolve table names for unregistered models
@@ -1595,9 +1718,13 @@ class ToolFactory:
             ToolConfigurationError: If tool has no source and is not a built-in
             ToolImportError: If tool module/class cannot be imported
         """
-        # Handle built-in tools (no source) — dispatch by name through
-        # the unified registry. Eliminates the previous drift between
-        # hardcoded name tuples and a separate factory dict.
+        # The task's search tool is source-less and bound by the task's
+        # declaration (``search.tool_name``), before any builtin lookup, so a
+        # renamed search tool needs no registry entry of its own.
+        if schema.source is None and schema.name == self.search_tool_name:
+            return self._create_search_wrapper(schema)
+
+        # Built-in tools (no source) dispatch by name through the unified registry.
         if schema.source is None:
             from tolokaforge.tools.builtin import registry as builtin_registry
 
@@ -1606,14 +1733,14 @@ class ToolFactory:
                     schema.name, _hint_source_configuration_missing(schema.name)
                 )
             dispatch = builtin_registry.get_dispatch(schema.name)
-            if dispatch is builtin_registry.Dispatch.RAG:
-                return self._create_rag_search_wrapper(schema)
             if dispatch is builtin_registry.Dispatch.FILES:
                 return BuiltinFileToolWrapper(schema)
             if dispatch is builtin_registry.Dispatch.PERSISTENT_SHELL:
                 return PersistentShellToolWrapper(schema)
             if dispatch is builtin_registry.Dispatch.EDITOR:
                 return StrReplaceEditorToolWrapper(schema, trial_id=self.trial_id)
+            if dispatch is builtin_registry.Dispatch.JSON_DB:
+                return JsonDBToolWrapper(schema, self.db_client, self.trial_id)
             return BuiltinGenericToolWrapper(schema)
 
         source = schema.source
@@ -1973,6 +2100,7 @@ class ToolFactory:
             server_script=source.mcp_server_script,
             db_client=self.db_client,
             trial_id=self.trial_id,
+            server_pool=self._mcp_server_pool,
         )
 
     def _create_docker_compose_exec_wrapper(
@@ -2000,29 +2128,22 @@ class ToolFactory:
             compose_project_prefix=compose_project_prefix,
         )
 
-    def _create_rag_search_wrapper(self, schema: ToolSchemaModel) -> RAGSearchToolWrapper:
+    def _create_search_wrapper(self, schema: ToolSchemaModel) -> SearchToolWrapper:
+        """Bind the task's search tool to the trial's index (FAIL FAST).
+
+        Raises:
+            ToolConfigurationError: the trial has no search index — the task
+                declares the tool but no corpus a search backend indexed.
         """
-        Create a RAG search tool wrapper.
-
-        FAIL FAST: Raises ToolConfigurationError if RAG client not available.
-
-        Args:
-            schema: Tool schema for search_kb
-
-        Returns:
-            RAGSearchToolWrapper instance
-        """
-        if self.rag_client is None:
+        if self.search_index is None:
             raise ToolConfigurationError(
                 schema.name,
-                "RAG client not configured. Set RAG_SERVICE_URL environment variable.",
+                "no search index serves this tool: the task description names no search "
+                "backend that built one for this trial (search.plane, or search.enabled "
+                "for rag-service) and no corpus (search.documents_path). Declare "
+                "initial_state.rag.corpus_dir for the task, or drop the tool.",
             )
-
-        return RAGSearchToolWrapper(
-            tool_schema=schema,
-            rag_client=self.rag_client,
-            trial_id=self.trial_id,
-        )
+        return SearchToolWrapper(schema, self.search_index)
 
 
 # =============================================================================
@@ -2035,7 +2156,8 @@ def reconstruct_tools(
     db_client: DBServiceClient,
     trial_id: str,
     is_user_tools: bool = False,
-    rag_client: RAGServiceClient | None = None,
+    search_index: SearchIndex | None = None,
+    search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
 ) -> dict[str, ToolWrapper]:
     """
     Convenience function to reconstruct tools from schema dicts.
@@ -2047,7 +2169,8 @@ def reconstruct_tools(
         db_client: DB Service client
         trial_id: Trial identifier
         is_user_tools: Whether these are user-side tools
-        rag_client: Optional RAG service client for search tools
+        search_index: The trial's search index, for the task's search tool
+        search_tool_name: The task's search tool name (``search.tool_name``)
 
     Returns:
         Dictionary mapping tool name to wrapper
@@ -2055,7 +2178,9 @@ def reconstruct_tools(
     Raises:
         ToolReconstructionError: If any tool cannot be reconstructed
     """
-    factory = ToolFactory(db_client, trial_id, rag_client)
+    factory = ToolFactory(
+        db_client, trial_id, search_tool_name=search_tool_name, search_index=search_index
+    )
 
     if is_user_tools:
         result = factory.reconstruct_tools([], tools)

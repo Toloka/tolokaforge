@@ -13,7 +13,7 @@ shipped table can be refreshed from the OpenRouter API using the
 Values reflect *OpenRouter-routed* rates, which is what every Anthropic-family
 call in this harness is billed at — :class:`LLMClient` always prefixes the
 litellm model id with ``openrouter/`` for ``provider="openrouter"`` model
-configs (see ``_format_model_name``) and sets
+configs (see ``providers.litellm_model_id``) and sets
 ``custom_llm_provider="openrouter"`` (see ``_build_kwargs``); no preset
 configures direct Anthropic API. The OR-discounted Opus 4.5+ tier
 (``$5/$25`` input/output per 1M tokens — verified live against
@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -109,7 +109,7 @@ class PricingTableMetadata:
         """How long ago the table was fetched, or ``None`` when it does not say."""
         if self.updated_at is None:
             return None
-        return datetime.now(timezone.utc) - self.updated_at
+        return datetime.now(UTC) - self.updated_at
 
 
 def pricing_table_metadata(path: Path | None = None) -> PricingTableMetadata:
@@ -138,7 +138,7 @@ def pricing_table_metadata(path: Path | None = None) -> PricingTableMetadata:
             parsed = None
         else:
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed = parsed.replace(tzinfo=UTC)
     return PricingTableMetadata(
         source_url=source if isinstance(source, str) else None, updated_at=parsed
     )

@@ -53,11 +53,15 @@ from tolokaforge.core.grading.trace_replay import (
 )
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
+from tolokaforge.core.llm.litellm_params import overlay_key_mismatches
 from tolokaforge.core.llm.presets import (
+    capability_override_errors,
     resolve_overlay_path,
     set_overlay_path,
     validate_overlay_file,
 )
+from tolokaforge.core.llm.proxy import ProxyConfigError
+from tolokaforge.core.llm.session_header import session_header_conflicts
 from tolokaforge.core.logging import (
     LogFormat,
     configure_root_logging,
@@ -115,18 +119,9 @@ install_global_redactor()
 # os.environ directly. Mirror the resolved secrets into os.environ once at
 # CLI startup so those SDKs find them. Use setdefault so explicit shell
 # exports always win.
-_secrets.export_to_environ(
-    [
-        "OPENROUTER_API_KEY",
-        "OPENROUTER_API_KEYS",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
-        "NOVA_API_KEY",
-        "TYPESENSE_API_KEY",
-    ]
-)
+from tolokaforge.core.llm.providers import CLI_EXPORTED_CREDENTIAL_ENV_NAMES as _CLI_CRED_NAMES
+
+_secrets.export_to_environ(list(_CLI_CRED_NAMES))
 
 
 def _print_runtime_banner(*, console: Console, runtime_choice: str | None, source: str) -> None:
@@ -399,7 +394,6 @@ cli.add_command(grade_run)
 
 # Default user model configuration
 DEFAULT_USER_MODEL_PROVIDER = "openrouter"
-DEFAULT_USER_MODEL_TEMPERATURE = 0.2
 
 _DEFAULT_DRY_RUN_SAMPLES = 3
 """Number of tasks rendered under ``tolokaforge run --dry-run``.
@@ -451,7 +445,9 @@ def _activate_presets_overlay(
     contract (so tests can install paths cheaply), but at the CLI boundary
     we want a typo'd overlay to fail *here* — before the orchestrator is
     constructed, ``load_tasks()`` walks the task tree, or the Docker stack
-    auto-starts.
+    auto-starts. The same holds for a ``litellm_models`` entry stored under a
+    model's raw name (``litellm_params.OverlayKeyMismatchError``, the first in walk order
+    over every model and fallback).
     """
     config_value = run_config.engine.presets_file if run_config.engine else None
     queue_state_value = read_persisted_presets_file(run_dir) if run_dir is not None else None
@@ -462,7 +458,40 @@ def _activate_presets_overlay(
     set_overlay_path(resolved)
     if resolved is not None:
         validate_overlay_file(resolved)
+        mismatches = overlay_key_mismatches(run_config.models)
+        if mismatches:
+            mismatch = mismatches[0][1]
+            raise click.ClickException(str(mismatch)) from mismatch
     return resolved
+
+
+def _refuse_session_header_conflicts(run_config: RunConfig) -> None:
+    """Refuse the first session header, over every model and fallback, that
+    another header source also sets, or a malformed gateway environment when some
+    config declares ``session``.
+
+    A fallback's client is built only on failover, so its construction-time
+    check alone would fail mid-run.
+    """
+    try:
+        conflicts = session_header_conflicts(run_config.models)
+    except ProxyConfigError as err:
+        raise click.ClickException(str(err)) from err
+    if conflicts:
+        conflict = conflicts[0][1]
+        raise click.ClickException(str(conflict)) from conflict
+
+
+def _refuse_unbuildable_capabilities(run_config: RunConfig) -> None:
+    """Refuse a run naming every model config, fallbacks included, whose
+    capabilities do not build.
+
+    Every configured role is checked, including one this run never builds (a judge
+    on a deterministic-only task set), so the refusal does not depend on the tasks.
+    """
+    errors = capability_override_errors(run_config.models)
+    if errors:
+        raise click.ClickException("\n".join(str(err) for _, err in errors))
 
 
 _UNGRADEABLE_TRIALS_NAMED = 5
@@ -638,9 +667,10 @@ def _run_dry_run(
     type=float,
     default=None,
     help=(
-        "Hard cap on cumulative agent cost in USD. Stops enqueuing new "
-        "trials on hit; in-flight trials finish. Writes LIMIT_HIT.json "
-        "under the run directory. Overrides compute.max_budget_usd."
+        "Hard cap in USD on cumulative spend across all actor roles (agent + "
+        "user simulator + rubric judge). Stops enqueuing new trials on hit; "
+        "in-flight trials finish. Writes LIMIT_HIT.json under the run "
+        "directory. Overrides compute.max_budget_usd."
     ),
 )
 @click.option(
@@ -773,27 +803,27 @@ def run(
         config_data["evaluation"]["output_dir"] = f"results/run_{timestamp}"
 
     # Apply user model override: CLI flag > env var > YAML config
-    # Priority: --user-model flag takes precedence over USER_MODEL env var
+    # Priority: --user-model flag takes precedence over USER_MODEL env var.
+    # No temperature: the simulator never reads models.user.temperature, and
+    # writing one would only earn the run the warning about it.
     user_model_override = user_model or os.environ.get("USER_MODEL")
     if user_model_override:
         config_data.setdefault("models", {})["user"] = {
             "provider": DEFAULT_USER_MODEL_PROVIDER,
             "name": user_model_override,
-            "temperature": DEFAULT_USER_MODEL_TEMPERATURE,
         }
         console.print(f"[cyan]User model override: {user_model_override}[/cyan]")
 
     # Apply judge model: CLI flag > env var > YAML config (models.judge).
-    # Temperature is pinned to 0 for grading determinism (the judge does not
-    # honour a non-zero temperature yet). The YAML path is primary and parses
-    # with no loader change; this flag is the ergonomic override mirroring
-    # --user-model.
+    # The YAML path is primary; this flag is the ergonomic override mirroring
+    # --user-model. No temperature: ModelConfig's default 0.0 applies, and an
+    # explicit one would earn the ignored-value warning on a model whose
+    # preset sends no sampling parameters.
     judge_model_override = judge_model or os.environ.get("JUDGE_MODEL")
     if judge_model_override:
         config_data.setdefault("models", {})["judge"] = {
             "provider": DEFAULT_USER_MODEL_PROVIDER,
             "name": judge_model_override,
-            "temperature": 0.0,
         }
         console.print(f"[cyan]Judge model: {judge_model_override}[/cyan]")
 
@@ -868,6 +898,8 @@ def run(
     overlay_path = _activate_presets_overlay(presets_file, run_config)
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
+    _refuse_session_header_conflicts(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     # Fallback-model chain lives on ``models.agent.fallbacks`` in the run
     # config (list of ModelConfig entries, in order). Empty list → no
@@ -1592,6 +1624,8 @@ def prepare(
     overlay_path = _activate_presets_overlay(presets_file, run_config)
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
+    _refuse_session_header_conflicts(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     orchestrator = Orchestrator(
         run_config,
@@ -1686,6 +1720,8 @@ def worker(
     overlay_path = _activate_presets_overlay(presets_file, run_config, run_dir=Path(run_dir))
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
+    _refuse_session_header_conflicts(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     orchestrator = Orchestrator(
         run_config,
@@ -1947,24 +1983,29 @@ def validate(tasks: str, strict_authoring: bool):
             )
             if strict_authoring and adapter_declared:
                 console.print(
-                    f"[red]✗ {task_file}: --strict-authoring refuses "
+                    f"[red]✗ {escape(task_file)}: --strict-authoring refuses "
                     f"{len(adapter_declared)} adapter-declared skip(s)[/red]"
                 )
                 for skip in adapter_declared:
-                    console.print(f"[red]  ✗ {skip.where}: {skip.reason}[/red]")
+                    console.print(f"[red]  ✗ {escape(skip.where)}: {escape(skip.reason)}[/red]")
                 for skip in report.unchecked:
                     if skip.kind is SkipKind.STRUCTURAL:
                         console.print(
-                            f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]"
+                            f"[yellow]  ? {escape(skip.where)} not checked: "
+                            f"{escape(skip.reason)}[/yellow]"
                         )
                 invalid += 1
                 continue
-            console.print(f"[green]✓ {task_file}[/green]")
+            console.print(f"[green]✓ {escape(task_file)}[/green]")
             for skip in report.unchecked:
-                console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")
+                console.print(
+                    f"[yellow]  ? {escape(skip.where)} not checked: {escape(skip.reason)}[/yellow]"
+                )
+            for hint in report.hints:
+                console.print(f"[yellow]  ⚠ {escape(hint.where)}: {escape(hint.message)}[/yellow]")
             valid += 1
         except Exception as e:
-            console.print(f"[red]✗ {task_file}: {str(e)}[/red]")
+            console.print(f"[red]✗ {escape(task_file)}: {escape(str(e))}[/red]")
             invalid += 1
 
     console.print(f"\n[bold]Summary:[/bold] {valid} valid, {invalid} invalid")

@@ -520,7 +520,8 @@ async def delete_index(trial_id: str) -> DeleteResponse:
     )
 
 
-# Legacy endpoint for compatibility with existing SearchKBTool
+# Legacy global endpoint, without trial isolation, kept for external clients;
+# the engine's own search reads /trials/{trial_id}/search.
 @app.post("/search")
 async def search_legacy(request: SearchRequest) -> list[SearchResult]:
     """

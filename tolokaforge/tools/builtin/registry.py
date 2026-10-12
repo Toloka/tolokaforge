@@ -14,6 +14,7 @@ contexts across services (#123).
 from __future__ import annotations
 
 import importlib
+from collections.abc import Iterable
 from enum import StrEnum
 from functools import cache
 from typing import NamedTuple
@@ -31,20 +32,25 @@ class Dispatch(StrEnum):
     schema's ``source`` field nor any per-task config influences the
     choice. ``GENERIC`` tools receive ``ToolSchema.tool_config`` as
     constructor kwargs; ``FILES`` tools take ``WORK_DIR`` from the runner
-    container layout; ``RAG`` tools take a ``rag_client`` + ``trial_id``
-    bound by the runner factory; ``PERSISTENT_SHELL`` tools are lifecycle
+    container layout; ``PERSISTENT_SHELL`` tools are lifecycle
     wrappers that hold a bash session for the trial, selecting a local or
     compose backend from ``tool_config`` without a second dispatch branch.
     ``EDITOR`` tools are stateless file editors matching Anthropic's
     ``str_replace_based_edit_tool``, selecting a local or compose backend from
-    ``tool_config``.
+    ``tool_config``. ``JSON_DB`` tools read and write the trial's own store on
+    db-service through the runner factory's ``db_client`` + ``trial_id``, and
+    take no ``tool_config``.
+
+    The knowledge-base search tool is not a builtin: the task declares it
+    (``initial_state.rag.tool``) and the runner binds it to the trial's search
+    index by that declaration, before this registry is consulted (ADR-0054).
     """
 
     GENERIC = "generic"
     FILES = "files"
-    RAG = "rag"
     PERSISTENT_SHELL = "persistent_shell"
     EDITOR = "editor"
+    JSON_DB = "json_db"
 
 
 _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
@@ -74,11 +80,11 @@ _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
     ),
     "db_query": (
         BuiltinToolEntry("tolokaforge.tools.builtin.db_json", "DBQueryTool"),
-        Dispatch.GENERIC,
+        Dispatch.JSON_DB,
     ),
     "db_update": (
         BuiltinToolEntry("tolokaforge.tools.builtin.db_json", "DBUpdateTool"),
-        Dispatch.GENERIC,
+        Dispatch.JSON_DB,
     ),
     "read_file": (
         BuiltinToolEntry("tolokaforge.tools.builtin.files", "ReadFileTool"),
@@ -92,10 +98,6 @@ _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
         BuiltinToolEntry("tolokaforge.tools.builtin.files", "ListDirTool"),
         Dispatch.FILES,
     ),
-    "search_kb": (
-        BuiltinToolEntry("tolokaforge.tools.builtin.rag_search", "SearchKBTool"),
-        Dispatch.RAG,
-    ),
     "bash_session": (
         BuiltinToolEntry("tolokaforge.tools.persistent_shell", "PersistentShellTool"),
         Dispatch.PERSISTENT_SHELL,
@@ -104,12 +106,37 @@ _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
         BuiltinToolEntry("tolokaforge.tools.str_replace_editor", "StrReplaceEditorTool"),
         Dispatch.EDITOR,
     ),
+    "submit": (
+        BuiltinToolEntry("tolokaforge.tools.builtin.submit", "SubmitTool"),
+        Dispatch.GENERIC,
+    ),
 }
+
+_COMPLETION_TOOLS: frozenset[str] = frozenset({"submit"})
+"""Builtins whose call is the agent's own end-of-episode signal.
+
+Orthogonal to :class:`Dispatch`, which names the runner-side wrapper: a
+completion tool is reconstructed like any other builtin, and what sets it
+apart happens a layer above, in the trial runner's termination policy. Naming
+the set here rather than at that policy keeps "which tool ends an episode" a
+property of the registry every caller already consults, so a second completion
+tool is one entry rather than an edit in two packages.
+"""
 
 
 def is_builtin(name: str) -> bool:
     """Return True if *name* is a known builtin tool."""
     return name in _REGISTRY
+
+
+def is_completion(name: str) -> bool:
+    """Return True if calling *name* is the agent's end-of-episode signal."""
+    return name in _COMPLETION_TOOLS
+
+
+def list_completion_tools() -> frozenset[str]:
+    """Return the set of builtin names that end an episode when called."""
+    return _COMPLETION_TOOLS
 
 
 def get_dispatch(name: str) -> Dispatch:
@@ -142,3 +169,11 @@ def list_builtins() -> frozenset[str]:
 def list_for_dispatch(dispatch: Dispatch) -> frozenset[str]:
     """Return the set of names that route to *dispatch*."""
     return frozenset(name for name, (_, d) in _REGISTRY.items() if d is dispatch)
+
+
+def json_db_tool_config_refusal(name: str, keys: Iterable[str]) -> str:
+    """Why the ``JSON_DB`` builtin *name* refuses a ``tool_config`` carrying *keys*."""
+    return (
+        f"'{name}' reads the trial's own JSON DB and takes no tool_config; "
+        f"got keys {sorted(keys)}"
+    )

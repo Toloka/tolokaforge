@@ -33,6 +33,11 @@ from tolokaforge.core.llm.presets import resolve_effective_preset
 pytestmark = pytest.mark.unit
 
 
+#: Every route that must end up with the recovery recipe, whichever preset
+#: hands it over. The Kimi K2 line gets it from ``moonshot_kimi_k2``, which
+#: restates the recipe verbatim alongside the turn budget that line needs;
+#: it is listed here because what matters to a trial is the behaviour, not
+#: which entry supplied it.
 _RECOVERY_MODELS = [
     "xiaomi/mimo-v2.5-pro",
     "xiaomi/mimo-v2.5",
@@ -41,6 +46,12 @@ _RECOVERY_MODELS = [
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4.1",
 ]
+
+#: The subset this preset still owns by name. K2 is routed by
+#: ``moonshot_kimi_k2`` — see ``tests/unit/test_kimi_preset_routing.py``.
+_RECOVERY_PRESET_MODELS = [m for m in _RECOVERY_MODELS if "kimi-k2" not in m]
+
+_K2_MODELS = [m for m in _RECOVERY_MODELS if "kimi-k2" in m]
 
 
 @pytest.mark.parametrize("model", _RECOVERY_MODELS)
@@ -53,10 +64,22 @@ def test_recovery_preset_routes_to_passthrough_trio(model: str) -> None:
     assert isinstance(caps.content_policy, OpenAIContent)
 
 
-@pytest.mark.parametrize("model", _RECOVERY_MODELS)
+@pytest.mark.parametrize("model", _RECOVERY_PRESET_MODELS)
 def test_recovery_preset_effective_name(model: str) -> None:
     """``resolve_effective_preset`` returns the new preset id."""
     assert resolve_effective_preset(model, "openrouter") == "openrouter_dict_stringify_recovery"
+
+
+@pytest.mark.parametrize("model", _K2_MODELS)
+def test_kimi_k2_gets_the_recipe_from_its_own_preset(model: str) -> None:
+    """K2 keeps the recovery behaviour but is owned by ``moonshot_kimi_k2``.
+
+    Only one preset applies per model, so the K2 entry restates this
+    recipe rather than inheriting it. Asserted here as well as in the
+    Kimi routing guard so that a change to this preset's recipe is
+    visibly a change K2 has to track too.
+    """
+    assert resolve_effective_preset(model, "openrouter") == "moonshot_kimi_k2"
 
 
 @pytest.mark.parametrize("model", _RECOVERY_MODELS)

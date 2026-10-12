@@ -23,6 +23,9 @@ models:
     # Optional: override auto-detected model capabilities
     capabilities:
       dict_map_prompt_hints: true
+    # Optional: request header carrying a per-conversation id (see the notes below)
+    session:
+      header: "x-session-id"
   # Required when the run dispatches a user simulator. The orchestrator
   # fails loud if `models.user` is absent — there is no hardcoded provider
   # default, so a run always names the provider it ships user turns to.
@@ -31,7 +34,7 @@ models:
   user:
     provider: "openai"
     name: "gpt-4o-mini"
-    temperature: 0.3
+    # No temperature: the user simulator does not read it (see the notes below).
   # Optional: read-only rubric judge model. Required only when a selected task
   # grades with `llm_judge` — the run aborts up front if a rubric task is
   # selected but `judge` is absent (no default, no fallback to the agent model).
@@ -85,12 +88,16 @@ Notes:
 - `models.judge` is the optional run-level read-only rubric judge model (no default); the run fails loud up front if a selected task grades with `llm_judge` but `models.judge` is absent.
 - `evaluation.grading_validation.fail_on` (default `advisory`) names the least severe finding class the pre-run gate refuses the run over. `advisory` fails on both classes; `error` fails on errors alone. Before it schedules anything, a run puts every selected task's grading block through the same predicate `tolokaforge validate` applies and aborts naming **every** offending task; the rules and their three classes are in [GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run). `unchecked` is not a value here: it is a channel rather than a severity, and is logged rather than enforced so a gate that could check nothing does not read as a clean bill of health.
 - **A misspelled `grading_validation` block name is silently dropped.** `evaluation` is `extra="ignore"`, so `grading_validaton:` leaves the defaults in place without a word. The block's own fields are `extra="forbid"`, so a misspelled *field* inside a correctly-spelled block does fail loud.
-- `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
+- `models.<role>.temperature` (default `0.0`) is sent as the request's `temperature`; `null` sends none, so the provider's default applies. A preset or override `fixed_temperature` is sent in place of either. A preset that declares `supports_sampling_params: false` sends neither `temperature` nor `top_p` (a `fixed_temperature` is still sent); an explicit value on such a model config earns a warning from `tolokaforge config validate` and at run start, and `capabilities: {supports_sampling_params: true}` sends it again. `ModelConfig` also crosses the grader RPC and the distributed-worker queue, so a run that writes `null` needs workers and a grader image of this engine version or newer; an older one refuses the payload. **`models.user.temperature` is not read**: the built-in user simulator samples at 0.2, and a simulator registered under `actors.user.simulator` at whatever its `simulator_config` says. Setting the key earns a warning from `tolokaforge config validate` and at run start; it has never changed what the simulator sends, and honouring it now would silently change every run config that sets it.
+- `models.<role>.session.header` names a request header that carries a conversation id, for backends that route one conversation to one replica (for example a gateway ingress that hashes the header to pick a replica). The engine adds it to the `extra_headers` of every request that model makes, whether or not the gateway transport is on; wire delivery is pinned for litellm's `openai` and `openrouter` transports by [`tests/canonical/test_litellm_extra_headers_contract.py`](../tests/canonical/test_litellm_extra_headers_contract.py). A trial's agent sends `<trace_id>-agent` and its user simulator `<trace_id>-user`, where `<trace_id>` is the trial attempt's trace id ([OBSERVABILITY.md](OBSERVABILITY.md)): one value on every turn, tool round, retry, reply-guard regeneration and fallback hop of that conversation, and a new one when the orchestrator retries the trial. Calls that carry no conversation id (the summarizer, the rubric judge, anchor warm-up, certification) send a fresh UUID per call, the same across its retries; a per-judgment id for the judge is tracked in #1690. The name must be an HTTP header token and not one the engine or litellm sets itself (`Authorization`, `Content-Type`, `Content-Length`, `Host`, `X-Api-Key`, `Api-Key`, `Anthropic-Version`, `Anthropic-Beta`, case-insensitively); a misspelled `session:` key or a misspelled key inside the block is refused at load (see the unknown-key note below). Each model config owns its block: a `fallbacks:` entry does not inherit its parent's, so a fallback without one sends no session header. A name that another header source also sets (case-insensitive) is refused: `LLM_PROXY_HEADERS` keys and `LLM_PROXY_REQUEST_ID_HEADER` for a provider the gateway routes, and the engine's OpenRouter defaults (`HTTP-Referer`, `X-Title`, `X-Data-Collection-Opt-Out`) for an OpenRouter provider. `tolokaforge config validate` reports every such config, `run` / `prepare` / `worker` refuse the first before scheduling anything (fallbacks included), and building an `LLMClient` refuses its own config. `config validate` judges against the gateway variables of the shell it runs in, so the run-start check is the authoritative one; both read those variables only when some model config declares `session`. Worker and grader images released before this engine version drop `session` without a word, so distributed workers must run this version for the header to be sent. Value, merge order and collision detail: [LLM_LAYER.md § Session header](LLM_LAYER.md#session-header).
+- **Unknown keys under `models.<role>` are refused.** A key that `ModelConfig` does not declare, at the role's top level or in a `fallbacks:` entry, and a key outside the `openrouter:`, `session:` or `reasoning:` block's own fields, fails the run config's load. The error is located at the block (`models.agent`, `models.agent.fallbacks.0`, `models.agent.openrouter`, …), names every offending key with the closest declared field, and lists the block's accepted keys; rename or delete the key. The same rule holds wherever a model config is built: the Python API, the trial-spec wire to workers and graders, and the readers of a bundle's recorded model configs. A preset overlay's `openrouter_defaults:` block is refused the same way when the overlay loads.
+- `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. The accepted keys are listed under [Model Capability Presets](#model-capability-presets) "Available overrides". Any other key is refused on every model config, fallbacks included, whether or not the run builds that role (a judge on a deterministic-only task set is checked too): `tolokaforge config validate` reports each as an ERROR at `<path>.capabilities`, and `run` / `prepare` / `worker` refuse to start naming every one. A recognised key the matched preset's policies cannot take (`gemini_drop_placeholder_signature` on a GPT-5 name: `OpenAIReasoningCodec() takes no arguments`) is refused the same way, at the same path.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
 - `orchestrator.runtime` is a deprecated plan-shape coercion knob. Backend selection is composer-driven — the orchestrator always constructs `SharedStackRuntimeBackend` and the composer sequences the resolved plan's per-scope substrate. `shared` coerces every task's plan to run-scope, `per_trial` to trial-scope; multi-stack packs are refused under either coercion (declare stack-scope explicitly instead). Any other name registered in the `tolokaforge.runtime_backends` entry-point group (only `in_memory` in-tree today) is a legit backend swap, resolved at run start with an actionable error listing the known names on a typo. Legacy `docker` is a retained alias for `shared`. See [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md).
+- `orchestrator.agent_loop` (default `engine-loop`) names the in-process loop that drives the agent's turns, resolved against the `tolokaforge.agent_loops` entry-point group. `engine-loop` is the built-in tool-calling loop; a downstream package registering a loop with a different prompt contract or action format selects it here without a framework PR. An unregistered name is refused at run start with the known names listed. See [ADR-0050](adr/0050-agent-loop-protocol-and-registry.md) and [RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
 - `orchestrator.strict_task_load` (default `false`) controls how the orchestrator handles an adapter exception raised from `get_task()` while `load_tasks` iterates the discovered task ids. Left `false`, the failure is logged at error level and that task is skipped — the run proceeds with the remaining tasks. Set to `true`, the exception propagates with the task id in the message so the run refuses to start rather than proceeding with a silently shorter task list; the bundled `examples/terminal_bench/*.yaml` opt in because a task-pack that fails to materialise is a config error the operator must see. **`--dry-run` is strict regardless of this flag** — it has its own loader (`load_tasks_for_dry_run`) with no exception handling, since surfacing config errors is the whole point of that entry point.
 - `orchestrator.runtime_connect.timeout_s` (default `30.0`) and `retry_interval_s` (default `1.0`) budget the runner's health-check retry loop during `runtime_backend.connect()`. Raise `timeout_s` when trials flake with `Runner service at localhost:<port> not healthy after 30.1s` on cold-boot. Env vars `TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S` and `TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S` override the block for operational tuning (env → YAML → default). See [RUNNER.md § Health-check timeout on connect](RUNNER.md#health-check-timeout-on-connect).
-- `max_budget_usd` pauses scheduling new trials when cumulative spend reaches the budget.
+- `max_budget_usd` pauses scheduling new trials when cumulative spend across all actor roles (agent + user simulator + rubric judge) reaches the budget.
 - `max_requests_per_second` applies a global limiter across worker threads.
 - `max_attempt_retries` retries transient failures (`rate_limit`, `api_error`, `timeout`) before marking a trial failed.
 - `compute.log_tail` (default `500`, must be `>= 1`) bounds the `docker compose logs --tail` line count captured per service when a multi-service trial fails or grades red on the per-trial backend.
@@ -298,7 +305,7 @@ see [`docs/LLM_LAYER.md`](LLM_LAYER.md) for the full translation table.
 
 ### Model Capability Presets
 
-Model capabilities are auto-detected from model name/provider using preset definitions in `tolokaforge_models/data/model_presets.yaml`. Override auto-detected capabilities via the `capabilities` field in model config:
+Model capabilities are auto-detected from model name/provider using preset definitions in `tolokaforge_models/data/model_presets.yaml`. A route prefix (`openrouter/`, `litellm_proxy/`, `self-hosted/`) does not change the preset a bundled glob picks, except for presets that route by `match_provider` (`aws_nova`); a route-prefixed name that resolves to `default` while its last segment matches a preset earns a warning from `tolokaforge config validate` and at run start (see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-route-prefixed-model-name-resolves-to-the-default-preset)). To pin a name to a preset other than the one the bundled table picks for it, for example to keep the preset a recorded run used, declare an overlay preset whose `match` names it (`match: ["<name>"]`) and that carries that preset's axes; overlay presets are matched first (see [Preset overlay file](#preset-overlay-file-no-engine-release-required)). Override auto-detected capabilities via the `capabilities` field in model config:
 
 ```yaml
 models:
@@ -309,13 +316,35 @@ models:
 ```
 
 Available overrides:
+- `api_call_timeout_s` (positive number) — per-call read/connect timeout for this model; use it to bound one judge attempt without changing other roles.
 - `dict_map_prompt_hints` (bool) — enables the `DictMapHints` prompt policy which appends explicit hints to the system prompt about dict-map parameters (`additionalProperties: {schema}`). When enabled together with `StrictSchema` (auto-enabled for GPT-5 models), both schema-level enriched descriptions AND system prompt hints are applied. Dict-map detection uses the shared `detect_dict_maps()` utility in [`tolokaforge/core/llm/dict_maps.py`](../tolokaforge/core/llm/dict_maps.py).
 - `supports_typed_dict_maps` (bool) — whether model handles typed dict-map schemas natively (without `StrictSchema` rewriting)
 - `supports_schema_extras` (bool) — whether model accepts `title`, `examples`, `minProperties`
-- `fixed_temperature` (float | null) — force specific temperature
+- `fixed_temperature` (float | null) — force specific temperature; sent even when sampling parameters are declared unsupported
 - `supports_seed` (bool) — whether model accepts seed parameter
+- `supports_sampling_params` (bool) — `false` sends no `temperature` / `top_p` / `top_k` from the config or the caller; `true` sends them on a model whose preset declares `false`
 - `unwrap_input_key` (bool) — unwrap Nova/Bedrock `{input: args}` wrapper
+- `tool_content_format` (`"anthropic"` | `"openai"`) — selects the content policy that formats tool results; any other value leaves the preset's in place
+- `supports_tool_images` (bool) — `true` selects the `anthropic` content policy, which sends image blocks in tool results; `false` selects the text-only `openai` one
+- `gemini_drop_placeholder_signature` (bool) — passed to the preset's reasoning codec as `drop_placeholder_signature`: whether the `gemini` codec drops OpenRouter's short placeholder `thought_signature` blocks before replaying them (on by default). A codec that takes no such argument refuses it
 - `reasoning_via_extra_body` (bool) — send reasoning via `extra_body` (OpenRouter)
+- `reasoning_via_thinking_kwarg` (bool) — send `reasoning.mode: budget` as litellm's top-level `thinking={"type": "enabled", "budget_tokens": N}` (direct Anthropic transport); `reasoning_via_extra_body` wins when both are set
+- `drop_sampling_when_thinking` (bool) — drop `temperature` / `top_p` / `top_k` from a request that carries a reasoning kwarg
+- `reasoning_budget_default` (int | null) — the `budget_tokens` sent when `reasoning.mode: budget` names none
+
+GPT-5, GPT-6 and the o-series presets declare `supports_sampling_params: false`, so these models get no `temperature` / `top_p` from any config. A direct-OpenAI config that wants its temperature honoured takes it back for itself:
+
+```yaml
+models:
+  agent:
+    provider: openai
+    name: gpt-5.2
+    temperature: 0.7
+    capabilities:
+      supports_sampling_params: true
+```
+
+or, for every `provider: openai` config of a run, in an operator overlay: `providers: {openai: {params: {supports_sampling_params: true}}}`. Both are for direct-OpenAI transports only. Do not set it on a `provider: openrouter` config, and do not flip it on the `openai_gpt5`, `openai_gpt6` or `openai_o_series` preset itself in an overlay: a gateway's resolved route for an OpenRouter-namespaced name goes out through litellm's `openai` transport, which refuses the `temperature` for the GPT-5 and o-series names before sending (`UnsupportedParamsError`); for GPT-6, no OpenRouter endpoint applies it (see [LLM_LAYER.md § litellm OpenRouter routing caveat](LLM_LAYER.md#litellm-openrouter-routing-caveat)).
 
 #### Prompt caching (preset-driven only)
 
@@ -337,8 +366,9 @@ To add support for a new model, add an entry to
 a class registry in
 [`tolokaforge/core/llm/presets.py`](../tolokaforge/core/llm/presets.py).
 The overlay validator rejects unknown slot names (`ValueError` with a
-`difflib.get_close_matches` suggestion) and unknown nested `params:`
-keys inside a slot block. See
+`difflib.get_close_matches` suggestion), unknown nested `params:`
+keys inside a slot block, and unknown `openrouter_defaults:` keys (refused
+in the same words as an unknown key under `models.<role>`). See
 [ADR-0030 § Extension-point surface](adr/0030-tolokaforge-models-split.md#extension-point-surface-new--widening).
 
 Each slot value takes one of two shapes:
@@ -418,7 +448,7 @@ Schema fields (see
 | `custom_llm_provider` | Value pinned into `kwargs["custom_llm_provider"]` — Nova: `"openai"`; OpenRouter: `"openrouter"`. When `None`, compound providers (`openrouter/google`) fall back to `provider.split("/")[0]`. |
 | `rate_limit_patterns` | Regex strings compiled once at construction and consulted by `LLMClient._is_rate_limit_exception`'s tier-3 text fallback and by `LLMClient.classify_loop_error`. Every shipped non-mock provider carries the same `DEFAULT_RATE_LIMIT_PATTERNS` list; onboarding a provider whose rate-limit prose differs is a YAML edit. |
 | `slug_rewrite` | Two-step per-attempt rewrite of `kwargs["model"]`: `strip_prefix` then `ensure_prefix`. Nova: `nova/` → `openai/`. |
-| `format_model_name_bare` | When `true`, `LLMClient._format_model_name` returns `config.name` as-is. Nova only. |
+| `format_model_name_bare` | When `true`, `litellm_model_id` (the model string `LLMClient` sends) returns `config.name` as-is. Nova only. |
 | `kwargs_pin_transport` | When `true`, `endpoint` and `api_key_env` are read fresh per attempt and pinned into `kwargs["api_base"]` / `kwargs["api_key"]` (fails loud when `api_key_env` resolves empty). Nova only. |
 
 `providers.yaml` ships inside the `tolokaforge-models` wheel at
@@ -464,7 +494,17 @@ litellm_models:                    # models litellm's own map does not carry
 Each entry declares what a model accepts on the wire, with the observation
 behind it, and admits exactly the parameters its flags name for that model's
 calls. Nothing else changes, and nothing is written into litellm's global
-map. See [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
+map. The key is a full `<provider>/<model>` litellm id, where `<model>` is the
+config `name` verbatim, slashes included: `provider: openai` + `name:
+self-hosted/qwen3.6-35b-a3b` is keyed `openai/self-hosted/qwen3.6-35b-a3b`. An
+entry stored under the raw `name` instead, whose first segment names no
+provider (`self-hosted/qwen3.6-35b-a3b`), is an ERROR in `config validate` and
+stops `run` / `prepare` / `worker`, with a message naming the key found and the
+key to rename it to; the check covers every role in `models:` and every
+fallback. A raw key whose first segment names a provider (`anthropic/<model>`
+for `provider: openrouter`) is that provider's config's key: it is left alone,
+admits nothing for this config, and `config validate` reports it as an INFO.
+See [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
 
 `config validate` treats a model absent from litellm's map as an *unknown*,
 not a refusal — it emits an INFO with the exact `litellm_models:` entry to
@@ -505,7 +545,7 @@ description: "Navigate to the mock Example Domain page"
 initial_user_message: "Open example.com and tell me the page title."   # optional — pinned opener, delivered verbatim as turn 1
 
 initial_state:
-  json_db: "initial_state.json"          # optional
+  json_db: "initial_state.json"          # required when db_query or db_update is enabled
   filesystem:
     copy:
       - from: "fixtures/file.txt"
@@ -514,8 +554,15 @@ initial_state:
     base_url: "http://mock-web:8080"
   rag:
     corpus_dir: "rag/corpus"
+    # backend: "rag_service"     # which registered search backend serves the corpus: rag_service | bm25 | a registered name
+    # backend_config: {}         # opaque config for that backend (bm25: see below)
+    # tool:
+    #   name: "search_kb"        # the agent's search tool
+    #   description: "..."       # default: the rag-service tool's description
 
 system_prompt: null
+
+agent_prompt_contract: null           # optional — a shipped contract name or a file beside the task
 
 interaction_mode: "conversational"   # or "agent_only" — see below
 
@@ -534,6 +581,13 @@ actors:
       - if_assistant_contains: "done"
         user: "Thanks!"
       - default: "Please continue."
+    # simulator: "builtin"      # which registered simulator produces the dialogue
+    # simulator_config: {}      # opaque config for a non-builtin simulator
+    stop_tokens: ["###STOP###"]  # tokens that end the dialogue (see docs/TASKS.md)
+    stop_with_text: "deliver"    # "deliver" or "end"
+    tool_turns: "shared"         # "shared" or "isolated" (see docs/TASKS.md)
+    # max_tool_steps: 10         # isolated only
+    # first_agent_message: "Hi! How can I help you today?"  # the agent's opening line
 
 policies:
   guidance:
@@ -547,6 +601,33 @@ metadata:
 
 grading: "grading.yaml"
 ```
+
+### `agent_prompt_contract:` — how the agent is asked to reply
+
+Names the *reply contract* placed ahead of the task's own prompt: how to answer
+each turn, as opposed to what the work is. A bare name selects a contract the
+engine ships (`reasoning_agent` today); anything else is read as a path relative
+to the task directory, the same rule `system_prompt` follows, so a pack may ship
+its own. An unknown name is refused at run start rather than ignored. `null`
+(the default) leaves the prompt exactly as it was.
+
+The contract is composed, not substituted — it opens the prompt and the task's
+own document follows it. An inline `policies.agent_system_prompt` still wins
+outright and is reproduced byte for byte, so byte-exact replay is unaffected.
+
+The shipped `reasoning_agent` contract asks the agent to write, in the same turn
+as its tool call, what the last output showed, what remains, and what it expects
+the next command to produce, and to finish by replying with no tool call once it
+has verified the work. It is written for a task the agent works alone, where the
+grader reads the container and never the transcript, and for models that stop
+narrating when nothing rewards it. A model preset can supply it by default for
+`agent_only` tasks — see [LLM_LAYER.md](LLM_LAYER.md) § Preset-level reply
+contract. Background and the measurements behind the text:
+[ADR-0052](adr/0052-agent-reply-contract.md).
+
+Selecting a contract changes what the model is told, so it changes what a score
+means: runs with and without one are not comparable. The field is written into
+each trial's `task_config.json` for that reason.
 
 ### `interaction_mode:` — turn-loop shape
 
@@ -583,6 +664,99 @@ is refused at load naming which one it is and the fix: `interaction_mode:
 agent_only`, which dispatches no user turn at all, and a user simulator resolving
 to `mode: scripted`, whose reply is text and never a tool call. `tools.user.enabled: []`
 loads under both — the declaration is what is refused, not the key.
+
+### `actors.user.simulator:` / `actors.user.simulator_config:` — which simulator produces the dialogue
+
+`actors.user.simulator` (default `builtin`) names the implementation that
+produces the user's turns, resolved against the `tolokaforge.user_simulators`
+entry-point group. `builtin` is the engine's own simulator (`mode`, `persona`,
+`backstory`, `scripted_flow` above configure it); a downstream package registers
+an alternative — one with its own system prompt, sampling or turn structure — and
+selects it here without a framework PR. Because the simulator is actor-scoped,
+different tasks in a run may name different simulators; a project sets it once in
+`task_defaults.actors.user.simulator` so a whole pack inherits one. An
+unregistered name is refused at run start, naming the registered simulators and
+the task that asked for it.
+
+`actors.user.simulator_config` is an opaque mapping the engine passes to the
+selected simulator untouched — a non-built-in simulator declares its own fields
+there and validates them itself; the built-in ignores it. See
+[ADR-0051](adr/0051-user-simulator-protocol-and-registry.md) and
+[RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
+
+### `initial_state.rag:` — the knowledge base, its search backend and the agent's tool
+
+| key | default | meaning |
+|---|---|---|
+| `corpus_dir` | none | Directory of the corpus, relative to the task dir. Its `.md` / `.txt` / `.json` files travel with the task and the runner builds the trial's index from them (`rag_service` indexes the `.md` / `.txt` ones; `bm25` reads all three, `.json` as `{id, title, content}` documents). Declaring it requires an actor to enable the search tool. |
+| `backend` | `rag_service` | The search backend that serves the corpus, resolved against the `tolokaforge.search_backends` entry-point group. `rag_service` is the engine's hybrid rag-service (BM25 + dense, one index per trial; its tasks run on `full_stack`). `bm25` is Okapi BM25 in the runner process — deterministic, no stack service, so its tasks run on the core stack. `typesense` is reserved: that plane is declared by an adapter that indexes host-side, not by a native task. |
+| `backend_config` | `{}` | An opaque mapping handed to the backend's factory verbatim; the engine never reads its keys. `rag_service` takes none and refuses a non-empty one; `bm25` validates it into the table below. |
+| `tool.name` | `search_kb` | The agent's search tool. It goes to whichever actor's `tools.<actor>.enabled` names it, and the runner binds it to the trial's index by this name. |
+| `tool.description` | the rag-service tool's description | What the agent reads about the tool. Its parameters come from the backend (`rag_service`: `query`, `top_k`, `alpha`; `bm25`: `query`, and `top_k` when `agent_parameters` exposes it). |
+
+A task that writes no `rag` block and enables `search_kb` gets the defaults. Unknown
+keys in the block (a misspelt `backend`, `tool: {nme: …}`) are refused, and a
+malformed block refuses the run even under `orchestrator.strict_task_load: false`
+rather than dropping the task. An unregistered `backend` is refused at run start, naming the registered backends and
+the task that asked for it. The typed block dumps only the keys the author wrote,
+so `TaskConfig` dumps of a task declaring `corpus_dir` alone are unchanged.
+`task_defaults` has no `initial_state`, so the backend is chosen per task. See
+[ADR-0054](adr/0054-search-backend-protocol-and-registry.md) and
+[RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
+
+#### `backend: bm25` — `backend_config`
+
+Okapi BM25 over the corpus, in the runner process (`tolokaforge/core/search/bm25.py`).
+The scores are bit-identical to `rank_bm25` 0.2.2's `BM25Okapi` without numpy. Every
+key is optional; unknown keys and out-of-range values are refused at run start, naming
+the task.
+
+| key | default | meaning |
+|---|---|---|
+| `documents.format` | `auto` | `json`: each `.json` file is one `{id, title, content}` document (strings; `id` and `content` non-empty; other keys ignored). `text`: each `.md` / `.txt` file is one document, `id` and `title` its file stem. `auto`: both, by extension. Files of other extensions are skipped. |
+| `documents.order` | `filename` | Documents load in sorted file-name order — the corpus order ties are broken by. |
+| `documents.skip_prefix` | `"_"` | Files whose name starts with it are not documents (a `_README.md` beside the corpus). `""` skips nothing. |
+| `documents.fields` | `[content]` | Which fields are indexed, joined by a space: `[content]`, `[title]` or `[title, content]`. A document whose indexed fields are blank (a blank `title` under `[title]`) refuses the trial, naming the file. The agent and the judge always read the whole `content`. |
+| `tokenizer` | `whitespace_lower` | `text.lower().split()`, applied to documents and queries. The only registered tokenizer. |
+| `bm25` | `{k1: 1.5, b: 0.75, epsilon: 0.25}` | `rank_bm25`'s constants: saturation, length normalisation (`0..1`), and the floor for a negative IDF as a fraction of the average IDF. |
+| `ranking.top_k` | `5` | Hits per search, `min(top_k, N)`. A zero score is a hit: a query touching nothing returns the first `top_k` documents in corpus order. |
+| `ranking.min_score` | `null` | Keep only hits scoring at least this much. `0.0` still keeps zero scores; a positive threshold drops the untouched documents. |
+| `ranking.tie_break` | `corpus_order` | Equal scores rank in corpus order (sort key `(-score, corpus_index)`). The only rule. |
+| `empty_query` | `no_results` | A blank query (empty or whitespace) renders the no-hits text; `error` renders the error text instead. Either way the agent reads text and nothing raises. |
+| `render.kind` | `json` | `json`: `{"results": [{doc_id, title, source, score, text}], "total", "query"}`, `text` being the whole document; no hits: `{"message": <empty_text>, "results": [], "query"}`; an error: `{"error": <error_text>, "results": []}`. `text`: the keys below. |
+| `render.empty_text`, `render.error_text` | `No relevant documents found.` / `Query is required` (json); `No results found.` / `Error: the query must not be empty.` (text) | The texts a no-hits search and an `empty_query: error` render. |
+| `render.item_template` (text) | `"{index}. {title}\n   ID: {id}\n   Score: {score}\n   Content: {content}\n"` | One hit, as a `str.format` template over `{index}` (1-based), `{id}`, `{title}`, `{score}` (already formatted with `score_format`), `{content}` and `{source}` (the file name). A format spec may follow a name: `{content:.300}` cuts the document to 300 characters. |
+| `render.separator` (text) | `"\n"` | Joins the hits. |
+| `render.score_format` (text) | `".4f"` | How `{score}` is formatted. |
+| `render.timing_suffix` (text) | `off` | `measured` appends `timing_template` after the hits (or the no-hits text; never the error text). |
+| `render.timing_template` (text) | `"\n\n[Timing: retrieval={retrieval_ms}ms, total={total_ms}ms]"` | Formatted with measured integer milliseconds: `{retrieval_ms}` (scoring and ranking), `{total_ms}` (the whole call), and `{reranking_ms}`, always `0` — this backend reranks nothing; the field lets a template carry that segment. |
+| `agent_parameters` | `[query]` | Which of `query` and `top_k` the agent's tool schema exposes; `query` is mandatory. An exposed `top_k` overrides `ranking.top_k` per call; an argument the schema does not expose is ignored. |
+
+A corpus that cannot be loaded or scored refuses the trial at `RegisterTrial`,
+naming the trial and, where one file is at fault, the file: a duplicate `id`, a
+blank document or blank indexed fields, a malformed JSON document, an empty corpus,
+or indexed text that tokenizes to no term at all.
+
+The judge's `search_kb` reads the same index with the same ranking and gets whole
+documents as `SearchHit.text`, with their titles; how much of each it shows is
+`grading.llm_judge.customization.judge_snippet_chars` (200 characters by default,
+`null` for whole documents). A built corpus is cached in the runner process by the
+corpus files' content and the config, so the trials of one task share one index.
+
+```yaml
+initial_state:
+  rag:
+    corpus_dir: "kb"               # {id, title, content} JSON files, or .md / .txt
+    backend: "bm25"
+    backend_config:
+      ranking: {top_k: 5}
+      render:
+        kind: text                 # "1. <title>\n   ID: <id>\n   Score: 0.1234\n   Content: <content>\n" per hit
+        timing_suffix: measured    # + "\n\n[Timing: retrieval=Xms, total=Zms]"
+    tool:
+      name: "search_kb"
+      description: "Search the knowledge base."
+```
 
 ## Grading Specification (`grading.yaml`)
 
@@ -650,6 +824,9 @@ llm_judge:                                 # the judge MODEL is set once per run
                                            # false omits the agent's policy from the
                                            # judge's opening-message evidence
                                            # (evidence gating; agent untouched)
+    judge_snippet_chars: null              # int >= 1 | null (default 200): how
+                                           # much of each hit the judge's search_kb
+                                           # shows; null = whole documents
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth
       The correct order total is $42.50 with apple_pay.
@@ -677,6 +854,31 @@ same shape is reported unchecked at the same address. Every other authoring rule
 grading block is checked against — tool names, argument names, `regex` compilation —
 is in [GRADING.md](GRADING.md#what-is-validated-before-a-run).
 
+`state_checks.comparison_view` (optional) shapes both sides of that hash before it is
+computed: a `version` and a list of `rules`, each an `exclude_records`, `exclude_tables`
+or `normalize_ids` entry. It drops the records that do not count and re-keys generated
+ids by their records' content, together with the references to them:
+
+```yaml
+state_checks:
+  hash: { enabled: true, golden_actions: [...] }
+  comparison_view:
+    version: 1
+    rules:
+      - { kind: exclude_tables, tables: [lookup_log], reason: written by the read tools }
+      - { kind: exclude_records, table: documents, where: { status: superseded } }
+      - kind: normalize_ids
+        table: documents
+        key: [client_id, source_id]
+        references: [{ table: corrections, field: document_ref }]
+```
+
+The block is validated when the task loads, against the tables it seeds and the masks
+the hash applies after it. A pack without the block dumps, crosses the wire and hashes
+byte-identically to a pack graded by an engine without the key. The rule vocabulary, the order of the pre-hash steps, the record
+a grade carries and the load-time refusals are in
+[GRADING.md § Comparison view](GRADING.md#comparison-view).
+
 The rubric is a structured `Rubric` (per-criterion scoring + a required gate),
 not a free-text blob; a free-text `rubric: "<text>"`, an `output_schema` field,
 or a per-task judge-model field is rejected at load with a migration message.
@@ -703,7 +905,14 @@ custom prompt can never break `submit_report` validation.
 `include_agent_system_prompt` (`bool | None`) controls whether the agent's policy is
 embedded in the judge's opening-message evidence: unset/`true` include it (the
 default), `false` omits it (evidence gating, distinct from `system_prompt`'s
-wording). Omitting the block leaves the judge at the faithful default. All fields
+wording). `judge_snippet_chars` (`int >= 1 | None`, default `200`) is how much of
+each hit's content the judge's `search_kb` shows: the first that many characters,
+or the whole document for `null`; it is not tri-state, so a task writes `200` to
+undo a project figure. It does not apply to a TypeSense task's `search_policy`
+passthrough (`DelegatingReadTool`), which renders the agent's own tool output
+verbatim. Omitting the block leaves the judge at the faithful default. Every judge
+kind receives these settings resolved as one `JudgeTrialOptions` (see
+[JUDGE_KINDS.md](JUDGE_KINDS.md#protocol-contract)). All fields
 layer project→task (a project default under
 `grading_defaults.llm_judge.customization`, task wins; `system_prompt: null`
 resets a project prompt; `include_agent_system_prompt: true` (explicit

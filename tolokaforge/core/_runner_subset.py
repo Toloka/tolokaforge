@@ -44,6 +44,7 @@ RUNNER_SUBSET_PACKAGES: tuple[str, ...] = (
     "tolokaforge/core/models",
     "tolokaforge/core/llm",
     "tolokaforge/core/grading",
+    "tolokaforge/core/search",
 )
 """Subpackage directories shipped in the runner subset.
 
@@ -65,7 +66,7 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     # compose materialisation, engine run state, backend capabilities,
     # runtime / conductor / trial-grader protocol definitions, the
     # ``run_trial`` library entry, run queue, resume, project loader,
-    # metrics, budgets, ``model_data_fingerprint``, and the remaining
+    # metrics, run-level budgets, ``model_data_fingerprint``, and the remaining
     # utility modules — is orchestrator-only. ``model_data`` is included;
     # its orchestrator-only compute sibling ``model_data_fingerprint`` is
     # not. ``plugin_registry`` is included: the runner reaches it through
@@ -92,10 +93,14 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/pricing.py",
     "tolokaforge/core/redaction.py",
     "tolokaforge/core/run_display_events.py",
+    # ``core.loop`` imports the shared half-duplex budget at runner boot.
+    "tolokaforge/core/simulation_budget.py",
     "tolokaforge/core/summarize_policy.py",
     "tolokaforge/core/tool_call_ids.py",
+    "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
     "tolokaforge/core/trial.py",
+    "tolokaforge/core/unknown_keys.py",
 )
 """Individual files shipped in the subset that live outside a whole-package
 entry — the top-level ``tolokaforge/__init__.py`` and the shared-spine
@@ -125,7 +130,9 @@ via ``importlib.resources.files("tolokaforge")`` for parity with the
 base wheel."""
 
 RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
+    "tolokaforge/core/actors/tool_turn_rule.py",
     "tolokaforge/core/actors/turn_policy.py",
+    "tolokaforge/core/actors/user_stop.py",
     "tolokaforge/core/grading/agreement.py",
     "tolokaforge/core/grading/bundle.py",
     "tolokaforge/core/grading/bundle_producer.py",
@@ -145,6 +152,7 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",
+    "tolokaforge/core/search/typesense_server.py",
 )
 """Files that live under a shared-spine subpackage but are orchestrator-only.
 
@@ -155,7 +163,10 @@ runner-side ``TrialRunner`` (orchestrator-owned) dispatches on
 orchestrator-only. The runner container never resolves a policy: the
 orchestrator does that before handing a :class:`TrialRunner` to the
 conductor, and the runner-side wire protocol carries only the resolved
-per-turn artefacts.
+per-turn artefacts. ``core.actors.user_stop`` is the stop rule the same
+``TrialRunner`` applies to a user reply, and ``core.actors.tool_turn_rule`` the
+rule it runs the simulator's tool calls by; the runner container needs neither,
+since it never builds a simulator.
 
 Seven grading-side files (``core.grading.combine``,
 ``core.grading.corpus_curation``, ``core.grading.migration_declaration``,
@@ -208,6 +219,14 @@ runtime backend's ``build_grade_bundle`` hook delegates to. It composes
 substrate reads plus caller-supplied trajectory and task-description
 inputs into a v1.0 bundle via ``serialize_grade_bundle``; the runner
 never invokes it. Excluded on the same grounds as ``core.grading.bundle``.
+
+``core.search.typesense_server`` starts or adopts the local TypeSense container
+the orchestrator bridges into ``runner-net`` before any trial; the runner only
+registers a client against the address the stack injects, so it never reaches
+the server manager. The rest of ``core.search`` ships: ``backend`` holds the
+``SearchBackend`` Protocols the runner resolves at ``RegisterTrial`` (re-exported
+by ``plugin_registry``), and the package ``__init__`` it is imported through
+re-exports ``domain_state`` and ``typesense``.
 
 ``core.grading.judge_kinds.parity`` is the κ-parity measurement harness
 the canonical ``test_judge_kind_parity`` lane calls to prove every

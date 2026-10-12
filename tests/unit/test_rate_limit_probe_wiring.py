@@ -27,13 +27,14 @@ What is load-bearing beyond the retry controller itself
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.utils.conductor_phases import AGENT_LOOP_IDENTITY
 from tolokaforge.core.actors.reply_guard import UserReplyGuard
 from tolokaforge.core.conductor import (
     InMemoryConductor,
@@ -43,7 +44,7 @@ from tolokaforge.core.conductor import (
 )
 from tolokaforge.core.grading.judge import LLMJudge
 from tolokaforge.core.grading.judge_result import JudgeStatus
-from tolokaforge.core.llm import LLMClient, UserSimulator
+from tolokaforge.core.llm import BuiltinUserSimulator, LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
@@ -67,7 +68,6 @@ from tolokaforge.core.runner import TrialRunner
 from tolokaforge.runner.models import Criterion, Rubric
 
 pytestmark = pytest.mark.unit
-
 
 _AGENT = ModelConfig(provider="openrouter", name="anthropic/claude-3-haiku")
 _PROBE = RateLimitProbeConfig(
@@ -334,7 +334,7 @@ class TestTheOvershootIsPartOfTheInvariant:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             pytest.raises(ValueError, match="task clamped-overshoot"),
         ):
-            conductor._run_agent_loop(_spec(), task, setup)
+            conductor._run_agent_loop(_spec(), task, setup, AGENT_LOOP_IDENTITY)
 
 
 class TestBudgetInvariantAgainstTheEffectiveTimeout:
@@ -377,7 +377,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             pytest.raises(ValueError, match="task clamped"),
         ):
-            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path), AGENT_LOOP_IDENTITY)
 
     def test_task_without_declared_timeouts_uses_the_unclamped_run_budget(
         self, tmp_path: Path
@@ -390,7 +390,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path), AGENT_LOOP_IDENTITY)
 
         kwargs = runner_cls.call_args.kwargs
         assert kwargs["episode_timeout_s"] == 14400
@@ -408,7 +408,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path), AGENT_LOOP_IDENTITY)
 
         stats = runner_cls.call_args.kwargs["probe_stats"]
         assert (stats.bucket_width_s, stats.max_buckets) == (60, 7)
@@ -416,7 +416,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
     def test_the_simulator_the_conductor_builds_carries_the_shorter_budget(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """End of the wiring: the ``UserSimulator`` the conductor actually
+        """End of the wiring: the ``BuiltinUserSimulator`` the conductor actually
         constructs probes at ``simulator_per_call_budget_s``, not the agent's."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-sk-probe-conductor")
         conductor = self._conductor(_run_config(probe=_PROBE), tmp_path)
@@ -430,7 +430,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path), AGENT_LOOP_IDENTITY)
 
         simulator = runner_cls.call_args.kwargs["user_simulator"]
         assert simulator.llm_client is not None
@@ -446,7 +446,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path), AGENT_LOOP_IDENTITY)
 
         assert runner_cls.call_args.kwargs["probe_stats"] is None
 
@@ -461,7 +461,7 @@ class TestUserSimulatorCarriesTheMode:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-sk-probe-sim")
-        sim = UserSimulator(mode="llm", llm_config=_AGENT, rate_limit_probe=_PROBE)
+        sim = BuiltinUserSimulator(mode="llm", llm_config=_AGENT, rate_limit_probe=_PROBE)
 
         assert sim.llm_client is not None
         assert sim.llm_client._rate_limit_probe == _PROBE
@@ -470,7 +470,9 @@ class TestUserSimulatorCarriesTheMode:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-sk-probe-sim")
-        sim = UserSimulator(mode="llm", llm_config=_AGENT, rate_limit_probe=_PROBE.for_simulator())
+        sim = BuiltinUserSimulator(
+            mode="llm", llm_config=_AGENT, rate_limit_probe=_PROBE.for_simulator()
+        )
 
         assert sim.llm_client is not None
         probe = sim.llm_client._rate_limit_probe
@@ -491,13 +493,13 @@ class TestUserSimulatorCarriesTheMode:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-sk-probe-sim")
-        sim = UserSimulator(mode="llm", llm_config=_AGENT)
+        sim = BuiltinUserSimulator(mode="llm", llm_config=_AGENT)
 
         assert sim.llm_client is not None
         assert sim.llm_client._rate_limit_probe is None
 
     def test_scripted_simulator_builds_no_client_at_all(self) -> None:
-        sim = UserSimulator(mode="scripted", rate_limit_probe=_PROBE)
+        sim = BuiltinUserSimulator(mode="scripted", rate_limit_probe=_PROBE)
         assert sim.llm_client is None
 
 
@@ -743,15 +745,16 @@ class TestGoodputReachesMetrics:
     """The serialised surface a consumer computes goodput / tokens-per-second /
     Little's-law concurrency from, without parsing a single log line.
 
-    ``Metrics.usage`` cannot serve: ``usage.calls`` holds agent calls only and
-    carries no role, so a hand count conflated the agent model with the
-    user-simulator model and inflated the number.
+    ``Metrics.usage`` cannot serve: ``usage.calls`` records only served responses,
+    so the 429 / retry / wait census is absent from it, and a hand count of log
+    lines conflated the agent model with the user-simulator model and inflated the
+    number.
     """
 
     _AGENT = "openrouter/deepseek/deepseek-v3.2-exp"
     _USER = "openrouter/anthropic/claude-sonnet-4.6"
     _EPOCH = 1_700_000_000.0
-    _BUCKET = datetime(2023, 11, 14, 22, 13, tzinfo=timezone.utc)
+    _BUCKET = datetime(2023, 11, 14, 22, 13, tzinfo=UTC)
     """``1_699_999_980`` — the 30 s window ``_EPOCH`` falls in, as UTC."""
 
     def _runner(self, probe_stats: RateLimitProbeStats | None) -> TrialRunner:

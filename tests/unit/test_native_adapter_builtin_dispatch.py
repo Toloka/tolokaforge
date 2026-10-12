@@ -457,9 +457,9 @@ def test_native_adapter_composes_task_yaml_and_tool_declared_output_max_chars(
 
 
 def test_search_kb_task_yaml_override_composes_with_the_canonical_schema(tmp_path: Path):
-    """``search_kb`` takes a different construction path
-    (``create_search_kb_schema()`` bypasses ``_builtin_tool_schemas``), but
-    the task-yaml override still composes with the schema's own
+    """``search_kb`` takes a different construction path (the declared search
+    backend's schema, ``search_tool_schema``, bypasses ``_builtin_tool_schemas``),
+    but the task-yaml override composes with the schema's own
     ``output_max_chars`` under the same tighter-wins rule the generic
     branch applies. Locks the third-axis contract for the special-cased
     tool so a future refactor cannot silently drop the override there.
@@ -473,9 +473,9 @@ def test_search_kb_task_yaml_override_composes_with_the_canonical_schema(tmp_pat
 
 
 def test_search_kb_without_override_preserves_canonical_schema(tmp_path: Path):
-    """Absent an override, ``search_kb`` emits whatever ``create_search_kb_schema``
-    declares — today ``None``. Pins the neither-axis-set row for the special
-    branch so a canonical-schema change lights up here first.
+    """Absent an override, ``search_kb`` emits whatever the declared search
+    backend's schema declares — today ``None``. Pins the neither-axis-set row for
+    the special branch so a canonical-schema change lights up here first.
     """
     base_dir = _task_dir_with_stub_block(tmp_path, "search_kb", {})
     adapter = NativeAdapter({"tasks_glob": "*/task.yaml", "base_dir": str(base_dir)})

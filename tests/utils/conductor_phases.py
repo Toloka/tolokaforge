@@ -5,7 +5,8 @@ dies inside ``EnvironmentState.hydrate()`` — so a test that needs the producti
 ``_grade`` / ``_write_artifacts`` phases assembles their arguments here: a
 conductor whose I/O seams (adapter, agent client, runtime backend) are doubles,
 the :class:`~tolokaforge.core.conductor._TrialSetup` those phases read, and the
-three ``TrialRunner`` attributes they touch.
+three ``TrialRunner`` attributes they touch. A test that drives
+``_run_agent_loop`` itself takes :data:`AGENT_LOOP_IDENTITY`.
 """
 
 from __future__ import annotations
@@ -24,6 +25,11 @@ from tolokaforge.core.models import (
     RunConfig,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
+from tolokaforge.observability.observer import TrialIdentity
+
+AGENT_LOOP_IDENTITY = TrialIdentity(run_id="run", task_id="t1", trial_index=0, attempt_id=0)
+"""A fixed identity for a test that calls ``InProcessConductor._run_agent_loop``
+directly, whatever its spec says."""
 
 
 @dataclass(frozen=True)

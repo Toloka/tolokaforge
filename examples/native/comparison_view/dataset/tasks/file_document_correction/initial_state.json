@@ -1,0 +1,18 @@
+{
+  "clients": [
+    {"id": "C-1", "name": "Northwind Traders"}
+  ],
+  "documents": [
+    {
+      "id": "DOC-001",
+      "client_id": "C-1",
+      "source_id": "INV-1001",
+      "kind": "invoice",
+      "status": "final",
+      "created_at": "2026-09-01T09:00:00Z"
+    }
+  ],
+  "corrections": [],
+  "holds": [],
+  "lookup_log": []
+}

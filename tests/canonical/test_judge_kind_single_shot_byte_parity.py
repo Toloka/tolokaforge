@@ -28,6 +28,7 @@ import pytest
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.default_rubric_evaluator import LLMJudgeRubricEvaluator
+from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
 from tolokaforge.core.logging import StructuredLogger
@@ -160,9 +161,7 @@ def _run_new_seam(config: LLMJudgeConfig) -> JudgeResult:
         state_diff=None,
         judge_model_config=_JUDGE_MODEL,
         judge_model_provider=_ScriptedJudgeModelProvider(client),
-        disable_knowledge_search=False,
-        custom_system_prompt=None,
-        include_agent_system_prompt=True,
+        options=JudgeTrialOptions(),
         kind_config=None,
         logger=_logger(),
     )

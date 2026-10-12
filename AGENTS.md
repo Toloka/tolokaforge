@@ -97,21 +97,16 @@ uv pip list
 
 ### Linting and Formatting
 
-We use `ruff` for linting and formatting Python code.
+We use `ruff` for linting and `black` plus `ruff format` for formatting Python code. The scope is the Makefile's `LINT_DIRS`:
 
 ```bash
-# Check for linting issues
-uv run ruff check tolokaforge tests scripts tools
-
-# Auto-fix linting issues
-uv run ruff check . --fix
-
-# Format code
-uv run ruff format .
-
-# Format check (CI)
-uv run ruff format --check tolokaforge tests scripts tools
+make lint          # check for linting issues
+make lint-fix      # auto-fix linting issues
+make format        # format code (black, then ruff format)
+make format-check  # format check (CI)
 ```
+
+The dev MCP tools `lint_check`, `lint_fix`, `format_code` and `format_check` run the same commands over the same scope.
 
 ### Testing
 
@@ -287,10 +282,10 @@ Recommended MCP servers for AI agents working on this project:
 
 - `pyproject.toml` for project configuration
 - `uv` for package management
-- `ruff` for linting and formatting
+- `ruff` for linting; `black` + `ruff format` for formatting
 - `pytest` for testing
 
-The runtime Python version is single-sourced in `.python-version`; changing it propagates to dev, CI, the devcontainer (via uv), and all runtime Docker images. A canonical guard (`tests/canonical/test_python_version_single_source.py`) fails CI if a workflow or runtime Dockerfile hardcodes a version instead.
+The runtime Python version is single-sourced in `.python-version`; changing it propagates to dev, CI, the devcontainer (via uv), and all runtime Docker images. Its `major.minor` is also the declared install floor: every package's `requires-python` is `>=` that version and its version classifiers name only it. It is also the ruff, black and mypy target (`[tool.ruff].target-version`, `[tool.black].target-version`, `[tool.mypy].python_version`); code that runs on a task image's `python3` instead carries a `[tool.ruff.per-file-target-version]` entry naming the lowest `python3` it runs on — for a task's own code, at or below the `FROM python:X.Y` of the task's Dockerfile, or, when the task image is built on another base, the version of that image's `python3` (the floor is never assumed for it). A canonical guard (`tests/canonical/test_python_version_single_source.py`) fails CI if a workflow or runtime Dockerfile hardcodes a version, or if a package's `requires-python`, its classifiers, a documented TOML snippet, or a lint/type-check target diverge from the floor, or if ruff lints task-image code above its image's Python.
 
 **Don't suppress warnings** — update code to use actual functionality instead.
 
@@ -569,17 +564,17 @@ The grader is a plug-in seam with three independent axes — substrate topology,
 4. **`black --check` is clean tree-wide**, so a `black` failure is drift in the code you just wrote, not the known `ruff format` backlog. Both formatters must pass on a file you touch, and they disagree often enough that satisfying one is not satisfying the other.
 5. **Benchmark runs** and e2e flows require API keys in `.env`. Unit and canonical tests do not.
 6. **10 tests in `test_golden_set_projects.py`** need `git lfs pull`, plus the committed-corpus sweep in [`tests/unit/test_scratchpad_detector.py`](tests/unit/test_scratchpad_detector.py) (skips gracefully without LFS). Not required for normal development.
-7. **JSON DB update API** uses JSON Patch-style operations: `{"ops": [{"op": "replace", "path": "$.field", "value": ...}]}`. Supported ops: `add`, `replace`, `remove`.
-8. **Service startup**: Start both services in background (`&`) for JSON DB (port 8000) + Mock Web (port 8080). Mock Web requires `JSON_DB_URL=http://localhost:8000`.
+7. **JSON DB update API** (`db_update` → `POST /trials/{trial_id}/update`) uses JSON Patch-style operations whose paths are JSONPath, not JSON Pointer: `{"ops": [{"op": "replace", "path": "$.tickets[0].status", "value": ...}]}`. Supported ops: `add`, `replace`, `remove`; the batch applies all or nothing.
+8. **Service startup**: Start both services in background (`&`) for JSON DB (port 8000) + Mock Web (port 8080). Each starts standalone; Mock Web calls no other service.
 9. **`tolokaforge run`** requires at least one LLM API key in `.env` (Anthropic, OpenAI, etc.).
 10. **`tasks/` is external** — Task packs live outside the engine. Point `task_packs` in your config at any directory containing tasks, or place them in `tasks/`. See the bundled examples in `examples/` for the expected layout.
-11. **GPT-5.4 / Qwen drop dict-map parameters** — `Dict[str, T]` schemas cause these models to silently omit or stringify the parameter. The `openai_gpt5` / `qwen` / `xai_grok` presets wire `StrictSchema` + `ArrayDictMapResponse` + `DictMapHints` to fix this. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `schema_sanitizer`.
-12. **litellm OpenRouter routing lacks GPT-5 awareness** — our `StrictSchema` and `DictMapHints` handle all GPT-5 tool-schema adaptation; litellm's native `_remove_additional_properties` does not apply via OpenRouter. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § litellm OpenRouter routing caveat.
+11. **GPT-5.4 / Qwen drop dict-map parameters** — `Dict[str, T]` schemas cause these models to silently omit or stringify the parameter. The `openai_gpt5` and `xai_grok` presets wire `StrictSchema` + `ArrayDictMapResponse`: the schema carries the map as an array of key/value objects and the response pivots it back. The `qwen` preset wires `passthrough` + `JsonCoerceResponse` + `DictMapHints` instead: Qwen never picks the array shape, so the schema stays a dict, the prompt hint names the dict format, and `json_coerce` decodes the stringified-JSON arguments. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `schema_sanitizer` and § Preset coverage.
+12. **litellm OpenRouter routing lacks GPT-5 awareness** — our `StrictSchema` and `DictMapHints` handle all GPT-5 tool-schema adaptation; litellm's native `_remove_additional_properties` does not apply via OpenRouter. The same split gates sampling parameters, which `openai_gpt5` and `openai_o_series` therefore declare unsupported (`openai_gpt6` too, on OpenRouter's support list). See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § litellm OpenRouter routing caveat.
 13. **Pydantic `Decimal` fields emit RE2-incompatible `pattern`** — `StrictSchema` strips all `pattern` / `format` keys and collapses the Decimal `anyOf` idiom to `{type: number}`. Raises `ValueError` if any RE2-unsafe regex survives post-sanitise. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `schema_sanitizer`.
 14. **Anthropic `thinking_blocks` signatures must be preserved and replayed** — `AnthropicReasoningCodec` extracts full `{type, thinking, signature}` blocks; `_convert_messages` splices them back via the litellm `thinking_blocks` field. Claude 4.7's `display="omitted"` (empty text, populated signatures) also round-trips. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `reasoning_codec`.
 15. **Claude 4.7 ignores `reasoning_effort`** — use litellm's `thinking={"type":"enabled","budget_tokens":N}` kwarg instead. The `anthropic_claude_4_7` preset handles this automatically (`reasoning_via_thinking_kwarg: true`, `reasoning_budget_default: 8000`, `drop_sampling_when_thinking: true`). See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `params_policy`.
 16. **`Metrics.tokens_input` / `tokens_output` / `GenerationResult.token_usage` removed** — use `Metrics.usage.prompt_tokens` / `.completion_tokens` / `.reasoning_tokens` / `.cached_tokens` / `.cache_*_input_tokens`. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `usage` and [`docs/OUTPUT_FORMAT.md`](docs/OUTPUT_FORMAT.md) § `metrics.yaml`.
-17. **Anthropic models default to ephemeral prompt caching** — `cache_policy: anthropic_ephemeral` on both Anthropic presets. Observable via `Metrics.usage.cache_read_input_tokens`. Disable for ablation with `cache_policy: none`. OpenRouter-routed cache counters use a dual-path fallback in `UsageExtractor`. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `cache_policy`.
+17. **Anthropic models default to ephemeral prompt caching** — `cache_policy: anthropic_ephemeral` on both Anthropic presets, including through an LLM gateway ([`docs/LLM_LAYER.md`](docs/LLM_LAYER.md#speaking-to-the-gateway)). Observable via `Metrics.usage.cache_read_input_tokens`. Disable for ablation with `cache_policy: none`. OpenRouter-routed cache counters use a dual-path fallback in `UsageExtractor`. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `cache_policy`.
 18. **Every trial records its preset + policy fingerprint** in `task.yaml.model_config.<role>.resolved.*` and tool schemas in `results/tools_schemas/<task>__<model>.json`. See [`docs/OUTPUT_FORMAT.md`](docs/OUTPUT_FORMAT.md) § `task.yaml` + § `tools_schemas`.
 19. **Gemini 3.1 Pro substitutes `:` for repeated `_` in tool names** — emits names like `workday_api:workday_api_get_employee` instead of the registered `workday_api_workday_api_get_employee`. The `tool_name_discipline` capability test reproduces this single-turn for Pro. **Gemini 3.5 Flash exhibits the same family in multi-turn production only** — verified live 2026-05-20 on `output/new_collected/tau_manufacturing/gemini_35_flash`: 2 of 7,817 tool calls (0.025 %) emitted malformed names — `'get_entity_info'` (missing `tau_manufacturing_` prefix) and `'default_api:tau_manufacturing_list_allocations_by_order'` (`:` separator + `default_api:` prefix). The single-turn `tool_name_discipline` test passes for 3.5 Flash, so the cert declares `required`; the production gap is the same family as gotcha #22 (single-turn synthetic doesn't catch multi-turn / heavy-context emergent failures). Gemini 3 Flash Preview unaffected on both surfaces. The 3.1 Pro certificate declares `known_unsupported` as the falsifiable record of the open regression.
 20. **Gemini reasoning lives in `provider_specific_fields.reasoning_details`** — same envelope as Anthropic-via-OpenRouter but two new block types: `reasoning.text` (Pro lineage, readable) and `reasoning.encrypted` (Flash lineage, opaque payload). NO `signature`, NO `format`. `GeminiReasoningCodec` handles both; signed-replay continuity tests are not applicable. **OpenRouter sends a constant 48-char placeholder (`reasoning.encrypted` data = base64 of UUID `e24830a7-…b9c3`) when Gemini emitted no real thinking on a turn (e.g. tool-call follow-up turns). Real opaque blobs are 1000-3000+ chars. `GeminiReasoningCodec.encode_for_replay` drops anything < 100 chars so the placeholder doesn't waste prompt tokens or create few-shot patterns the model echoes back. `extract` does NOT filter — `trajectory.yaml` records what the wire actually returned.** See [`tolokaforge/core/llm/reasoning_codec.py`](tolokaforge/core/llm/reasoning_codec.py) § `GeminiReasoningCodec`.

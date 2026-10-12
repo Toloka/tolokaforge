@@ -257,20 +257,33 @@ class CodingHarnessAdapterMixin:
             },
         }
 
-    def emit_test_execution_grading(self) -> dict[str, Any]:
+    def emit_test_execution_grading(
+        self, verifier_timeout_sec: float | None = None
+    ) -> dict[str, Any]:
         """Payload the adapter passes to :class:`~tolokaforge.runner.models.RunnerGradingConfig`.
 
-        Fixed shape: the runner dispatches on ``grading_method="test_execution"``
-        and scores the trial by reading the reward the task's own verifier
-        wrote to ``/logs/verifier/reward.txt``. Weights and threshold match the
+        The runner dispatches on ``grading_method="test_execution"`` and scores
+        the trial by reading the reward the task's own verifier wrote to
+        ``/logs/verifier/reward.txt``. Weights and threshold match the
         historical terminal-bench values so a run switching to the mixin scores
-        byte-identically."""
-        return {
+        byte-identically.
+
+        *verifier_timeout_sec* is how long the task says its verifier needs.
+        It rides ``grading_method_config`` to
+        :class:`~tolokaforge.core.grading.kinds.TestExecutionKindConfig`, whose
+        own 300s default stands when the task declares nothing. A suite killed
+        before it finishes writes no reward and scores zero, so a task asking
+        for more time than the default is asking not to be failed by the clock.
+        """
+        payload: dict[str, Any] = {
             "combine_method": "weighted",
             "weights": {"custom_checks": 1.0},
             "pass_threshold": 0.5,
             "grading_method": "test_execution",
         }
+        if verifier_timeout_sec is not None:
+            payload["grading_method_config"] = {"timeout_s": verifier_timeout_sec}
+        return payload
 
     def preferred_grader_kind(self) -> str:
         """Grader-kind name aligned with the payload the mixin emits.

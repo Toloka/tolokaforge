@@ -1,8 +1,9 @@
 """Tests for resume/retry functionality"""
 
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -28,8 +29,8 @@ class TestRunState:
             run_id="test_run",
             config_path="test.yaml",
             output_dir="/tmp/output",
-            start_ts=datetime.now(tz=timezone.utc),
-            last_updated=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            last_updated=datetime.now(tz=UTC),
             status="running",
             total_trials=2,
             completed_trials=1,
@@ -53,8 +54,8 @@ class TestRunState:
             run_id="test",
             config_path="test.yaml",
             output_dir="/tmp",
-            start_ts=datetime.now(tz=timezone.utc),
-            last_updated=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            last_updated=datetime.now(tz=UTC),
             status="running",
             total_trials=3,
             completed_trials=1,
@@ -77,8 +78,8 @@ class TestRunState:
             run_id="test",
             config_path="test.yaml",
             output_dir="/tmp",
-            start_ts=datetime.now(tz=timezone.utc),
-            last_updated=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            last_updated=datetime.now(tz=UTC),
             status="running",
             total_trials=1,
             completed_trials=0,
@@ -103,8 +104,8 @@ class TestRunState:
             run_id="test",
             config_path="test.yaml",
             output_dir="/tmp",
-            start_ts=datetime.now(tz=timezone.utc),
-            last_updated=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            last_updated=datetime.now(tz=UTC),
             status="running",
             total_trials=1,
             completed_trials=0,
@@ -232,6 +233,21 @@ class TestRunStateManager:
 
             # Check completion status
             assert manager.is_completed("task1", 0) is True
+            assert manager.is_completed("task1", 1) is False
+
+    def test_is_completed_reads_a_state_it_is_given_instead_of_the_disk(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = RunStateManager(Path(tmpdir))
+            run_state = manager.initialize_run(
+                run_id="test_run", config_path="test.yaml", task_ids=["task1"], repeats=2
+            )
+            run_state.mark_completed("task1", 0, True, 0.9)
+            manager.save_state(run_state)
+            run_state.mark_completed("task1", 1, True, 0.8)  # held only in memory
+
+            with patch.object(manager, "load_state", side_effect=AssertionError("re-read")):
+                assert manager.is_completed("task1", 0, run_state=run_state) is True
+                assert manager.is_completed("task1", 1, run_state=run_state) is True
             assert manager.is_completed("task1", 1) is False
 
     def test_get_resume_info(self):

@@ -42,8 +42,6 @@ class TestBuiltinGenericToolWrapper:
             "http_request",
             "build_check",
             "mobile",
-            "db_query",
-            "db_update",
         }
         assert expected.issubset(registry.list_for_dispatch(registry.Dispatch.GENERIC))
 
