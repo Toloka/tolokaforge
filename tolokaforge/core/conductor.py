@@ -225,8 +225,8 @@ class Conductor(Protocol):
     :data:`SUPPORTS_RATE_LIMIT_PROBE_ATTR`. A conductor that wires all three
     declares the attribute ``True``; anything else (including a conductor
     written before the mode existed) is treated as unsupported and
-    :func:`~tolokaforge.core.trial_node.build_trial_execution_unit` refuses to start such a run rather
-    than emitting artifacts that read all-default while the run really did
+    :func:`~tolokaforge.core.trial_node.build_trial_execution_unit` refuses to start
+    such a run rather than emitting artifacts that read all-default while the run really did
     absorb 429s. Deliberately *not* a declared Protocol member: the Protocol is
     ``@runtime_checkable`` and adding a data member would break ``isinstance``
     for every implementation that predates it.

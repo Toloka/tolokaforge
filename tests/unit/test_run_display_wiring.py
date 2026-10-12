@@ -716,7 +716,7 @@ def test_build_trial_unit_threads_events_into_context(
     assert captured_ctx[0].events is events
 
 
-def test_build_trial_executor_threads_events_into_provisioning_executor(
+def test_build_trial_unit_threads_events_into_provisioning_executor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``_build_trial_unit`` constructs a :class:`ProvisioningTrialExecutor`

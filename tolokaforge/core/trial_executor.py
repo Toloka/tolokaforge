@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args, runtime_checkable
 
 import yaml
 
@@ -118,9 +118,10 @@ class ProvisioningTrialExecutor:
         events: RunDisplayEvents = _NULL_EVENTS,
         provision_error: ProvisionErrorPolicy = "synthesize",
     ) -> None:
-        if provision_error not in ("synthesize", "propagate"):
+        if provision_error not in get_args(ProvisionErrorPolicy):
             raise ValueError(
-                f"provision_error must be 'synthesize' or 'propagate', got {provision_error!r}"
+                f"provision_error must be one of {get_args(ProvisionErrorPolicy)}, "
+                f"got {provision_error!r}"
             )
         self.provision_error = provision_error
         self.runtime_backend = runtime_backend

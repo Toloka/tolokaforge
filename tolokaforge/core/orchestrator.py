@@ -831,10 +831,6 @@ class Orchestrator:
         # ``None``, ``run()`` / ``run_worker()`` construct a default
         # :class:`SharedStackRuntimeBackend` from the resolved runner address — the
         # legacy behaviour. Tests / alternate backends inject via ``deps``.
-        # Per-trial executor: the orchestrator delegates each trial to a
-        # :class:`Conductor`. ``_build_trial_unit`` invokes the injected
-        # factory (typed against :class:`ConductorContext`) when one is
-        # supplied; otherwise it constructs :class:`InProcessConductor`.
         resolved_deps = deps if deps is not None else OrchestratorDeps()
         self._artifact_writer: TrialArtifactWriter = resolved_deps.artifact_writer
         self._run_aggregate_writer: RunAggregateWriter = resolved_deps.run_aggregate_writer
@@ -1150,7 +1146,7 @@ class Orchestrator:
         """
         if self.adapter is None:
             raise RuntimeError(
-                "Conductor cannot be built before the adapter is loaded. "
+                "Trial execution unit cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
         # Drain any leftover from a prior aborted run on this orchestrator
@@ -3251,12 +3247,12 @@ class Orchestrator:
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
-        # ``try/finally`` from here to the run's return guarantees the
-        # grader teardown (broker close + worker join, gRPC channel close)
-        # fires even when the trial loop or a mid-run cleanup raises. The
+        # ``try/finally`` from here to the run's return guarantees the trial
+        # unit teardown (its grader's broker close + worker join, gRPC channel
+        # close) fires even when the trial loop or a mid-run cleanup raises. The
         # rest of the existing sequential teardown lives inside the try
-        # body — a mid-run exception still surfaces to the caller after
-        # the grader is closed.
+        # body — a mid-run exception still surfaces to the caller after the
+        # units are closed.
         try:
             executor_healthy = runtime_backend.health_check()
             self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
@@ -3633,8 +3629,7 @@ class Orchestrator:
                 unit.close()
             except Exception as exc:  # noqa: BLE001 — teardown must survive
                 self.logger.warning(
-                    "Trial grader close() raised",
-                    grader=type(unit.grader).__name__,
+                    "Trial execution unit close() raised",
                     error=str(exc),
                 )
 

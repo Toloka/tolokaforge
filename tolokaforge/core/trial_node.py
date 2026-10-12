@@ -24,7 +24,10 @@ from tolokaforge.core.plugin_registry import (
 )
 from tolokaforge.core.run_display_events import _NULL_EVENTS, RunDisplayEvents
 from tolokaforge.core.trial import TrialResult, TrialSpec
-from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
+from tolokaforge.core.trial_executor import (
+    ProvisionErrorPolicy,
+    ProvisioningTrialExecutor,
+)
 from tolokaforge.core.trial_grader import TrialGrader
 from tolokaforge.observability.observer import NullTrialObserver, TrialObserver
 
@@ -73,6 +76,14 @@ class TrialExecutionContext:
     events: RunDisplayEvents = _NULL_EVENTS
     trial_observer: TrialObserver = field(default_factory=NullTrialObserver)
     run_identity: RunIdentity | None = None
+    provision_error: ProvisionErrorPolicy = "synthesize"
+
+
+def _close_grader(grader: TrialGrader) -> None:
+    """Release a grader's transport. A grader with no ``close()`` has nothing to release."""
+    close = getattr(grader, "close", None)
+    if callable(close):
+        close()
 
 
 class TrialExecutionUnit:
@@ -99,9 +110,7 @@ class TrialExecutionUnit:
         A grader registered downstream without a ``close()`` has nothing to
         release.
         """
-        close = getattr(self.grader, "close", None)
-        if callable(close):
-            close()
+        _close_grader(self.grader)
 
 
 def build_trial_execution_unit(ctx: TrialExecutionContext) -> TrialExecutionUnit:
@@ -167,19 +176,18 @@ def build_trial_execution_unit(ctx: TrialExecutionContext) -> TrialExecutionUnit
             ctx.config.orchestrator.rate_limit_probe,
             source="orchestrator",
         )
+        provisioning_executor = ProvisioningTrialExecutor(
+            runtime_backend=ctx.runtime_backend,
+            conductor=conductor,
+            logger=ctx.logger,
+            output_dir=ctx.output_dir,
+            artifact_writer=ctx.artifact_writer,
+            events=ctx.events,
+            provision_error=ctx.provision_error,
+        )
     except BaseException:
-        close = getattr(grader, "close", None)
-        if callable(close):
-            close()
+        _close_grader(grader)
         raise
-    provisioning_executor = ProvisioningTrialExecutor(
-        runtime_backend=ctx.runtime_backend,
-        conductor=conductor,
-        logger=ctx.logger,
-        output_dir=ctx.output_dir,
-        artifact_writer=ctx.artifact_writer,
-        events=ctx.events,
-    )
     return TrialExecutionUnit(
         grader=grader,
         conductor=conductor,
