@@ -15,7 +15,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from tolokaforge.core.pricing import pricing_table_metadata
-from tolokaforge.core.pricing_freshness import compare_against_source, live_prices
+from tolokaforge.core.pricing_freshness import (
+    _endpoint_prices,
+    compare_against_source,
+    live_prices,
+    reconcile_with_pinned_providers,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -143,3 +148,97 @@ class TestFailingToAskIsNotAnAnswer:
         )
 
         assert live_prices("https://example.invalid/models") is None
+
+
+class TestARunPinnedToAProviderIsComparedWithThatProvider:
+    """The listing carries one rate per slug. A run pinned to a dearer provider
+    with ``allow_fallbacks: false`` is billed that provider's rate, so a table
+    that matches it is current even when a cheaper provider exists."""
+
+    SLUG = "z-ai/glm-5.3"
+    SOURCE = {SLUG: {"input": 0.079, "output": 0.3}}
+    ENDPOINTS = {
+        "z-ai": {"input": 1.4, "output": 4.4},
+        "wafer": {"input": 0.079, "output": 0.3},
+    }
+
+    @pytest.fixture
+    def table(self, monkeypatch):
+        monkeypatch.setattr(
+            "tolokaforge.core.pricing_freshness.MODEL_PRICING",
+            {self.SLUG: {"input": 1.4, "output": 4.4}},
+        )
+
+    @pytest.fixture
+    def endpoints(self, monkeypatch):
+        monkeypatch.setattr(
+            "tolokaforge.core.pricing_freshness._endpoint_prices",
+            lambda url, model: self.ENDPOINTS,
+        )
+
+    def _drifts(self):
+        return compare_against_source([self.SLUG], self.SOURCE)
+
+    def test_a_table_matching_the_pinned_provider_passes(self, table, endpoints) -> None:
+        drifts = self._drifts()
+        assert drifts, "the slug-level listing alone does disagree"
+
+        assert reconcile_with_pinned_providers(drifts, {self.SLUG: ["z-ai"]}, "u") == []
+
+    def test_a_table_matching_no_pinned_provider_still_fails(self, table, endpoints) -> None:
+        drifts = reconcile_with_pinned_providers(self._drifts(), {self.SLUG: ["wafer"]}, "u")
+
+        assert {d.rate for d in drifts} == {"input", "output"}
+        assert all(d.theirs < d.ours for d in drifts)
+
+    def test_a_table_matching_any_of_several_pinned_providers_passes(
+        self, table, endpoints
+    ) -> None:
+        pins = {self.SLUG: ["wafer", "z-ai"]}
+
+        assert reconcile_with_pinned_providers(self._drifts(), pins, "u") == []
+
+    def test_an_unpinned_model_keeps_the_slug_level_drift(self, table, endpoints) -> None:
+        drifts = self._drifts()
+
+        assert reconcile_with_pinned_providers(drifts, {}, "u") == drifts
+
+    def test_unreadable_endpoints_are_not_checked(self, table, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "tolokaforge.core.pricing_freshness._endpoint_prices", lambda url, model: None
+        )
+
+        assert reconcile_with_pinned_providers(self._drifts(), {self.SLUG: ["z-ai"]}, "u") == []
+
+    def test_endpoints_are_read_by_provider_slug(self, monkeypatch) -> None:
+        body = {
+            "data": {
+                "endpoints": [
+                    {"provider_name": "Z.AI", "tag": "z-ai", "pricing": {"prompt": "0.0000014"}},
+                    {"provider_name": "Wafer", "tag": "wafer/fp8", "pricing": {"prompt": "7.9e-8"}},
+                ]
+            }
+        }
+
+        class _Response:
+            def read(self):
+                return json.dumps(body).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        seen = []
+        monkeypatch.setattr(
+            "tolokaforge.core.pricing_freshness.urllib_request.urlopen",
+            lambda url, timeout: seen.append(url) or _Response(),
+        )
+
+        prices = _endpoint_prices("https://x.invalid/api/v1/models", self.SLUG)
+
+        assert seen == ["https://x.invalid/api/v1/models/z-ai/glm-5.3/endpoints"]
+        assert prices is not None
+        assert prices["z-ai"]["input"] == pytest.approx(1.4)
+        assert prices["wafer"]["input"] == pytest.approx(0.079)
