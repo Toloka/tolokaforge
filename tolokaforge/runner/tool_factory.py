@@ -96,6 +96,15 @@ def _resolve_compose_container_name(trial_id: str, service: str, project_prefix:
 # =============================================================================
 
 
+class MCPProtocolError(RuntimeError):
+    """A JSON-RPC error answer from an MCP server, with its code kept."""
+
+    def __init__(self, code: Any, message: Any):
+        self.code = code
+        self.message = message
+        super().__init__(f"MCP error {code}: {message}")
+
+
 class ToolReconstructionError(Exception):
     """Error during tool reconstruction - fail fast."""
 
@@ -156,12 +165,27 @@ class ToolLifecycleContext:
     work_dir: str | None = None
 
 
+#: The one failure category a substrate can declare (see ``ToolCallOutcome.category``).
+INVALID_ARGUMENTS_CATEGORY = "invalid_arguments"
+#: ``CallToolResult._meta`` key through which an MCP tool declares its failure's category.
+MCP_ERROR_CATEGORY_META = "tolokaforge/error_category"
+#: JSON-RPC "Invalid params": the server refused the call's arguments.
+JSONRPC_INVALID_PARAMS = -32602
+
+
 @dataclass(frozen=True)
 class ToolCallOutcome:
-    """What a tool call answered, and whether the substrate declared it a failure."""
+    """What a tool call answered, and whether the substrate declared it a failure.
+
+    ``category`` is set only when the substrate said why in a typed way:
+    ``"invalid_arguments"`` means the caller's input was refused and nothing was
+    done, so the caller can correct it. A failure without a category stays an
+    environment failure.
+    """
 
     output: str
     declared_failure: bool
+    category: str | None = None
 
 
 BACKSTOP_GRACE_S = 5.0
@@ -667,7 +691,7 @@ class MCPServerProcess(BaseModel):
 
         if "error" in response:
             error = response["error"]
-            raise RuntimeError(f"MCP error {error.get('code')}: {error.get('message')}")
+            raise MCPProtocolError(error.get("code"), error.get("message"))
 
         return response.get("result", {})
 
@@ -802,9 +826,21 @@ class MCPServerToolWrapper(ToolWrapper):
 
             # Run in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, lambda: server.send_request("tools/call", params)
-            )
+            try:
+                result = await loop.run_in_executor(
+                    None, lambda: server.send_request("tools/call", params)
+                )
+            except MCPProtocolError as refusal:
+                if refusal.code != JSONRPC_INVALID_PARAMS:
+                    raise
+                # The server refused the arguments before running the tool: the
+                # caller's input, not the environment. The server's message is its
+                # own feedback to the caller.
+                return ToolCallOutcome(
+                    output=str(refusal.message),
+                    declared_failure=True,
+                    category=INVALID_ARGUMENTS_CATEGORY,
+                )
 
             # MCP server tools may modify state - assume true if successful
             state_changed = True
@@ -826,8 +862,11 @@ class MCPServerToolWrapper(ToolWrapper):
             # MCP specifies CallToolResult.isError as optional, absent meaning
             # the call did not fail — so the default is the protocol's, not a
             # fallback covering a response shape we failed to handle.
+            declared_failure = bool(result.get("isError", False))
             return ToolCallOutcome(
-                output=output, declared_failure=bool(result.get("isError", False))
+                output=output,
+                declared_failure=declared_failure,
+                category=_declared_category(result) if declared_failure else None,
             )
 
         except Exception as e:
@@ -850,6 +889,17 @@ class MCPServerToolWrapper(ToolWrapper):
     def cleanup(self) -> None:
         """Close this trial's pool; repeated cleanup by sibling tools is safe."""
         self._server_pool.cleanup()
+
+
+def _declared_category(result: dict[str, Any]) -> str | None:
+    """The failure category an MCP tool declared in ``_meta``, if it is one we know.
+
+    Only an explicit, known category counts; an untyped ``isError`` (or an unknown
+    category) stays an environment failure rather than being guessed from prose.
+    """
+    meta = result.get("_meta")
+    category = meta.get(MCP_ERROR_CATEGORY_META) if isinstance(meta, dict) else None
+    return category if category == INVALID_ARGUMENTS_CATEGORY else None
 
 
 # =============================================================================

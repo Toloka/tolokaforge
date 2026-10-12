@@ -767,7 +767,7 @@ The tool execution flow:
 | `ERROR` | Tool raised exception | Return error message to LLM | yes |
 | `TIMEOUT` | Execution exceeded timeout | Return timeout message to LLM | yes |
 | `TOOL_NOT_FOUND` | Tool name not registered | Log error, fail trial | yes |
-| `INVALID_ARGUMENTS` | Arguments don't match schema | Return validation error to LLM | yes, with empty `arguments` |
+| `INVALID_ARGUMENTS` | Arguments don't match the schema, or an MCP tool refused them in a typed way (JSON-RPC `-32602`, or `isError: true` with `_meta` `tolokaforge/error_category: invalid_arguments`) | Return the feedback to LLM; it does not count as an environment error | yes; with empty `arguments` when the runner refused unparseable JSON |
 | `TRIAL_NOT_FOUND` | Trial ID not registered | Abort the trial as `trial_lost` | no — on either side; the call reached no tool |
 
 A call the runner refuses before execution is still recorded, because the host appends a `role: tool` error message for it either way; a record that omitted it would read as a call the agent never attempted. `TRIAL_NOT_FOUND` is the exception, and it is not one: the runner holds no registration, so the call reached no tool and there is no outcome for either side to record. `GrpcRunnerClient` raises `TrialNotRegisteredError` instead of building a `ToolResult`, and the trial ends with `termination_reason: trial_lost` — see [RUNNER.md](RUNNER.md) § Retryability and countability are two questions.
