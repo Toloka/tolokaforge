@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "tolokaforge-adapter-harbor"
 version = "0.1.0"
 description = "Harbor-harness adapter plugin for tolokaforge — delegates execution to the Harbor harness (harbor run + Terminus 2) and grades from its native result.json"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 dependencies = [
     "tolokaforge",

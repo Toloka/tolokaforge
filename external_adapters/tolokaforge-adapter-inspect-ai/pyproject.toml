@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "tolokaforge-adapter-inspect-ai"
 version = "0.1.0"
 description = "Inspect AI adapter plugin for tolokaforge — delegates execution to inspect_ai and normalizes its results into tolokaforge types"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 dependencies = [
     "tolokaforge",
