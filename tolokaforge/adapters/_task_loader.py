@@ -1421,6 +1421,13 @@ def _load_rich_tool_schemas(
     cached back into the fixture — but only under *allow_subprocess*; without it
     the unresolved task yields ``{}`` and neither the server nor the tree is
     touched.
+
+    A readable cache is never refreshed, so it wins over the server: a
+    ``mutates_state`` declaration added to the server after the cache was
+    written does not reach the wire until the cache is regenerated. An entry
+    without the key is reported once per load through
+    :func:`_warn_cache_entries_without_mutates_state`, which names the file and
+    the regeneration path; the cache itself is left as it is.
     """
     tools_json_path = task_dir / "fixtures" / "tools.json"
 
@@ -1434,6 +1441,7 @@ def _load_rich_tool_schemas(
                 count=len(schemas),
                 path=str(tools_json_path),
             )
+            _warn_cache_entries_without_mutates_state(tools_json_path, schemas)
             return schemas
         except Exception as exc:
             logger.warning(
@@ -1462,6 +1470,33 @@ def _load_rich_tool_schemas(
             error=str(exc),
         )
     return schemas
+
+
+def _warn_cache_entries_without_mutates_state(
+    tools_json_path: Path, schemas: Mapping[str, Mapping[str, Any]]
+) -> None:
+    """One warning naming the cache file when any of its entries lacks ``mutates_state``.
+
+    The cache is written once from the server's ``tools/list`` and read ever
+    after, so a ``readOnlyHint`` the server gained later (ADR-0057) is invisible
+    on the wire until the file is regenerated. Deleting it and describing the
+    task on the run path — a run, or ``tolokaforge run --dry-run`` on a config
+    that names the task — queries the server again and writes the cache anew.
+    The warning says so; nothing here touches the file.
+    """
+    undeclared = sorted(name for name, entry in schemas.items() if "mutates_state" not in entry)
+    if not undeclared:
+        return
+    logger.warning(
+        f"{tools_json_path} carries no mutates_state for {len(undeclared)} of "
+        f"{len(schemas)} tools ({', '.join(undeclared)}); a committed cache wins over "
+        "the server, so a readOnlyHint declared since the cache was written does not "
+        "reach the wire until the cache is regenerated: delete the file and describe "
+        "the task on the run path (a run, or `tolokaforge run --dry-run` on a config "
+        "naming it), which queries the server's tools/list and writes the cache anew",
+        path=str(tools_json_path),
+        tools=undeclared,
+    )
 
 
 def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:

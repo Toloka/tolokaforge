@@ -36,6 +36,18 @@ annotation, its schema carries no `mutates_state`, and the engine treats it as
 possibly mutating — today's behaviour. Nothing consumes the flag yet;
 `category` is unrelated and stays as it is.
 
+### A committed cache wins
+
+The native adapter reads a committed `fixtures/tools.json` first and never
+refreshes it (see [NATIVE_ADAPTER.md](NATIVE_ADAPTER.md#tool-schemas-fixturestoolsjson)).
+Adding `mutates_state=` to a tool of a server whose cache is already committed
+therefore changes nothing on the wire until the cache is regenerated: delete
+`fixtures/tools.json` and describe the task on the run path — a run, or
+`tolokaforge run --dry-run` on a config naming the task — which queries the
+server's `tools/list` again and writes the cache anew; then commit the result.
+A cache with an entry that lacks the key is loaded as it is and logged as a
+warning naming the file and the tools, so the stale declaration is not silent.
+
 ## Notes
 
 - MCP tools are loaded in addition to built-in tools.

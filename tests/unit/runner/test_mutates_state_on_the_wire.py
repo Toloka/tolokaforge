@@ -21,11 +21,11 @@ import yaml
 
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tests.utils.servicer_runtime import ServicerStub
-from tolokaforge.adapters._task_loader import _fetch_mcp_tool_schemas
-from tolokaforge.runner import tool_factory
+from tolokaforge.adapters._task_loader import _fetch_mcp_tool_schemas, _load_rich_tool_schemas
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner import tool_factory
 from tolokaforge.runner.models import TaskDescription, ToolSchema
 
 pytestmark = pytest.mark.unit
@@ -164,6 +164,69 @@ def test_a_malformed_read_only_hint_leaves_the_tool_undeclared(
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any("'odd'" in w and "readOnlyHint" in w for w in warnings), warnings
     assert not any("'fine'" in w or "'silent'" in w for w in warnings), warnings
+
+
+def _cache(task_dir: Path, entries: list[dict[str, Any]]) -> Path:
+    path = task_dir / "fixtures" / "tools.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries))
+    return path
+
+
+def test_a_committed_cache_without_the_key_warns_and_names_the_regeneration_path(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A committed ``fixtures/tools.json`` wins over the server and is never
+    refreshed, so adding ``mutates_state=`` to a tool's decorator changes nothing
+    on the wire. The load warns once, naming the file and the tools, and says
+    how to regenerate; the cache is read as it is and left alone.
+    """
+    task_dir = _records_pack(tmp_path)
+    before = _cache(
+        task_dir,
+        [
+            {"name": "read_record", "description": "d", "parameters": {}},
+            {"name": "write_record", "description": "d", "parameters": {}, "mutates_state": True},
+        ],
+    ).read_text()
+
+    with caplog.at_level(logging.WARNING):
+        schemas = _load_rich_tool_schemas(
+            task_dir, task_dir / "mcp_server.py", allow_subprocess=False
+        )
+
+    assert "mutates_state" not in schemas["read_record"]
+    assert schemas["write_record"]["mutates_state"] is True
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, warnings
+    assert str(task_dir / "fixtures" / "tools.json") in warnings[0]
+    assert "read_record" in warnings[0] and "write_record" not in warnings[0].split(";")[0]
+    assert "regenerated" in warnings[0] and "--dry-run" in warnings[0]
+    assert (task_dir / "fixtures" / "tools.json").read_text() == before
+
+
+def test_a_committed_cache_declaring_every_tool_loads_silently(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    task_dir = _records_pack(tmp_path)
+    _cache(
+        task_dir,
+        [
+            {"name": "read_record", "description": "d", "parameters": {}, "mutates_state": False},
+            {"name": "write_record", "description": "d", "parameters": {}, "mutates_state": True},
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        schemas = _load_rich_tool_schemas(
+            task_dir, task_dir / "mcp_server.py", allow_subprocess=False
+        )
+
+    assert {n: e["mutates_state"] for n, e in schemas.items()} == {
+        "read_record": False,
+        "write_record": True,
+    }
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 def test_the_native_adapter_reads_it_into_the_schema_and_the_cache(

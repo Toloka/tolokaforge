@@ -221,6 +221,14 @@ them from that server, in one of two modes:
 | `True` | `fixtures/tools.json` first; when it is absent or unreadable, a live `tools/list` query against `mcp_server.py`, cached back into `fixtures/tools.json` | `to_task_description` — the run path |
 | `False` | `fixtures/tools.json` only; an MCP task without one resolves to no schemas at all | validation and pre-run gates |
 
+A readable cache is never refreshed, so a committed `fixtures/tools.json` wins
+over the server. A tool annotation declared after the cache was written — a
+`readOnlyHint`, read into `ToolSchema.mutates_state` — stays off the wire until
+the cache is regenerated: delete the file and describe the task on the run path
+(a run, or `tolokaforge run --dry-run` on a config naming the task). A load whose
+cache lacks `mutates_state` for some entry warns once, naming the file and the
+tools, and leaves the cache as it is.
+
 The read-only mode exists because a gate must not mutate the tree it is
 validating: spawning a server and depositing a generated fixture would change
 the task under inspection.  Its answer for an unresolved tool is *unknown*, not
