@@ -1,30 +1,32 @@
 """Error contract, ``auto`` selection, and the no-disk seam of ``run_trial``.
 
-Hermetic: the single-task adapter and the three registry loaders are stubbed /
-patched at the ``run_trial``-module binding, so no fixture pack, Docker, or LLM
-key is needed. Composition equivalence against the orchestrator lives in the
+Hermetic: the single-task adapter and the registry loaders are stubbed /
+patched at the ``trial_node``-module binding (the standalone entry ``run_trial``
+routes through), so no fixture pack, Docker, or LLM key is needed. Composition equivalence against the orchestrator lives in the
 canonical tier (``tests/canonical/test_run_trial_composition.py``).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-import tolokaforge.core.run_trial as run_trial_mod
+import tolokaforge.core.trial_node as trial_node_mod
 from tests.canonical._factories import make_task_config, make_task_description
 from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
 from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifactWriter
 from tolokaforge.core.plugin_registry import UnknownImplementationError
 from tolokaforge.core.run_trial import run_trial
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
+from tolokaforge.core.trial import EnvironmentManifest
+from tolokaforge.runner.models import ServiceSpec
 
 pytestmark = pytest.mark.unit
 
+_FIXTURES = Path(__file__).parent.parent / "canonical" / "fixtures" / "environment_manifest"
 _AGENT = {"provider": "openai", "name": "gpt-4"}
 _USER = {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"}
 
@@ -32,8 +34,13 @@ _USER = {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"}
 class _FakeAdapter:
     """Stands in for the single-task native adapter; returns a fixed desc."""
 
+    trial_grader_name = "runner_rpc"
+
     def __init__(self, task_desc: Any) -> None:
         self._task_desc = task_desc
+
+    def register_preloaded_task(self, task: Any, task_dir: Path) -> None:
+        pass
 
     def to_task_description(self, task_id: str) -> Any:
         return self._task_desc
@@ -41,9 +48,9 @@ class _FakeAdapter:
 
 def _patch_adapter(monkeypatch: pytest.MonkeyPatch, task_desc: Any) -> None:
     monkeypatch.setattr(
-        run_trial_mod,
-        "_build_single_task_adapter",
-        lambda task: _FakeAdapter(task_desc),
+        trial_node_mod,
+        "get_adapter",
+        lambda adapter_type, params: _FakeAdapter(task_desc),
     )
 
 
@@ -56,17 +63,19 @@ class TestModelValidation:
     def test_malformed_agent_value_raises_validation_error(self) -> None:
         with pytest.raises(ValidationError):
             run_trial(
-                task=make_task_config(),
+                task=make_task_config(task_id="task-1"),
                 models={"agent": {"provider": "openai", "name": "gpt-4", "temperature": "nope"}},
             )
 
     def test_missing_agent_key_raises_validation_error(self) -> None:
         with pytest.raises(ValidationError):
-            run_trial(task=make_task_config(), models={"user": _AGENT})
+            run_trial(task=make_task_config(task_id="task-1"), models={"user": _AGENT})
 
     def test_unexpected_role_key_raises_validation_error(self) -> None:
         with pytest.raises(ValidationError):
-            run_trial(task=make_task_config(), models={"agent": _AGENT, "bogus": _AGENT})
+            run_trial(
+                task=make_task_config(task_id="task-1"), models={"agent": _AGENT, "bogus": _AGENT}
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -76,28 +85,30 @@ class TestModelValidation:
 
 class TestUnknownImplementationErrors:
     def test_unknown_runtime_lists_known_names(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_adapter(monkeypatch, make_task_description())
+        _patch_adapter(monkeypatch, make_task_description(task_id="task-1"))
         with pytest.raises(UnknownImplementationError) as exc:
-            run_trial(task=make_task_config(), models={"agent": _AGENT}, runtime="bogus")
+            run_trial(
+                task=make_task_config(task_id="task-1"), models={"agent": _AGENT}, runtime="bogus"
+            )
         assert "shared" in str(exc.value)
         assert "bogus" in str(exc.value)
 
     def test_unknown_grader_lists_known_names(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_adapter(monkeypatch, make_task_description())
+        _patch_adapter(monkeypatch, make_task_description(task_id="task-1"))
         with pytest.raises(UnknownImplementationError) as exc:
             run_trial(
-                task=make_task_config(),
-                models={"agent": _AGENT},
+                task=make_task_config(task_id="task-1"),
+                models={"agent": _AGENT, "user": _USER},
                 runtime="in_memory",
                 grader="bogus",
             )
         assert "runner_rpc" in str(exc.value)
 
     def test_unknown_conductor_lists_known_names(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_adapter(monkeypatch, make_task_description())
+        _patch_adapter(monkeypatch, make_task_description(task_id="task-1"))
         with pytest.raises(UnknownImplementationError) as exc:
             run_trial(
-                task=make_task_config(),
+                task=make_task_config(task_id="task-1"),
                 models={"agent": _AGENT},
                 runtime="in_memory",
                 conductor="bogus",
@@ -119,16 +130,28 @@ class TestAutoRuntimeSelection:
         self, monkeypatch: pytest.MonkeyPatch, *, requires_per_trial: bool
     ) -> dict[str, str]:
         recorded: dict[str, str] = {}
-        manifest = SimpleNamespace(requires_per_trial=requires_per_trial)
-        _patch_adapter(monkeypatch, SimpleNamespace(environment_manifest=manifest))
+        services = {
+            "db": ServiceSpec(isolation="ephemeral" if requires_per_trial else "shared"),
+            "default": ServiceSpec(isolation="shared"),
+        }
+        manifest = EnvironmentManifest(
+            compose_file=_FIXTURES / "safe_two_service.yaml", services=services
+        )
+        assert manifest.requires_per_trial is requires_per_trial
+        _patch_adapter(
+            monkeypatch,
+            make_task_description(task_id="task-1", environment_manifest=manifest),
+        )
 
         def fake_loader(name: str) -> Any:
             recorded["name"] = name
             raise _StopBeforeBackend
 
-        monkeypatch.setattr(run_trial_mod, "load_runtime_backend", fake_loader)
+        monkeypatch.setattr(trial_node_mod, "load_runtime_backend", fake_loader)
         with pytest.raises(_StopBeforeBackend):
-            run_trial(task=make_task_config(), models={"agent": _AGENT}, runtime="auto")
+            run_trial(
+                task=make_task_config(task_id="task-1"), models={"agent": _AGENT}, runtime="auto"
+            )
         return recorded
 
     def test_auto_picks_per_trial_when_manifest_requires_isolation(
@@ -161,7 +184,7 @@ class TestOutputDirSeam:
 
             return factory
 
-        monkeypatch.setattr(run_trial_mod, "load_conductor", capture_conductor)
+        monkeypatch.setattr(trial_node_mod, "load_conductor", capture_conductor)
         result = run_trial(
             task=make_task_config(task_id="task-1"),
             models={"agent": _AGENT, "user": _USER},
@@ -207,7 +230,7 @@ class _RaisingConductor:
 class TestBackendLifecycle:
     def _capture_backend(self, monkeypatch: pytest.MonkeyPatch) -> list[InMemoryRuntimeBackend]:
         captured: list[InMemoryRuntimeBackend] = []
-        original_loader = run_trial_mod.load_runtime_backend
+        original_loader = trial_node_mod.load_runtime_backend
 
         def wrap_loader(name: str) -> Any:
             real_factory = original_loader(name)
@@ -219,12 +242,12 @@ class TestBackendLifecycle:
 
             return capturing_factory
 
-        monkeypatch.setattr(run_trial_mod, "load_runtime_backend", wrap_loader)
+        monkeypatch.setattr(trial_node_mod, "load_runtime_backend", wrap_loader)
         return captured
 
     def _install_conductor(self, monkeypatch: pytest.MonkeyPatch, conductor_impl: Any) -> None:
         monkeypatch.setattr(
-            run_trial_mod,
+            trial_node_mod,
             "load_conductor",
             lambda name: (lambda ctx: conductor_impl),
         )

@@ -63,8 +63,8 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.run_display_events import RateLimitProbeStats
-from tolokaforge.core.run_trial import _build_run_config
 from tolokaforge.core.runner import TrialRunner
+from tolokaforge.core.trial_node import _build_run_config
 from tolokaforge.runner.models import Criterion, Rubric
 
 pytestmark = pytest.mark.unit

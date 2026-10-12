@@ -37,6 +37,7 @@ source_modules =
     tolokaforge.core.orchestrator
     tolokaforge.core.conductor
     tolokaforge.core.trial_executor
+    tolokaforge.core.trial_node
 forbidden_modules =
     tolokaforge.core.grading
     tolokaforge.runner.service
