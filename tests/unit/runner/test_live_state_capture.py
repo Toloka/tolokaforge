@@ -3,8 +3,8 @@
 The db-service only mirrors such a trial; the subprocess holds what the agent's
 calls changed. These tests drive a real stdio child and the real db-service app
 through ``RunnerServiceImpl`` and kill the child between the agent's last call
-and the final read — the sequence that used to answer ``GetState`` and
-``GradeTrial`` from the stale mirror as if nothing had happened.
+and the final read; both reads must then fail with the cause, never answer
+from the mirror.
 """
 
 from __future__ import annotations
@@ -17,8 +17,10 @@ import grpc
 import pytest
 
 from tests.utils.runner_requests import register_request, simple_task_description, trial_spec_json
+from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.runner.service import RunnerServiceImpl
+from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
+from tolokaforge.runner.service import RunnerServiceImpl, _LiveStateSync
 from tolokaforge.runner.substrate_service import SubstrateServicer
 from tolokaforge.runner.tool_factory import MCPServerProcess, MCPServerToolWrapper, ToolFactory
 
@@ -85,7 +87,9 @@ def trial_id() -> str:
 def mcp_trial(runner_service: RunnerServiceImpl, mock_grpc_context, tmp_path, trial_id):
     """A registered trial whose one agent tool runs in a real MCP child."""
 
-    def register(task: dict[str, Any]) -> MCPServerToolWrapper:
+    def register(
+        task: dict[str, Any], child_tables: dict[str, Any] | None = None
+    ) -> MCPServerToolWrapper:
         response = runner_service.RegisterTrial(
             register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id),
             mock_grpc_context,
@@ -108,7 +112,7 @@ def mcp_trial(runner_service: RunnerServiceImpl, mock_grpc_context, tmp_path, tr
         tools = ToolFactory(runner_service.db_client, trial_id).reconstruct_tools([schema], [])
         wrapper = tools.agent_tools["set_balance"]
         assert isinstance(wrapper, MCPServerToolWrapper)
-        wrapper.reset_state(task["initial_state"]["tables"])
+        wrapper.reset_state(child_tables or task["initial_state"]["tables"])
         runner_service.trials[trial_id].agent_tools = {"set_balance": wrapper}
         owned.append((tools, wrapper))
         return wrapper
@@ -151,6 +155,19 @@ def _grade(service: RunnerServiceImpl, context, trial_id: str) -> pb2.GradeTrial
 
 def _u1_balance(response: pb2.GetStateResponse) -> int:
     return json.loads(response.state_json)["users"][0]["balance"]
+
+
+def _substrate(service: RunnerServiceImpl, trial_id: str, *, synced: bool = False):
+    """The grading substrate one ``GradeTrial`` call would read through.
+
+    ``synced`` runs that call's one MCP sync up front, so a later read failure
+    is the read's own and not the sync's.
+    """
+    trial_context = service.trials[trial_id]
+    live_state = _LiveStateSync(service, trial_id, trial_context)
+    if synced:
+        service._run_async(live_state.ensure())
+    return service._build_grading_substrate(trial_id, trial_context, live_state)
 
 
 class TestHealthyChild:
@@ -304,6 +321,81 @@ class TestChildLostBeforeTheFinalRead:
         assert graded.success is False and "dropped the mutation" in graded.error
 
 
+class TestMirrorReadFailsAfterASuccessfulSync:
+    """The sync landed, but the mirror then could not be read for grading."""
+
+    def test_a_jsonpath_read_is_ungradeable_with_the_cause(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+
+        async def drop(*_args: Any, **_kwargs: Any) -> None:
+            raise ConnectionError("db-service read dropped")
+
+        monkeypatch.setattr(runner_service.db_client, "get_stable_state", drop)
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success is False
+        assert "could not be read for grading" in graded.error
+        assert "read dropped" in graded.error
+        assert not graded.HasField("grade")
+
+    def test_a_raw_state_read_raises_rather_than_answer_empty(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """The custom-checks read: a lost DB is not an empty world."""
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+
+        substrate = _substrate(runner_service, trial_id, synced=True)
+
+        async def drop(*_args: Any, **_kwargs: Any) -> None:
+            raise ConnectionError("db-service read dropped")
+
+        monkeypatch.setattr(runner_service.db_client, "get_state", drop)
+
+        with pytest.raises(SubstrateUnreachableError, match="could not be read for grading"):
+            substrate.final_state()
+
+
+class TestNoDatabase:
+    """A trial that provisions no database has no mirror for its MCP tools to sync."""
+
+    @staticmethod
+    def _task_without_db() -> tuple[dict[str, Any], dict[str, Any]]:
+        task = _task()
+        tables = task["initial_state"]["tables"]
+        task["initial_state"] = {}
+        return task, tables
+
+    def test_final_reads_keep_the_no_database_answer(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id
+    ) -> None:
+        task, tables = self._task_without_db()
+        wrapper = mcp_trial(task, child_tables=tables)
+        _mutate(runner_service, wrapper, 120)
+
+        answer = SubstrateServicer(runner_service).ReadFinalDBState(
+            pb2.ReadFinalDBStateRequest(trial_id=trial_id), mock_grpc_context
+        )
+
+        assert answer.trial_not_found is True
+        mock_grpc_context.set_code.assert_not_called()
+
+    def test_grading_reads_get_the_db_clients_own_error(
+        self, runner_service, mcp_trial, trial_id
+    ) -> None:
+        """The error evaluators read as "no database", not an unreachable substrate."""
+        task, tables = self._task_without_db()
+        wrapper = mcp_trial(task, child_tables=tables)
+        _mutate(runner_service, wrapper, 120)
+
+        with pytest.raises(DBTrialNotFoundError):
+            _substrate(runner_service, trial_id).final_state()
+
+
 class TestDetachedGraderReads:
     """The grader outside the runner reads final state through ``SubstrateService``."""
 
@@ -360,6 +452,14 @@ class TestStateAnswerShape:
 
         with pytest.raises(RuntimeError, match=match):
             MCPServerProcess(script_path="/unused.py").get_state()
+
+    def test_a_refused_state_hand_back_raises(self, monkeypatch) -> None:
+        """A child that kept its old state must not pass for one that took the new."""
+        answer = {"isError": True, "content": [{"type": "text", "text": "boom"}]}
+        monkeypatch.setattr(MCPServerProcess, "send_request", lambda *_a, **_k: answer)
+
+        with pytest.raises(RuntimeError, match="_tolokaforge_set_state_ declared failure"):
+            MCPServerProcess(script_path="/unused.py").reset_state({"users": []})
 
     def test_an_empty_state_object_is_a_state(self, monkeypatch) -> None:
         answer = {"content": [{"type": "text", "text": "{}"}]}

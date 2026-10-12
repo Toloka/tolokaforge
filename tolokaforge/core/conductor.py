@@ -550,11 +550,8 @@ class InProcessConductor:
             )
             # Every bundle, including the snapshot grader's, records the traced attempt.
             trajectory.attempt_id = spec.attempt_id
-            state_capture_error = self._capture_final_state(spec, setup, trajectory)
-            if state_capture_error is None:
-                self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
-            else:
-                self._refuse_grade(task_config, setup, trajectory, state_capture_error)
+            self._capture_final_state(spec, setup, trajectory)
+            self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
             self._produce_grade_bundle(spec, setup, trajectory)
         except BaseException as exc:
             # A trial that dies here (a hard raise, strict mode, a lost registration) still
@@ -1109,7 +1106,7 @@ class InProcessConductor:
         spec: TrialSpec,
         setup: _TrialSetup,
         trajectory: Trajectory,
-    ) -> str | None:
+    ) -> None:
         """Sync the trial's final environment state from the Runner DB
         service and stash it on ``trajectory.final_env_state``.
 
@@ -1126,17 +1123,18 @@ class InProcessConductor:
         For a task that provisions a database the Runner's answer is the only
         final state there is, an empty one included. When it cannot be read —
         the RPC raises, reports failure, or answers with no state object — the
-        cause is returned and no DB state is stashed: the pre-trial snapshot
-        would grade the agent on a world its tool calls never touched.
+        cause is logged and no DB state is stashed: the pre-trial snapshot
+        would record a world the agent's tool calls never touched. No grader
+        reads this stash: one that grades on state reads it from the Runner,
+        which refuses a final state it cannot capture, so a lost capture leaves
+        the grader's own verdict — an auto-fail, no grade for a lost trial, or
+        a grading error — standing.
 
         When the trial's task carries an ``environment_manifest`` (a
         Project-layer / multi-container substrate), the resolved
         environment identity is recorded under the ``environment`` key so a
         post-mortem can read which services, images, DSNs, and mounts backed
         the trial. Manifest-less trials keep the JSON-DB-only shape.
-
-        Returns:
-            ``None`` once the final state is captured, else why it could not be.
         """
         capture_error: str | None = None
         if provisions_database(spec.task.initial_state):
@@ -1168,7 +1166,6 @@ class InProcessConductor:
             )
 
         trajectory.final_env_state = final_state
-        return capture_error
 
     def _read_runner_state(self, trial_id: str) -> dict[str, Any]:
         """The trial's final DB state as the Runner's ``GetState`` reports it.
@@ -1194,28 +1191,6 @@ class InProcessConductor:
                 f"GetState returned {type(decoded).__name__}, not a state object"
             )
         return decoded
-
-    def _refuse_grade(
-        self,
-        task_config: TaskConfig,
-        setup: _TrialSetup,
-        trajectory: Trajectory,
-        state_capture_error: str,
-    ) -> None:
-        """Book a trial whose final state was lost as ungradeable.
-
-        The same outcome :meth:`_grade` gives a :class:`GradingFailedError`:
-        the cause lands on ``trajectory.grading_error``, ``grade`` stays unset,
-        and the trial keeps its own ``status`` and ``termination_reason``. No
-        grader runs — every one of them would read state that was never captured.
-        """
-        trajectory.grading_error = f"Final state could not be captured: {state_capture_error}"
-        self.logger.error(
-            "Trial could not be graded",
-            task_id=task_config.task_id,
-            trial_index=setup.trial_idx,
-            error=trajectory.grading_error,
-        )
 
     def _grade(
         self,

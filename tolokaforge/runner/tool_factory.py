@@ -713,8 +713,7 @@ class MCPServerProcess(BaseModel):
             "tools/call",
             {"name": "_tolokaforge_get_state_", "arguments": {}},
         )
-        content = result.get("content")
-        text = content[0].get("text") if content and isinstance(content, list) else None
+        text = _first_text(result)
         if result.get("isError"):
             raise RuntimeError(f"_tolokaforge_get_state_ declared failure: {text!r}")
         if not isinstance(text, str):
@@ -734,14 +733,20 @@ class MCPServerProcess(BaseModel):
 
         Args:
             initial_state: State dict to restore (table_name -> list[record]).
+
+        Raises:
+            RuntimeError: the tool declared failure, so the subprocess still
+                holds whatever state it had before.
         """
-        self.send_request(
+        result = self.send_request(
             "tools/call",
             {
                 "name": "_tolokaforge_set_state_",
                 "arguments": {"state_json": json.dumps(initial_state)},
             },
         )
+        if result.get("isError"):
+            raise RuntimeError(f"_tolokaforge_set_state_ declared failure: {_first_text(result)!r}")
 
 
 class MCPServerPool:
@@ -901,6 +906,12 @@ class MCPServerToolWrapper(ToolWrapper):
     def cleanup(self) -> None:
         """Close this trial's pool; repeated cleanup by sibling tools is safe."""
         self._server_pool.cleanup()
+
+
+def _first_text(result: dict[str, Any]) -> str | None:
+    """The text of an MCP tool answer's first content item, if it has one."""
+    content = result.get("content")
+    return content[0].get("text") if content and isinstance(content, list) else None
 
 
 def _declared_category(result: dict[str, Any]) -> str | None:

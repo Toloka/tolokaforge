@@ -750,7 +750,8 @@ class _LiveStateSync:
 
     A failed sync is kept and re-raised to every later reader as
     :class:`SubstrateUnreachableError` — the mirror is stale, so nothing in
-    this call may be graded from it.
+    this call may be graded from it. A trial that provisions no database has
+    no mirror to sync, so nothing is synced for it.
     """
 
     def __init__(
@@ -758,7 +759,7 @@ class _LiveStateSync:
     ) -> None:
         self._service = service
         self._trial_id = trial_id
-        self._wrapper = service._find_mcp_server_wrapper(trial_context)
+        self._wrapper = service._mirrored_mcp_server_wrapper(trial_context)
         self._sync: asyncio.Future[None] | None = None
 
     async def ensure(self) -> None:
@@ -3259,6 +3260,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 return wrapper
         return None
 
+    @classmethod
+    def _mirrored_mcp_server_wrapper(
+        cls, trial_context: "TrialContextRuntime"
+    ) -> MCPServerToolWrapper | None:
+        """The MCP subprocess whose state the trial's DB mirror must follow, if any.
+
+        Only a trial that provisions a database has a mirror in the db-service;
+        a trial that provisions none keeps its MCP tools' state to itself.
+        """
+        if not provisions_database(trial_context.task_description.initial_state):
+            return None
+        return cls._find_mcp_server_wrapper(trial_context)
+
     async def _refresh_db_mirror(self, trial_id: str) -> None:
         """Sync the mirror of a registered trial whose state lives in an MCP subprocess.
 
@@ -3266,11 +3280,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         its final state comes after this. A failed sync raises
         :class:`SubstrateUnreachableError` rather than leaving the stale
         mirror to be read.
+
+        A trial this runner does not hold has no subprocess here to sync, so
+        the read that follows answers the db-service as it stands. Such a trial
+        is one the runner lost, and ``GradeTrial`` refuses it before any read.
         """
         trial_context = self.trials.get(trial_id)
         if trial_context is None:
             return
-        mcp_wrapper = self._find_mcp_server_wrapper(trial_context)
+        mcp_wrapper = self._mirrored_mcp_server_wrapper(trial_context)
         if mcp_wrapper is not None:
             await self._sync_live_state(trial_id, mcp_wrapper)
 

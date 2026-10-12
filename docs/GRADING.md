@@ -831,12 +831,19 @@ read fails with the cause instead of answering from the mirror: `GetState` retur
 `success = false`, `GradeTrial` returns `success = false`, `SubstrateService`
 answers `UNAVAILABLE`. For a task whose `initial_state` provisions a database, a
 failed DB read during grading fails the same way rather than grading against empty
-state. The conductor, for its part, takes the runner's answer as the trial's final
-state — an empty one included — and never substitutes the adapter's pre-trial
-snapshot: when `GetState` fails, raises or answers with no state object, no grader
-runs, `Trajectory.grading_error` reads `Final state could not be captured: <cause>`,
-and `final_env_state` carries no DB state. The trial is then ungradeable exactly as
-above.
+state. A task that provisions no database has no mirror: nothing is synced for its
+MCP subprocess, and its reads keep the "no database" answers they always had.
+
+The grader's verdict stands on that refusal. A trial that reaches the runner's
+grading is then ungradeable exactly as above, with the runner's cause in
+`Trajectory.grading_error`. A verdict the grader reaches without reading state —
+no grade for an infrastructure abort or a lost trial, the auto-fail for an
+error, a timeout, a stuck agent or a context-window overflow — is unaffected.
+
+The conductor's own read of the final state (for `env.yaml`) takes the runner's
+answer as the trial's final state — an empty one included — and never substitutes
+the adapter's pre-trial snapshot: when `GetState` fails, raises or answers with no
+state object, the cause is logged and `final_env_state` carries no DB state.
 
 #### A component the config declared that produced no verdict
 
@@ -4510,12 +4517,17 @@ custom_checks:
 (`core/grading/composite/custom_checks.py: grade_custom_checks`) and reads its evidence through
 the `GradingSubstrate` seam: `substrate.initial_state()` feeds
 `ctx.initial_state`, and `substrate.final_state()` (RAW) feeds `ctx.final_state`
-— the shape a check's arithmetic over final DB rows needs. Any failure reaching
-the substrate's final state degrades to `{}` under the composite's single
-broad-except so the check still runs against an honest empty state and the
-audit signal survives on the log line downstream tooling greps for
-(`final DB state fetch failed (<exc>); grading against empty state`); the
-runner's `_grade_custom_checks` dispatches the composite off-loop via
+— the shape a check's arithmetic over final DB rows needs. A substrate that
+cannot reach the final state of a task whose `initial_state` provisions a
+database raises `SubstrateUnreachableError`, which the dispatch re-raises: the
+trial is ungradeable, never checked against an empty world (see
+[A trial whose final state could not be captured](#a-trial-whose-final-state-could-not-be-captured)).
+Any other failure reaching the final state — on the runner substrate, the DB
+client's own error for a task that provisions no database — degrades to `{}`
+under the composite's single broad-except so the check still runs against an
+honest empty state and the audit signal survives on the log line downstream
+tooling greps for (`final DB state fetch failed (<exc>); grading against empty
+state`); the runner's `_grade_custom_checks` dispatches the composite off-loop via
 `loop.run_in_executor` so the substrate's blocking reads and the executor's
 own blocking `.run()` land on a worker thread.
 
