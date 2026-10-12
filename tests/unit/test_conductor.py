@@ -373,14 +373,22 @@ class TestCaptureFinalState:
         conductor.runtime_backend.get_state.return_value = answer
         setup = self._db_setup()
         setup.trial_idx = 0
+        setup.env_state.get_final_state.return_value = {
+            "agent": {"users": []},
+            "user": {"device": {}},
+            "db": {"users": []},
+            "filesystem": {"notes.txt": "kept"},
+            "mock_web_url": "http://mock-web:8080",
+        }
         trajectory = _default_success_trajectory("t1", 0)
 
         conductor._capture_final_state(self._db_spec(), setup, trajectory)
 
-        assert "db" not in trajectory.final_env_state
-        assert "agent" not in trajectory.final_env_state
-        assert cause in trajectory.final_env_state["final_state_error"]
-        setup.env_state.get_final_state.assert_not_called()
+        stash = trajectory.final_env_state
+        assert not {"agent", "user", "db"} & stash.keys()
+        assert stash["filesystem"] == {"notes.txt": "kept"}
+        assert stash["mock_web_url"] == "http://mock-web:8080"
+        assert cause in stash["final_state_error"]
         (record,) = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert record.getMessage() == "Could not capture the trial's final state"
         assert (record.task_id, record.trial_index, record.trial_id) == ("t1", 0, "t1:0")
@@ -448,6 +456,7 @@ class TestCaptureFinalState:
         assert trajectory.grade is None
         assert trajectory.status == TrialStatus.COMPLETED
         assert classify_trial_outcome(trajectory) is TrialOutcomeClass.UNGRADEABLE
+        assert "SubstrateUnreachableError" in trajectory.grading_error
 
     def test_a_lost_trial_stays_a_harness_error(self) -> None:
         trajectory = _default_success_trajectory("t1", 0).model_copy(

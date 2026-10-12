@@ -825,8 +825,9 @@ agent changed after it, and hash grading's golden replay (which runs in the same
 subprocess, and hands it the trial's state back once scored) is never read as the
 agent's.
 
-When that sync fails — the subprocess is gone, `_tolokaforge_get_state_` declares
-failure or answers without a state object, or the mirror refuses the update — the
+When that sync fails — the subprocess is gone or does not answer within 20 s,
+`_tolokaforge_get_state_` declares failure or answers without a state object, or the
+mirror refuses the update — the
 read fails with the cause instead of answering from the mirror: `GetState` returns
 `success = false`, `GradeTrial` returns `success = false`, `SubstrateService`
 answers `UNAVAILABLE`. For a task whose `initial_state` provisions a database, a
@@ -834,8 +835,12 @@ failed DB read during grading fails the same way rather than grading against emp
 state: in `GradeTrial`, in the judge's `get_db_state` / `query_db` tools (the judge
 returns no verdict, even when it submitted one), and in `SubstrateService`, which
 answers `UNAVAILABLE` rather than `trial_not_found` when the db-service has lost a
-trial the runner holds. A task that provisions no database has no mirror: nothing is
-synced for its MCP subprocess, and its reads answer "no database" (`trial_not_found`).
+trial the runner holds. A judge DB read that does not come back within its 30 s
+bound is refused the same way. A read the db-service rejects as malformed — a
+jsonpath that does not parse, a table that is not there — is no lost state: the judge
+gets it as a tool error and can correct it. A task that provisions no database has no
+mirror: nothing is synced for its MCP subprocess, and its reads answer "no database"
+(`trial_not_found`).
 
 A grading call that reads state is refused, and the trial is ungradeable exactly as
 above, with the cause in `Trajectory.grading_error`. A verdict that reads no state
@@ -847,8 +852,9 @@ The conductor's own read of the final state (for `env.yaml`) takes the runner's
 answer as the trial's final state — an empty one included — and never substitutes
 the adapter's pre-trial snapshot. When `GetState` fails, raises or answers with no
 state object, the cause is logged with the trial's identity and `env.yaml` carries
-it as `final_state_error` instead of any DB state, so a trial graded on a verdict
-that read no state still shows its lost capture.
+it as `final_state_error` in place of the keys derived from the DB state (`agent`,
+`user`, `db`); the filesystem, mock-web and RAG entries stay. A trial graded on a
+verdict that read no state still shows its lost capture.
 
 #### A component the config declared that produced no verdict
 

@@ -345,6 +345,11 @@ class _TrialSetup:
     """
 
 
+#: The keys :meth:`EnvironmentState.get_final_state` derives from its DB state.
+#: A lost capture leaves that state at the pre-trial snapshot, so they are dropped.
+_DB_DERIVED_FINAL_STATE_KEYS = ("agent", "user", "db")
+
+
 class FinalStateUnavailableError(Exception):
     """The Runner could not report the final state of a trial that provisions a database."""
 
@@ -1124,8 +1129,10 @@ class InProcessConductor:
         final state there is, an empty one included. When it cannot be read —
         the RPC raises, reports failure, or answers with no state object — the
         cause is logged with the trial's identity and stashed under
-        ``final_state_error`` in place of any DB state: the pre-trial snapshot
-        would record a world the agent's tool calls never touched. No grader
+        ``final_state_error`` in place of the keys derived from the DB state
+        (``agent``, ``user``, ``db``), while the rest — filesystem, mock-web and
+        RAG entries — stays: the pre-trial snapshot would record a world the
+        agent's tool calls never touched. No grader
         reads this stash. A grading read of the state goes to the Runner, which
         refuses a final state it cannot capture; a verdict that reads no state
         (transcript rules, an auto-fail, no grade for a lost trial) still
@@ -1162,11 +1169,11 @@ class InProcessConductor:
             setup.env_state.db_state = setup.adapter_env.data
             setup.env_state._normalize_db_state()
 
-        final_state = (
-            setup.env_state.get_final_state()
-            if capture_error is None
-            else {"final_state_error": capture_error}
-        )
+        final_state = setup.env_state.get_final_state()
+        if capture_error is not None:
+            for key in _DB_DERIVED_FINAL_STATE_KEYS:
+                final_state.pop(key, None)
+            final_state["final_state_error"] = capture_error
         # Pass agent_visible_dir so the agentic judge can read files from disk.
         final_state["agent_visible_dir"] = str(setup.env_state.agent_visible_dir)
 

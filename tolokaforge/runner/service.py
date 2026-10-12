@@ -128,9 +128,13 @@ from tolokaforge.runner.capabilities import BUILTIN_ADAPTERS
 from tolokaforge.runner.db_client import (
     DBServiceClient,
     DBServiceError,
+    TableNotFoundError,
 )
 from tolokaforge.runner.db_client import (
     TrialNotFoundError as DBTrialNotFoundError,
+)
+from tolokaforge.runner.db_client import (
+    ValidationError as DBValidationError,
 )
 from tolokaforge.runner.env_exec import first_env_exec_tool
 from tolokaforge.runner.grading import (
@@ -209,6 +213,16 @@ AGENT_WORK_DIR = "/work"
 # ``ExecuteTool``. Both enforce the same tool budget, so on an equal deadline the
 # winner is scheduler noise — and an outer win reports a genuine timeout as ERROR.
 _TOOL_TIMEOUT_SLACK_S = 5.0
+
+# Bound on one grading read through the judge's DB tools (``get_db_state`` /
+# ``query_db``), the read a judge waits on mid-loop.
+_JUDGE_DB_READ_TIMEOUT_S = 30.0
+
+# Bound on reading an MCP subprocess's live state for a mirror sync. A child that
+# hangs instead of dying would otherwise stall every final-state read for as long
+# as the reader waits; it stays inside the judge's read bound so the reader sees
+# the sync's own cause rather than its own timeout.
+_MCP_STATE_READ_TIMEOUT_S = 20.0
 
 # The documented read-only mcp_core TypeSense KB connector the agent uses. The
 # judge is allowed to reuse this ONE reconstructed tool (read-only passthrough)
@@ -769,7 +783,9 @@ class _LiveStateSync:
             self._sync = asyncio.ensure_future(
                 self._service._sync_live_state(self._trial_id, self._wrapper)
             )
-        await self._sync
+        # Shielded: a reader that gives up waiting must not cancel the sync the
+        # call's other readers share.
+        await asyncio.shield(self._sync)
 
 
 # =============================================================================
@@ -1895,47 +1911,60 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Every DB read awaits ``live_state`` first, so a trial whose state lives
         in an MCP subprocess is graded on that state, not on the mirror an
         earlier ``GetState`` left. For a trial that provisions a database, a
-        failed sync or read raises :class:`SubstrateUnreachableError` — the
-        trial is ungradeable, never graded on empty or stale tables. A trial
-        that provisions none keeps the DB client's own errors, which the
-        evaluators already read as "no database".
+        failed or timed-out sync or read raises :class:`SubstrateUnreachableError`
+        — the trial is ungradeable, never graded on empty or stale tables. A read
+        the db-service refuses as malformed (a jsonpath that does not parse, a
+        table that is not there) is not a lost state and keeps its own error, so
+        a judge can correct it. A trial that provisions no database keeps the
+        DB client's own errors, which the evaluators already read as "no database".
         """
-        loop = self._loop
         db_client = self.db_client
         provisions_db = provisions_database(trial_context.task_description.initial_state)
+
+        def _unreadable(cause: str) -> SubstrateUnreachableError:
+            return SubstrateUnreachableError(
+                f"Trial {trial_id!r}: its DB state could not be read for grading ({cause})"
+            )
 
         async def _read_mirror(read: Callable[[], Any]) -> Any:
             await live_state.ensure()
             try:
                 return await read()
+            except (DBValidationError, TableNotFoundError):
+                # The service refused the read itself — a jsonpath that does not
+                # parse, a table that is not there. The state is intact; the
+                # caller (a judge, typically) gets the refusal and can correct it.
+                raise
             except Exception as exc:
                 if not provisions_db:
                     raise
-                raise SubstrateUnreachableError(
-                    f"Trial {trial_id!r}: its DB state could not be read for grading "
-                    f"({type(exc).__name__}: {exc})"
-                ) from exc
+                raise _unreadable(f"{type(exc).__name__}: {exc}") from exc
+
+        def _bridged_read(read: Callable[[], Any], timeout_s: float) -> Any:
+            """Run one mirror read on the runner's event loop from a grading worker thread."""
+            try:
+                return self._run_async(_read_mirror(read), timeout=timeout_s)
+            except TimeoutError as exc:
+                if not provisions_db:
+                    raise
+                raise _unreadable(f"timed out after {timeout_s:g}s") from exc
 
         class _LoopBridgeDBReader:
-            """Sync :class:`DBReader` seam bridging to the async DB client on ``loop``."""
+            """Sync :class:`DBReader` seam bridging to the async DB client on the runner's loop."""
 
             def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
-                fut = asyncio.run_coroutine_threadsafe(
-                    _read_mirror(lambda: db_client.get_state(trial_id, tables)), loop
-                )
-                return fut.result(timeout=30.0).data
+                read = partial(db_client.get_state, trial_id, tables)
+                return _bridged_read(read, _JUDGE_DB_READ_TIMEOUT_S).data
 
             def query(self, jsonpath: str) -> dict[str, Any]:
-                fut = asyncio.run_coroutine_threadsafe(
-                    _read_mirror(lambda: db_client.query(trial_id, jsonpath)), loop
-                )
-                return {"results": fut.result(timeout=30.0).results}
+                read = partial(db_client.query, trial_id, jsonpath)
+                return {"results": _bridged_read(read, _JUDGE_DB_READ_TIMEOUT_S).results}
 
         def _get_raw_state() -> dict[str, Any]:
-            return self._run_async(_read_mirror(lambda: db_client.get_state(trial_id))).data
+            return _bridged_read(partial(db_client.get_state, trial_id), 300.0).data
 
         def _get_stable_state() -> dict[str, Any]:
-            return self._run_async(_read_mirror(lambda: db_client.get_stable_state(trial_id))).data
+            return _bridged_read(partial(db_client.get_stable_state, trial_id), 300.0).data
 
         def _get_filesystem_state() -> dict[str, str]:
             return self._read_filesystem_for_state(trial_id)
@@ -3299,13 +3328,22 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """Bring the db-service mirror up to the MCP subprocess's live state.
 
         Raises :class:`SubstrateUnreachableError` carrying the cause when the
-        subprocess cannot answer or the mirror cannot take the update — a
+        subprocess cannot answer (within ``_MCP_STATE_READ_TIMEOUT_S``, so a hung
+        child fails like a dead one) or the mirror cannot take the update — a
         mirror that missed the sync still holds an earlier state, and handing
         that out would grade the trial on evidence its tool calls never left.
         """
         try:
             loop = asyncio.get_running_loop()
-            mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
+            try:
+                mcp_state = await asyncio.wait_for(
+                    loop.run_in_executor(None, mcp_wrapper.get_state),
+                    timeout=_MCP_STATE_READ_TIMEOUT_S,
+                )
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"the MCP server did not answer within {_MCP_STATE_READ_TIMEOUT_S:g}s"
+                ) from exc
             await self._sync_mcp_state_to_db(trial_id, mcp_state)
         except Exception as exc:
             raise SubstrateUnreachableError(

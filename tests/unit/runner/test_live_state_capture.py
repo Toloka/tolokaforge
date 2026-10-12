@@ -9,7 +9,9 @@ from the mirror.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 import uuid
 from typing import Any
 
@@ -21,6 +23,7 @@ from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner import service as runner_service_module
 from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
 from tolokaforge.runner.service import RunnerServiceImpl, _LiveStateSync
 from tolokaforge.runner.substrate_service import SubstrateServicer
@@ -141,6 +144,12 @@ def _kill(wrapper: MCPServerToolWrapper) -> None:
     process = wrapper._get_server().process
     process.kill()
     process.wait(timeout=5)
+
+
+def _hang(wrapper: MCPServerToolWrapper, monkeypatch) -> None:
+    """Make the child stop answering state reads, past a shortened sync bound."""
+    monkeypatch.setattr(runner_service_module, "_MCP_STATE_READ_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(wrapper, "get_state", lambda: time.sleep(3))
 
 
 def _get_state(service: RunnerServiceImpl, context, trial_id: str) -> pb2.GetStateResponse:
@@ -324,6 +333,18 @@ class TestChildLostBeforeTheFinalRead:
         assert state.success is False and "dropped the mutation" in state.error
         assert graded.success is False and "dropped the mutation" in graded.error
 
+    def test_get_state_fails_on_a_hung_child(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        _hang(wrapper, monkeypatch)
+
+        state = _get_state(runner_service, mock_grpc_context, trial_id)
+
+        assert state.success is False
+        assert "did not answer within 0.5s" in state.error
+
 
 class TestMirrorReadFailsAfterASuccessfulSync:
     """The sync landed, but the mirror then could not be read for grading."""
@@ -396,9 +417,11 @@ class TestJudgeReadsOfTheState:
         }
         return task, tables
 
-    def _judge_reads_then_passes(self, runner_service, monkeypatch) -> None:
+    def _judge_reads_then_passes(
+        self, runner_service, monkeypatch, read: tuple[str, dict[str, Any]] = ("get_db_state", {})
+    ) -> None:
         submit = {"reasons": "ok", "paid": True, "paid_justification": "paid\nVERDICT: MET"}
-        judge = ScriptedLLMClient([[("get_db_state", {})], [("submit_report", submit)]])
+        judge = ScriptedLLMClient([[read], [("submit_report", submit)]])
         monkeypatch.setattr(runner_service._judge_model_provider, "build", lambda _config: judge)
 
     def test_a_healthy_child_is_judged(
@@ -428,6 +451,62 @@ class TestJudgeReadsOfTheState:
         assert graded.success is False
         assert "could not be synchronised" in graded.error
         assert not graded.HasField("grade")
+
+    def test_a_malformed_query_is_the_judges_to_correct(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """The db-service refusing a jsonpath is a tool error, not a lost state."""
+        task, tables = self._judged_task()
+        wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
+        _mutate(runner_service, wrapper, 120)
+        self._judge_reads_then_passes(
+            runner_service, monkeypatch, read=("query_db", {"jsonpath": "$.users[?(@.id=="})
+        )
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success, graded.error
+        assert graded.grade.binary_pass is True
+
+    def test_a_hung_child_leaves_no_verdict(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """A child that stops answering is as lost as one that died."""
+        task, tables = self._judged_task()
+        wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
+        _mutate(runner_service, wrapper, 120)
+        _hang(wrapper, monkeypatch)
+        self._judge_reads_then_passes(runner_service, monkeypatch)
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success is False
+        assert "did not answer within" in graded.error
+        assert not graded.HasField("grade")
+
+    def test_a_stalled_mirror_read_leaves_no_verdict(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        task, tables = self._judged_task()
+        wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
+        _mutate(runner_service, wrapper, 120)
+        monkeypatch.setattr(runner_service_module, "_JUDGE_DB_READ_TIMEOUT_S", 0.5)
+        real_get_state = runner_service.db_client.get_state
+
+        async def stall(trial: str, tables: Any = None) -> Any:
+            if tables is None:  # the sync's own read
+                return await real_get_state(trial)
+            await asyncio.sleep(5)
+
+        monkeypatch.setattr(runner_service.db_client, "get_state", stall)
+        self._judge_reads_then_passes(
+            runner_service, monkeypatch, read=("get_db_state", {"tables": ["users"]})
+        )
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success is False
+        assert "timed out after 0.5s" in graded.error
 
 
 class TestNoDatabase:
