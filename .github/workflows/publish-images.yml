@@ -16,7 +16,7 @@ concurrency:
 # only needs the names reads from here — kept in one place so adding a
 # fifth image is one env edit + one matrix row, not six sites.
 env:
-  FIRST_PARTY_IMAGES: "runner db-service rag-service mock-web grader"
+  FIRST_PARTY_IMAGES: "runner db-service rag-service mock-web grader orchestrator"
 
 jobs:
   build-wheel:
@@ -96,6 +96,15 @@ jobs:
           - image: grader
             dockerfile: tolokaforge/docker/dockerfiles/grader.Dockerfile
             needs_wheel: true
+          # The orchestrator is the only image with a wheel-extras selector: its
+          # Dockerfile installs tolokaforge[${EXTRAS}] and defaults to dx (engine
+          # + CLI, native backend). Published as dx; an adapters variant is a
+          # later follow-up. It builds under context: ., which already carries the
+          # tolokaforge_models sibling its first stage compiles.
+          - image: orchestrator
+            dockerfile: tolokaforge/docker/dockerfiles/orchestrator.Dockerfile
+            needs_wheel: true
+            extras: dx
     steps:
       - uses: actions/checkout@v5
 
@@ -144,6 +153,7 @@ jobs:
           build-args: |
             PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
             ${{ matrix.needs_wheel && format('WHEEL_FILENAME={0}', env.WHEEL_FILENAME) || '' }}
+            ${{ matrix.extras && format('EXTRAS={0}', matrix.extras) || '' }}
 
       - name: Mint Docker Hub OIDC token
         id: docker_oidc
@@ -177,6 +187,7 @@ jobs:
           build-args: |
             PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
             ${{ matrix.needs_wheel && format('WHEEL_FILENAME={0}', env.WHEEL_FILENAME) || '' }}
+            ${{ matrix.extras && format('EXTRAS={0}', matrix.extras) || '' }}
 
   smoke:
     name: rc-smoke against published images
