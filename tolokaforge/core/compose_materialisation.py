@@ -45,6 +45,7 @@ from tolokaforge.core.netpolicy_constants import (
 from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
 from tolokaforge.runner.compose_naming import compose_trial_slug
+from tolokaforge.runner.grpc_limits import MAX_MESSAGE_ENV_VAR, validate_max_message_mb
 from tolokaforge.runner.models import bind_mount_source
 from tolokaforge.secrets import (
     CONTAINER_SECRETS_ENV_VAR,
@@ -475,6 +476,38 @@ def inject_substrate_env_into_runner(compose_file: Path, runner_service: str) ->
     validation, kept so an internal inconsistency is loud rather than
     silently un-exposed.
     """
+    _set_runner_env_unless_declared(
+        compose_file, runner_service, RUNNER_EXPOSE_SUBSTRATE_ENV_VAR, "true"
+    )
+
+
+def inject_grpc_limit_env_into_runner(
+    compose_file: Path, runner_service: str, max_message_mb: int
+) -> None:
+    """Set ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` on ``runner_service`` in place.
+
+    The built-in shared stack's ``core_stack`` factory sets the variable on
+    the engine-owned runner from ``compute.grpc_max_message_mb``; a
+    task-declared runner gets the same value here, so the runner serves with
+    the bound the engine's client channel uses. A compose file that declares
+    the variable itself keeps its own value. Raises ``ValueError`` when
+    ``runner_service`` is not declared, like
+    :func:`inject_substrate_env_into_runner`.
+    """
+    _set_runner_env_unless_declared(
+        compose_file,
+        runner_service,
+        MAX_MESSAGE_ENV_VAR,
+        str(validate_max_message_mb(max_message_mb)),
+    )
+
+
+def _set_runner_env_unless_declared(
+    compose_file: Path, runner_service: str, name: str, value: str
+) -> None:
+    """Add ``name=value`` to ``runner_service``'s environment in place unless
+    the service already declares ``name`` (mapping key, ``KEY=value`` or bare
+    ``KEY`` list entry)."""
     with compose_file.open() as f:
         doc = yaml.safe_load(f)
     services: dict[str, Any] = doc["services"]
@@ -484,11 +517,9 @@ def inject_substrate_env_into_runner(compose_file: Path, runner_service: str) ->
             f"{compose_file.name!r}; declared services are {sorted(services)!r}."
         )
     service = services[runner_service]
-    if _service_declares_env_var(service.get("environment"), RUNNER_EXPOSE_SUBSTRATE_ENV_VAR):
+    if _service_declares_env_var(service.get("environment"), name):
         return
-    service["environment"] = _merge_service_env(
-        service.get("environment"), {RUNNER_EXPOSE_SUBSTRATE_ENV_VAR: "true"}
-    )
+    service["environment"] = _merge_service_env(service.get("environment"), {name: value})
     with compose_file.open("w") as f:
         yaml.safe_dump(doc, f, sort_keys=False)
 

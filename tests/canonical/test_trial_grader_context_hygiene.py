@@ -212,15 +212,18 @@ class TestRunnerRpcTrialGraderFactory:
         the context's ``runner_address`` — a fresh client per grader."""
 
         class _StubClient:
-            def __init__(self, runner_address: str) -> None:
+            def __init__(self, runner_address: str, max_message_mb: int) -> None:
                 self.runner_address = runner_address
+                self.max_message_mb = max_message_mb
 
         import tolokaforge.core.shared_stack_runtime as ssr
 
         original = ssr.GrpcRunnerClient
         ssr.GrpcRunnerClient = _StubClient  # type: ignore[misc,assignment]
         try:
-            ctx = TrialGraderContext(runner_address="test-runner:9999", logger=MagicMock())
+            ctx = TrialGraderContext(
+                runner_address="test-runner:9999", logger=MagicMock(), grpc_max_message_mb=120
+            )
             grader = runner_rpc_trial_grader_factory(ctx)
         finally:
             ssr.GrpcRunnerClient = original  # type: ignore[misc]
@@ -229,6 +232,8 @@ class TestRunnerRpcTrialGraderFactory:
         assert grader.runner_address == "test-runner:9999"
         assert isinstance(grader.runner_client, _StubClient)
         assert grader.runner_client.runner_address == "test-runner:9999"
+        # The owned client's channel carries the run's gRPC message bound.
+        assert grader.runner_client.max_message_mb == 120
         # Shared-stack + P2/P3 shape: when the context carries an address,
         # the in-process routing shim MUST stay ``None`` so ADR-0038's
         # "grader owns its own client, independent of the orchestrator"

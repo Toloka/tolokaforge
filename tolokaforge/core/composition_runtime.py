@@ -34,6 +34,7 @@ from tolokaforge.core.run_display_events import ContainerSnapshot, RunDisplayEve
 from tolokaforge.core.runtime import EnvHandle
 from tolokaforge.core.shared_stack_runtime import RunnerClient
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, NetworkPolicy, TrialSpec
+from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
 from tolokaforge.runner.models import (
     PlanShape,
     ServiceIsolation,
@@ -122,6 +123,9 @@ class MaterialiseContext:
     # constructing a context need not care about the shield surface.
     bridged_services: frozenset[str] = frozenset()
     stripped_container_secrets: frozenset[str] = frozenset()
+    grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
+    """Injected as ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` into the stack's runner
+    service unless the compose file declares the variable itself."""
 
 
 @dataclass(frozen=True)
@@ -142,6 +146,7 @@ class RunCtx:
     log_capture: LogCaptureConfig | None
     events: RunDisplayEvents
     seeds: Mapping[str, SeedRef]
+    grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
 
 
 @dataclass
@@ -156,8 +161,8 @@ class RunSubstrate:
     trial-scope-owned runners live on :class:`ComposedEnvHandle` instead.
 
     :attr:`mount_docker_socket`, :attr:`expose_substrate`,
-    :attr:`log_capture`, :attr:`events` are threaded from :class:`RunCtx`
-    onto the substrate at :meth:`SubstrateComposer.materialise_run` time so
+    :attr:`log_capture`, :attr:`events`, :attr:`grpc_max_message_mb` are
+    threaded from :class:`RunCtx` onto the substrate at :meth:`SubstrateComposer.materialise_run` time so
     :meth:`SubstrateComposer.provision_trial` materialises task-scope
     and trial-scope stacks against the same policies the run-scope
     stacks were materialised with — the run-wide values a caller set on
@@ -175,6 +180,7 @@ class RunSubstrate:
     expose_substrate: bool
     log_capture: LogCaptureConfig | None
     events: RunDisplayEvents
+    grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
 
 
 @dataclass(frozen=True)

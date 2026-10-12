@@ -186,8 +186,8 @@ class _FakePublisher:
 class _FakeRunnerClient:
     """Minimal ``GrpcRunnerClient`` stand-in with a close() spy."""
 
-    def __init__(self, runner_address: str, events: Any = None) -> None:
-        del events
+    def __init__(self, runner_address: str, events: Any = None, max_message_mb: int = 0) -> None:
+        del events, max_message_mb
         self.runner_address = runner_address
         self.closed = False
 

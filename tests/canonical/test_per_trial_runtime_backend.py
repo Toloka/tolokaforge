@@ -163,8 +163,8 @@ class _FakePublisher:
 class _FakeRunnerClient:
     """Stand-in for ``GrpcRunnerClient`` with a recording call log."""
 
-    def __init__(self, runner_address: str, events: Any = None) -> None:
-        del events
+    def __init__(self, runner_address: str, events: Any = None, max_message_mb: int = 0) -> None:
+        del events, max_message_mb
         self.runner_address = runner_address
         self.connected = False
         self.closed = False
@@ -271,7 +271,7 @@ def _make_composer(
     *,
     readiness_probe_loader: Callable[[str], Callable[[], ServiceReadinessProbe]] = _ready_loader,
     compose_factory: Callable[..., _FakeCompose] = _FakeCompose,
-    runner_client_factory: Callable[[str, Any], _FakeRunnerClient] = _FakeRunnerClient,
+    runner_client_factory: Callable[[str, Any, int], _FakeRunnerClient] = _FakeRunnerClient,
 ) -> DefaultSubstrateComposer:
     """Build a composer wired to the test fakes.
 

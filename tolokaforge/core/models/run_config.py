@@ -17,6 +17,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from tolokaforge.core.deprecations import coerce_task_packs_alias, drop_retired_max_idle_turns
 from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.core.models.model_config import ModelConfig
+from tolokaforge.runner.grpc_limits import (
+    DEFAULT_MAX_MESSAGE_MB,
+    MAX_MESSAGE_MB_CEILING,
+    MAX_MESSAGE_MB_FLOOR,
+)
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.bundle_store import BundleStore
@@ -802,6 +807,22 @@ class ComputeConfig(BaseModel):
     log_tail: int = Field(default=500, ge=1)
     capture_logs_on_success: bool = False
     local_docker: LocalDockerComputeConfig | None = None
+
+    grpc_max_message_mb: int = Field(
+        default=DEFAULT_MAX_MESSAGE_MB, ge=MAX_MESSAGE_MB_FLOOR, le=MAX_MESSAGE_MB_CEILING
+    )
+    """Largest gRPC message, in MiB, any endpoint between the engine, the runner
+    and the grader sends or accepts: a trial's registration (which carries its
+    initial state inline), the captured final state (``GetState``), the
+    grader's ``Grade`` request and its substrate reads of the runner's state.
+    Both ends of every channel use this one value: the engine applies it to
+    its own clients and passes it to every runner container it starts as
+    ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB``; a separately deployed runner or grader
+    sets that variable to the same value. A message above the bound fails the
+    call with ``RESOURCE_EXHAUSTED`` and an error naming this setting. The
+    upper bound is gRPC's signed 32-bit byte limit. Memory per call grows with
+    the message, since each side holds several copies of it while
+    (de)serialising."""
 
     capabilities: list[Any] = Field(default_factory=list)
     """Backend-capability declarations. Each entry is either a bare

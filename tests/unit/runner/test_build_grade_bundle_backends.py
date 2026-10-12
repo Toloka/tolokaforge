@@ -56,7 +56,9 @@ class TestInMemoryRuntimeBackendOptsOut:
 
 class TestSharedStackRuntimeBackendImpl:
     def test_build_grade_bundle_composes_substrate_reads(self, tmp_path: Path) -> None:
-        backend = SharedStackRuntimeBackend(runner_address="fake-runner:50051")
+        backend = SharedStackRuntimeBackend(
+            runner_address="fake-runner:50051", grpc_max_message_mb=120
+        )
         trajectory = MagicMock()
         task_description = MagicMock()
         backend.remember_trial_inputs("trial-1", trajectory, task_description)
@@ -76,7 +78,9 @@ class TestSharedStackRuntimeBackendImpl:
             result = backend.build_grade_bundle("trial-1", out_dir=tmp_path / "bundle")
 
         assert result is expected_manifest
-        fake_substrate_cls.assert_called_once_with("fake-runner:50051", "trial-1")
+        fake_substrate_cls.assert_called_once_with(
+            "fake-runner:50051", "trial-1", max_message_mb=120
+        )
         fake_serialise.assert_called_once_with(
             substrate=fake_substrate_instance,
             trial_id="trial-1",
@@ -128,7 +132,7 @@ class TestPerTrialRuntimeBackendImpl:
         # SharedStackRuntimeBackend (composition-plan rewrite, ADR-0044).
         # The build_grade_bundle path lives on the delegate; we assert the
         # delegate composes reads correctly.
-        backend = PerTrialRuntimeBackend()
+        backend = PerTrialRuntimeBackend(grpc_max_message_mb=120)
         trajectory = MagicMock()
         task_description = MagicMock()
         backend.remember_trial_inputs("trial-1", trajectory, task_description)
@@ -157,7 +161,9 @@ class TestPerTrialRuntimeBackendImpl:
             result = backend.build_grade_bundle("trial-1", out_dir=tmp_path / "bundle")
 
         assert result is expected_manifest
-        fake_substrate_cls.assert_called_once_with("per-trial-runner:50051", "trial-1")
+        fake_substrate_cls.assert_called_once_with(
+            "per-trial-runner:50051", "trial-1", max_message_mb=120
+        )
         fake_serialise.assert_called_once()
         fake_substrate_instance.close.assert_called_once()
 
