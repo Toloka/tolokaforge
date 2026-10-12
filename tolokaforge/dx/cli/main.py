@@ -151,6 +151,7 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str | None, sourc
     backend_class = {
         "shared": "SharedStackRuntimeBackend",
         "per_trial": "PerTrialRuntimeBackend",
+        "remote": "RemoteRuntimeBackend",
     }.get(runtime_choice, runtime_choice)
     isolation_line = {
         "shared": (
@@ -159,6 +160,10 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str | None, sourc
         "per_trial": (
             "one docker-compose stack per trial via Testcontainers "
             "(concurrent trials fully isolated)"
+        ),
+        "remote": (
+            "one runner node leased per trial from orchestrator.remote.nodes "
+            "(no local stack; node count bounds concurrency)"
         ),
     }.get(runtime_choice, "unknown")
     console.print(
@@ -646,7 +651,8 @@ def _run_dry_run(
         "Any name registered in the tolokaforge.runtime_backends entry-point group: "
         "built-in 'shared' (one docker-compose stack across every trial), 'per_trial' "
         "(an isolated stack per trial via Testcontainers, required by tasks whose "
-        "environment_manifest declares isolation: per_trial), 'in_memory', or a "
+        "environment_manifest declares isolation: per_trial), 'remote' (a runner node "
+        "leased per trial from orchestrator.remote.nodes), 'in_memory', or a "
         "plug-in's registered name. Validated at run start with an actionable error "
         "listing the known names. See docs/RUNTIME_BACKENDS.md."
     ),

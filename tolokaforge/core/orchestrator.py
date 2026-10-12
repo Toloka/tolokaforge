@@ -84,7 +84,12 @@ from tolokaforge.core.models import (
     TypeSenseConfig,
     require_user_simulator_config,
 )
-from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, sets_user_temperature
+from tolokaforge.core.models.run_config import (
+    REMOTE_RUNTIME_NAME,
+    USER_TEMPERATURE_IGNORED,
+    sets_user_temperature,
+)
+from tolokaforge.core.node_registry import InMemoryNodeRegistry, NodeRegistry
 from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION, _engine_version
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import (
@@ -1335,6 +1340,54 @@ class Orchestrator:
                 return True
         return False
 
+    def _runtime_is_remote(self) -> bool:
+        return self.config.orchestrator.runtime == REMOTE_RUNTIME_NAME
+
+    def _refuse_unsupported_remote_run(self) -> None:
+        """Fail loud on run shapes the ``remote`` runtime cannot serve.
+
+        The remote backend leases a runner node per trial and starts no local
+        stack, so it refuses an explicit ``auto_start_services: true``, tasks
+        that declare an ``environment_manifest`` (it does not materialise
+        task-declared stacks), and trial graders that dial a static runner
+        address (``grader_rpc`` / ``queue``) — only ``runner_rpc`` grading
+        reaches the leased node.
+        """
+        orchestrator = self.config.orchestrator
+        if (
+            orchestrator.auto_start_services
+            and "auto_start_services" in orchestrator.model_fields_set
+        ):
+            raise ValueError(
+                "orchestrator.runtime='remote' leases runner nodes from "
+                "orchestrator.remote and starts no local stack; it contradicts "
+                "orchestrator.auto_start_services=true. Set auto_start_services: false."
+            )
+        if self._any_task_declares_environment_manifest():
+            raise RuntimeError(
+                "orchestrator.runtime='remote' does not materialise task-declared "
+                "stacks, but at least one task declares an environment_manifest. "
+                "Run those tasks under the shared or per_trial runtime."
+            )
+        grader_name = (
+            self.config.grader.name if self.config.grader and self.config.grader.name else None
+        ) or (self.adapter.trial_grader_name if self.adapter is not None else None)
+        if grader_name in ("grader_rpc", "queue"):
+            raise ValueError(
+                f"orchestrator.runtime='remote' cannot use grader {grader_name!r}: it dials a "
+                "static runner address the remote backend does not expose. Use "
+                "the 'runner_rpc' grader."
+            )
+
+    def _build_node_registry(self) -> NodeRegistry:
+        remote = self.config.orchestrator.remote
+        if remote is None or not remote.nodes:
+            raise ValueError(
+                "orchestrator.runtime='remote' requires orchestrator.remote.nodes "
+                "to list at least one runner node as 'host:port'."
+            )
+        return InMemoryNodeRegistry(remote.nodes, lease_timeout_s=remote.lease_timeout_s)
+
     def _coerce_plan_shape_for_override(self, override: str | None) -> None:
         """Rewrite every task's resolved plan ``stack_scope`` to match the
         operator's ``orchestrator.runtime`` coercion knob.
@@ -1544,6 +1597,7 @@ class Orchestrator:
                 connect_timeout_s=connect_timeout_s,
                 connect_retry_interval_s=connect_retry_interval_s,
                 grpc_max_message_mb=self._grpc_max_message_mb(),
+                node_registry=self._build_node_registry() if self._runtime_is_remote() else None,
             )
         )
         self.logger.info(
@@ -2923,15 +2977,18 @@ class Orchestrator:
         # already-coerced scopes. Fires BEFORE ``_extract_run_env_manifest`` so
         # the extract sees the coerced plan.
         self._coerce_plan_shape_for_override(self.config.orchestrator.runtime)
+        if self._runtime_is_remote():
+            self._refuse_unsupported_remote_run()
 
         # Task-declared shared-stack manifest: if the run's tasks declare an
         # environment_manifest, extract the shared manifest here — mixed / divergent
         # declarations fail loud before we touch docker.
         run_env_manifest = self._extract_run_env_manifest()
 
-        # Auto-start services via EngineStack if configured
+        # Auto-start services via EngineStack if configured. The remote runtime
+        # leases runner nodes per trial and starts no local stack.
         service_stack = None
-        if self.config.orchestrator.auto_start_services:
+        if self.config.orchestrator.auto_start_services and not self._runtime_is_remote():
             try:
                 from tolokaforge.docker.stacks import core_stack, full_stack
 
@@ -3163,10 +3220,8 @@ class Orchestrator:
         # ``provision_trial`` per trial. The default ``env_endpoints`` built
         # from ``runner_address`` are phantom in that case, so logging them
         # would misdirect log-based diagnosis.
-        if self._any_task_declares_environment_manifest():
-            self.logger.info(
-                "Trial-scoped service endpoints resolved by backend from task-declared stack"
-            )
+        if self._any_task_declares_environment_manifest() or self._runtime_is_remote():
+            self.logger.info("Trial-scoped service endpoints resolved by the runtime backend")
         else:
             self.logger.info(
                 "Resolved trial-scoped service endpoints",

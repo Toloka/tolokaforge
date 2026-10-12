@@ -198,6 +198,7 @@ tolokaforge = "tolokaforge._entry:main"
 shared = "tolokaforge.core.shared_stack_runtime:shared_runtime_backend_factory"
 per_trial = "tolokaforge.core.per_trial_runtime:per_trial_runtime_backend_factory"
 in_memory = "tolokaforge.core.runtime:in_memory_runtime_backend_factory"
+remote = "tolokaforge.core.remote_runtime:remote_runtime_backend_factory"
 
 [project.entry-points."tolokaforge.trial_graders"]
 runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
