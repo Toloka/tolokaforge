@@ -5,20 +5,68 @@ on:
     tags:
       - "image-v*"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Actually log in and push to Docker Hub (default: build-only dry-run). Uses the current pyproject version; always includes the standalone image."
+        type: boolean
+        default: false
 
 concurrency:
   group: publish-images-${{ github.ref }}
   cancel-in-progress: true
 
-# Single source of truth for the first-party image set. The matrix below
-# carries per-image metadata (Dockerfile path, whether the image bundles
-# the wheel) and must stay in sync with this list, but every bash loop that
-# only needs the names reads from here — kept in one place so adding a
-# fifth image is one env edit + one matrix row, not six sites.
-env:
-  FIRST_PARTY_IMAGES: "runner db-service rag-service mock-web grader orchestrator"
-
 jobs:
+  # Single source of truth for the first-party image set + the build matrix.
+  # The five scale-out images publish on every ``image-v*`` tag. The all-in-one
+  # ``standalone`` image is heavier (multi-arch), so it publishes only on
+  # MINOR/MAJOR releases (patch == 0) or on any manual ``workflow_dispatch`` —
+  # patch releases skip it. ``images`` (the name list every retag/move/digest
+  # loop reads) and ``matrix`` (the publish fan-out) are computed together here
+  # so the matrix and the loops can never disagree about whether standalone is in.
+  setup:
+    name: Resolve image set
+    runs-on: ubuntu-latest
+    outputs:
+      # Full name list every retag/move/digest loop reads (5 scale-out + standalone
+      # when it is published this run).
+      images: ${{ steps.resolve.outputs.images }}
+      # The five amd64 scale-out images — the `publish` job's matrix. Standalone is
+      # NOT here: it builds per-arch on native runners in its own job + a merge.
+      scaleout_matrix: ${{ steps.resolve.outputs.scaleout_matrix }}
+      # "true" when the all-in-one standalone image should publish this run.
+      standalone: ${{ steps.resolve.outputs.standalone }}
+    steps:
+      - name: Resolve image set (gate standalone to minor/major or dispatch)
+        id: resolve
+        run: |
+          set -euo pipefail
+          include_standalone=false
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            include_standalone=true
+            echo "manual dispatch → standalone included"
+          else
+            version="${GITHUB_REF_NAME#image-v}"
+            base_version="${version%%-rc.*}"
+            patch="${base_version##*.}"
+            if [ "$patch" = "0" ]; then
+              include_standalone=true
+              echo "minor/major release (patch=0) → standalone included"
+            else
+              echo "patch release (patch=$patch) → standalone skipped"
+            fi
+          fi
+
+          base_images="runner db-service rag-service mock-web grader orchestrator"
+          base_rows='{"image":"runner","dockerfile":"tolokaforge/docker/dockerfiles/runner.Dockerfile","needs_wheel":true},{"image":"rag-service","dockerfile":"tolokaforge/docker/dockerfiles/rag.Dockerfile","needs_wheel":true},{"image":"db-service","dockerfile":"tolokaforge/docker/dockerfiles/db_service.Dockerfile","needs_wheel":false},{"image":"mock-web","dockerfile":"tolokaforge/docker/dockerfiles/mock_web.Dockerfile","needs_wheel":false},{"image":"grader","dockerfile":"tolokaforge/docker/dockerfiles/grader.Dockerfile","needs_wheel":true},{"image":"orchestrator","dockerfile":"tolokaforge/docker/dockerfiles/orchestrator.Dockerfile","needs_wheel":true,"extras":"dx"}'
+
+          echo "scaleout_matrix={\"include\":[${base_rows}]}" >> "$GITHUB_OUTPUT"
+          echo "standalone=${include_standalone}" >> "$GITHUB_OUTPUT"
+          if [ "$include_standalone" = "true" ]; then
+            echo "images=${base_images} standalone" >> "$GITHUB_OUTPUT"
+          else
+            echo "images=${base_images}" >> "$GITHUB_OUTPUT"
+          fi
+
   build-wheel:
     name: Build wheel
     runs-on: ubuntu-latest
@@ -62,56 +110,38 @@ jobs:
 
   publish:
     name: Publish ${{ matrix.image }}
-    needs: build-wheel
+    needs: [setup, build-wheel]
     runs-on: ubuntu-latest
     # rc tags publish under pre-stable, stable tags under release. A tag that
     # resolves to the wrong tier fails OIDC claim resolution and blocks the push,
     # which is safer than an rc leaking onto the moving tags. A workflow_dispatch
-    # build binds no environment (empty string) so its dry-run is not gated by a
-    # tag-typed deployment policy. The push/tag branch is the `&&` operand and the
-    # empty string is the final `||` fallback: an empty string is falsy in an
-    # expression, so `workflow_dispatch && '' || …` would wrongly fall through to
-    # the tag branch and route the dry-run to `release` — reordering keeps `''` as
-    # the value actually returned for a workflow_dispatch.
-    environment: ${{ github.event_name != 'workflow_dispatch' && (contains(github.ref_name, '-rc.') && 'pre-stable' || 'release') || '' }}
+    # build normally binds no environment (empty string) so its dry-run is not
+    # gated by a tag-typed deployment policy; a dispatch WITH `publish: true` binds
+    # `release` so its OIDC token can push. The empty string is the final `||`
+    # fallback and is falsy, so the branch order keeps `''` as the value a
+    # non-publishing dispatch actually returns.
+    environment: ${{ github.event_name != 'workflow_dispatch' && (contains(github.ref_name, '-rc.') && 'pre-stable' || 'release') || (inputs.publish && 'release' || '') }}
     permissions:
       id-token: write
       contents: read
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - image: runner
-            dockerfile: tolokaforge/docker/dockerfiles/runner.Dockerfile
-            needs_wheel: true
-          - image: rag-service
-            dockerfile: tolokaforge/docker/dockerfiles/rag.Dockerfile
-            needs_wheel: true
-          - image: db-service
-            dockerfile: tolokaforge/docker/dockerfiles/db_service.Dockerfile
-            needs_wheel: false
-          - image: mock-web
-            dockerfile: tolokaforge/docker/dockerfiles/mock_web.Dockerfile
-            needs_wheel: false
-          - image: grader
-            dockerfile: tolokaforge/docker/dockerfiles/grader.Dockerfile
-            needs_wheel: true
-          # The orchestrator is the only image with a wheel-extras selector: its
-          # Dockerfile installs tolokaforge[${EXTRAS}] and defaults to dx (engine
-          # + CLI, native backend); published with EXTRAS=dx. It builds under
-          # context: ., which already carries the tolokaforge_models sibling its
-          # first stage compiles.
-          - image: orchestrator
-            dockerfile: tolokaforge/docker/dockerfiles/orchestrator.Dockerfile
-            needs_wheel: true
-            extras: dx
+      # The five amd64 scale-out images. The standalone image publishes multi-arch
+      # in its own per-arch jobs below.
+      matrix: ${{ fromJSON(needs.setup.outputs.scaleout_matrix) }}
     steps:
       - uses: actions/checkout@v5
 
       - name: Resolve version and Python pin
         id: meta
         run: |
-          echo "version=${GITHUB_REF_NAME#image-v}" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # No tag ref on a manual run — publish "whatever version we have".
+            version="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          else
+            version="${GITHUB_REF_NAME#image-v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "python_version=$(cat .python-version)" >> "$GITHUB_OUTPUT"
 
       - name: Download wheel
@@ -148,6 +178,13 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
+          # No build cache here. This anonymous pre-login build exists ONLY to
+          # resolve + pull the python base from the registry *unauthenticated*,
+          # warming it for the authenticated provenance push below (which, with
+          # provenance: true, re-resolves the base metadata). A cache hit would
+          # short-circuit that resolution, so the push would re-fetch the base
+          # metadata under the repo-scoped token — which cannot pull
+          # library/python and 401s. Correctness beats a warm cache here.
           pull: false
           push: false
           build-args: |
@@ -157,13 +194,13 @@ jobs:
 
       - name: Mint Docker Hub OIDC token
         id: docker_oidc
-        if: github.event_name != 'workflow_dispatch'
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
         uses: docker/oidc-action@v1
         with:
           connection_id: "06a2983d-e4d1-473e-8dab-f1d6ead9bc8f"
 
       - name: Docker Hub login
-        if: github.event_name != 'workflow_dispatch'
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
         uses: docker/login-action@v3
         with:
           username: tolokasoft1
@@ -171,10 +208,12 @@ jobs:
 
       # Pushes only the immutable :{version} tag. The moving tags (:latest, :X.Y)
       # are owned by move-tags, which runs only after every image and the smoke
-      # gate are green.
+      # gate are green. A manual `publish: true` dispatch pushes the immutable
+      # tag only (no smoke, no moving tags) — the deliberate "publish any version
+      # now" escape hatch.
       - name: Push immutable tag
         id: push
-        if: github.event_name != 'workflow_dispatch'
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -189,10 +228,222 @@ jobs:
             ${{ matrix.needs_wheel && format('WHEEL_FILENAME={0}', env.WHEEL_FILENAME) || '' }}
             ${{ matrix.extras && format('EXTRAS={0}', matrix.extras) || '' }}
 
+  # The all-in-one standalone image publishes MULTI-ARCH (linux/amd64 +
+  # linux/arm64), unlike the five amd64-only scale-out images above. It is built
+  # on NATIVE per-arch runners — no QEMU — because (a) emulated arm64 builds are
+  # minutes-to-hours slower and (b) the repo-scoped Docker Hub OIDC token cannot
+  # pull `library/python`, and a multi-arch push re-resolves the base *manifest
+  # index* under that token and 401s; a single-arch native leg resolves only its
+  # own platform manifest (reusing the anonymous pre-login pull, pull:false),
+  # exactly like the scale-out images, so it never hits the 401. Each leg pushes
+  # by digest (no tag); the merge job assembles the manifest list. Only runs when
+  # `setup` says standalone publishes this run (minor/major or dispatch).
+  publish-standalone:
+    name: Publish standalone (${{ matrix.arch }})
+    needs: [setup, build-wheel]
+    if: needs.setup.outputs.standalone == 'true'
+    runs-on: ${{ matrix.runner }}
+    # Same tag-tier → environment gating as the `publish` job: rc under
+    # pre-stable, stable under release, a non-publishing dispatch under '' (so the
+    # dry-run binds no push-capable deployment policy). See that job's note.
+    environment: ${{ github.event_name != 'workflow_dispatch' && (contains(github.ref_name, '-rc.') && 'pre-stable' || 'release') || (inputs.publish && 'release' || '') }}
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Free native runners for public repos: amd64 on the default runner,
+          # arm64 on GitHub's arm64 image. Each leg builds ONLY its own platform.
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version and Python pin
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          else
+            version="${GITHUB_REF_NAME#image-v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "python_version=$(cat .python-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: tolokaforge-dist
+          path: dist/
+
+      - name: Stage wheel into build context
+        run: |
+          shopt -s nullglob
+          wheels=(dist/tolokaforge-*.whl)
+          wheel="${wheels[0]}"
+          if [ -z "$wheel" ]; then
+            echo "::error::no tolokaforge wheel found in dist/"
+            exit 1
+          fi
+          cp "$wheel" "./$(basename "$wheel")"
+          echo "WHEEL_FILENAME=$(basename "$wheel")" >> "$GITHUB_ENV"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Anonymous pre-login base pull (single platform → no 401), warming the
+      # cache the authenticated push-by-digest below reuses with pull:false.
+      - name: Build image (anonymous base pull, pre-login)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tolokaforge/docker/dockerfiles/standalone.Dockerfile
+          platforms: ${{ matrix.platform }}
+          # No build cache — see the scale-out publish job's note: a cache hit
+          # skips the anonymous base resolution the push-by-digest step relies on.
+          pull: false
+          push: false
+          build-args: |
+            PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
+            WHEEL_FILENAME=${{ env.WHEEL_FILENAME }}
+
+      - name: Mint Docker Hub OIDC token
+        id: docker_oidc
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        uses: docker/oidc-action@v1
+        with:
+          connection_id: "06a2983d-e4d1-473e-8dab-f1d6ead9bc8f"
+
+      - name: Docker Hub login
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        uses: docker/login-action@v3
+        with:
+          username: tolokasoft1
+          password: ${{ steps.docker_oidc.outputs.token }}
+
+      # Push THIS arch by digest only — no tag. `name-canonical` keeps the digest
+      # addressable as tolokasoft1/tolokaforge-standalone@sha256:…; merge-standalone
+      # assembles the two digests into the tagged manifest list. provenance:false
+      # keeps one manifest per arch so the merge list is clean (an attestation
+      # manifest would otherwise ride along and confuse `imagetools create`).
+      - name: Push image by digest
+        id: push
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tolokaforge/docker/dockerfiles/standalone.Dockerfile
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          pull: false
+          outputs: type=image,name=tolokasoft1/tolokaforge-standalone,push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
+            WHEEL_FILENAME=${{ env.WHEEL_FILENAME }}
+
+      - name: Export digest
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Assemble the per-arch digests into one multi-arch manifest list tagged
+  # :{version}. `imagetools create` is the same primitive move-tags/auto-promote
+  # use — no rebuild, it references the digests publish-standalone already pushed.
+  # Skipped on a dry-run (nothing was pushed, so no digests) and on patch releases
+  # (publish-standalone did not run).
+  merge-standalone:
+    name: Merge standalone manifest list
+    needs: [setup, publish-standalone]
+    if: ${{ needs.setup.outputs.standalone == 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name != 'workflow_dispatch' && (contains(github.ref_name, '-rc.') && 'pre-stable' || 'release') || 'release' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # Needed for the workflow_dispatch version resolver below, which reads
+      # pyproject.toml — the off-cycle `publish: true` path has no tag ref.
+      - uses: actions/checkout@v5
+
+      - name: Resolve version
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          else
+            version="${GITHUB_REF_NAME#image-v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: standalone-digest-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Mint Docker Hub OIDC token
+        id: docker_oidc
+        uses: docker/oidc-action@v1
+        with:
+          connection_id: "06a2983d-e4d1-473e-8dab-f1d6ead9bc8f"
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: tolokasoft1
+          password: ${{ steps.docker_oidc.outputs.token }}
+
+      # Build the manifest list from the per-arch digests under the one repo.
+      - name: Create multi-arch manifest list
+        working-directory: /tmp/digests
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          repo="tolokasoft1/tolokaforge-standalone"
+          refs=()
+          for digest in *; do
+            refs+=("${repo}@sha256:${digest}")
+          done
+          docker buildx imagetools create -t "${repo}:${VERSION}" "${refs[@]}"
+
+      - name: Confirm both arches present
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          repo="tolokasoft1/tolokaforge-standalone"
+          docker buildx imagetools inspect "${repo}:${VERSION}"
+
   smoke:
     name: rc-smoke against published images
-    needs: publish
-    if: github.event_name != 'workflow_dispatch'
+    needs: [setup, publish, merge-standalone]
+    # Runs after the scale-out publish and (when it ran) the standalone merge.
+    # `!failure() && !cancelled()` lets smoke proceed when merge-standalone was
+    # SKIPPED (patch releases don't publish standalone) while still blocking if
+    # publish or the merge actually failed.
+    if: ${{ github.event_name != 'workflow_dispatch' && !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -243,9 +494,24 @@ jobs:
             uv run pytest tests/integration/deploy/test_rc_smoke_parity_reference.py \
             -v --tb=short -m "integration and requires_docker"
 
+      # All-in-one image gate: runs the single container, waits for the runner's
+      # healthcheck, and asserts all four services answer on loopback plus one
+      # keyless in-container wiring trial. A red gate blocks move-tags, so
+      # :latest never moves onto a broken all-in-one image. Skipped on patch
+      # releases, where the standalone image is not published (see setup).
+      - name: Run all-in-one image smoke
+        if: ${{ contains(needs.setup.outputs.images, 'standalone') }}
+        run: |
+          version="${GITHUB_REF_NAME#image-v}"
+          TOLOKAFORGE_SMOKE_IMAGE_TAG="$version" \
+            uv run pytest tests/integration/deploy/test_standalone_image_smoke.py \
+            -v --tb=short -m "integration and requires_docker"
+
   auto-promote-rc-to-stable:
     name: Auto-promote rc → stable (retag digest + move :latest + release notes)
-    needs: smoke
+    needs: [setup, smoke]
+    env:
+      IMAGES: ${{ needs.setup.outputs.images }}
     # Only fires on the automated rc-push path. A workflow_dispatch dry-run has
     # no images to promote (see the publish job's `push: false`) and skips.
     # A manual stable `image-vX.Y.Z` push takes the move-tags branch below
@@ -300,7 +566,7 @@ jobs:
           RC_VERSION: ${{ steps.meta.outputs.rc_version }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          for image in $FIRST_PARTY_IMAGES; do
+          for image in $IMAGES; do
             repo="tolokasoft1/tolokaforge-${image}"
             docker buildx imagetools create -t "${repo}:${VERSION}" "${repo}:${RC_VERSION}"
           done
@@ -314,7 +580,7 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
           MAJOR_MINOR: ${{ steps.meta.outputs.major_minor }}
         run: |
-          for image in $FIRST_PARTY_IMAGES; do
+          for image in $IMAGES; do
             repo="tolokasoft1/tolokaforge-${image}"
             docker buildx imagetools create -t "${repo}:latest" "${repo}:${VERSION}"
             docker buildx imagetools create -t "${repo}:${MAJOR_MINOR}" "${repo}:${VERSION}"
@@ -343,7 +609,7 @@ jobs:
             echo ""
             echo "| Image | Tag | Digest |"
             echo "|---|---|---|"
-            for image in $FIRST_PARTY_IMAGES; do
+            for image in $IMAGES; do
               repo="tolokasoft1/tolokaforge-${image}"
               digest="$(docker buildx imagetools inspect "${repo}:${VERSION}" --format '{{.Manifest.Digest}}')"
               echo "| \`${repo}\` | ${VERSION} | \`${digest}\` |"
@@ -371,7 +637,9 @@ jobs:
 
   move-tags:
     name: Move :latest and :X.Y
-    needs: smoke
+    needs: [setup, smoke]
+    env:
+      IMAGES: ${{ needs.setup.outputs.images }}
     # Stable tags only — rc tags carry no moving tags.
     if: github.event_name == 'push' && !contains(github.ref_name, '-rc.')
     runs-on: ubuntu-latest
@@ -411,7 +679,7 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
           MAJOR_MINOR: ${{ steps.meta.outputs.major_minor }}
         run: |
-          for image in $FIRST_PARTY_IMAGES; do
+          for image in $IMAGES; do
             repo="tolokasoft1/tolokaforge-${image}"
             docker buildx imagetools create -t "${repo}:latest" "${repo}:${VERSION}"
             docker buildx imagetools create -t "${repo}:${MAJOR_MINOR}" "${repo}:${VERSION}"
@@ -419,11 +687,13 @@ jobs:
 
   release-notes:
     name: Release notes
-    needs: move-tags
+    needs: [setup, move-tags]
     if: github.event_name == 'push' && !contains(github.ref_name, '-rc.')
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      IMAGES: ${{ needs.setup.outputs.images }}
     steps:
       - name: Collect image digests
         run: |
@@ -433,7 +703,7 @@ jobs:
             echo ""
             echo "| Image | Tag | Digest |"
             echo "|---|---|---|"
-            for image in $FIRST_PARTY_IMAGES; do
+            for image in $IMAGES; do
               repo="tolokasoft1/tolokaforge-${image}"
               digest="$(docker buildx imagetools inspect "${repo}:${version}" --format '{{.Manifest.Digest}}')"
               echo "| \`${repo}\` | ${version} | \`${digest}\` |"

@@ -154,10 +154,11 @@ make docker-down                    # Stop and remove services
 Docker commands are managed through the CLI via Makefile targets:
 
 ```bash
-make docker-build        # Build all Docker images
-make docker-build-core   # Build core images only (db-service + runner)
+make docker-build               # Build all Docker images
+make docker-build-core          # Build core images only (db-service + runner)
 make docker-build-orchestrator  # Build the standalone orchestrator image (full `tolokaforge run`; see docs/ORCHESTRATOR_IMAGE.md)
-make docker-up           # Start Docker services (core stack)
+make docker-build-standalone    # Build the all-in-one single-container image (on demand)
+make docker-up                  # Start Docker services (core stack)
 make docker-down         # Stop and remove Docker services
 make docker-status       # Show Docker service status
 ```

@@ -99,7 +99,7 @@ BUILD_CONTEXT_TMPDIR: Path = Path("/tmp")
 
 
 #: Build-context entries the runner Dockerfile's ``hatchling build`` stage
-#: needs, as repo-relative source-checkout paths. ``_runner_definition()``
+#: needs, as repo-relative source-checkout paths. ``_full_source_definition()``
 #: maps each to a packaged copy when the repo root is not available.
 _RUNNER_SOURCE_CONTEXT_FILES: list[str] = [
     "pyproject.toml",
@@ -152,10 +152,10 @@ _PACKAGED_SUBSET_BUILD_DIR = "_subset_build"
 # (ADR-0025 § subset build target), producing the runner-subset wheel
 # in-container via ``hatch build --target custom``. Its context is a source-
 # tree slice rather than a resolved wheel, so it needs no host-side wheel
-# resolution — but it DOES pair with ``_runner_definition()``, which picks
+# resolution — but it DOES pair with ``_full_source_definition()``, which picks
 # between the repo-root paths (source checkout) and the packaged copies
 # (wheel install, where the repo root is ``site-packages``). The grader
-# image compiles the identical source set, so ``_grader_definition()`` shares
+# image compiles the identical source set, so ``_full_source_definition()`` shares
 # that mapping.
 #
 # This module is the single source of truth for every service's build-context
@@ -187,7 +187,7 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         #
         # These entries are the *source-checkout* paths. On a wheel install
         # the repo-root files are absent from ``site-packages``, so
-        # ``_runner_definition()`` swaps in the packaged copies — see that
+        # ``_full_source_definition()`` swaps in the packaged copies — see that
         # factory and ``docs/adr/0025-runner-wheel-split.md``.
         "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
         "build_args": dict(_PYTHON_BUILD_ARGS),
@@ -219,6 +219,21 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
+    # All-in-one (single-image, multi-service) image — db-service, rag-service,
+    # mock-web, and the runner in one container under supervisord. Its
+    # Dockerfile compiles the same full source set as the grader (base +
+    # tolokaforge_models + tolokaforge_coding_harnesses wheels in-container),
+    # plus the env-service apps and supervisor config that already live under
+    # the copied ``tolokaforge/`` tree — so it shares the runner/grader
+    # packaged-copy mapping via ``_full_source_definition()``. See
+    # ``docs/adr/0056-all-in-one-image.md``.
+    "standalone": {
+        "name": "tolokaforge-standalone",
+        "dockerfile": "tolokaforge/docker/dockerfiles/standalone.Dockerfile",
+        "context": ".",
+        "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
+        "build_args": dict(_PYTHON_BUILD_ARGS),
+    },
 }
 
 # Factories that augment a static base entry with wheel-resolver-dependent
@@ -226,7 +241,10 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
 # fits in IMAGE_DEFINITIONS verbatim.
 _DYNAMIC_DEFINITIONS: dict[str, Callable[[], dict[str, Any]]] = {}
 
-# Service groups for selective building
+# Service groups for selective building. ``grader`` and ``standalone`` are in no
+# group: like the grader, the all-in-one image is built on demand via
+# ``tolokaforge docker build --service standalone`` and never joins the default
+# ``build_all_images`` sweep.
 CORE_IMAGES: list[str] = ["db-service", "runner"]
 EXTENDED_IMAGES: list[str] = ["rag-service", "mock-web"]
 
@@ -389,42 +407,28 @@ def _packaged_sibling_entries() -> list[Path]:
     return entries
 
 
-def _runner_definition() -> dict[str, Any]:
-    """Resolve the runner build context for source-checkout OR wheel install.
+#: Services whose Dockerfile compiles the full source set in-container (base +
+#: both workspace-sibling wheels). They share one build-context mapping: the
+#: repo-root slice on a source checkout, the packaged ``_subset_build`` copies on
+#: a wheel install (where ``repo_root()`` is ``site-packages``). The runner's
+#: stage is ``hatchling build --target custom`` (ADR-0025); grader and standalone
+#: build the full base wheel; standalone additionally COPYs env-service apps and
+#: the supervisor config, which already ride under the copied ``tolokaforge/``.
+_FULL_SOURCE_IMAGES: tuple[str, ...] = ("runner", "grader", "standalone")
 
-    The Dockerfile's ``hatchling build --target custom`` stage needs the
-    pyproject (which carries the ``[tool.hatch.build.targets.custom]`` table),
-    the metadata files pyproject references, the custom builder script, and the
-    ``tolokaforge`` sources. In a source checkout those sit at the repo root;
-    installed as a wheel they do not, so the packaged copies stand in (see
-    ``docs/adr/0025-runner-wheel-split.md``).
-    """
+
+def _full_source_definition(service: str) -> dict[str, Any]:
+    """Resolve a full-source image's build context for source-checkout OR wheel install."""
     if not _is_wheel_install():
-        return dict(IMAGE_DEFINITIONS["runner"])
+        return dict(IMAGE_DEFINITIONS[service])
     return {
-        **IMAGE_DEFINITIONS["runner"],
-        "context_files": _context_files_from_entries(_packaged_full_source_entries("runner")),
+        **IMAGE_DEFINITIONS[service],
+        "context_files": _context_files_from_entries(_packaged_full_source_entries(service)),
     }
 
 
-def _grader_definition() -> dict[str, Any]:
-    """Resolve the grader build context for source-checkout OR wheel install.
-
-    The grader Dockerfile compiles the same full source set as the runner (base
-    + ``tolokaforge_models`` + ``tolokaforge_coding_harnesses`` wheels
-    in-container), so it shares the runner's packaged-copy mapping on a wheel
-    install.
-    """
-    if not _is_wheel_install():
-        return dict(IMAGE_DEFINITIONS["grader"])
-    return {
-        **IMAGE_DEFINITIONS["grader"],
-        "context_files": _context_files_from_entries(_packaged_full_source_entries("grader")),
-    }
-
-
-_DYNAMIC_DEFINITIONS["runner"] = _runner_definition
-_DYNAMIC_DEFINITIONS["grader"] = _grader_definition
+for _svc in _FULL_SOURCE_IMAGES:
+    _DYNAMIC_DEFINITIONS[_svc] = lambda s=_svc: _full_source_definition(s)
 
 
 def get_image_definition(service_name: str) -> dict[str, Any]:
@@ -695,7 +699,7 @@ def assemble_build_context(
     # (e.g. a wheel from the wheel-cache — copied flat into build_dir).
     # An entry may also be a ``(source, destination)`` pair when the name the
     # Dockerfile expects differs from the source basename — used by
-    # ``_runner_definition()`` to land the packaged ``_python_version.txt``
+    # ``_full_source_definition()`` to land the packaged ``_python_version.txt``
     # back under its repo-root dotfile name.
     for entry in context_files:
         if isinstance(entry, tuple):
