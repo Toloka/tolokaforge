@@ -79,24 +79,33 @@ Add a sixth first-party image, `tolokasoft1/tolokaforge-standalone`, built from
   RPC, zero harness errors).
 - **Multi-arch.** Unlike the five scale-out images (`linux/amd64` only), the
   all-in-one image is published **multi-arch** (`linux/amd64` + `linux/arm64`) —
-  the "runs anywhere Docker does" appliance runs natively on Linux (both arches),
-  Apple-Silicon and Intel macOS, and Windows/WSL2. The Dockerfile is arch-agnostic
-  (TypeSense binary via `dpkg --print-architecture`, CPU-torch wheels for both
-  arches); arm64 is cross-built on the amd64 runner via the workflow's QEMU step.
-  The TypeSense flavor in particular requires the native arch — its raft writes do
-  not make progress under qemu emulation.
+  the "runs anywhere Docker does" appliance runs natively on Linux (both arches,
+  incl. Graviton), Apple-Silicon and Intel macOS, and Windows/WSL2. The Dockerfile
+  is arch-agnostic (TypeSense binary via `dpkg --print-architecture`, CPU-torch
+  wheels for both arches). Each arch is built on its **native runner** (`amd64` on
+  `ubuntu-latest`, `arm64` on the free `ubuntu-24.04-arm` public-repo runner) and
+  pushed by digest; a merge job assembles the manifest list with `imagetools
+  create`. Native builds — not QEMU — are required: the repo-scoped Docker Hub
+  OIDC token cannot pull `library/python`, and a multi-arch push re-resolves the
+  base *manifest index* under that token and 401s, whereas a single-arch native
+  leg resolves only its own platform manifest (reusing the anonymous pre-login
+  pull) exactly like the scale-out images. Native also sidesteps emulated arm64
+  build time and the TypeSense flavor's raft writes, which do not make progress
+  under qemu emulation.
 - **Build + release.** Registered in `tolokaforge/docker/builder.py`
   (`_full_source_definition("standalone")`, built on demand via `tolokaforge
   docker build --service standalone` / `make docker-build-standalone`, never in
   the default `build_all_images` sweep). The `publish-images.yml` `setup` job
-  computes the build matrix + image-name list; the standalone row inherits the
-  OIDC push, rc→stable auto-promotion, and `:X.Y.Z`/`:X.Y`/`:latest` tagging, and
-  a keyless rc-smoke (`tests/integration/deploy/test_standalone_image_smoke.py`)
-  gates its `:latest` promotion.
+  computes the scale-out build matrix + image-name list and gates the standalone
+  image in or out of the run; the standalone build fans out to the per-arch
+  `publish-standalone` + `merge-standalone` jobs and inherits the OIDC push,
+  rc→stable auto-promotion, and `:X.Y.Z`/`:X.Y`/`:latest` tagging, with a keyless
+  rc-smoke (`tests/integration/deploy/test_standalone_image_smoke.py`) gating its
+  `:latest` promotion.
 - **Publish cadence.** The five scale-out images publish on every `image-v*` tag;
   the heavier multi-arch `standalone` publishes **only on minor/major releases**
-  (`image-vX.Y.0`) and is skipped on patches, to keep its slow cross-arch build
-  off every patch. It can be published off-cycle at any version via a manual
+  (`image-vX.Y.0`) and is skipped on patches, to keep its two-runner cross-arch
+  build off every patch. It can be published off-cycle at any version via a manual
   `workflow_dispatch` with `publish: true` (pushes the immutable `:X.Y.Z` tags for
   the current `pyproject` version, standalone included). See
   [docs/RELEASING.md](../RELEASING.md) § Standalone publish cadence.
