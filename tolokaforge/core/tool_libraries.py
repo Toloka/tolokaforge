@@ -127,7 +127,8 @@ def resolve_tool_libraries(pins: Sequence[ToolLibraryPin]) -> list[ResolvedToolL
 
     Raises:
         ToolLibraryError: A name is pinned twice, is not installed (the message
-            lists what is), registers an object that is not a
+            lists what is), fails to load (the entry point's ImportError or
+            AttributeError, chained), registers an object that is not a
             :class:`ToolLibrary` or that calls itself by another name, or is
             installed at a version other than the pinned one (both named).
     """
@@ -150,6 +151,13 @@ def _installed_library(pin: ToolLibraryPin) -> ToolLibrary:
             f"tool library {pin.name!r} is pinned but not installed next to the engine "
             f"(installed: {', '.join(installed) if installed else 'none'})"
         ) from None
+    except Exception as exc:
+        # The entry point names a module attribute; an ImportError or
+        # AttributeError raised on loading it is the library's failure, reported
+        # like every other refusal of the pin rather than as a raw traceback.
+        raise ToolLibraryError(
+            f"tool library {pin.name!r} failed to load: {type(exc).__name__}: {exc}"
+        ) from exc
     if not isinstance(library, ToolLibrary):
         raise ToolLibraryError(
             f"tool library {pin.name!r} registers a {type(library).__name__}, which lacks "
@@ -184,10 +192,17 @@ def merge_tool_libraries(
     Raises:
         ToolLibraryError: Any refusal of :func:`resolve_tool_libraries`, an
             empty bundle, a bundle path that is absolute, leaves the artefact
-            root or is not normalised, a non-bytes file, or a collision.
+            root or is not normalised, a non-bytes file, a collision, or a
+            description whose metadata already carries the provenance key.
     """
     if not pins:
         return description
+    if PROVENANCE_METADATA_KEY in description.metadata:
+        raise ToolLibraryError(
+            f"the adapter's description already sets metadata[{PROVENANCE_METADATA_KEY!r}], "
+            "the key the engine records the merged libraries under; an adapter does not merge "
+            "libraries itself (see describe_task)"
+        )
     artifacts: dict[str, str] = dict(description.tool_artifacts)
     import_roots = _import_roots(description)
     provenance: list[dict[str, Any]] = []

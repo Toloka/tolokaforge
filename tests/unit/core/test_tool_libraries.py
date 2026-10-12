@@ -70,6 +70,9 @@ class _FakeEntryPoint:
         self._target = target
 
     def load(self) -> object:
+        """The registered object — or, registered as an exception, the import failure."""
+        if isinstance(self._target, BaseException):
+            raise self._target
         return self._target
 
 
@@ -179,6 +182,25 @@ def test_a_library_registered_under_another_name_is_refused(install: InstallLibr
         resolve_tool_libraries([ToolLibraryPin(name="acme_tools", version="1.2.0")])
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [ImportError("No module named 'acme_tools.plugin'"), AttributeError("no attribute LIBRARY")],
+    ids=["import", "attribute"],
+)
+def test_an_entry_point_that_fails_to_load_is_refused_with_the_cause(
+    install: InstallLibraries, failure: Exception
+) -> None:
+    """A broken installation is the library's failure, reported like every other refusal."""
+    install(("acme_tools", failure))
+
+    with pytest.raises(
+        ToolLibraryError, match=rf"'acme_tools' failed to load: .*{failure}"
+    ) as info:
+        resolve_tool_libraries([ToolLibraryPin(name="acme_tools", version="1.2.0")])
+
+    assert info.value.__cause__ is failure
+
+
 # ---------------------------------------------------------------------------
 # Merge
 # ---------------------------------------------------------------------------
@@ -215,6 +237,16 @@ def test_no_pins_leave_the_description_untouched(acme: InMemoryToolLibrary) -> N
 
     assert merge_tool_libraries(description, []) is description
     assert "tool_libraries" not in description.metadata
+
+
+def test_a_description_that_already_carries_the_provenance_key_is_refused(
+    acme: InMemoryToolLibrary,
+) -> None:
+    """The adapter's own value is neither overwritten nor taken for the engine's record."""
+    description = _description().model_copy(update={"metadata": {"tool_libraries": "mine"}})
+
+    with pytest.raises(ToolLibraryError, match=r"already sets metadata\['tool_libraries'\]"):
+        merge_tool_libraries(description, [ToolLibraryPin(name="acme_tools", version="1.2.0")])
 
 
 def test_a_path_the_adapter_already_bundles_is_refused(acme: InMemoryToolLibrary) -> None:
