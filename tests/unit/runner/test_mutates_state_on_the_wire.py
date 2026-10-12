@@ -12,6 +12,7 @@ annotation, no key in the JSON wire and no field set on the proto wire.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ import yaml
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tests.utils.servicer_runtime import ServicerStub
 from tolokaforge.adapters._task_loader import _fetch_mcp_tool_schemas
+from tolokaforge.runner import tool_factory
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.runner import runner_pb2 as pb2
@@ -102,6 +104,66 @@ def test_the_annotation_round_trips_through_a_real_server(tmp_path: Path) -> Non
     assert schemas["read_record"]["mutates_state"] is False
     assert schemas["write_record"]["mutates_state"] is True
     assert "mutates_state" not in schemas["legacy_tool"]
+
+
+class _ListingServer:
+    """Stands in for ``MCPServerProcess`` and answers ``tools/list`` with a fixed listing."""
+
+    tools: list[dict[str, Any]] = []
+
+    def __init__(self, *, script_path: str) -> None:
+        self.script_path = script_path
+
+    def start(self) -> None: ...
+
+    def send_request(self, method: str, params: dict) -> dict:
+        assert method == "tools/list"
+        return {"tools": self.tools}
+
+    def stop(self) -> None: ...
+
+
+def _listing(monkeypatch: pytest.MonkeyPatch, tools: list[dict[str, Any]]) -> None:
+    monkeypatch.setattr(_ListingServer, "tools", tools)
+    monkeypatch.setattr(tool_factory, "MCPServerProcess", _ListingServer)
+
+
+@pytest.mark.parametrize(
+    "annotations",
+    [
+        pytest.param([], id="annotations-is-a-list"),
+        pytest.param({"readOnlyHint": "false"}, id="read-only-hint-is-a-string"),
+        pytest.param({"readOnlyHint": 0}, id="read-only-hint-is-an-int"),
+    ],
+)
+def test_a_malformed_read_only_hint_leaves_the_tool_undeclared(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, annotations: Any
+) -> None:
+    """Only a bool under an ``annotations`` mapping is a declaration.
+
+    ``annotations: []`` used to raise ``AttributeError`` outside the function's
+    ``RuntimeError`` contract, and the string ``"false"`` used to record the tool
+    as declared read-only. Either shape now warns, names the tool, and leaves
+    ``mutates_state`` undeclared; a well-formed sibling is still read.
+    """
+    _listing(
+        monkeypatch,
+        [
+            {"name": "odd", "annotations": annotations},
+            {"name": "fine", "annotations": {"readOnlyHint": True}},
+            {"name": "silent"},
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        schemas = _fetch_mcp_tool_schemas(Path("/srv/mcp_server.py"))
+
+    assert "mutates_state" not in schemas["odd"]
+    assert "mutates_state" not in schemas["silent"]
+    assert schemas["fine"]["mutates_state"] is False
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("'odd'" in w and "readOnlyHint" in w for w in warnings), warnings
+    assert not any("'fine'" in w or "'silent'" in w for w in warnings), warnings
 
 
 def test_the_native_adapter_reads_it_into_the_schema_and_the_cache(

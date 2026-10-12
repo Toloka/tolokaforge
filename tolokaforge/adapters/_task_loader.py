@@ -1517,10 +1517,24 @@ def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:
             "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
         }
         # ADR-0057: the server's ``readOnlyHint`` is the author's declaration; a tool
-        # carrying no hint stays undeclared rather than defaulting either way.
-        read_only = (tool.get("annotations") or {}).get("readOnlyHint")
-        if read_only is not None:
+        # carrying no hint stays undeclared rather than defaulting either way. Only
+        # a bool under an ``annotations`` mapping is a declaration: any other shape
+        # is reported and left undeclared, never read as one (a string "false"
+        # would otherwise record the tool as read-only).
+        annotations = tool.get("annotations")
+        if annotations is None:
+            continue
+        read_only = annotations.get("readOnlyHint") if isinstance(annotations, Mapping) else None
+        if isinstance(read_only, bool):
             schemas[name]["mutates_state"] = not read_only
+        elif not isinstance(annotations, Mapping) or read_only is not None:
+            logger.warning(
+                f"tools/list entry {name!r} from {mcp_server_path} carries annotations "
+                f"{annotations!r}, not a mapping with a bool readOnlyHint; "
+                "mutates_state stays undeclared for it",
+                tool_name=name,
+                server=str(mcp_server_path),
+            )
     if not schemas:
         raise RuntimeError(
             f"MCP server {mcp_server_path} returned no tools from tools/list "
