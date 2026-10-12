@@ -42,7 +42,7 @@ from __future__ import annotations
 import shutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from itertools import chain
 from pathlib import Path
@@ -263,7 +263,7 @@ def curate_corpus(
         criterion=criterion,
         task_ids=sorted({entry.task_id for _, entry in admitted}),
         curated_from=sorted({entry.source_run for _, entry in admitted}),
-        curated_at=datetime.now(timezone.utc),
+        curated_at=datetime.now(UTC),
         bundles=[entry for _, entry in admitted],
         excluded=rejected,
     )

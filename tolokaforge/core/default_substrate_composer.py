@@ -58,9 +58,16 @@ __all__ = ["DefaultSubstrateComposer"]
 logger = logging.getLogger(__name__)
 
 
+RunnerClientFactory = Callable[[str, RunDisplayEvents | None, int], RunnerClient]
+"""``(runner_address, events, max_message_mb) -> RunnerClient`` — the composer's
+client seam. ``max_message_mb`` is the run's ``compute.grpc_max_message_mb``,
+the same bound injected into the runner container the client dials."""
+
+
 def _default_runner_client_factory(
     runner_address: str,
     events: RunDisplayEvents | None,
+    max_message_mb: int,
 ) -> RunnerClient:
     """Construct a :class:`GrpcRunnerClient` — the production factory.
 
@@ -68,7 +75,9 @@ def _default_runner_client_factory(
     can default to a stable reference without a lambda that captures a
     per-instance closure.
     """
-    return GrpcRunnerClient(runner_address=runner_address, events=events)
+    return GrpcRunnerClient(
+        runner_address=runner_address, events=events, max_message_mb=max_message_mb
+    )
 
 
 @dataclass
@@ -86,9 +95,7 @@ class DefaultSubstrateComposer:
     dispatcher_registry: dict[ServiceIsolation, ServiceLifecycleDispatcher] = field(
         default_factory=lambda: dict(DISPATCHER_REGISTRY)
     )
-    runner_client_factory: Callable[[str, RunDisplayEvents | None], RunnerClient] = (
-        _default_runner_client_factory
-    )
+    runner_client_factory: RunnerClientFactory = _default_runner_client_factory
     readiness_probe_loader: Callable[[str], ReadinessProbeFactory] = load_readiness_probe
     connect_timeout: float = 30.0
 
@@ -118,6 +125,7 @@ class DefaultSubstrateComposer:
                     write_compose_env=None,
                     events=ctx.events,
                     component_id_prefix="engine",
+                    grpc_max_message_mb=ctx.grpc_max_message_mb,
                 )
                 handle = self.materialiser.materialise(decl, m_ctx)
                 materialised.append(handle)
@@ -138,6 +146,7 @@ class DefaultSubstrateComposer:
                 expose_substrate=ctx.expose_substrate,
                 log_capture=ctx.log_capture,
                 events=ctx.events,
+                grpc_max_message_mb=ctx.grpc_max_message_mb,
             )
 
         assert runner_decl is not None  # narrowed by runner_handle presence
@@ -158,7 +167,9 @@ class DefaultSubstrateComposer:
         endpoints = _resolve_env_endpoints(
             self.materialiser, runner_handle, runner_host, runner_host_port, manifest
         )
-        runner_client = self.runner_client_factory(f"{runner_host}:{runner_host_port}", ctx.events)
+        runner_client = self.runner_client_factory(
+            f"{runner_host}:{runner_host_port}", ctx.events, ctx.grpc_max_message_mb
+        )
         return RunSubstrate(
             run_id=ctx.run_id,
             run_stack_handles=tuple(materialised),
@@ -170,6 +181,7 @@ class DefaultSubstrateComposer:
             expose_substrate=ctx.expose_substrate,
             log_capture=ctx.log_capture,
             events=ctx.events,
+            grpc_max_message_mb=ctx.grpc_max_message_mb,
         )
 
     # ------------------------------------------------------------------
@@ -228,6 +240,7 @@ class DefaultSubstrateComposer:
                 stripped_container_secrets=manifest.stripped_container_secrets,
                 mount_docker_socket=run_sub.mount_docker_socket,
                 expose_substrate=run_sub.expose_substrate,
+                grpc_max_message_mb=run_sub.grpc_max_message_mb,
                 log_capture=_trial_scope_log_capture(run_sub.log_capture, spec),
                 write_compose_env=None,
                 events=run_sub.events,
@@ -257,6 +270,7 @@ class DefaultSubstrateComposer:
                 stripped_container_secrets=manifest.stripped_container_secrets,
                 mount_docker_socket=run_sub.mount_docker_socket,
                 expose_substrate=run_sub.expose_substrate,
+                grpc_max_message_mb=run_sub.grpc_max_message_mb,
                 log_capture=_trial_scope_log_capture(run_sub.log_capture, spec),
                 write_compose_env=WriteComposeEnv(
                     trial_id=spec.trial_id,
@@ -335,7 +349,9 @@ class DefaultSubstrateComposer:
         endpoints = _resolve_env_endpoints(
             self.materialiser, runner_handle, runner_host, runner_host_port, manifest
         )
-        client = self.runner_client_factory(f"{runner_host}:{runner_host_port}", run_sub.events)
+        client = self.runner_client_factory(
+            f"{runner_host}:{runner_host_port}", run_sub.events, run_sub.grpc_max_message_mb
+        )
         return ComposedEnvHandle(
             trial_id=spec.trial_id,
             trial_stack_handles=tuple(trial_handles),

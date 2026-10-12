@@ -151,8 +151,9 @@ def test_trial_grader_name_resolves_to_its_class() -> None:
     # The built-in ``runner_rpc`` factory constructs a ``GrpcRunnerClient``
     # from ``ctx.runner_address``; stub the client to avoid a real socket.
     class _StubClient:
-        def __init__(self, runner_address: str) -> None:
+        def __init__(self, runner_address: str, max_message_mb: int) -> None:
             self.runner_address = runner_address
+            self.max_message_mb = max_message_mb
 
     original = ssr.GrpcRunnerClient
     ssr.GrpcRunnerClient = _StubClient  # type: ignore[misc,assignment]

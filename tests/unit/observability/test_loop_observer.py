@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -81,7 +81,7 @@ def test_indices_match_the_recorded_message_positions() -> None:
         ]
     )
     observer = InMemoryTrialObserver()
-    messages = [Message(role=MessageRole.USER, content="hi", ts=datetime.now(tz=timezone.utc))]
+    messages = [Message(role=MessageRole.USER, content="hi", ts=datetime.now(tz=UTC))]
     binding = LoopObserverBinding(observer, TrialIdentity("run-1", "T-1", 0, 0))
     _loop(client, binding).run("system", messages, time.time())
     generations = [args for name, args in observer.call_log.calls if name == "generation"]
@@ -110,7 +110,7 @@ def test_loop_runs_without_an_observer() -> None:
 def test_a_turn_the_simulation_budget_ends_still_reports_its_generation() -> None:
     client = _ScriptedClient([GenerationResult(text="done", usage=Usage(prompt_tokens=1))])
     observer = InMemoryTrialObserver()
-    messages = [Message(role=MessageRole.USER, content="hi", ts=datetime.now(tz=timezone.utc))]
+    messages = [Message(role=MessageRole.USER, content="hi", ts=datetime.now(tz=UTC))]
     binding = LoopObserverBinding(observer, TrialIdentity("run-1", "T-1", 0, 0))
     budget = SimulationBudget(max_steps=1, max_errors=None)
 

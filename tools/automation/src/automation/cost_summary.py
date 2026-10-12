@@ -288,7 +288,7 @@ def snapshot_key(out: Path, *, api_key: str | None = None, timeout: float = 20.0
         _log("key snapshot: unexpected payload (no data.usage)")
         return False
     snapshot = {
-        "at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        "at": _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds"),
         "usage_usd": _num(data.get("usage")),
     }
     out.parent.mkdir(parents=True, exist_ok=True)

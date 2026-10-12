@@ -7,7 +7,7 @@ import shlex
 import tarfile
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge_coding_harnesses.native_log import NATIVE_LOG_USAGE_SOURCE
@@ -154,7 +154,7 @@ def _as_utc(ts: float | None) -> datetime | None:
     """``time.time()`` epoch seconds as an aware UTC datetime, ``None`` passthrough."""
     if ts is None:
         return None
-    return datetime.fromtimestamp(ts, tz=timezone.utc)
+    return datetime.fromtimestamp(ts, tz=UTC)
 
 
 class TrialToolCallRecorder:
@@ -189,7 +189,7 @@ class TrialToolCallRecorder:
                 status=status,
                 output=output,
                 latency_seconds=latency_seconds,
-                timestamp=datetime.now(tz=timezone.utc),
+                timestamp=datetime.now(tz=UTC),
             )
         )
 
@@ -533,7 +533,7 @@ class TrialRunner:
                     max_steps=self.max_simulation_steps,
                     max_errors=self.max_environment_errors,
                 )
-            start_ts = datetime.now(tz=timezone.utc)
+            start_ts = datetime.now(tz=UTC)
             status = TrialStatus.COMPLETED  # Optimistic default
             termination_reason: TerminationReason | None = None
             # What the loop returned, or ``None`` where it never returned at
@@ -647,9 +647,7 @@ class TrialRunner:
             except _BootstrapUserStop as exc:
                 termination_reason = TerminationReason.USER_STOP
                 self.messages.append(
-                    Message(
-                        role=MessageRole.SYSTEM, content=str(exc), ts=datetime.now(tz=timezone.utc)
-                    )
+                    Message(role=MessageRole.SYSTEM, content=str(exc), ts=datetime.now(tz=UTC))
                 )
             except SimulationBudgetReached as exc:
                 termination_reason = exc.reason
@@ -657,7 +655,7 @@ class TrialRunner:
                     Message(
                         role=MessageRole.SYSTEM,
                         content=str(exc),
-                        ts=datetime.now(tz=timezone.utc),
+                        ts=datetime.now(tz=UTC),
                     )
                 )
             except Exception as e:
@@ -692,7 +690,7 @@ class TrialRunner:
                     Message(
                         role=MessageRole.SYSTEM,
                         content=f"Trial initialization error: {str(e)}. Dialogue terminated.",
-                        ts=datetime.now(tz=timezone.utc),
+                        ts=datetime.now(tz=UTC),
                     )
                 )
                 if self.strict:
@@ -775,12 +773,12 @@ class TrialRunner:
                 timeout_s=timeout_s,
             )
             self.start_time = time.time()
-            start_ts = datetime.now(tz=timezone.utc)
+            start_ts = datetime.now(tz=UTC)
             self.messages.append(
                 Message(
                     role=MessageRole.USER,
                     content=instruction,
-                    ts=datetime.now(tz=timezone.utc),
+                    ts=datetime.now(tz=UTC),
                 )
             )
 
@@ -827,7 +825,7 @@ class TrialRunner:
                 Message(
                     role=MessageRole.ASSISTANT,
                     content=output,
-                    ts=datetime.now(tz=timezone.utc),
+                    ts=datetime.now(tz=UTC),
                 )
             )
 
@@ -1067,7 +1065,7 @@ class TrialRunner:
         Shared by every way a trial can be driven, so the recorded shape does
         not depend on which one drove it.
         """
-        end_ts = datetime.now(tz=timezone.utc)
+        end_ts = datetime.now(tz=UTC)
         self.metrics.latency_total_s = time.time() - self.start_time
         self.metrics.turns = self._agent_generations(self.messages)
         self._apply_probe_stats()
@@ -1609,7 +1607,7 @@ class TrialRunner:
             RateLimitProbeBucketMetrics(
                 # ``bucket_start`` is already an exact integer epoch second, so
                 # this render is lossless and identical across run legs.
-                bucket_start_ts=datetime.fromtimestamp(start, tz=timezone.utc),
+                bucket_start_ts=datetime.fromtimestamp(start, tz=UTC),
                 role=role,
                 model=model,
                 successful_calls=counters.successes,
@@ -1760,7 +1758,7 @@ class TrialRunner:
             self._opening_line = Message(
                 role=MessageRole.ASSISTANT,
                 content=self._first_agent_message,
-                ts=datetime.now(tz=timezone.utc),
+                ts=datetime.now(tz=UTC),
             )
             self.messages.append(self._opening_line)
             self.logger.info("Agent opening delivered", chars=len(self._first_agent_message))
@@ -1786,7 +1784,7 @@ class TrialRunner:
                 role=MessageRole.USER,
                 content=first_user_text,
                 tool_calls=first_user_calls if first_user_calls else None,
-                ts=datetime.now(tz=timezone.utc),
+                ts=datetime.now(tz=UTC),
             )
         )
         if self._simulation_budget is not None:
@@ -1956,7 +1954,7 @@ class TrialRunner:
             Message(
                 role=MessageRole.ASSISTANT,
                 content=SIMULATOR_GREETING,
-                ts=datetime.now(tz=timezone.utc),
+                ts=datetime.now(tz=UTC),
             )
         ]
 
@@ -2196,7 +2194,7 @@ class TrialRunner:
             role=MessageRole.USER,
             content=user_message_text,
             tool_calls=executed_calls if executed_calls else None,
-            ts=datetime.now(tz=timezone.utc),
+            ts=datetime.now(tz=UTC),
         )
 
         if stop is None:
@@ -2229,7 +2227,7 @@ class TrialRunner:
             role=MessageRole.USER,
             content=user_message_text,
             tool_calls=executed_calls if executed_calls else None,
-            ts=datetime.now(tz=timezone.utc),
+            ts=datetime.now(tz=UTC),
         )
         self.logger.info(
             f"User sent final reply with {stop.token} — recording reply, dialogue ends"
@@ -2344,7 +2342,7 @@ class TrialRunner:
                 content=result.text,
                 tool_calls=calls,
                 reasoning=result.reasoning,
-                ts=datetime.now(tz=timezone.utc),
+                ts=datetime.now(tz=UTC),
             )
         )
         if self._simulation_budget is not None:
@@ -2420,7 +2418,7 @@ class TrialRunner:
             content=content,
             tool_call_id=call_id,
             tool_status=status,
-            ts=datetime.now(tz=timezone.utc),
+            ts=datetime.now(tz=UTC),
         )
 
     @staticmethod

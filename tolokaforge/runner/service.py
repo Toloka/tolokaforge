@@ -27,7 +27,7 @@ import threading
 import time
 import traceback
 from collections.abc import Callable, Collection
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -183,6 +183,7 @@ from tolokaforge.runner.search_plane import (
     resolve_typesense_binding,
 )
 from tolokaforge.runner.tool_factory import (
+    INVALID_ARGUMENTS_CATEGORY,
     MCPServerToolWrapper,
     SearchToolWrapper,
     ToolCallOutcome,
@@ -722,7 +723,7 @@ class TrialContextRuntime:
                 output=output,
                 status=status,
                 latency_seconds=latency_seconds,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
         )
 
@@ -1689,14 +1690,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
                 # MCP completed the call and reported its own error flag beside
                 # the response text. This is an environment outcome, not a
-                # transport failure or a string-prefix heuristic.
+                # transport failure or a string-prefix heuristic — unless the
+                # substrate declared, in a typed way, that the arguments were
+                # refused (``ToolCallOutcome.category``).
                 if isinstance(result, ToolCallOutcome):
                     output = result.output
-                    status = (
-                        pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR
-                        if result.declared_failure
-                        else pb2.EXECUTION_STATUS_SUCCESS
-                    )
+                    if not result.declared_failure:
+                        status = pb2.EXECUTION_STATUS_SUCCESS
+                    elif result.category == INVALID_ARGUMENTS_CATEGORY:
+                        # A refused call, like any INVALID_ARGUMENTS: the host
+                        # renders and records ``error_message`` for a failed
+                        # call, so the server's feedback travels there too.
+                        status = pb2.EXECUTION_STATUS_INVALID_ARGUMENTS
+                        error_message = result.output
+                    else:
+                        status = pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR
                 elif isinstance(result, str):
                     output = result
                 elif result is None:
@@ -1706,7 +1714,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
                 logger.debug(f"ExecuteTool: {tool_name} completed with status {status}")
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 status = pb2.EXECUTION_STATUS_TIMEOUT
                 logger.warning(f"ExecuteTool: {tool_name} timed out after {timeout_seconds}s")
                 error_message = await self._reset_backstopped_tool(

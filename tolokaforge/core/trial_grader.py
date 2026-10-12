@@ -76,6 +76,7 @@ from tolokaforge.core.models.grade import GradingStateSnapshots
 from tolokaforge.core.plugin_registry import load_grading_method
 from tolokaforge.core.trial import TrialSpec
 from tolokaforge.grader.wire_snapshot import build_grade_request_fields
+from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
 from tolokaforge.runner.models import ComparisonViewGradeRecord, RunnerGradingConfig
 
 if TYPE_CHECKING:
@@ -209,6 +210,7 @@ class RunnerRPCTrialGrader:
         *,
         runner_client: GrpcRunnerClient | None = None,
         runtime_backend: RuntimeBackend | None = None,
+        grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
     ) -> None:
         self.runner_address = runner_address
         self.logger = logger
@@ -219,7 +221,9 @@ class RunnerRPCTrialGrader:
         if runner_client is None and runtime_backend is None:
             from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient as _Client
 
-            runner_client = _Client(runner_address=runner_address)
+            runner_client = _Client(
+                runner_address=runner_address, max_message_mb=grpc_max_message_mb
+            )
         self.runner_client = runner_client
 
     def grade(
@@ -608,6 +612,7 @@ def runner_rpc_trial_grader_factory(ctx: TrialGraderContext) -> RunnerRPCTrialGr
         runner_address=ctx.runner_address or "",
         logger=ctx.logger,
         runtime_backend=ctx.runtime_backend,
+        grpc_max_message_mb=ctx.grpc_max_message_mb,
     )
 
 
@@ -769,6 +774,7 @@ class GraderRPCTrialGrader:
         *,
         runner_substrate_address: str | None = None,
         grader_client: GrpcGraderClient | None = None,
+        grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
     ) -> None:
         self.grader_address = grader_address
         self.logger = logger
@@ -776,7 +782,9 @@ class GraderRPCTrialGrader:
         if grader_client is None:
             from tolokaforge.grader.client import GrpcGraderClient as _Client
 
-            grader_client = _Client(grader_address=grader_address)
+            grader_client = _Client(
+                grader_address=grader_address, max_message_mb=grpc_max_message_mb
+            )
         self.grader_client = grader_client
 
     def grade(
@@ -955,6 +963,7 @@ def grader_rpc_trial_grader_factory(ctx: TrialGraderContext) -> GraderRPCTrialGr
         grader_address=address,
         logger=ctx.logger,
         runner_substrate_address=ctx.runner_address or "",
+        grpc_max_message_mb=ctx.grpc_max_message_mb,
     )
 
 
@@ -1203,7 +1212,7 @@ def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:
     broker = InMemoryGradeBroker()
     workers: list[threading.Thread] = []
     for i in range(cfg.workers):
-        client = GrpcGraderClient(grader_address=address)
+        client = GrpcGraderClient(grader_address=address, max_message_mb=ctx.grpc_max_message_mb)
         worker = threading.Thread(
             target=_queue_worker_loop,
             args=(broker, client, ctx.logger),

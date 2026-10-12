@@ -18,7 +18,10 @@ What it does, in order, per file:
 4. **scan** the payload against the sentinel, which knows the credential shapes *and* the values
    this very process holds: the shapes read the serialised JSON, the values also the raw strings.
    A hit sends nothing;
-5. **export** one batch per transcript.
+5. **export** one batch per transcript, under the wheel's retry policy (its defaults): a batch the
+   receiver refused without reading it (the gateway's refusal page, 429, 503) is posted again
+   after a wait, and nothing else is. All the upload's waits together take at most the policy's
+   ``flush_grace_s``, so a receiver that keeps refusing costs one grace, not one per transcript.
 
 Nothing here fails the pipeline on its own: the command reports what it refused, what it blocked
 and what it could not send and exits 1 for any of them, for a step that carries
@@ -277,6 +280,8 @@ class UploadReport:
     unchecked: list[dict[str, str]] = field(default_factory=list)
     # files in the directory that are not an agent's output (not read, not a failure)
     ignored: list[str] = field(default_factory=list)
+    # what the retry policy did (tolokaforge_langfuse.retry.RetryStats.counts)
+    retries: dict[str, int] = field(default_factory=dict)
     dry_run: bool = False
 
     @property
@@ -299,6 +304,7 @@ class UploadReport:
             "failed": self.failed,
             "unchecked": self.unchecked,
             "ignored": self.ignored,
+            "retries": self.retries,
             "ok": self.ok,
         }
 
@@ -324,6 +330,13 @@ class UploadReport:
         if self.ignored:
             lines.append(f"- not an agent output file, not read: **{len(self.ignored)}**")
             lines.extend(f"  - `{name}`" for name in self.ignored)
+        if self.retries.get("retried_requests") or self.retries.get("retries_exhausted"):
+            lines.append(
+                f"- posted again after a refusal: **{self.retries['retried_requests']}** "
+                f"transcript(s), {self.retries['retries_recovered']} recovered, "
+                f"{self.retries['retries_exhausted']} given up, "
+                f"{self.retries['retry_wait_s']} s waited"
+            )
         return "\n".join(lines) + "\n"
 
 
@@ -363,6 +376,7 @@ def upload(
         ModelNameResolverError,
         build_model_name_resolver,
     )
+    from tolokaforge_langfuse.retry import Retrier, RetryPolicy
 
     from tolokaforge.observability import ids as engine_ids
     from tolokaforge_langfuse import otlp_spans, otlp_transport
@@ -398,8 +412,14 @@ def upload(
     verified = _project_verified(receiver, project)
     gate = _sentinel(receiver)
     contract = tr.id_contract(engine_ids)
+    policy = RetryPolicy()
+    # all the upload's waits together take at most one grace, the bound a live run's end has;
+    # only time spent waiting counts, so a long upload keeps its retries
+    retrier = Retrier(policy, wait_budget_s=policy.flush_grace_s)
     exporter = (
-        otlp_transport.make_otlp_exporter(receiver.endpoint, receiver.headers, retry=False)
+        otlp_transport.make_otlp_exporter(
+            receiver.endpoint, receiver.headers, retry=False, retrier=retrier
+        )
         if receiver is not None and not dry_run
         else None
     )
@@ -484,6 +504,7 @@ def upload(
                     "already holds this trace",
                 }
             )
+    report.retries = retrier.stats.counts()
     return report
 
 

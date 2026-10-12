@@ -20,6 +20,7 @@ absence must persist as ``None`` / an empty list, never as a crash.
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -221,9 +222,9 @@ class TestPersistedBundle:
 
     @staticmethod
     def _trajectory(generation_id: str | None) -> Trajectory:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        ts = datetime(2026, 8, 19, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2026, 8, 19, 12, 0, 0, tzinfo=UTC)
         metrics = Metrics()
         recorder = _TrialMetricsSink(metrics)
         headers = (

@@ -34,6 +34,7 @@ observability:
         # attach_api_base: https://langfuse.example  # default: derived from endpoint
         # attach_timeout_s: 60              # per-request timeout
         # attach_budget_s: 120              # whole-trial attachment budget
+        # retry: {statuses: [403, 429, 503], flush_grace_s: 240}  # refusals posted again (§ Retries)
 ```
 
 The engine's `TracingConfig` owns only exporter selection, endpoint, run identity, session/label,
@@ -42,7 +43,7 @@ installed plugin's supported exporter. `options` is an opaque mapping keyed by p
 the engine passes it through unchanged. The Langfuse plugin validates `options.langfuse` against
 its strict `LangfuseConfig` before contacting the receiver. All receiver-specific settings below
 (`expect_project`, `project`, `project_id`, `environments`, `attach`, `gradings`, `projection`,
-`attach_*`, `profile`, `environment`, `model_name_*`) live in that namespace. Defaults and environment precedence are unchanged.
+`attach_*`, `retry`, `profile`, `environment`, `model_name_*`) live in that namespace. Defaults and environment precedence are unchanged.
 
 A receiver setting left at the tracing block's top level, and an unknown key inside the Langfuse
 namespace, are both errors at config load; they are never silently ignored. Adding a
@@ -182,7 +183,8 @@ JWTs, secret-named fields); a hit skips the file, names it in `attachments_skipp
 `attachments_complete: false`. Bytes are never rewritten. The REST base URL derives from the OTLP
 endpoint (`attach_api_base` overrides it), the headers are `OTEL_EXPORTER_OTLP_HEADERS`, each
 request has `attach_timeout_s`; the step runs in the trial's thread once the trial is over and
-never raises. Under `extra`, `tracing_receipt.json` reports the `langfuse.`-prefixed counters
+never raises. A request the receiver refused without reading it goes again within the trial's
+budget (§ Retries). Under `extra`, `tracing_receipt.json` reports the `langfuse.`-prefixed counters
 `attachments_registered`, `attachments_uploaded`,
 `attachments_deduplicated`, `attachments_skipped`, `attachments_failed`, `manifests_sent`,
 `manifests_failed`.
@@ -285,7 +287,9 @@ refused at run start.
 
 **One POST per batch, and what happens when one fails.** The stock OTLP exporter re-posts a batch
 that failed with a connection error or a retryable status. The v4 producer makes one POST attempt
-per batch to avoid unnecessary requests and unintended overwrites. This does not guarantee
+per batch to avoid unnecessary requests and unintended overwrites, and posts the same bytes again
+only after a refusal that normally comes before the receiver reads them: a gateway's own
+refusal page, 429 or 503 (§ Retries). This does not guarantee
 delivery or prevent an undeletable duplicate. It takes more than disabling the exporter's retry
 loop: the SDK posts a second time on a lost connection (`_export` up to OpenTelemetry 1.44, its
 OTLP client from 1.45), `requests` follows a 307 or 308 by re-sending the body, and a session's
@@ -301,10 +305,12 @@ keeps the stock retrying exporter. The consequences are visible in the receipt:
 
 - a batch the queue never took (it was full, or the flush budget ran out) is certainly unwritten,
   so the trace gets its **error root** at run end;
-- a batch the exporter posted and could not confirm is **ambiguous**: no error root is written for
-  it, because a minimal error root could overwrite a complete root already stored. The run warns,
-  counts it in `langfuse.roots_unconfirmed`, and the offline uploader completes such a trace later
-  (it reads which ids the receiver already holds before writing).
+- a batch the exporter posted and could not confirm (after the retries § Retries allows) is
+  **ambiguous**: no error root is written for it, because a minimal error root could overwrite a
+  complete root already stored. The run warns, counts it in `langfuse.roots_unconfirmed`, and the
+  offline uploader completes such a trace later (it reads which ids the receiver already holds
+  before writing). A root whose batch was still waiting out a refusal when the error roots were
+  decided, and had not landed when the run ended, is counted the same way.
 
 The error root itself carries nine of the trace metadata schema's keys, not the full 34: it is
 deliberately minimal (identity, status, the reason, the label and the time source), so a reader
@@ -603,7 +609,13 @@ loop never waits. At run end the queue is flushed within `flush_timeout_s` and
 `tracing_receipt.json` in the run directory reports `spans_queued`, `spans_exported`,
 `spans_dropped`, `export_failures`, `flushed`; the same counts go to the log (a warning when
 anything was dropped). If the receiver is unreachable the flush gives up after `flush_timeout_s`
-and counts the rest as dropped, so a run never waits on its traces.
+and counts the rest as dropped, so a run never waits on its traces, also while the background
+thread still exports a batch: a batch it holds when the run ends counts as posted and not
+confirmed. `flushed` is false only when something was dropped or a batch was still being
+exported; a batch that finished just past the timeout has left. The flush goes on longer only
+while the receiver refuses with an answer the retry policy waits out, by `retry.flush_grace_s`
+at most, and stops going on once a batch fails in another way (a timeout, a lost connection, a
+status the policy does not wait out) or the retry breaker opens (§ Retries).
 
 **What leaves is scanned, by one gate per run.** Tool-call **arguments** (a mapping) pass through
 the engine's `SensitiveKeyRedaction`, which reads key names only; tool outputs and message text are
@@ -674,9 +686,129 @@ Every counter the Langfuse plugin reports under `extra` (each key has the `langf
 | `scores_sent`, `user_generations_sent` | the scores and simulated user turns the grading passes sent |
 | `previews_sent`, `final_observations_sent`, `error_roots_sent`, `roots_unconfirmed` | the v4 layout (§ The write-once producer layout) |
 | `spans_refused_secret` | live spans the gate withheld |
+| `retried_requests`, `retry_attempts`, `retries_recovered`, `retries_exhausted`, `retry_wait_s`, `retry_breaker_trips` | the retry policy over every write route (§ Retries): requests posted more than once, the posts after the first, retried requests that landed, requests still refused when the policy, a deadline, the breaker or the run's end stopped them, the seconds waited (rounded up), and how often the breaker stopped the waiting |
 
 A receipt covers one process. `ExportReceipt.merge` applies the same reduction to receipts
 collected from distinct workers; the caller must deduplicate workers and retain partial/final
 status before calling it. The engine does not collect worker receipts automatically. Counts
 measure export attempts, so deterministic ids prevent duplicate receiver records without making
 repeat receipt merges idempotent.
+
+## Retries
+
+A receiver can sit behind a gateway that answers a shared write limit with its own block page: a
+403 the gateway sends without forwarding the request, in bursts that can last minutes while other
+clients spend the same limit. The receiver never reads a body refused this way, so the writes
+follow one retry policy, `options.langfuse.retry` (`tolokaforge_langfuse.retry`).
+
+**What is posted again.** Only a refusal that comes before the receiver reads the body
+(ADR-0048, amendment 2026-10-07):
+
+| Answer | Why the body was not read |
+|---|---|
+| 403 whose body carries one of `gateway_markers` | the gateway in front of the receiver refused it without forwarding it (the offline connector recognises the Azure Application Gateway's page the same way) |
+| 429 | a limit refuses before processing |
+| 503 | a service answers it before it processes the request; a proxy may also answer it after forwarding the request, and on a v4 receiver the second post is then an update with the same content |
+
+A 403 Langfuse answers itself is JSON and fails at once: a key Langfuse rejects is never waited
+on. The gateway's page does not say why it refused, though: a rule of its own (an admission header
+it checks itself, missing or rotated) looks exactly like its shared limit and is waited out too,
+until the breaker below stops the waiting. A lost answer and a timeout get no second post (the
+receiver may have taken the body), and neither does any status the list does not name. An
+operator may list more statuses, but listing 500, 502 or 504 can re-send a body the receiver has
+already read and written: a gateway answers those when the receiver broke off or did not answer
+in time. On a v4 receiver that second write is an update with the same content (same ids, same
+rows, last write wins), which is the trade-off ADR-0048 describes.
+
+**The schedule.** Every retried answer waits the same steps: the wait before the n-th re-send is
+the n-th value of `delays_s`, and the last value repeats once the list runs out, for at most
+`max_retries` re-sends. With the defaults that is 1, 3, 9, 20, 30 and 30 s, 93 s in all, so at
+most 7 posts. A `Retry-After` longer than the step is honoured instead, up to
+`retry_after_max_s`, and the jitter then lengthens the wait.
+
+**The settings**, every key optional, each default with its reason:
+
+| Key | Default | Why |
+|---|---|---|
+| `statuses` | `[403, 429, 503]` | the refusals that come before the receiver reads the body (above; 503 with the exception its row names); 403 stands for the gateway's page alone; `[]` turns retries off |
+| `gateway_markers` | `[Microsoft-Azure-Application-Gateway]` | the text that marks a 403's body as the refusal page of the gateway in front of the receiver. The default is the text of the Azure Application Gateway's page; a deployment behind another gateway names the text of its page. A 403 that carries none of them is the receiver's own and fails at once |
+| `delays_s` | `[1, 3, 9, 20, 30]` | a refusal that passes in seconds is caught by the short first waits; the steps grow about threefold up to 30 s, which repeats, so a lasting refusal costs about two posts a minute; a value that is not a positive finite number, or that is shorter than the one before it, is refused |
+| `max_retries` | `6` | the most re-sends of one request after its first post: waits of 1 + 3 + 9 + 20 + 30 + 30 = 93 s before the jitter, which fit inside the default 120 s `attach_budget_s`, so a trial-end call can run the whole schedule; a refusal that lasts longer than about 93 s still costs the batches it refuses throughout; `0` turns retries off |
+| `jitter` | `0.2` | each wait grows by a random 0 to 20 % of itself and never shrinks: a run's parallel trials are refused together and would otherwise post again together, while a `Retry-After` never ends early |
+| `retry_after_max_s` | `60` | a `Retry-After` longer than the step is honoured up to a minute; a receiver asking for more would hold a trial or the run's end for it |
+| `breaker_after` | `2` | two span batches in a row that ran out their whole schedule still refused (about three minutes of refusals) point to a rule rather than the limit, so a refusal then fails at once until a write is accepted again; `0` never stops the waiting |
+| `flush_grace_s` | `240` | how much longer than `flush_timeout_s` the run's end may wait while the receiver refuses: two whole schedules with the jitter (2 x 112 s) and their posts fit, so a burst of about three minutes at the run's end is ridden out |
+
+```yaml
+# project.yaml
+run_defaults:
+  observability:
+    tracing:
+      flush_timeout_s: 30                 # the engine's run-end flush bound
+      options:
+        langfuse:
+          retry:
+            statuses: [403, 429, 503]     # 403: the gateway's page only
+            gateway_markers: [Microsoft-Azure-Application-Gateway]
+            delays_s: [1, 3, 9, 20, 30]   # the last value repeats
+            max_retries: 6                # re-sends after the first post; 0 turns retries off
+            jitter: 0.2
+            retry_after_max_s: 60
+            breaker_after: 2
+            flush_grace_s: 240
+```
+
+An unknown key or a bad value (a status outside 400-599 or listed twice, a blank gateway marker,
+no gateway marker while `statuses` lists 403, a `max_retries` that is not a whole number from 0
+to 100, an empty or shrinking `delays_s` or one with a value that is not a positive finite
+number, a negative or non-finite number elsewhere, a jitter above 1, a boolean where a number
+belongs) refuses the run at start. The offline connector reads the same
+block through the wheel's reader, so a deployment that sets `retry` needs a connector whose wheel
+knows the key.
+
+**Where it applies, and what bounds it.**
+
+- **The span export of the write-once layout** (a v4 receiver). The background thread posts a
+  refused batch again, the same bytes each time, and the trials never wait for it. A v3 receiver
+  keeps the SDK's exporter and its own retries (429, 502, 503, 504; not the gateway's page).
+- **The trial-end calls** of either family: the media registration, its confirmation and the
+  presigned upload, the manifest, the gradings and the scores. They run in the trial's own
+  thread, and a wait starts only if it ends, with a second to spare for the request, before the
+  trial's `attach_budget_s` runs out; each request gets what is left of the budget. The whole
+  default schedule (93 s) fits the default budget, so the first call of a pass that meets a
+  refusal can wait it out to the end; calls after it in the same pass have only what is left. A
+  deployment that would rather ride out a longer refusal at the trial's end raises
+  `attach_budget_s` and `max_retries`, at the cost of the trial's wall time.
+- **The breaker.** The span export's requests count towards `breaker_after`: once that many in a
+  row ran out their whole schedule still refused, a refusal fails at once, without a wait, until
+  the first write accepted afterwards closes it. The trial-end calls obey it but do not count
+  towards it, since a run's parallel trials would otherwise open it within one schedule of any
+  long refusal. A gateway rule that refuses for good therefore costs the span export two
+  schedules in its background thread, and each trial end its schedule until the breaker opens
+  (or the attachment step's own breaker switches the step off after three trials that reached
+  nothing). Opening the breaker also ends the waits in progress. On a v3 receiver nothing counts
+  towards it, since the span export keeps the SDK's exporter: there a gateway rule that refuses
+  for good costs each trial end its schedule within `attach_budget_s`, until the attachment
+  step's own breaker switches the step off. The transcript upload has a breaker of its own.
+- **The run's end.** The flush ends at `flush_timeout_s` unless the receiver refuses it with an
+  answer the policy waits out (a batch already waiting one out when the flush starts counts too);
+  then it may go on, by `flush_grace_s` at most in total over its flushes (two on a v4 receiver:
+  before and after the error roots). It stops going on once a batch fails in another
+  way (a timeout, a lost connection, a status the policy does not wait out) or the breaker opens.
+  No wait ends past the grace, and whatever did not get out is counted (`spans_dropped`,
+  `export_failures`), so a v4 run's end takes at most 2 x `flush_timeout_s` + `flush_grace_s`
+  (300 s with the defaults), plus, per flush, the timeout of one request in flight.
+  `flush_grace_s: 0` keeps every wait within the timeout.
+- **The agent transcripts** (`automation langfuse-upload`) leave through the same transport with
+  the default policy. All the upload's waits together take at most `flush_grace_s` (only the time
+  spent waiting counts, so a long upload keeps its retries), and the report's `retries` holds the
+  same counts as the receipt.
+
+**What a run says.** Every retry is an INFO line naming the request (a method and a path, never
+a URL or a header), the status, the wait and the retry's number; every give-up is a WARNING with
+the status, the posts, the time waited and the reason (`max_retries`, the deadline, the wait
+budget, the run's end). The breaker says once at WARNING that it opened, and at INFO that a write
+was accepted again; a request it stops is an INFO line. The receipt counts it all over the routes
+(§ Delivery): `retried_requests`, `retry_attempts`, `retries_recovered`, `retries_exhausted`,
+`retry_wait_s`, `retry_breaker_trips`. Every other counter keeps its meaning: a batch that landed
+on its second post is exported, not failed.

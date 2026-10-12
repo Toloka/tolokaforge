@@ -91,7 +91,10 @@ class _FakeRunnerClient:
         return True
 
 
-def _fake_client_factory(runner_address: str, events: Any) -> _FakeRunnerClient:
+def _fake_client_factory(
+    runner_address: str, events: Any, max_message_mb: int
+) -> _FakeRunnerClient:
+    del max_message_mb
     return _FakeRunnerClient(runner_address=runner_address, events=events)
 
 

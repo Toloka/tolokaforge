@@ -36,7 +36,7 @@ veto can be told apart from a fraction.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
@@ -63,7 +63,7 @@ from tolokaforge.runner.service import RunnerServiceImpl
 pytestmark = pytest.mark.canonical
 
 _PARITY_GLOB = "transcript_parity/**/task.yaml"
-_FIXTURE_TIMESTAMP = datetime(2026, 1, 1, tzinfo=timezone.utc)
+_FIXTURE_TIMESTAMP = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 class _ScoringQuestion(str, Enum):

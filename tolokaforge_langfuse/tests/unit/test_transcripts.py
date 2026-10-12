@@ -394,7 +394,8 @@ class TestTheProjection:
         generations = one(build, "generation-create")
         assert root["name"] == "transcript" and [t["name"] for t in tools] == ["tool: Bash"]
         # a name says what an observation is; the turn's position is metadata
-        assert [g["name"] for g in generations] == ["agent", "agent"]
+        # an automation agent's calls, told apart from a trial agent's in a view by name
+        assert [g["name"] for g in generations] == ["analyzer", "analyzer"]
         assert [g["metadata"]["message_index"] for g in generations] == [0, 1]
         assert all(o["parentObservationId"] == root["id"] for o in tools + generations)
         assert all(o["traceId"] == build.trace_id for o in [root, *tools, *generations])

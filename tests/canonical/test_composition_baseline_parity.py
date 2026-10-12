@@ -148,7 +148,9 @@ def _run_composer_scenario_a(
     materialiser = DockerComposeMaterialiser(docker_compose_factory=factory)
     composer = DefaultSubstrateComposer(
         materialiser=materialiser,
-        runner_client_factory=lambda addr, events: _RecordingRunnerClient(addr, events=events),
+        runner_client_factory=lambda addr, events, _max_mb: _RecordingRunnerClient(
+            addr, events=events
+        ),
     )
     _synthesise_composition_plan(manifest, {})
     plan = list(manifest.stacks)
@@ -249,7 +251,9 @@ def _run_composer_scenario_b(
     materialiser = DockerComposeMaterialiser(docker_compose_factory=factory)
     composer = DefaultSubstrateComposer(
         materialiser=materialiser,
-        runner_client_factory=lambda addr, events: _RecordingRunnerClient(addr, events=events),
+        runner_client_factory=lambda addr, events, _max_mb: _RecordingRunnerClient(
+            addr, events=events
+        ),
         readiness_probe_loader=_always_ready_loader,
     )
     _synthesise_composition_plan(manifest, {})

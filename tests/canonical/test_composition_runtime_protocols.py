@@ -191,6 +191,7 @@ class TestCompanionDataclassFields:
             "component_id_prefix",
             "bridged_services",
             "stripped_container_secrets",
+            "grpc_max_message_mb",
         ]
 
     def test_run_ctx_fields(self) -> None:
@@ -202,6 +203,7 @@ class TestCompanionDataclassFields:
             "log_capture",
             "events",
             "seeds",
+            "grpc_max_message_mb",
         ]
 
     def test_run_substrate_fields(self) -> None:
@@ -222,6 +224,7 @@ class TestCompanionDataclassFields:
             "expose_substrate",
             "log_capture",
             "events",
+            "grpc_max_message_mb",
         ]
 
     def test_composed_env_handle_fields(self) -> None:

@@ -454,6 +454,14 @@ class MyTool(ToolWrapper):
         return ToolCallOutcome(output=answer.text, declared_failure=answer.failed)
 ```
 
+When the substrate also says, in a typed way, that the failure was the caller's
+arguments, set `category="invalid_arguments"` on the outcome: the runner then
+records the call as `INVALID_ARGUMENTS`, which the environment-error budget does
+not count, instead of `ENVIRONMENT_ERROR`. `MCPServerToolWrapper` sets it for the
+JSON-RPC error `-32602` and for an `isError: true` reply whose `_meta` carries
+`"tolokaforge/error_category": "invalid_arguments"`. Never derive it from the
+error prose; a failure without a typed category stays an environment error.
+
 Keep one request path, as above: `execute` delegates to `execute_call` and drops
 the flag. A wrapper that sends the request twice can answer the agent and the
 grade differently. That direction holds only for a wrapper that overrides

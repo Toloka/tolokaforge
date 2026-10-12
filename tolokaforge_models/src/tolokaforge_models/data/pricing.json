@@ -2,7 +2,7 @@
   "_meta": {
     "description": "Model pricing in USD per 1M tokens. Source: OpenRouter API.",
     "source_url": "https://openrouter.ai/api/v1/models",
-    "updated_at": "2026-09-25T07:14:46.171869+00:00",
+    "updated_at": "2026-09-29T07:10:55.408616+00:00",
     "notes": "Run `uv run pricing-updater update` to refresh from OpenRouter API."
   },
   "models": {
@@ -336,6 +336,12 @@
       "cache_write": 1.875
     },
     "anthropic/claude-sonnet-5": {
+      "input": 2.0,
+      "output": 10.0,
+      "cache_read": 0.2,
+      "cache_write": 2.5
+    },
+    "anthropic/claude-sonnet-5.5": {
       "input": 2.0,
       "output": 10.0,
       "cache_read": 0.2,

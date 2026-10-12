@@ -25,7 +25,7 @@ Three steps, in order, each usable on its own:
 
 ``build_events``
     The transcript as ingestion bodies: the trace, its root (an ``agent`` observation), one
-    generation per assistant turn, one ``tool`` observation per tool result. The same bodies the
+    ``analyzer`` generation per assistant turn, one ``tool`` observation per tool result. The same bodies the
     trial projection builds, so :mod:`tolokaforge_langfuse.otlp_spans` turns them into v4 spans
     unchanged. The prompt the agent was given is not in its output, so it is the caller's to pass
     (``TranscriptOptions.input``); it becomes the trace's input.
@@ -63,7 +63,7 @@ import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +78,7 @@ from tolokaforge_langfuse.model_names import (
 from tolokaforge_langfuse.vocabulary import (
     EVENT_AGENT,
     EVENT_TOOL,
-    NAME_AGENT,
+    NAME_ANALYZER,
     NAME_TRANSCRIPT,
     SOURCE_TRANSCRIPT,
     TRANSCRIPT_CALLER_PREFIXES,
@@ -609,12 +609,12 @@ def _ended(
         return stamps[-1]
     if started and result is not None and result.duration_ms:
         try:
-            base = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            base = datetime.fromisoformat(started)
         except ValueError:
             return stamps[-1] if stamps else None
         try:
             end = base.timestamp() + result.duration_ms / 1000.0
-            ended = datetime.fromtimestamp(end, tz=timezone.utc)
+            ended = datetime.fromtimestamp(end, tz=UTC)
         except (OverflowError, OSError, ValueError) as exc:
             raise TranscriptRefused(f"{origin}: the result's duration_ms is out of range") from exc
         return ended.isoformat().replace("+00:00", "Z")
@@ -811,7 +811,7 @@ def build_events(
             "id": ids.observation(trace_id, "gen", turn.index),
             "traceId": trace_id,
             "parentObservationId": root_id,
-            "name": NAME_AGENT,
+            "name": NAME_ANALYZER,
             "startTime": started,
             "endTime": turn.timestamp or started,
             "input": context[-CONTEXT_MESSAGES:],
@@ -1148,7 +1148,7 @@ def _envelope(event_type: str, body: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": uuid.uuid4().hex,
         "type": event_type,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "body": body,
     }
 
@@ -1191,11 +1191,11 @@ def _normalize_ts(value: object) -> str | None:
     if not value:
         return None
     if isinstance(value, datetime):
-        aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-        return aware.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return aware.astimezone(UTC).isoformat().replace("+00:00", "Z")
     if isinstance(value, date):
         return (
-            datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+            datetime(value.year, value.month, value.day, tzinfo=UTC)
             .isoformat()
             .replace("+00:00", "Z")
         )

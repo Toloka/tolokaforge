@@ -223,6 +223,45 @@ invalid env-var value (non-numeric, zero, or negative) logs a warning and
 falls back to the YAML / default; a running trial is never taken down by a
 mis-set operational override.
 
+### gRPC message size
+
+A trial's whole JSON-DB world crosses gRPC in single messages: `RegisterTrial`
+carries the `TrialSpec` with `initial_state` inline, `GetState` returns the
+whole captured world, the grader's `Grade` request carries the task
+description, and the grader reads the final state through `SubstrateService`.
+One setting bounds every one of these messages on both ends:
+
+```yaml
+compute:
+  grpc_max_message_mb: 200   # default 50, accepted 4..2047
+```
+
+- **Engine side** — the runner client, the grader clients and the engine's
+  own substrate reads (snapshot grade bundles) open their channels with this
+  bound.
+- **Runner side** — the runner server reads `TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`.
+  The engine sets it on the built-in stack's runner and injects it into the
+  runner service of a task-declared compose file; a compose file that declares
+  the variable itself keeps its own value.
+- **Grader side** — `python -m tolokaforge.grader` reads the same variable
+  for its server and for each substrate channel it opens to a runner. The
+  engine does not start the grader, so its deployment sets the variable (see
+  `deploy/standalone/docker-compose.yaml`).
+
+A container fails at startup when the variable is set to anything other than
+a whole number in range; unset means 50. The default is 50 MiB on both sides.
+A message above the bound fails the call with
+`RESOURCE_EXHAUSTED`: `RegisterTrial` fails the trial's registration and
+`GetState` reports a failed capture, both with an error naming the limit and
+`compute.grpc_max_message_mb` (see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-large-task-world-fails-to-register-or-capture)).
+
+The ceiling, 2047 MiB, is the largest whole-MiB value gRPC's signed 32-bit
+message-length options hold. Memory grows with the message: each side holds
+several copies of it at once (the wire bytes, the decoded string and the
+parsed state), so budget a few times the world's size per concurrent trial on
+both the engine host and the runner.
+
 ## Runner Image Contents
 
 `runner.Dockerfile` is a multi-stage build on a `python:3.12-slim` base

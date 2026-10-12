@@ -110,6 +110,23 @@ def test_runner_env_expose_substrate_is_true() -> None:
     )
 
 
+def test_runner_and_grader_share_one_grpc_message_bound() -> None:
+    """Both ends of the grader's substrate channel read the same variable.
+
+    The grader serves ``Grade`` requests carrying the task's initial state and
+    reads the runner's final state; a bound set on one service and not the
+    other refuses large worlds on whichever end was left at the default.
+    """
+    services = _load_compose()["services"]
+    expected = "${TOLOKAFORGE_GRPC_MAX_MESSAGE_MB:-50}"
+    for name in ("runner", "grader"):
+        value = services[name]["environment"].get("TOLOKAFORGE_GRPC_MAX_MESSAGE_MB")
+        assert value == expected, (
+            f"{name} env must declare TOLOKAFORGE_GRPC_MAX_MESSAGE_MB: {expected} so the "
+            f"runner and the grader serve with one operator-set bound (found: {value!r})"
+        )
+
+
 def test_only_runner_and_grader_publish_a_host_port() -> None:
     services = _load_compose()["services"]
     published = {name for name, spec in services.items() if "ports" in spec}

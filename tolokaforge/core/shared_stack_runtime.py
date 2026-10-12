@@ -47,6 +47,11 @@ from tolokaforge.runner import (
     runner_pb2,
     runner_pb2_grpc,
 )
+from tolokaforge.runner.grpc_limits import (
+    DEFAULT_MAX_MESSAGE_MB,
+    channel_options,
+    resource_exhausted_message,
+)
 from tolokaforge.runner.models import PlanShape
 from tolokaforge.runner.protocol import (
     ENGINE_PROTOCOL_VERSION,
@@ -263,6 +268,7 @@ class GrpcRunnerClient:
         runner_address: str = "runner:50051",
         *,
         events: RunDisplayEvents | None = None,
+        max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
     ):
         """
         Initialize Runner client
@@ -275,8 +281,12 @@ class GrpcRunnerClient:
                 same row updated in place) instead of scrolling
                 per-attempt log lines. Defaults to the null sink so
                 out-of-tree callers keep pre-existing behaviour.
+            max_message_mb: Largest gRPC message, in MiB, the channel sends
+                or accepts — the run's ``compute.grpc_max_message_mb``,
+                matching the bound the runner container serves with.
         """
         self.runner_address = runner_address
+        self.max_message_mb = max_message_mb
         self.channel: grpc.Channel | None = None
         self.stub: runner_pb2_grpc.RunnerServiceStub | None = None
         self._events: RunDisplayEvents = events if events is not None else _NULL_EVENTS
@@ -310,7 +320,9 @@ class GrpcRunnerClient:
             ConnectionError: If Runner not healthy after timeout
         """
         if self.channel is None:
-            self.channel = grpc.insecure_channel(self.runner_address)
+            self.channel = grpc.insecure_channel(
+                self.runner_address, options=channel_options(self.max_message_mb)
+            )
             self.stub = runner_pb2_grpc.RunnerServiceStub(self.channel)
             logger.info("Channel created to Runner service")
 
@@ -492,7 +504,7 @@ class GrpcRunnerClient:
             logger.error(f"gRPC error in register_trial: {e}")
             return {
                 "success": False,
-                "error": f"gRPC error: {str(e)}",
+                "error": self._rpc_error_text("RegisterTrial", e),
                 "tool_schemas": [],
                 "num_agent_tools": 0,
                 "num_user_tools": 0,
@@ -564,6 +576,18 @@ class GrpcRunnerClient:
         except grpc.RpcError as e:
             logger.error(f"gRPC error in execute_tool: {e}")
             return ToolResult(success=False, output="", error=f"gRPC error: {str(e)}")
+
+    def _rpc_error_text(self, operation: str, error: grpc.RpcError) -> str:
+        """Error text for a failed state-carrying call.
+
+        A ``RESOURCE_EXHAUSTED`` status means the message exceeded the
+        channel's size bound, so the text names the bound and the setting
+        that raises it; any other status keeps the generic gRPC wording.
+        """
+        code = error.code() if isinstance(error, grpc.Call) else None
+        if code is grpc.StatusCode.RESOURCE_EXHAUSTED:
+            return resource_exhausted_message(operation, self.max_message_mb, error.details())
+        return f"gRPC error: {error}"
 
     def _status_to_error(self, status: int) -> str:
         """The sentence a failed call reports when the runner sent no message.
@@ -811,7 +835,7 @@ class GrpcRunnerClient:
             logger.error(f"gRPC error in get_state: {e}")
             return {
                 "success": False,
-                "error": f"gRPC error: {str(e)}",
+                "error": self._rpc_error_text("GetState", e),
                 "state_json": None,
                 "stable_hash": None,
                 "full_hash": None,
@@ -1056,6 +1080,7 @@ class SharedStackRuntimeBackend:
         composer: SubstrateComposer | None = None,
         connect_timeout: float = 30.0,
         connect_retry_interval: float = 1.0,
+        grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
     ):
         from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
 
@@ -1082,6 +1107,9 @@ class SharedStackRuntimeBackend:
         self.connect_retry_interval = connect_retry_interval
         self._per_trial_mode: bool = False
         self._expose_substrate_per_trial: bool = expose_substrate
+        # One bound for every channel this backend opens to a runner and for
+        # every runner container its composer materialises.
+        self._grpc_max_message_mb: int = grpc_max_message_mb
         self._run_substrate: RunSubstrate | None = None
         self._env_handles: dict[str, ComposedEnvHandle] = {}
         self._connected_trials: set[str] = set()
@@ -1089,7 +1117,9 @@ class SharedStackRuntimeBackend:
         self.runner_client: GrpcRunnerClient | None
         self._endpoints: EnvEndpoints | None
         if env_manifest is None:
-            self.runner_client = GrpcRunnerClient(runner_address, events=self._events)
+            self.runner_client = GrpcRunnerClient(
+                runner_address, events=self._events, max_message_mb=grpc_max_message_mb
+            )
             if endpoints is None:
                 endpoints = EnvEndpoints(
                     db_url=f"http://{runner_address}/db",
@@ -1192,6 +1222,7 @@ class SharedStackRuntimeBackend:
             log_capture=self.log_capture,
             events=self._events,
             seeds=self.seeds,
+            grpc_max_message_mb=self._grpc_max_message_mb,
         )
         self._run_substrate = self.composer.materialise_run(
             plan=list(self._env_manifest.stacks), ctx=ctx
@@ -1331,7 +1362,9 @@ class SharedStackRuntimeBackend:
         task_description = self._pending_task_descriptions[trial_id]
         judge_model_config = self._pending_judge_model_configs.get(trial_id)
         runner_address = self._runner_client_for(trial_id).runner_address
-        substrate = LiveRunnerCallbackGradingSubstrate(runner_address, trial_id)
+        substrate = LiveRunnerCallbackGradingSubstrate(
+            runner_address, trial_id, max_message_mb=self._grpc_max_message_mb
+        )
         try:
             return serialize_bundle_from_substrate(
                 substrate=substrate,
@@ -1659,6 +1692,7 @@ class SharedStackRuntimeBackend:
             expose_substrate=self._expose_substrate_per_trial,
             log_capture=self.log_capture,
             events=self._events,
+            grpc_max_message_mb=self._grpc_max_message_mb,
         )
 
     def __enter__(self):
@@ -1699,6 +1733,7 @@ def shared_runtime_backend_factory(
             events=ctx.events,
             connect_timeout=ctx.connect_timeout_s,
             connect_retry_interval=ctx.connect_retry_interval_s,
+            grpc_max_message_mb=ctx.grpc_max_message_mb,
         )
     if ctx.per_trial_mode:
         backend = SharedStackRuntimeBackend(
@@ -1710,6 +1745,7 @@ def shared_runtime_backend_factory(
             events=ctx.events,
             connect_timeout=ctx.connect_timeout_s,
             connect_retry_interval=ctx.connect_retry_interval_s,
+            grpc_max_message_mb=ctx.grpc_max_message_mb,
         )
         backend._per_trial_mode = True
         return backend
@@ -1720,4 +1756,5 @@ def shared_runtime_backend_factory(
         events=ctx.events,
         connect_timeout=ctx.connect_timeout_s,
         connect_retry_interval=ctx.connect_retry_interval_s,
+        grpc_max_message_mb=ctx.grpc_max_message_mb,
     )

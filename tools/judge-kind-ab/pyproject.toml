@@ -2,7 +2,7 @@
 name = "judge-kind-ab"
 version = "0.1.0"
 description = "Assemble real trial bundles into a parity corpus and drive JudgeKind kappa-agreement + cost A/B against a live judge model."
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "tolokaforge",
     "typer>=0.12.5,<0.13",

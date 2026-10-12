@@ -1,5 +1,5 @@
 {
-  "bucket_a_count": 4,
+  "bucket_a_count": 5,
   "bucket_b_count": 8,
   "integrations": [
     {
@@ -229,6 +229,20 @@
       "touched_files": [
         "tests/canonical/snapshots/certify_suite_collection/collection.json",
         "tests/canonical/test_certify_excluded_capabilities.py",
+        "tolokaforge_models/src/tolokaforge_models/certificates/registry.py",
+        "tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml",
+        "tolokaforge_models/src/tolokaforge_models/data/pricing.json"
+      ]
+    },
+    {
+      "bucket": "A",
+      "date": "2026-10-06",
+      "engine_paths": [],
+      "model": "anthropic/claude-sonnet-5.5",
+      "pr": 1661,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "7579a0efe5793f38235077a893663e78c6b0abee",
+      "touched_files": [
         "tolokaforge_models/src/tolokaforge_models/certificates/registry.py",
         "tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml",
         "tolokaforge_models/src/tolokaforge_models/data/pricing.json"

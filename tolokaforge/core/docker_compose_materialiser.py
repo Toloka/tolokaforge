@@ -13,8 +13,10 @@ structurally. Each :meth:`materialise` call:
    ``.env``, applies the run's :class:`NetworkPolicy`, injects the
    engine's credential payload into the runner service, mounts the
    docker socket into the runner when the run needs compose-variant
-   tools, and sets ``RUNNER_EXPOSE_SUBSTRATE=true`` on the runner when
-   the run exposes the grading substrate.
+   tools, sets ``RUNNER_EXPOSE_SUBSTRATE=true`` on the runner when
+   the run exposes the grading substrate, and sets
+   ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` on the runner from the run's
+   ``compute.grpc_max_message_mb`` unless the compose file declares it.
 3. Constructs a ``testcontainers.compose.DockerCompose`` via the
    injectable :attr:`DockerComposeMaterialiser.docker_compose_factory`
    seam (defaults to the real class; tests substitute a stub) and
@@ -48,6 +50,7 @@ from tolokaforge.core.compose_materialisation import (
     cleanup_partial_materialisation,
     compose_container_to_snapshot,
     copy_compose_context,
+    inject_grpc_limit_env_into_runner,
     inject_runner_credentials,
     inject_substrate_env_into_runner,
     make_project_temp_dir,
@@ -152,6 +155,9 @@ class DockerComposeMaterialiser:
                     mount_docker_socket_into_runner(compose_file, decl.runner_service)
                 if ctx.expose_substrate:
                     inject_substrate_env_into_runner(compose_file, decl.runner_service)
+                inject_grpc_limit_env_into_runner(
+                    compose_file, decl.runner_service, ctx.grpc_max_message_mb
+                )
             compose = self.docker_compose_factory(
                 context=str(temp_dir),
                 compose_file_name=decl.compose_file.name,

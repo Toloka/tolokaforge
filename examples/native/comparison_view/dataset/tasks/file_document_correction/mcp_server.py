@@ -6,7 +6,7 @@ the final document under a later id than the golden path does. The read tools lo
 each lookup. Both are what the task's ``comparison_view`` exists to see past.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -17,7 +17,7 @@ mcp, registry, TOOLS = create_server(__file__, "document-desk")
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _next_id(data: dict, table: str, prefix: str) -> str:

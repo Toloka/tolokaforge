@@ -21,7 +21,7 @@ Update the golden with::
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -66,7 +66,7 @@ def _build_trajectory() -> Trajectory:
         budget_used=512,
     )
 
-    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     return Trajectory(
         task_id="canon-reasoning-001",
         trial_index=0,

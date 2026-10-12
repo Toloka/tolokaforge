@@ -12,7 +12,7 @@ consumer that reads raw YAML sees the field either way.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.unit
 
 
 def _build_trajectory(snapshot_status: SnapshotStatus | None) -> Trajectory:
-    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     return Trajectory(
         task_id="snapshot-status-roundtrip",
         trial_index=0,

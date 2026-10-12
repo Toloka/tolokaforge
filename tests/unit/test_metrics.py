@@ -1,6 +1,6 @@
 """Tests for metrics calculation, especially pass@k"""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -46,8 +46,8 @@ def _trial(
     return Trajectory(
         task_id="task_outcomes",
         trial_index=trial_idx,
-        start_ts=datetime.now(tz=timezone.utc),
-        end_ts=datetime.now(tz=timezone.utc),
+        start_ts=datetime.now(tz=UTC),
+        end_ts=datetime.now(tz=UTC),
         status=status,
         termination_reason=termination_reason,
         messages=[],
@@ -175,8 +175,8 @@ class TestExtendedMetrics:
         return Trajectory(
             task_id="task_metrics",
             trial_index=trial_idx,
-            start_ts=datetime.now(tz=timezone.utc),
-            end_ts=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            end_ts=datetime.now(tz=UTC),
             messages=[],
             metrics=Metrics(latency_total_s=1.0 + trial_idx),
             grade=Grade(
@@ -212,8 +212,8 @@ class TestExtendedMetrics:
             return Trajectory(
                 task_id="task_api_lat",
                 trial_index=trial_idx,
-                start_ts=datetime.now(tz=timezone.utc),
-                end_ts=datetime.now(tz=timezone.utc),
+                start_ts=datetime.now(tz=UTC),
+                end_ts=datetime.now(tz=UTC),
                 messages=[],
                 metrics=Metrics(latency_total_s=1.0, usage=Usage(calls=calls)),
                 grade=Grade(binary_pass=True, score=1.0, components=GradeComponents()),
@@ -502,8 +502,8 @@ class TestJudgeCost:
         return Trajectory(
             task_id="task_judge_cost",
             trial_index=idx,
-            start_ts=datetime.now(tz=timezone.utc),
-            end_ts=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            end_ts=datetime.now(tz=UTC),
             messages=[],
             metrics=Metrics(latency_total_s=1.0, usage=Usage(), cost_usd=agent_cost),
             grade=Grade(

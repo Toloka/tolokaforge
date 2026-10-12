@@ -1,7 +1,7 @@
 """Tests for resume/retry functionality"""
 
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,8 +29,8 @@ class TestRunState:
             run_id="test_run",
             config_path="test.yaml",
             output_dir="/tmp/output",
-            start_ts=datetime.now(tz=timezone.utc),
-            last_updated=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            last_updated=datetime.now(tz=UTC),
             status="running",
             total_trials=2,
             completed_trials=1,
@@ -54,8 +54,8 @@ class TestRunState:
             run_id="test",
             config_path="test.yaml",
             output_dir="/tmp",
-            start_ts=datetime.now(tz=timezone.utc),
-            last_updated=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            last_updated=datetime.now(tz=UTC),
             status="running",
             total_trials=3,
             completed_trials=1,
@@ -78,8 +78,8 @@ class TestRunState:
             run_id="test",
             config_path="test.yaml",
             output_dir="/tmp",
-            start_ts=datetime.now(tz=timezone.utc),
-            last_updated=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            last_updated=datetime.now(tz=UTC),
             status="running",
             total_trials=1,
             completed_trials=0,
@@ -104,8 +104,8 @@ class TestRunState:
             run_id="test",
             config_path="test.yaml",
             output_dir="/tmp",
-            start_ts=datetime.now(tz=timezone.utc),
-            last_updated=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            last_updated=datetime.now(tz=UTC),
             status="running",
             total_trials=1,
             completed_trials=0,

@@ -61,6 +61,40 @@ Which keys bite, from which release, and in which direction is one table:
 the protocol-version half of the pairing see
 [RUNNER.md](RUNNER.md#engine--image-version-lock) § Engine / image version lock.
 
+## A Large Task World Fails to Register or Capture
+
+**Symptom.** Trials of a task with a large initial state fail at registration,
+or their final-state capture fails, with an error such as:
+
+```
+RegisterTrial failed: the message exceeds the gRPC message size limit (CLIENT: Sent message larger than max (73400320 vs. 52428800)). The engine's limit is 50 MiB, set by `compute.grpc_max_message_mb`; ...
+GetState failed: the message exceeds the gRPC message size limit (CLIENT: Received message larger than max (73400320 vs. 52428800)). ...
+```
+
+A grader reading the state through `SubstrateService` reports the same gRPC
+`RESOURCE_EXHAUSTED` status inside `substrate unreachable at ...`.
+
+**Cause.** Every gRPC message between the engine, the runner and the grader is
+bounded by `compute.grpc_max_message_mb` (default 50 MiB), and the trial's
+world does not fit. The two figures in gRPC's detail are the message size and
+the bound that refused it, in bytes; `CLIENT:` means the engine's own bound
+refused it, `SERVER:` means the runner's (its bound differs from the engine's,
+for example because a task compose file pins its own value).
+
+**Fix.** Raise the bound in the run config, above the world's serialized size
+(at most 2047 MiB):
+
+```yaml
+compute:
+  grpc_max_message_mb: 200
+```
+
+The engine passes the value to every runner container it starts. A task
+compose file that sets `TOLOKAFORGE_GRPC_MAX_MESSAGE_MB` on its runner keeps
+that value, so raise it there too; a separately deployed runner or grader
+needs the same variable. Memory per trial grows with the message on both
+sides — see [RUNNER.md § gRPC message size](RUNNER.md#grpc-message-size).
+
 ## Every Tool Call Fails: MCP server closed connection
 
 **Symptom.** Every tool call of every task declaring an `mcp_server.py` comes back

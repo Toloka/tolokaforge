@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -156,7 +156,7 @@ class RunState(BaseModel):
         key = format_trial_id(entry, task_id, trial_index)
         if key in self.trials:
             self.trials[key].status = "completed"
-            self.trials[key].end_ts = datetime.now(tz=timezone.utc)
+            self.trials[key].end_ts = datetime.now(tz=UTC)
             self.trials[key].binary_pass = binary_pass
             self.trials[key].score = score
             self.completed_trials += 1
@@ -166,7 +166,7 @@ class RunState(BaseModel):
         key = format_trial_id(entry, task_id, trial_index)
         if key in self.trials:
             self.trials[key].status = "failed"
-            self.trials[key].end_ts = datetime.now(tz=timezone.utc)
+            self.trials[key].end_ts = datetime.now(tz=UTC)
             self.trials[key].error = error
             self.failed_trials += 1
 
@@ -175,7 +175,7 @@ class RunState(BaseModel):
         key = format_trial_id(entry, task_id, trial_index)
         if key in self.trials:
             self.trials[key].status = "running"
-            self.trials[key].start_ts = datetime.now(tz=timezone.utc)
+            self.trials[key].start_ts = datetime.now(tz=UTC)
 
 
 class RunStateManager:
@@ -233,8 +233,8 @@ class RunStateManager:
             run_id=run_id,
             config_path=self._normalize_to_relative(config_path),
             output_dir=self._normalize_to_relative(str(self.output_dir)),
-            start_ts=datetime.now(tz=timezone.utc),
-            last_updated=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            last_updated=datetime.now(tz=UTC),
             status="running",
             total_trials=len(trials),
             completed_trials=0,
@@ -283,7 +283,7 @@ class RunStateManager:
 
     def save_state(self, run_state: RunState):
         """Save run state to disk"""
-        run_state.last_updated = datetime.now(tz=timezone.utc)
+        run_state.last_updated = datetime.now(tz=UTC)
 
         with open(self.state_file, "w") as f:
             json.dump(run_state.model_dump(mode="json"), f, indent=2, default=str)

@@ -288,7 +288,12 @@ tolokaforge.grader`. Reads `--port` (or `$GRADER_SERVICE_PORT`, default
 `GEMINI_API_KEY` / `TOLOKAFORGE_SECRETS_JSON` — populated from
 `deploy/standalone/.env`. The grader requires a provider key only when
 the task exercises `llm_judge`; the other four grading components run
-against the keyless stack.
+against the keyless stack. `TOLOKAFORGE_GRPC_MAX_MESSAGE_MB` (default `50`)
+bounds both the `Grade` RPC the grader serves and the substrate channel it
+opens to the runner; the compose file sets it on the runner and the grader
+from one variable, which must match the run config's
+`compute.grpc_max_message_mb` (see
+[RUNNER.md § gRPC message size](RUNNER.md#grpc-message-size)).
 
 `deploy/standalone/examples/grader_rpc/` documents the run-config shape
 that routes grading through the standalone service

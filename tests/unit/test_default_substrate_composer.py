@@ -190,7 +190,10 @@ class _FakeRunnerClient:
         return True
 
 
-def _fake_client_factory(runner_address: str, events: Any) -> _FakeRunnerClient:
+def _fake_client_factory(
+    runner_address: str, events: Any, max_message_mb: int
+) -> _FakeRunnerClient:
+    del max_message_mb
     return _FakeRunnerClient(runner_address=runner_address, events=events)
 
 
@@ -479,6 +482,33 @@ class TestProvisionTrialTrialScopedPlan:
         assert len(env_handle.trial_stack_handles) == 1
         assert env_handle.trial_endpoints is not None
         assert env_handle.trial_runner_client is not None
+
+    def test_grpc_message_bound_reaches_trial_runner_and_its_client(self, tmp_path: Path) -> None:
+        """The run's gRPC message bound travels on the substrate to both the
+        trial runner's materialisation (env injection) and the client the
+        composer builds for it, so the two ends of the channel agree."""
+        compose = _write_compose(tmp_path)
+        manifest = _manifest(compose)
+        plan = [_decl(compose, stack_scope="trial", runner_service="runner")]
+        materialiser = _FakeMaterialiser()
+        client_bounds: list[int] = []
+
+        def _recording_factory(address: str, events: Any, max_message_mb: int):
+            client_bounds.append(max_message_mb)
+            return _FakeRunnerClient(runner_address=address, events=events)
+
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_recording_factory,
+            readiness_probe_loader=_always_ready_loader,
+        )
+        run_sub = _empty_run_sub()
+        run_sub.grpc_max_message_mb = 120
+
+        composer.provision_trial(plan, _trial_spec(manifest), run_sub)
+
+        assert [ctx.grpc_max_message_mb for ctx in materialiser.materialise_contexts] == [120]
+        assert client_bounds == [120]
 
     def test_reset_recipes_dispatch_on_newly_materialised_stack(self, tmp_path: Path) -> None:
         """Every ``reset``-labelled service on a newly-materialised trial

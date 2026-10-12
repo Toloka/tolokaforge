@@ -78,7 +78,7 @@ import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import litellm.exceptions
@@ -687,7 +687,7 @@ def _reasoning_stall_evidence(result: Any) -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
 
 
 ToolMessageAppender = Callable[[Message], int]

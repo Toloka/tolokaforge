@@ -10,7 +10,7 @@ only the inputs had aged.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -43,7 +43,7 @@ class TestTheTableSaysHowOldItIs:
         meta = pricing_table_metadata(path)
 
         assert meta.source_url == "https://example.invalid/models"
-        assert meta.updated_at == datetime(2026, 9, 2, 9, 51, 31, tzinfo=timezone.utc)
+        assert meta.updated_at == datetime(2026, 9, 2, 9, 51, 31, tzinfo=UTC)
         assert meta.age is not None and meta.age > timedelta(0)
 
     @pytest.mark.parametrize(
