@@ -665,6 +665,8 @@ Version 3 is the first that reports completed MCP `isError` replies as `EXECUTIO
 
 Version 4 is the first whose grading regexes run on RE2 by default and whose grading config carries `regex_engine` (on `trace_checks`, `transcript_rules`, and an authored matcher predicate or bound value). An engine below it sends a config with no `regex_engine`, which this runner would read as `linear`: a lookahead the older engine's gate passed would spend the trial's tokens and then raise at grade time, and a `\d`, `\w` or `$` pattern would silently change verdict. An image below it would refuse every pack carrying `trace_checks` or `transcript_rules` at the wire model instead of at the gate. Both pairings are refused at registration, for every pack.
 
+Version 5 is the first that records an MCP tool's typed refusal of its arguments — the JSON-RPC error `-32602`, or an `isError: true` reply whose `_meta` carries `tolokaforge/error_category: invalid_arguments` — as `EXECUTION_STATUS_INVALID_ARGUMENTS` instead of `EXECUTION_STATUS_ENVIRONMENT_ERROR`. An older image would record those calls as environment errors, so a model's correctable input mistake would spend the trial's environment-error budget and could end it as `too_many_errors`; the host refuses such an image before a trial starts.
+
 The runner's request gate is a lower bound, not an equality: a newer engine still sends `call_id`. From version 3 onward the host also checks `runner_protocol_version` in the successful registration response, so an older image cannot silently omit a newer outcome or grading field.
 
 #### Trial spec payload
