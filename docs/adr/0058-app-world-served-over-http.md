@@ -101,11 +101,20 @@ No credential appears in the declaration. Task validation refuses:
 
 ### Isolation
 
-The service that `url` names must have `isolation: ephemeral` or
-`isolation: reset` in the environment manifest (ADR-0018, ADR-0044). Validation
-refuses `shared` and names the service. Under these isolations the runtime
-already gives each trial its own stack, so concurrent trials never share a
-world. A run-scoped world service (Option 5) would need its own ADR.
+The service that `url` names must have `isolation: ephemeral` in the
+environment manifest (ADR-0018, ADR-0044): a fresh container per trial, so
+concurrent trials never share a world and every trial claims a service that no
+one has claimed before. Validation refuses any other isolation and names the
+service:
+
+- `shared` would let concurrent trials act on, and be graded against, one world.
+- `reset` re-seeds the service in place, but the process keeps the admin token
+  the previous trial claimed, and the protocol has no release. The next
+  trial's claim would be refused.
+
+A release call in the protocol would make `reset` usable, and a run-scoped
+world service (Option 5) would save the container. Each needs its own ADR,
+written when a world service is expensive enough to start that it matters.
 
 `mock-web` is unchanged. `app_world` does not route through it, and its shared
 state stays a known limitation of `mock-web`. A task that needs per-trial HTTP
@@ -224,7 +233,7 @@ that does not declare it.
 
 - Code changes required:
   - `InitialStateConfig.app_world` and its validation (`json_db`, no
-    `mcp_server`, hosts within `allowed_hosts`, isolation not `shared`);
+    `mcp_server`, hosts within `allowed_hosts`, isolation `ephemeral`);
   - the runner's state holder for `app_world` (load, read back, restore, reset);
   - per-trial token minting through `register_runtime_secret`;
   - credential attachment in `tools/builtin/http_request.py`;
@@ -245,7 +254,7 @@ that does not declare it.
 - Tests to add:
   - one golden path graded identically through an MCP pack and a compose pack;
   - concurrent trials against per-trial stacks keep separate worlds;
-  - `shared` isolation is refused;
+  - `shared` and `reset` isolation are refused;
   - no token appears in the trajectory, tool output or logs;
   - no credential is attached to a host outside `app_world.hosts`.
 
