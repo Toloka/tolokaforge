@@ -135,8 +135,12 @@ through the `readOnlyHint` tool annotation
 back from `tools/list` and caches in `fixtures/tools.json`; an adapter that knows the
 flag from its own sources sets it directly. The proto `ToolSchema` that
 `RegisterTrialResponse` returns carries the same flag as `optional bool
-mutates_state = 7`, set only when declared. `category` is not read for it and is
-retired in a later release.
+mutates_state = 7`, set only when declared. The engine declares it for the tools
+it authors: a builtin's `ToolPolicy.category` is read as its declaration (`read`
+→ `False`, `write` → `True`; `compute` — a shell, a browser, an HTTP client —
+says nothing and stays undeclared), and the task's search tool, which the engine
+builds over the trial's index, is `False`. `ToolSchema.category` is not read for
+it and is retired in a later release.
 
 ```python
 # =============================================================================

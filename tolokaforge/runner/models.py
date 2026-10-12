@@ -199,7 +199,10 @@ class ToolSchema(BaseModel):
     (``DomainToolRegistry.tool(..., mutates_state=...)``), which the native adapter
     reads back; an adapter that knows it from its own sources sets it directly.
     Left out of the dump while ``None``, so an image predating the field accepts
-    every pack that does not declare it. ``category`` is not read for it.
+    every pack that does not declare it. The engine declares it for the tools it
+    authors — a builtin's from its ``ToolPolicy.category`` (``read`` → ``False``,
+    ``write`` → ``True``, ``compute`` undeclared), the search tool's as ``False``.
+    This schema's own ``category`` is not read for it.
     """
 
     omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"mutates_state"})

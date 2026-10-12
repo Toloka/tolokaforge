@@ -241,6 +241,12 @@ what the agent is handed. The same declaration sets the task's `search` block:
 `backend_config` / `tool_name` ride along when they are not at their defaults
 (see [TASK_DESCRIPTION_SCHEMA.md](TASK_DESCRIPTION_SCHEMA.md)).
 
+`ToolSchema.mutates_state` ([ADR-0057](adr/0057-mutates-state-on-the-tool-wire.md))
+is declared by whoever authored the tool. A builtin's schema derives it from the
+tool's `ToolPolicy.category` (`read` → `False`, `write` → `True`, `compute` →
+undeclared); the search tool is `False`; an MCP tool carries whatever its server's
+`readOnlyHint` annotation says, and nothing when the server declares nothing.
+
 `fixtures/tools.json` format (list of tool descriptors):
 
 ```json

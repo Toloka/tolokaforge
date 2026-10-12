@@ -108,6 +108,7 @@ from tolokaforge.core.project_loader import (
     resolve_effective_grading_combine,
 )
 from tolokaforge.runner.models import ToolSchema
+from tolokaforge.tools.registry import ToolCategory
 
 if TYPE_CHECKING:
     from tolokaforge.core.search.backend import SearchBackend
@@ -837,6 +838,9 @@ def search_tool_schema(declaration: SearchDeclaration, backend: SearchBackend) -
         category="read",
         timeout_s=SEARCH_TOOL_TIMEOUT_S,
         source=None,
+        # The engine builds this tool over the trial's index and never writes
+        # through it, so the engine declares it read-only (ADR-0057).
+        mutates_state=False,
     )
 
 
@@ -1340,6 +1344,32 @@ def grading_source_under_adapter(
     return source
 
 
+BUILTIN_MUTATES_STATE_BY_CATEGORY: dict[ToolCategory, bool | None] = {
+    ToolCategory.READ: False,
+    ToolCategory.WRITE: True,
+    ToolCategory.COMPUTE: None,
+}
+"""What a builtin tool's :attr:`~tolokaforge.tools.registry.ToolPolicy.category`
+declares about ``mutates_state`` (ADR-0057).
+
+The engine authors its builtin tools, so their policy category is the author's
+declaration: a ``read`` tool never changes the graded state and a ``write`` tool
+does. ``compute`` says nothing about state — a shell, a browser or an HTTP client
+can do either — so it stays undeclared. Every member of
+:class:`~tolokaforge.tools.registry.ToolCategory` has a row here, and a member
+added without one fails :func:`builtin_mutates_state` loudly rather than
+slipping onto the wire as a guess."""
+
+
+def builtin_mutates_state(category: ToolCategory) -> bool | None:
+    """The ``mutates_state`` a builtin tool of *category* declares; ``None`` is undeclared.
+
+    Raises:
+        KeyError: *category* has no row in :data:`BUILTIN_MUTATES_STATE_BY_CATEGORY`.
+    """
+    return BUILTIN_MUTATES_STATE_BY_CATEGORY[category]
+
+
 def _builtin_tool_schemas(
     tool_names: list[str], tool_configs: dict[str, dict] | None = None
 ) -> dict[str, dict]:
@@ -1347,8 +1377,12 @@ def _builtin_tool_schemas(
 
     Each known name is instantiated with kwargs from ``tool_configs[name]`` and
     its ``get_schema()`` output reduced to ``{"description", "parameters"}`` so
-    the LLM receives real parameter descriptions. A name the registry does not
-    know, or one whose construction raises, is absent from the result.
+    the LLM receives real parameter descriptions, plus the policy-declared
+    ``output_max_chars`` and ``timeout_s``. ``mutates_state`` is derived from the
+    policy's category through :func:`builtin_mutates_state` and, like the
+    ``fixtures/tools.json`` cache, carried only when declared. A name the
+    registry does not know, or one whose construction raises, is absent from the
+    result.
     """
     from tolokaforge.tools.builtin import registry
 
@@ -1369,6 +1403,9 @@ def _builtin_tool_schemas(
                 "output_max_chars": tool.policy.output_max_chars,
                 "timeout_s": tool.policy.timeout_s,
             }
+            mutates_state = builtin_mutates_state(tool.policy.category)
+            if mutates_state is not None:
+                schemas[name]["mutates_state"] = mutates_state
         except Exception as exc:
             logger.debug("Could not load builtin schema", tool_name=name, error=str(exc))
     return schemas
