@@ -1225,9 +1225,9 @@ def tasks_use_compose_variant_tools(tasks: list[Any]) -> bool:
     ``bash_session`` and ``str_replace_editor`` each ship a compose variant
     that executes inside a sibling compose service by ``docker exec``-ing
     from the runner container into it. The runner image needs the docker
-    CLI when any enabled tool is in that shape — e.g. the Migration Bench
-    adapter's task packs (``services.mb-server`` running the workload,
-    tools routed there via ``bash_session.service: mb-server``).
+    CLI when any enabled tool is in that shape — e.g. an adapter whose task
+    packs run the workload in a sibling service and route a tool there via
+    ``bash_session.service: <service-name>``.
 
     The ``service:`` key is read from the block that enabled the tool, so a
     user-declared tool is routed by ``tools.user.<tool>.service`` and never by
@@ -1251,7 +1251,7 @@ def _actor_routes_a_compose_variant(task: Any, actor: ToolActor) -> bool:
 def run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
     """Return True iff the run needs the docker CLI baked into the runner image.
 
-    Two triggers today:
+    Two triggers:
 
     - The adapter declares ``requires_docker_cli_in_runner = True`` — the
       class-level capability flag says its grading needs to shell out to

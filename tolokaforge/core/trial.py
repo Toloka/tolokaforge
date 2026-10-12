@@ -164,6 +164,10 @@ class TrialNodeInputs(BaseModel):
     serialization; the pack is read only for file assets and for the content
     check below. Credentials never travel here: model configs carry
     ``${secret:NAME}`` references, resolved from the node's own secret payload.
+
+    :attr:`task_pack_dir` and :attr:`output_dir` are node-local filesystem
+    placement the node supplies, not portable data — a caller that moves these
+    inputs between hosts sets them to the receiving node's mount and output paths.
     """
 
     task: TaskConfig

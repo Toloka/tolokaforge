@@ -274,7 +274,8 @@ def require_rate_limit_probe_support(
 
     No-op while the mode is off. Called by ``build_trial_execution_unit`` — the one
     site that resolves a conductor while holding an already-armed agent client,
-    for every trial entry — because arming and wiring live at different layers: the orchestrator owns the agent client, the
+    for every trial entry — because arming and wiring live at different layers:
+    the orchestrator owns the agent client, the
     conductor owns the simulator probe, the per-task effective-budget re-check
     and the per-trial telemetry accumulator.
 

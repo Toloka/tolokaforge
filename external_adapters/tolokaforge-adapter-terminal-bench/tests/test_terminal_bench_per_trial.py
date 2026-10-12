@@ -107,7 +107,7 @@ def engine_images_with_docker_cli() -> None:
 
     Mirrors the run-path preparation: the orchestrator sets
     ``enable_docker_cli=True`` for terminal-bench (see
-    ``_run_needs_docker_cli``), calls ``core_stack(...).build_and_prepare()``,
+    ``run_needs_docker_cli``), calls ``core_stack(...).build_and_prepare()``,
     then aliases each freshly-built engine image as ``:local`` so the
     synthesised task compose file can reference stable tags. A plain
     ``make docker-build-core`` produces the aliases but without the

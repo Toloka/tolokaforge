@@ -2,8 +2,8 @@
 Runner Package
 
 Hosts the runtime-independence library surface (:func:`run_trial`,
-:func:`run_trial_from_inputs`, :func:`load_task`) alongside the gRPC protocol definitions and service
-implementation used for Host ↔ Runner communication.
+:func:`run_trial_from_inputs`, :func:`load_task`) alongside the gRPC protocol
+definitions and service implementation used for Host ↔ Runner communication.
 
 Components:
 - ``run_trial`` — single-trial library entry (ADR-0022 § Surface 2)

@@ -78,10 +78,10 @@ if TYPE_CHECKING:
     from tolokaforge.observability.factory import RunIdentity
 
 __all__ = [
+    "TaskPackDriftError",
     "TrialExecutionContext",
     "TrialExecutionUnit",
     "build_single_task_adapter",
-    "TaskPackDriftError",
     "build_trial_execution_unit",
     "compute_task_pack_hash",
     "run_trial_from_inputs",
