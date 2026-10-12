@@ -260,7 +260,7 @@ class TestHTTPRequestTool:
 
     @patch("tolokaforge.tools.builtin.http_request.httpx.request")
     def test_execute_error_status_reports_the_body(self, mock_request: MagicMock) -> None:
-        """A 4xx/5xx answer reaches ``error`` with its status and body (#1836)."""
+        """A 4xx/5xx answer reaches ``error`` with its status and body."""
         mock_response = MagicMock()
         mock_response.status_code = 404
         mock_response.is_success = False
