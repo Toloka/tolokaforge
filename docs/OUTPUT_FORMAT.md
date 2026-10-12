@@ -610,6 +610,7 @@ db: {...}          # Full database state
 filesystem: {...}  # File system state
 mock_web_url: "..."
 agent_visible_dir: /work
+final_state_error: "..."  # present only when the runner's final state could not be captured
 environment:       # present only for manifest-driven trials (see below)
   network_policy: no_internet
   runner_service: runner

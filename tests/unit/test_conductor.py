@@ -9,6 +9,7 @@ Cross-implementation parity lives in ``tests/canonical/test_conductor_contract.p
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -364,20 +365,26 @@ class TestCaptureFinalState:
         ],
     )
     def test_an_unreadable_runner_state_is_reported_not_replaced(
-        self, answer: dict[str, Any], cause: str
+        self, answer: dict[str, Any], cause: str, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The pre-trial snapshot is not the final state of a trial whose DB is the Runner's."""
         conductor = self._conductor()
+        conductor.logger = StructuredLogger("test.conductor.capture")
         conductor.runtime_backend.get_state.return_value = answer
         setup = self._db_setup()
+        setup.trial_idx = 0
         trajectory = _default_success_trajectory("t1", 0)
 
         conductor._capture_final_state(self._db_spec(), setup, trajectory)
 
         assert "db" not in trajectory.final_env_state
         assert "agent" not in trajectory.final_env_state
+        assert cause in trajectory.final_env_state["final_state_error"]
         setup.env_state.get_final_state.assert_not_called()
-        assert cause in conductor.logger.error.call_args.kwargs["error"]
+        (record,) = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert record.getMessage() == "Could not capture the trial's final state"
+        assert (record.task_id, record.trial_index, record.trial_id) == ("t1", 0, "t1:0")
+        assert cause in record.error
 
     def test_a_raising_get_state_is_reported_not_replaced(self) -> None:
         conductor = self._conductor()
@@ -387,17 +394,18 @@ class TestCaptureFinalState:
         conductor._capture_final_state(self._db_spec(), self._db_setup(), trajectory)
 
         assert "db" not in trajectory.final_env_state
-        assert "ConnectionError: runner gone" in conductor.logger.error.call_args.kwargs["error"]
+        assert "ConnectionError: runner gone" in trajectory.final_env_state["final_state_error"]
 
     def test_an_empty_runner_state_is_the_final_state(self) -> None:
         conductor = self._conductor()
         conductor.runtime_backend.get_state.return_value = {"success": True, "state_json": "{}"}
         setup = self._db_setup()
+        trajectory = _default_success_trajectory("t1", 0)
 
-        conductor._capture_final_state(self._db_spec(), setup, _default_success_trajectory("t1", 0))
+        conductor._capture_final_state(self._db_spec(), setup, trajectory)
 
         assert setup.env_state.db_state == {}
-        conductor.logger.error.assert_not_called()
+        assert "final_state_error" not in trajectory.final_env_state
 
     def _run_with_lost_state(self, trajectory: Trajectory) -> InProcessConductor:
         """Run one trial whose final ``GetState`` fails, through the production grader."""
@@ -439,8 +447,6 @@ class TestCaptureFinalState:
         conductor.runtime_backend.grade_trial.assert_called_once()
         assert trajectory.grade is None
         assert trajectory.status == TrialStatus.COMPLETED
-        assert trajectory.grading_error is not None
-        assert "could not be synchronised" in trajectory.grading_error
         assert classify_trial_outcome(trajectory) is TrialOutcomeClass.UNGRADEABLE
 
     def test_a_lost_trial_stays_a_harness_error(self) -> None:
@@ -458,6 +464,7 @@ class TestCaptureFinalState:
         assert trajectory.grade is None
         assert trajectory.grading_error is None
         assert classify_trial_outcome(trajectory) is TrialOutcomeClass.HARNESS_ERROR
+        assert "could not be synchronised" in trajectory.final_env_state["final_state_error"]
 
     def test_a_timed_out_trial_keeps_its_measured_auto_fail(self) -> None:
         trajectory = _default_success_trajectory("t1", 0).model_copy(

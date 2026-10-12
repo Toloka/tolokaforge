@@ -831,19 +831,24 @@ read fails with the cause instead of answering from the mirror: `GetState` retur
 `success = false`, `GradeTrial` returns `success = false`, `SubstrateService`
 answers `UNAVAILABLE`. For a task whose `initial_state` provisions a database, a
 failed DB read during grading fails the same way rather than grading against empty
-state. A task that provisions no database has no mirror: nothing is synced for its
-MCP subprocess, and its reads keep the "no database" answers they always had.
+state: in `GradeTrial`, in the judge's `get_db_state` / `query_db` tools (the judge
+returns no verdict, even when it submitted one), and in `SubstrateService`, which
+answers `UNAVAILABLE` rather than `trial_not_found` when the db-service has lost a
+trial the runner holds. A task that provisions no database has no mirror: nothing is
+synced for its MCP subprocess, and its reads answer "no database" (`trial_not_found`).
 
-The grader's verdict stands on that refusal. A trial that reaches the runner's
-grading is then ungradeable exactly as above, with the runner's cause in
-`Trajectory.grading_error`. A verdict the grader reaches without reading state —
-no grade for an infrastructure abort or a lost trial, the auto-fail for an
-error, a timeout, a stuck agent or a context-window overflow — is unaffected.
+A grading call that reads state is refused, and the trial is ungradeable exactly as
+above, with the cause in `Trajectory.grading_error`. A verdict that reads no state
+still stands: transcript rules, no grade for an infrastructure abort or a lost
+trial, and the auto-fail for an error, a timeout, a stuck agent or a context-window
+overflow.
 
 The conductor's own read of the final state (for `env.yaml`) takes the runner's
 answer as the trial's final state — an empty one included — and never substitutes
-the adapter's pre-trial snapshot: when `GetState` fails, raises or answers with no
-state object, the cause is logged and `final_env_state` carries no DB state.
+the adapter's pre-trial snapshot. When `GetState` fails, raises or answers with no
+state object, the cause is logged with the trial's identity and `env.yaml` carries
+it as `final_state_error` instead of any DB state, so a trial graded on a verdict
+that read no state still shows its lost capture.
 
 #### A component the config declared that produced no verdict
 
@@ -1952,6 +1957,14 @@ because golden actions are authored unprefixed, and answers `GradeTrial` with
 `success=false`. It resolves before it writes anything — before the MCP state sync, the
 `pre_golden` snapshot and the reset — so a pack defect costs the trial's database
 nothing and the trial still holds what the agent left behind.
+
+For a trial whose tools run in an MCP subprocess the replay runs in that subprocess:
+the runner sets its state to the initial tables before the replay, and back to the
+trial's state once the golden hash is taken, both through `_tolokaforge_set_state_`.
+A set that declares failure fails hash grading (`Hash grading failed: RuntimeError:
+_tolokaforge_set_state_ declared failure: …`, `success=false`), so the trial is
+ungradeable rather than hashed against, or left holding, the wrong world. A pack whose
+state setter is broken therefore sees an ungradeable trial, not a grade.
 
 **An action that resolved and ran but did not take effect is different: the verdict
 stands, and the grade names it.** Two shapes reach that state. The action *raised*, or it
@@ -4522,8 +4535,8 @@ cannot reach the final state of a task whose `initial_state` provisions a
 database raises `SubstrateUnreachableError`, which the dispatch re-raises: the
 trial is ungradeable, never checked against an empty world (see
 [A trial whose final state could not be captured](#a-trial-whose-final-state-could-not-be-captured)).
-Any other failure reaching the final state — on the runner substrate, the DB
-client's own error for a task that provisions no database — degrades to `{}`
+Any other failure reaching the final state — the "no database" answer for a task
+that provisions none — degrades to `{}`
 under the composite's single broad-except so the check still runs against an
 honest empty state and the audit signal survives on the log line downstream
 tooling greps for (`final DB state fetch failed (<exc>); grading against empty

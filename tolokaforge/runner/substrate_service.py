@@ -45,7 +45,7 @@ from tolokaforge.runner.db_client import (
     TrialNotFoundError as DBTrialNotFoundError,
 )
 from tolokaforge.runner.env_exec import first_env_exec_tool
-from tolokaforge.runner.models import StableStateResponse, StateResponse
+from tolokaforge.runner.models import StableStateResponse, StateResponse, provisions_database
 
 if TYPE_CHECKING:
     from tolokaforge.runner.service import RunnerServiceImpl
@@ -118,7 +118,14 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         context: grpc.ServicerContext,
         read: Callable[[], Awaitable[StateResponse | StableStateResponse]],
     ) -> pb2.ReadStateResponse:
-        """Read the trial's final DB state after refreshing its mirror."""
+        """Read the trial's final DB state after refreshing its mirror.
+
+        ``trial_not_found`` answers a trial with no database here — one this
+        runner does not hold, or one that provisions none. A trial this runner
+        holds and provisions a database for has one; when the db-service no
+        longer knows it, its final state is lost, so the answer is
+        ``UNAVAILABLE`` rather than an empty state to grade.
+        """
 
         async def _refreshed_read() -> StateResponse | StableStateResponse:
             await self._runner._refresh_db_mirror(trial_id)
@@ -126,7 +133,17 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
 
         try:
             state = self._runner._run_async(_refreshed_read())
-        except DBTrialNotFoundError:
+        except DBTrialNotFoundError as exc:
+            trial_context = self._runner.trials.get(trial_id)
+            if trial_context is not None and provisions_database(
+                trial_context.task_description.initial_state
+            ):
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(
+                    f"Trial {trial_id!r}: its DB state could not be read for grading "
+                    f"({type(exc).__name__}: {exc})"
+                )
+                return pb2.ReadStateResponse()
             return pb2.ReadStateResponse(state_json="{}", trial_not_found=True)
         except SubstrateUnreachableError as exc:
             context.set_code(grpc.StatusCode.UNAVAILABLE)

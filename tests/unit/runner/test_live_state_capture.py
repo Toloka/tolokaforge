@@ -17,7 +17,9 @@ import grpc
 import pytest
 
 from tests.utils.runner_requests import register_request, simple_task_description, trial_spec_json
+from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
+from tolokaforge.core.models import ModelConfig
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
 from tolokaforge.runner.service import RunnerServiceImpl, _LiveStateSync
@@ -88,11 +90,13 @@ def mcp_trial(runner_service: RunnerServiceImpl, mock_grpc_context, tmp_path, tr
     """A registered trial whose one agent tool runs in a real MCP child."""
 
     def register(
-        task: dict[str, Any], child_tables: dict[str, Any] | None = None
+        task: dict[str, Any],
+        child_tables: dict[str, Any] | None = None,
+        judge_model_config: ModelConfig | None = None,
     ) -> MCPServerToolWrapper:
+        spec = trial_spec_json(task, trial_id=trial_id, judge_model_config=judge_model_config)
         response = runner_service.RegisterTrial(
-            register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id),
-            mock_grpc_context,
+            register_request(spec, trial_id=trial_id), mock_grpc_context
         )
         assert response.success, response.error
         script = tmp_path / "server.py"
@@ -360,6 +364,72 @@ class TestMirrorReadFailsAfterASuccessfulSync:
             substrate.final_state()
 
 
+class TestJudgeReadsOfTheState:
+    """The judge reads the state through its own DB tools, under the same refusal.
+
+    A task that provisions its database through ``schemas`` alone has no initial
+    rows, so the judge gets no state diff and its tools are the only state read.
+    """
+
+    JUDGE = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0)
+
+    @classmethod
+    def _judged_task(cls) -> tuple[dict[str, Any], dict[str, Any]]:
+        task = _task()
+        tables = task["initial_state"].pop("tables")
+        task["grading"] = {
+            "combine_method": "all",
+            "pass_threshold": 1.0,
+            "weights": {"llm_judge": 1.0},
+            "llm_judge": {
+                "rubric": {
+                    "criteria": [
+                        {
+                            "id": "paid",
+                            "description": "u1 was paid",
+                            "kind": "binary",
+                            "weight": 1.0,
+                        }
+                    ]
+                }
+            },
+        }
+        return task, tables
+
+    def _judge_reads_then_passes(self, runner_service, monkeypatch) -> None:
+        submit = {"reasons": "ok", "paid": True, "paid_justification": "paid\nVERDICT: MET"}
+        judge = ScriptedLLMClient([[("get_db_state", {})], [("submit_report", submit)]])
+        monkeypatch.setattr(runner_service._judge_model_provider, "build", lambda _config: judge)
+
+    def test_a_healthy_child_is_judged(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        task, tables = self._judged_task()
+        wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
+        _mutate(runner_service, wrapper, 120)
+        self._judge_reads_then_passes(runner_service, monkeypatch)
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success, graded.error
+        assert graded.grade.binary_pass is True
+
+    def test_a_refused_tool_read_leaves_no_verdict(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        task, tables = self._judged_task()
+        wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
+        _mutate(runner_service, wrapper, 120)
+        _kill(wrapper)
+        self._judge_reads_then_passes(runner_service, monkeypatch)
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success is False
+        assert "could not be synchronised" in graded.error
+        assert not graded.HasField("grade")
+
+
 class TestNoDatabase:
     """A trial that provisions no database has no mirror for its MCP tools to sync."""
 
@@ -434,6 +504,36 @@ class TestDetachedGraderReads:
         (details,) = mock_grpc_context.set_details.call_args.args
         assert "could not be synchronised" in details
 
+    def test_a_lost_database_of_a_held_trial_answers_unavailable(
+        self, runner_service, mock_grpc_context, trial_id
+    ) -> None:
+        """Without an MCP child to sync, the read itself must not turn a lost DB into ``{}``."""
+        registered = runner_service.RegisterTrial(
+            register_request(trial_spec_json(_task(), trial_id=trial_id), trial_id=trial_id),
+            mock_grpc_context,
+        )
+        assert registered.success, registered.error
+        runner_service._run_async(runner_service.db_client.delete_trial(trial_id))
+
+        answer = SubstrateServicer(runner_service).ReadFinalDBStateStable(
+            pb2.ReadFinalDBStateStableRequest(trial_id=trial_id), mock_grpc_context
+        )
+
+        assert answer.trial_not_found is False and answer.state_json == ""
+        mock_grpc_context.set_code.assert_called_once_with(grpc.StatusCode.UNAVAILABLE)
+        (details,) = mock_grpc_context.set_details.call_args.args
+        assert "could not be read for grading" in details
+
+    def test_a_trial_this_runner_does_not_hold_is_not_found(
+        self, runner_service, mock_grpc_context, trial_id
+    ) -> None:
+        answer = SubstrateServicer(runner_service).ReadFinalDBState(
+            pb2.ReadFinalDBStateRequest(trial_id=trial_id), mock_grpc_context
+        )
+
+        assert answer.trial_not_found is True
+        mock_grpc_context.set_code.assert_not_called()
+
 
 class TestStateAnswerShape:
     """``_tolokaforge_get_state_`` answers are read strictly: only a state object is state."""
@@ -445,6 +545,8 @@ class TestStateAnswerShape:
             ({}, "no state text"),
             ({"content": []}, "no state text"),
             ({"content": [{"type": "text", "text": "[]"}]}, "not a state object"),
+            ({"content": ["{}"]}, "no state text"),
+            ({"content": [{"type": "text", "text": "not json"}]}, "unreadable state"),
         ],
     )
     def test_a_malformed_answer_raises(self, monkeypatch, result: dict, match: str) -> None:

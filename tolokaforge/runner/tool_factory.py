@@ -718,7 +718,10 @@ class MCPServerProcess(BaseModel):
             raise RuntimeError(f"_tolokaforge_get_state_ declared failure: {text!r}")
         if not isinstance(text, str):
             raise RuntimeError("_tolokaforge_get_state_ returned no state text")
-        state = json.loads(text)
+        try:
+            state = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"_tolokaforge_get_state_ returned unreadable state: {exc}") from exc
         if not isinstance(state, dict):
             raise RuntimeError(
                 f"_tolokaforge_get_state_ returned {type(state).__name__}, not a state object"
@@ -911,7 +914,8 @@ class MCPServerToolWrapper(ToolWrapper):
 def _first_text(result: dict[str, Any]) -> str | None:
     """The text of an MCP tool answer's first content item, if it has one."""
     content = result.get("content")
-    return content[0].get("text") if content and isinstance(content, list) else None
+    first = content[0] if content and isinstance(content, list) else None
+    return first.get("text") if isinstance(first, dict) else None
 
 
 def _declared_category(result: dict[str, Any]) -> str | None:

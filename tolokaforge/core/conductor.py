@@ -1123,12 +1123,13 @@ class InProcessConductor:
         For a task that provisions a database the Runner's answer is the only
         final state there is, an empty one included. When it cannot be read —
         the RPC raises, reports failure, or answers with no state object — the
-        cause is logged and no DB state is stashed: the pre-trial snapshot
+        cause is logged with the trial's identity and stashed under
+        ``final_state_error`` in place of any DB state: the pre-trial snapshot
         would record a world the agent's tool calls never touched. No grader
-        reads this stash: one that grades on state reads it from the Runner,
-        which refuses a final state it cannot capture, so a lost capture leaves
-        the grader's own verdict — an auto-fail, no grade for a lost trial, or
-        a grading error — standing.
+        reads this stash. A grading read of the state goes to the Runner, which
+        refuses a final state it cannot capture; a verdict that reads no state
+        (transcript rules, an auto-fail, no grade for a lost trial) still
+        stands, and this stash is then where the lost capture shows.
 
         When the trial's task carries an ``environment_manifest`` (a
         Project-layer / multi-container substrate), the resolved
@@ -1142,7 +1143,13 @@ class InProcessConductor:
                 runner_state = self._read_runner_state(setup.trial_id)
             except FinalStateUnavailableError as e:
                 capture_error = str(e)
-                self.logger.error("Could not capture the trial's final state", error=capture_error)
+                self.logger.error(
+                    "Could not capture the trial's final state",
+                    task_id=spec.task.task_id,
+                    trial_index=setup.trial_idx,
+                    trial_id=setup.trial_id,
+                    error=capture_error,
+                )
             else:
                 setup.env_state.db_state = runner_state
                 setup.env_state._normalize_db_state()
@@ -1155,7 +1162,11 @@ class InProcessConductor:
             setup.env_state.db_state = setup.adapter_env.data
             setup.env_state._normalize_db_state()
 
-        final_state = setup.env_state.get_final_state() if capture_error is None else {}
+        final_state = (
+            setup.env_state.get_final_state()
+            if capture_error is None
+            else {"final_state_error": capture_error}
+        )
         # Pass agent_visible_dir so the agentic judge can read files from disk.
         final_state["agent_visible_dir"] = str(setup.env_state.agent_visible_dir)
 

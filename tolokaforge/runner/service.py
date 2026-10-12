@@ -3283,7 +3283,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         A trial this runner does not hold has no subprocess here to sync, so
         the read that follows answers the db-service as it stands. Such a trial
-        is one the runner lost, and ``GradeTrial`` refuses it before any read.
+        is one the runner lost. ``GradeTrial`` refuses it before any read;
+        ``GetState`` and ``SubstrateService``'s final-state reads do not, and
+        serve that mirror. The trial graders leave a ``TRIAL_LOST`` trial
+        ungraded before reading it, except the queue grader (#1848).
         """
         trial_context = self.trials.get(trial_id)
         if trial_context is None:
