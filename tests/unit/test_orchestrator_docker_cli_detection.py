@@ -17,6 +17,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tolokaforge.core.compose_materialisation import (
+    run_needs_docker_cli,
+    tasks_use_compose_variant_tools,
+)
 from tolokaforge.core.models import (
     EvaluationConfig,
     HarnessAdapterConfig,
@@ -24,11 +28,7 @@ from tolokaforge.core.models import (
     OrchestratorConfig,
     RunConfig,
 )
-from tolokaforge.core.orchestrator import (
-    Orchestrator,
-    _run_needs_docker_cli,
-    _tasks_use_compose_variant_tools,
-)
+from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.runner.models import AdapterType
 
 pytestmark = pytest.mark.unit
@@ -47,27 +47,27 @@ class _StubTask:
         self.tools = tools
 
 
-# ---- _run_needs_docker_cli: adapter-type trigger ----
+# ---- run_needs_docker_cli: adapter-type trigger ----
 
 
 def test_terminal_bench_string_triggers_docker_cli():
-    assert _run_needs_docker_cli("terminal_bench", tasks=[]) is True
+    assert run_needs_docker_cli("terminal_bench", tasks=[]) is True
 
 
 def test_terminal_bench_enum_triggers_docker_cli():
-    assert _run_needs_docker_cli(AdapterType.TERMINAL_BENCH, tasks=[]) is True
+    assert run_needs_docker_cli(AdapterType.TERMINAL_BENCH, tasks=[]) is True
 
 
 def test_native_adapter_without_compose_tools_returns_false():
-    assert _run_needs_docker_cli("native", tasks=[]) is False
+    assert run_needs_docker_cli("native", tasks=[]) is False
 
 
 def test_other_adapter_without_compose_tools_returns_false():
-    assert _run_needs_docker_cli(AdapterType.TAU, tasks=[]) is False
+    assert run_needs_docker_cli(AdapterType.TAU, tasks=[]) is False
 
 
 def test_no_adapter_without_compose_tools_returns_false():
-    assert _run_needs_docker_cli(None, tasks=[]) is False
+    assert run_needs_docker_cli(None, tasks=[]) is False
 
 
 # ---- Flag-based dispatch: adapter class's requires_docker_cli_in_runner drives the decision ----
@@ -110,7 +110,7 @@ def test_adapter_class_with_docker_cli_flag_triggers(_register_throwaway_adapter
 
     _register_throwaway_adapter("_fake_docker_cli", _FakeDockerCliAdapter)
 
-    assert _run_needs_docker_cli("_fake_docker_cli", tasks=[]) is True
+    assert run_needs_docker_cli("_fake_docker_cli", tasks=[]) is True
 
 
 def test_adapter_class_without_docker_cli_flag_does_not_trigger(
@@ -124,10 +124,10 @@ def test_adapter_class_without_docker_cli_flag_does_not_trigger(
 
     _register_throwaway_adapter("_fake_no_cli", _FakeNoCliAdapter)
 
-    assert _run_needs_docker_cli("_fake_no_cli", tasks=[]) is False
+    assert run_needs_docker_cli("_fake_no_cli", tasks=[]) is False
 
 
-# ---- _tasks_use_compose_variant_tools: compose-variant trigger ----
+# ---- tasks_use_compose_variant_tools: compose-variant trigger ----
 
 
 def test_tasks_with_bash_session_compose_variant_trigger():
@@ -141,7 +141,7 @@ def test_tasks_with_bash_session_compose_variant_trigger():
             }
         )
     )
-    assert _tasks_use_compose_variant_tools([task]) is True
+    assert tasks_use_compose_variant_tools([task]) is True
 
 
 def test_tasks_with_str_replace_editor_compose_variant_trigger():
@@ -153,7 +153,7 @@ def test_tasks_with_str_replace_editor_compose_variant_trigger():
             }
         )
     )
-    assert _tasks_use_compose_variant_tools([task]) is True
+    assert tasks_use_compose_variant_tools([task]) is True
 
 
 def test_tasks_with_both_compose_variants_trigger():
@@ -167,7 +167,7 @@ def test_tasks_with_both_compose_variants_trigger():
             }
         )
     )
-    assert _tasks_use_compose_variant_tools([task]) is True
+    assert tasks_use_compose_variant_tools([task]) is True
 
 
 def test_enabled_bash_session_without_service_does_not_trigger():
@@ -181,7 +181,7 @@ def test_enabled_bash_session_without_service_does_not_trigger():
             }
         )
     )
-    assert _tasks_use_compose_variant_tools([task]) is False
+    assert tasks_use_compose_variant_tools([task]) is False
 
 
 def test_bash_session_config_without_being_enabled_does_not_trigger():
@@ -195,7 +195,7 @@ def test_bash_session_config_without_being_enabled_does_not_trigger():
             }
         )
     )
-    assert _tasks_use_compose_variant_tools([task]) is False
+    assert tasks_use_compose_variant_tools([task]) is False
 
 
 def test_a_user_declared_compose_variant_triggers_and_reads_its_own_block():
@@ -220,17 +220,17 @@ def test_a_user_declared_compose_variant_triggers_and_reads_its_own_block():
         )
     )
 
-    assert _tasks_use_compose_variant_tools([routed]) is True
-    assert _tasks_use_compose_variant_tools([crossed]) is False
+    assert tasks_use_compose_variant_tools([routed]) is True
+    assert tasks_use_compose_variant_tools([crossed]) is False
 
 
 def test_no_tools_config_does_not_trigger():
     task = _StubTask(tools=None)
-    assert _tasks_use_compose_variant_tools([task]) is False
+    assert tasks_use_compose_variant_tools([task]) is False
 
 
 def test_empty_task_list_does_not_trigger():
-    assert _tasks_use_compose_variant_tools([]) is False
+    assert tasks_use_compose_variant_tools([]) is False
 
 
 def test_mixed_tasks_trigger_if_any_uses_compose_variant():
@@ -247,7 +247,7 @@ def test_mixed_tasks_trigger_if_any_uses_compose_variant():
             }
         )
     )
-    assert _tasks_use_compose_variant_tools([plain_task, compose_task]) is True
+    assert tasks_use_compose_variant_tools([plain_task, compose_task]) is True
 
 
 # ---- Composition: native adapter + compose-variant tools = docker CLI needed ----
@@ -267,7 +267,7 @@ def test_native_adapter_with_compose_variant_tools_triggers_docker_cli():
             }
         )
     )
-    assert _run_needs_docker_cli("native", tasks=[mb_task]) is True
+    assert run_needs_docker_cli("native", tasks=[mb_task]) is True
 
 
 # ---- _construct_runtime_backend wires the socket flag through the same predicate ----

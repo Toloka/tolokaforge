@@ -388,7 +388,7 @@ class RuntimeBackendBuildContext:
     mount_docker_socket: bool = False
     """Bind-mount the host docker socket into the materialised runner. Set by
     the same predicate that decides whether to bake the docker CLI into the
-    runner image (see :func:`_run_needs_docker_cli`): the terminal-bench
+    runner image (see :func:`~tolokaforge.core.compose_materialisation.run_needs_docker_cli`): the terminal-bench
     adapter (which shells out to docker directly against the host daemon) or
     any run routing a shipped tool through the compose variant
     (``tools.agent.<tool>.service``), whose wrappers ``docker exec`` from the

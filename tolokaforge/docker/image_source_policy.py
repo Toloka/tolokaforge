@@ -121,7 +121,7 @@ def check_runner_docker_cli_available(
 
     Args:
         needs_docker_cli: The orchestrator's decision from
-            ``_run_needs_docker_cli(adapter_type, tasks)``. When ``False`` the
+            ``run_needs_docker_cli(adapter_type, tasks)``. When ``False`` the
             check is a no-op.
         request: The three-valued config request, same input
             :func:`resolve_image_source` takes.

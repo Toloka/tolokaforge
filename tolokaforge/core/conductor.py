@@ -272,10 +272,10 @@ def require_rate_limit_probe_support(
 ) -> None:
     """Raise unless *conductor* can support an enabled rate-limit probe *probe*.
 
-    No-op while the mode is off. Called from every site that resolves a conductor
-    while holding an already-armed agent client — ``build_trial_execution_unit``
-    and :func:`tolokaforge.core.run_trial.run_trial` — because arming and wiring
-    live at different layers: the orchestrator owns the agent client, the
+    No-op while the mode is off. Called by ``build_trial_execution_unit`` — the one
+    site that resolves a conductor while holding an already-armed agent client,
+    for every trial entry — because arming and wiring live at different layers:
+    the orchestrator owns the agent client, the
     conductor owns the simulator probe, the per-task effective-budget re-check
     and the per-trial telemetry accumulator.
 

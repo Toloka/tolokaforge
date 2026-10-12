@@ -7,11 +7,18 @@ here for callers that work against the trial-spec surface.
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import Any, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from tolokaforge.core.models import ModelConfig, Trajectory
+from tolokaforge.core.models import (
+    GraderConfig,
+    ModelConfig,
+    RateLimitProbeConfig,
+    TaskConfig,
+    Trajectory,
+)
 from tolokaforge.runner.models import (
     EnvironmentManifest,
     InitialStateKind,
@@ -147,6 +154,73 @@ class TrialResult(BaseModel):
         return cls(trial_id=trial_id, trajectory=trajectory, worker_id=worker_id)
 
 
+class TrialNodeInputs(BaseModel):
+    """Everything a standalone node needs to run one trial to a graded result.
+
+    Pure data: it names no live dependency and no remote address. A node
+    rebuilds the adapter, LLM clients, runtime backend and grader from it plus
+    the task pack it has mounted. ``task`` is the same full :class:`TaskConfig`
+    the ``run-trial`` subprocess wire carries, so there is one task
+    serialization; the pack is read only for file assets and for the content
+    check below. Credentials never travel here: model configs carry
+    ``${secret:NAME}`` references, resolved from the node's own secret payload.
+
+    :attr:`task_pack_dir` and :attr:`output_dir` are node-local filesystem
+    placement the node supplies, not portable data — a caller that moves these
+    inputs between hosts sets them to the receiving node's mount and output paths.
+    """
+
+    task: TaskConfig
+    """The full task configuration (the ``run-trial`` wire's ``task``)."""
+
+    trial_spec: TrialSpec
+    """The trial to run; its ``task`` projection and model configs drive the node."""
+
+    grader_config: GraderConfig | None = None
+    """The run's ``grader`` block; ``None`` defers to the adapter's default grader."""
+
+    grpc_max_message_mb: int = Field(gt=0)
+    """Bound on every gRPC channel the node opens."""
+
+    runtime: str
+    """Registered runtime-backend name, or ``"auto"``."""
+
+    conductor: str
+    """Registered conductor name."""
+
+    task_pack_dir: Path | None = None
+    """Where the node mounted the task pack: the directory holding the task's own
+    files. ``None`` for a task that references no file assets."""
+
+    task_pack_hash: str | None = None
+    """Content hash of the pack the inputs were produced against; the node
+    refuses to run when its mounted pack hashes differently. Set exactly when
+    :attr:`task_pack_dir` is."""
+
+    output_dir: Path | None = None
+    """Where the node writes trial artifacts; ``None`` writes none."""
+
+    rate_limit_probe: RateLimitProbeConfig | None = None
+    """Rate-limit probe mode for the agent and simulator clients; ``None`` runs the
+    standard retry path."""
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> Self:
+        if (self.task_pack_dir is None) != (self.task_pack_hash is None):
+            raise ValueError(
+                "task_pack_dir and task_pack_hash are set together: a pack with no hash "
+                "cannot be verified, and a hash with no pack has nothing to verify"
+            )
+        if self.trial_spec.task.task_id != self.task.task_id:
+            raise ValueError(
+                f"trial_spec.task is {self.trial_spec.task.task_id!r} but task is "
+                f"{self.task.task_id!r}; the two describe different tasks"
+            )
+        return self
+
+
 __all__ = [
     "DEFAULT_TOOL_TIMEOUT_S",
     "EnvEndpoints",
@@ -156,6 +230,7 @@ __all__ = [
     "NetworkPolicy",
     "SecurityContext",
     "TaskIsolation",
+    "TrialNodeInputs",
     "TrialResult",
     "TrialSpec",
 ]

@@ -1261,7 +1261,7 @@ def require_user_simulator_config(user_config: ModelConfig | None) -> ModelConfi
     """Return ``user_config`` or raise if it is missing.
 
     Callers that dispatch a user simulator (``Orchestrator.run``,
-    ``Orchestrator.run_worker``, the library entry ``core.run_trial``)
+    ``Orchestrator.run_worker``, the standalone entry ``core.trial_node.run_trial_from_inputs``)
     fail loud here when ``RunConfig.models["user"]`` is unset, so a run
     always names the provider it ships user turns to. There is
     deliberately no hardcoded default: a project that wants a shared

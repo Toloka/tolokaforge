@@ -113,6 +113,17 @@ grade_bundle_<trial_id>/
 
 Full format spec: [`docs/GRADE_BUNDLE.md`](GRADE_BUNDLE.md).
 
+### Producing a bundle from a standalone node
+
+A node that runs one trial through [`run_trial_from_inputs`](STANDALONE_RUNNER.md#from-a-node--tolokaforgerunnerrun_trial_from_inputs)
+produces a bundle on the same terms as a batch run: the `grader:` block above
+travels as `TrialNodeInputs.grader_config`, and the trial grader and the
+trial-end producer are built from it by the same execution unit the
+orchestrator uses. The block's `store` must be reachable from the node, and the
+node's runtime backend must implement `build_grade_bundle` and run with
+`expose_substrate: true`, exactly as in a batch run. The trial's
+`snapshot_status:` lands in the node's trial directory (`output_dir`).
+
 ## Step 2 — Grade the bundle with the CLI
 
 ### Single-trial regrade
@@ -381,6 +392,7 @@ Now `task.grading.grading_method: my_custom_kind` is a valid selector, and `tolo
 ## Where to look next
 
 - [ADR-0043](adr/0043-detached-mode-grader-and-typed-grader-kinds.md) — accepted-record for the substrate/kind/transport product.
+- [ADR-0056](adr/0056-node-runnable-trial-unit.md) — the standalone trial entry and its grader contract.
 - [ADR-0040](adr/0040-standalone-grader.md) — `GradingSubstrate` Protocol.
 - [`docs/GRADE_BUNDLE.md`](GRADE_BUNDLE.md) — bundle format v1.0 spec (manifest, parts, digests, deterministic-serialisation rules).
 - [`docs/RUNNER.md § Snapshot bundle mode`](RUNNER.md#snapshot-bundle-mode) — the producer side, config detail.
