@@ -346,16 +346,15 @@ def _configured_harness(config: Any) -> str | None:
 
 
 def adapter_supported_modes(adapter: Any) -> frozenset[ExecutionMode]:
-    """The execution modes *adapter* runs, honouring the legacy flag one release.
+    """The execution modes *adapter* runs.
 
     Reads the adapter's ``supported_execution_modes`` capability. An adapter
     that has not overridden it (it inherits :class:`BaseAdapter`'s default, or
-    carries no such attribute at all) but sets the legacy
-    ``supports_coding_harness = True`` — an external or private adapter from
-    before the capability shipped — is treated as also running
-    :attr:`~tolokaforge.core.execution_mode.ExecutionMode.DELEGATED`, so the
-    gate stays back-compatible for the deprecation window. An adapter that
-    declares no capability defaults to
+    carries no such attribute at all) but sets the older
+    ``supports_coding_harness = True`` — an external or private adapter that
+    predates the capability — is treated as also running
+    :attr:`~tolokaforge.core.execution_mode.ExecutionMode.DELEGATED`. An
+    adapter that declares no capability defaults to
     :attr:`~tolokaforge.core.execution_mode.ExecutionMode.ENGINE_LOOP`.
     """
     overrides_capability = any(

@@ -1,4 +1,4 @@
-"""Unit tests for the multi-harness resolver (issue #1750, slice A2).
+"""Unit tests for the multi-harness resolver.
 
 Covers :class:`CompositeAdapter` and :func:`build_composite_adapter`:
 

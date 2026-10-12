@@ -1,4 +1,4 @@
-"""Unit tests for the ``harnesses:`` run-config block (issue #1750, slice A1).
+"""Unit tests for the ``harnesses:`` run-config block.
 
 The block declares one adapter per entry for a multi-harness run. This suite
 pins its parse-time contract:

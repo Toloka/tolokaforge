@@ -299,10 +299,8 @@ evaluation:
 its canonical home on `models.agent.{harness,name}` at parse time,
 emits one `DeprecationWarning` per key naming the new location, and
 drops the legacy entry from `params`. A collision between equal values
-warns once; differing values raise. Removal target: the next scheduled
-major-version bump. The lift keeps existing run configs working through
-one deprecation window; a new run config should write the canonical
-shape.
+warns once; differing values raise. The lift keeps existing run configs
+working; a new run config should write the canonical shape.
 
 ## Related docs
 

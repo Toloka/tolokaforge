@@ -187,8 +187,8 @@ harnesses:
 - Each entry's execution mode is gated per entry before any task enumeration or
   container work: the mode (the entry's `mode`, or inferred from its harness) is
   checked against the modes its adapter runs, and a mismatch is refused naming
-  the entry, its adapter, the mode, and the supported set. (The config-side and
-  conductor-side mode classification are unified under #1758.)
+  the entry, its adapter, the mode, and the supported set. The config-side and
+  conductor-side mode classification read one source of truth.
 
 #### Worked example — one task across two harnesses
 

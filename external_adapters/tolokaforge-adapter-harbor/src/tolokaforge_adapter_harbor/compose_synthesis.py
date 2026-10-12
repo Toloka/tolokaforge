@@ -29,9 +29,9 @@ bind mount (``<staging>/harbor_jobs`` → the same path), and ``harbor run
 --jobs-dir`` targets that absolute path. The tolokaforge verifier reward
 (``/logs/verifier/reward.txt``, written by the generated ``tests/test.sh`` and
 read by the runner over ``docker exec``) stays an in-container path — it rides no
-nested mount, so it needs no identity treatment. In the orchestrator-image case
-the staging root must itself be a host-visible path for the same reason (the DooD
-caveat in ``docs/ORCHESTRATOR_IMAGE.md``).
+nested mount, so it needs no identity treatment. When the adapter itself runs
+inside a container, the staging root must itself be a host-visible path for the
+same reason.
 
 No subprocess is run here; the image is built declaratively by the orchestrator
 from the ``build:`` context this module writes.

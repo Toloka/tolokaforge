@@ -62,10 +62,9 @@ An adapter declares which modes it runs through the
 `BaseAdapter` (default `{ENGINE_LOOP}`). Before any container work, the
 orchestrator refuses a run that selects `DELEGATED` against an adapter whose
 capability does not include it, naming both sides and the adapter's accepted
-modes. `supports_coding_harness = True` is retained as a back-compat surface
-for one release: an external adapter that sets only that legacy flag is
-treated as also running `DELEGATED` (see
-`adapter_supported_modes()` in `tolokaforge/core/orchestrator.py`).
+modes. An external adapter that sets only the older
+`supports_coding_harness = True` flag is treated as also running `DELEGATED`
+(see `adapter_supported_modes()` in `tolokaforge/core/orchestrator.py`).
 
 ### How to add a harness / delegated adapter
 

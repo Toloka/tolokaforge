@@ -1,4 +1,4 @@
-"""Canonical: multi-harness dispatch wiring in the orchestrator (issue #1750, A3).
+"""Canonical: multi-harness dispatch wiring in the orchestrator.
 
 Mock runtime, no Docker. A two-entry ``harnesses:`` run (a plain adapter
 standing in for the native case, plus a registered fake *delegated* adapter)

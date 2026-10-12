@@ -1,4 +1,4 @@
-"""Unit tests for per-entry adapter resolution + trajectory identity (A4, #1750).
+"""Unit tests for per-entry adapter resolution + trajectory identity.
 
 Covers:
 
@@ -13,7 +13,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -140,8 +140,8 @@ class TestTrajectoryIdentity:
         base: dict[str, Any] = {
             "task_id": "t",
             "trial_index": 0,
-            "start_ts": datetime.now(tz=timezone.utc),
-            "end_ts": datetime.now(tz=timezone.utc),
+            "start_ts": datetime.now(tz=UTC),
+            "end_ts": datetime.now(tz=UTC),
             "messages": [],
         }
         base.update(overrides)

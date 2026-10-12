@@ -386,7 +386,7 @@ def _assert_host_visible_staging_root(staging_root: Path) -> None:
 
     Harbor's sandbox bind-mounts the job directory via the **host** daemon, so
     the staging root must resolve to a real host path. When the adapter runs
-    inside a container (the orchestrator image), a path that is not on a bind
+    inside a container, a path that is not on a bind
     mount from the host is invisible to the host daemon — Harbor's sandbox then
     silently sees no results and every trial reads as ungradeable. Fail loud
     here instead. On a bare-host run (no container) the path is always

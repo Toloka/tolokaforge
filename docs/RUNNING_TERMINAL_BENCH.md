@@ -12,7 +12,7 @@ End-to-end guide for running terminal-bench tasks through tolokaforge, in two mo
   bash exec, trajectory capture, grading) but does not touch the LLM turn loop.
 
 Both modes produce the same per-trial bundle layout at
-`<output-dir>/trials/<task_id>/<trial_index>/`, so downstream tooling reads one
+`<evaluation.output_dir>/trials/<task_id>/<trial_index>/`, so downstream tooling reads one
 shape regardless of which produced it.
 
 ## Prerequisites
