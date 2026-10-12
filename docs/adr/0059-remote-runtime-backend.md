@@ -35,8 +35,8 @@ trial gets*, not a new transport.
 
 1. **Extend the shared backend with a remote mode.** Rejected: it carries a
    static runner address and a local-stack lifecycle that do not apply.
-2. **A networked registry with node self-registration now.** Rejected for this
-   stage: it adds a service and an auth surface before the dispatch path is proven.
+2. **A networked registry with node self-registration.** Rejected: it adds a
+   service and an auth surface that the dispatch path does not need.
 3. **A new backend leasing from a node registry seam; the first registry is
    config-seeded and in-process.**
 
@@ -49,8 +49,8 @@ Protocol: `register_node`, `lease(trial_id)`, `release(trial_id)`, `has_nodes`.
 `lease` blocks until a node is free and raises on timeout; `release` is
 idempotent. `InMemoryNodeRegistry` is seeded from
 `orchestrator.remote.nodes` (bare `host:port` strings, with synthesised node
-ids) and holds a condition variable, so the node count bounds concurrency. A
-networked registry is a later implementation of the same Protocol.
+ids) and holds a condition variable, so the node count bounds concurrency. Any
+other registry implements the same Protocol.
 
 **The backend.** `RemoteRuntimeBackend` (`tolokaforge.core.remote_runtime`,
 registered as `remote`) leases a node in `provision`, builds a `GrpcRunnerClient`
@@ -75,12 +75,12 @@ runtime other than `remote`; the new context field is `None` for them.
 - One orchestrator can drive trials on several machines whose runners are listed
   in the run config.
 - `remote` is selected through `orchestrator.runtime`, which already emits a
-  `DeprecationWarning` for any explicit value. A non-deprecated selector is a
-  follow-up.
+  `DeprecationWarning` for any explicit value; there is no non-deprecated selector.
 - Node health is observed lazily: an unreachable node fails the trial that
   leased it at first RPC, under the connect budget, not at run start.
-- Task-declared stacks, grade bundles and networked node registration remain
-  later stages.
+- Not supported: task-declared stacks, grade bundles, networked node
+  registration, and worker-mode (multi-process) runs, which are refused because
+  each process holds its own node registry.
 
 ## References
 

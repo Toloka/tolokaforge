@@ -490,6 +490,20 @@ class RemoteConfig(BaseModel):
     lease_timeout_s: float = Field(default=300.0, gt=0.0)
     """How long a trial waits for a free node before the run fails."""
 
+    @field_validator("nodes")
+    @classmethod
+    def _nodes_are_unique_host_ports(cls, nodes: list[str]) -> list[str]:
+        for node in nodes:
+            host, sep, port = node.rpartition(":")
+            if not (sep and host and port.isdigit()):
+                raise ValueError(f"remote node {node!r} must be shaped 'host:port'")
+        duplicates = sorted({node for node in nodes if nodes.count(node) > 1})
+        if duplicates:
+            raise ValueError(
+                f"remote nodes must be unique; each entry is one runner slot: {duplicates}"
+            )
+        return nodes
+
 
 class OrchestratorConfig(BaseModel):
     """Orchestrator configuration"""

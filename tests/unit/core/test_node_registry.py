@@ -52,9 +52,9 @@ def test_lease_blocks_until_a_node_frees() -> None:
         started.set()
         acquired.append(registry.lease("t:1"))
 
-    thread = threading.Thread(target=contender)
+    thread = threading.Thread(target=contender, daemon=True)
     thread.start()
-    started.wait()
+    assert started.wait(timeout=5)
     time.sleep(0.2)
     assert acquired == []
 

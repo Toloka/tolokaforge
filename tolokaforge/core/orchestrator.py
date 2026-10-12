@@ -1364,14 +1364,14 @@ class Orchestrator:
                 "orchestrator.auto_start_services=true. Set auto_start_services: false."
             )
         if self._any_task_declares_environment_manifest():
-            raise RuntimeError(
+            raise ValueError(
                 "orchestrator.runtime='remote' does not materialise task-declared "
                 "stacks, but at least one task declares an environment_manifest. "
                 "Run those tasks under the shared or per_trial runtime."
             )
-        grader_name = (
-            self.config.grader.name if self.config.grader and self.config.grader.name else None
-        ) or (self.adapter.trial_grader_name if self.adapter is not None else None)
+        grader_name = self.config.grader.name if self.config.grader else None
+        if not grader_name and self.adapter is not None:
+            grader_name = self.adapter.trial_grader_name
         if grader_name in ("grader_rpc", "queue"):
             raise ValueError(
                 f"orchestrator.runtime='remote' cannot use grader {grader_name!r}: it dials a "
@@ -1381,11 +1381,7 @@ class Orchestrator:
 
     def _build_node_registry(self) -> NodeRegistry:
         remote = self.config.orchestrator.remote
-        if remote is None or not remote.nodes:
-            raise ValueError(
-                "orchestrator.runtime='remote' requires orchestrator.remote.nodes "
-                "to list at least one runner node as 'host:port'."
-            )
+        assert remote is not None  # OrchestratorConfig requires remote.nodes for runtime='remote'
         return InMemoryNodeRegistry(remote.nodes, lease_timeout_s=remote.lease_timeout_s)
 
     def _coerce_plan_shape_for_override(self, override: str | None) -> None:
@@ -3220,7 +3216,11 @@ class Orchestrator:
         # ``provision_trial`` per trial. The default ``env_endpoints`` built
         # from ``runner_address`` are phantom in that case, so logging them
         # would misdirect log-based diagnosis.
-        if self._any_task_declares_environment_manifest() or self._runtime_is_remote():
+        if self._any_task_declares_environment_manifest():
+            self.logger.info(
+                "Trial-scoped service endpoints resolved by backend from task-declared stack"
+            )
+        elif self._runtime_is_remote():
             self.logger.info("Trial-scoped service endpoints resolved by the runtime backend")
         else:
             self.logger.info(
@@ -3628,6 +3628,14 @@ class Orchestrator:
         This mode is intended for distributed execution where multiple worker
         processes lease from the same queue backend.
         """
+        if self._runtime_is_remote():
+            raise ValueError(
+                "orchestrator.runtime='remote' is not supported in worker mode: each worker "
+                "process builds its own node registry from orchestrator.remote.nodes, so "
+                "workers would lease the same node and over-subscribe it. Run the "
+                "orchestrator as a single process."
+            )
+
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 

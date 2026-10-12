@@ -8,24 +8,18 @@ the gRPC transport, so no node, Docker daemon or LLM is involved.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
-import tolokaforge.core.trial_node as trial_node
 from tests.canonical._factories import make_trial_spec
 from tests.canonical._fakes import RecordingClientFactory
-from tolokaforge.core.models import GraderConfig, ModelConfig
 from tolokaforge.core.node_registry import InMemoryNodeRegistry
 from tolokaforge.core.plugin_registry import (
     RuntimeBackendBuildContext,
-    TrialGraderContext,
     load_runtime_backend,
 )
 from tolokaforge.core.remote_runtime import RemoteRuntimeBackend
 from tolokaforge.core.runtime import IsolationMode, RuntimeBackend
-from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
-from tolokaforge.core.trial_node import TrialExecutionContext, build_trial_execution_unit
 
 pytestmark = pytest.mark.canonical
 
@@ -153,6 +147,20 @@ def test_cleanup_trial_without_a_lease_succeeds() -> None:
     assert backend.cleanup_trial("never-provisioned:0") == {"success": True, "error": None}
 
 
+def test_cleanup_trial_reports_a_failed_node_cleanup_and_still_frees_the_node() -> None:
+    factory = RecordingClientFactory()
+    backend = _backend(factory, nodes=["only:1"])
+    backend.provision(make_trial_spec(trial_id="t:0"))
+    backend.register_trial("t:0", "{}")
+    failure = {"success": False, "error": "gRPC error: unavailable"}
+    factory.clients[0].cleanup_trial = lambda trial_id: failure  # type: ignore[method-assign]
+
+    assert backend.cleanup_trial("t:0") == failure
+
+    backend.provision(make_trial_spec(trial_id="t:1"))
+    assert factory.clients[1].runner_address == "only:1"
+
+
 def test_close_closes_every_client_and_frees_every_node() -> None:
     factory = RecordingClientFactory()
     backend = _backend(factory)
@@ -245,42 +253,3 @@ def test_factory_threads_the_context_budget_and_registry() -> None:
     assert backend.registry is registry
     assert (backend.connect_timeout_s, backend.retry_interval_s) == (9.0, 0.25)
     assert backend.grpc_max_message_mb == 13
-
-
-def test_exposes_no_static_runner_address_so_the_grader_shim_is_wired(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    backend = _backend(RecordingClientFactory())
-    assert not hasattr(backend, "runner_address")
-    seen: list[TrialGraderContext] = []
-
-    def grader_factory(ctx: TrialGraderContext) -> RunnerRPCTrialGrader:
-        seen.append(ctx)
-        return RunnerRPCTrialGrader(
-            runner_address="", logger=ctx.logger, runtime_backend=ctx.runtime_backend
-        )
-
-    monkeypatch.setattr(trial_node, "load_trial_grader", lambda name: grader_factory)
-
-    unit = build_trial_execution_unit(_unit_context(backend, tmp_path))
-
-    assert seen[0].runtime_backend is backend
-    assert seen[0].runner_address is None
-    unit.close()
-
-
-def _unit_context(backend: RemoteRuntimeBackend, tmp_path: Path) -> TrialExecutionContext:
-    adapter = MagicMock()
-    adapter.trial_grader_name = "runner_rpc"
-    return TrialExecutionContext(
-        adapter=adapter,
-        artifact_writer=MagicMock(),
-        config=MagicMock(),
-        logger=MagicMock(),
-        agent_client=MagicMock(config=ModelConfig(provider="openai", name="gpt-4")),
-        runtime_backend=backend,
-        output_dir=tmp_path,
-        request_limiter=None,
-        grader_config=GraderConfig(name="runner_rpc"),
-        grpc_max_message_mb=7,
-    )

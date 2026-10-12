@@ -46,3 +46,14 @@ def test_remote_runtime_with_nodes_parses() -> None:
 
 def test_other_runtimes_do_not_require_nodes() -> None:
     assert _orchestrator(runtime="shared").remote is None
+
+
+def test_remote_config_rejects_duplicate_nodes() -> None:
+    with pytest.raises(ValidationError, match="must be unique"):
+        RemoteConfig(nodes=["a:1", "b:2", "a:1"])
+
+
+@pytest.mark.parametrize("node", ["no-port", "host:", ":50051", "host:port"])
+def test_remote_config_rejects_malformed_nodes(node: str) -> None:
+    with pytest.raises(ValidationError, match="host:port"):
+        RemoteConfig(nodes=[node])

@@ -24,7 +24,10 @@ class RunnerLease:
 
 @runtime_checkable
 class NodeRegistry(Protocol):
-    """The set of runner nodes a run may dispatch trials to."""
+    """The set of runner nodes a run may dispatch trials to.
+
+    Implementations must be thread-safe: trials lease and release concurrently.
+    """
 
     def register_node(self, node_id: str, runner_address: str) -> None:
         """Add a node, or update the address of an existing one."""
@@ -54,6 +57,9 @@ class InMemoryNodeRegistry:
 
     Each node serves one trial at a time, so the node count bounds trial
     concurrency: :meth:`lease` blocks while every node is leased.
+
+    ``lease_timeout_s`` is how long :meth:`lease` waits for a free node before
+    raising :class:`TimeoutError`.
     """
 
     def __init__(self, addresses: Iterable[str] = (), *, lease_timeout_s: float = 300.0) -> None:

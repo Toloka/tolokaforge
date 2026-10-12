@@ -191,7 +191,7 @@ def test_a_task_declaring_an_environment_manifest_fails_loud_before_any_trial(
     _write_pack(tmp_path / "pack", manifest=True)
     orch, conductor = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
 
-    with pytest.raises(RuntimeError, match="does not materialise task-declared stacks"):
+    with pytest.raises(ValueError, match="does not materialise task-declared stacks"):
         orch.run()
 
     assert conductor.specs == []
@@ -211,5 +211,15 @@ def test_a_grader_needing_a_static_runner_address_fails_loud(
 
     with pytest.raises(ValueError, match="static runner address"):
         orch.run()
+
+    assert conductor.specs == []
+
+
+def test_worker_mode_under_the_remote_runtime_fails_loud(tmp_path: Path) -> None:
+    _write_pack(tmp_path / "pack")
+    orch, conductor = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
+
+    with pytest.raises(ValueError, match="not supported in worker mode"):
+        orch.run_worker(tmp_path / "out")
 
     assert conductor.specs == []

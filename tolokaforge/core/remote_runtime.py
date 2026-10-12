@@ -58,8 +58,19 @@ class _RemoteHandle:
 
 @dataclass
 class RemoteRuntimeBackend:
-    """Runtime backend that leases a runner node per trial from a :class:`NodeRegistry`."""
+    """Runtime backend that leases a runner node per trial from a :class:`NodeRegistry`.
 
+    Fields:
+        registry: Source of runner nodes; :meth:`provision` leases one per trial.
+        grpc_max_message_mb: Max gRPC message size, in MB, for each node client.
+        connect_timeout_s: Budget for a trial's client to reach its node on the first RPC.
+        retry_interval_s: Pause between connect attempts within that budget.
+        runner_client_factory: Builds the client for a leased address; tests inject
+            a recording factory in place of the gRPC client.
+    """
+
+    # The only consumer branches on PER_TRIAL_STACK (no local per-trial stack to
+    # check against dispatchers); every other mode takes the shared-stack path.
     isolation_mode: ClassVar[IsolationMode] = IsolationMode.SHARED_STACK
     advertised_capabilities: ClassVar[frozenset[str]] = frozenset()
 
@@ -101,6 +112,9 @@ class RemoteRuntimeBackend:
             self.registry.release(spec.trial_id)
             raise
         self._trials[spec.trial_id] = (lease, client)
+        logger.debug(
+            "Leased node %s (%s) for trial %s", lease.node_id, lease.runner_address, spec.trial_id
+        )
         return _RemoteHandle(trial_id=spec.trial_id)
 
     def await_ready(self, handle: EnvHandle) -> None:  # noqa: ARG002 — Protocol conformance
@@ -197,14 +211,15 @@ class RemoteRuntimeBackend:
     def cleanup_trial(self, trial_id: str) -> dict[str, Any]:
         """Forget ``trial_id`` on its node and free the node; idempotent.
 
-        A trial that holds no lease (the retry-cleanup path runs before
-        :meth:`provision`) has nothing to forget and succeeds.
+        Returns the node runner's ``{"success", "error"}`` result, so a failed
+        cleanup RPC is reported to the caller rather than raised. The node is
+        freed either way. A trial that holds no lease (the retry-cleanup path
+        runs before :meth:`provision`) has nothing to forget and succeeds.
         """
         try:
-            self._forget_registration(trial_id)
+            return self._forget_registration(trial_id)
         finally:
             self._drop_trial(trial_id)
-        return {"success": True, "error": None}
 
     def remember_trial_inputs(
         self,
@@ -240,12 +255,12 @@ class RemoteRuntimeBackend:
             self._connected_trials.add(trial_id)
         return client
 
-    def _forget_registration(self, trial_id: str) -> None:
+    def _forget_registration(self, trial_id: str) -> dict[str, Any]:
         """Ask a connected trial's node to drop its registration."""
         if trial_id not in self._connected_trials:
-            return
+            return {"success": True, "error": None}
         _, client = self._held(trial_id)
-        client.cleanup_trial(trial_id)
+        return client.cleanup_trial(trial_id)
 
     def _drop_trial(self, trial_id: str) -> None:
         """Close the trial's client and free its node; a no-op for an unknown trial."""
@@ -257,6 +272,7 @@ class RemoteRuntimeBackend:
             held[1].close()
         finally:
             self.registry.release(trial_id)
+            logger.debug("Released node for trial %s", trial_id)
 
 
 def remote_runtime_backend_factory(ctx: RuntimeBackendBuildContext) -> RemoteRuntimeBackend:
