@@ -31,6 +31,7 @@ from tolokaforge.core.grading.state_composition import (
     resolve_hash_weight,
 )
 from tolokaforge.core.hash import ColumnCompareRule
+from tolokaforge.core.hosts import unreachable_hosts
 from tolokaforge.core.models.run_config import RunDefaults
 from tolokaforge.runner.models import (
     DEFAULT_SEARCH_TOOL_NAME,
@@ -42,7 +43,6 @@ from tolokaforge.runner.models import (
     TraceChecksConfig,
     TranscriptRulesConfig,
 )
-from tolokaforge.tools.builtin.http_request import unreachable_hosts
 
 __all__ = [
     "ActorSpec",

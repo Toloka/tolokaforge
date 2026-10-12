@@ -11,10 +11,10 @@ redirect hop judged by its own url. The token is in no schema, argument or resul
 from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
+from tolokaforge.core.hosts import host_listed, unreachable_hosts
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
 DEFAULT_ALLOWED_HOSTS: tuple[str, ...] = ("mock-web", "mock-web:8080", "localhost:8080")
@@ -26,39 +26,8 @@ REDACTED_CREDENTIAL = "***REDACTED***"
 MAX_REDIRECTS = 5
 """Hops a credentialed request follows before it is refused as a redirect loop."""
 
-
-def host_listed(url: str, hosts: Collection[str]) -> bool:
-    """Whether ``url``'s host, bare or with its explicit port, is one of ``hosts``.
-
-    A bare ``host`` entry matches the host on every port; ``host:port`` matches
-    it on that explicit port alone.
-    """
-    parsed = urlparse(url)
-    if parsed.hostname is None:
-        return False
-    if parsed.hostname in hosts:
-        return True
-    return parsed.port is not None and f"{parsed.hostname}:{parsed.port}" in hosts
-
-
-def unreachable_hosts(hosts: Collection[str], allowed: Collection[str]) -> list[str]:
-    """The entries of ``hosts`` no request ``allowed`` admits could carry a credential to.
-
-    Both lists are read as :func:`host_listed` reads them at request time, so
-    ``world`` is reachable through an allowed ``world:8080`` (a request to that
-    port is admitted and credentialed alike) and ``world:8080`` through an
-    allowed ``world``; ``world:8080`` is not reachable through ``world:9090``.
-    Task validation and :meth:`HTTPRequestTool.present_bearer` ask this one
-    question, so a declaration one accepts the other presents.
-    """
-    return sorted(host for host in hosts if not _reachable(host, allowed))
-
-
-def _reachable(host: str, allowed: Collection[str]) -> bool:
-    name, _, port = host.partition(":")
-    if not port:
-        return any(entry.partition(":")[0] == name for entry in allowed)
-    return name in allowed or host in allowed
+__all__ = ["HTTPRequestTool", "host_listed", "unreachable_hosts"]
+"""The host helpers live in :mod:`tolokaforge.core.hosts`; they stay importable here."""
 
 
 @dataclass(frozen=True)
