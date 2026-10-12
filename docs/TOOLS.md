@@ -49,7 +49,11 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
   and `User-Agent`, so the agent presents no credential of its own. Under
   `initial_state.app_world` (ADR-0058) the tool is built once per actor and sets
   `Authorization: Bearer <token>` with the token the runner minted for that actor,
-  on requests to `app_world.hosts` only. The token is in no schema, argument,
+  on requests to `app_world.hosts` only, each redirect hop judged by its own url
+  (a hop leaving those hosts carries no credential; a credentialed request follows
+  at most 5 hops). A host is listed as `host` (every port) or `host:port`, and the
+  same reading decides at validation whether an actor's `allowed_hosts` reaches
+  every world host. The token is in no schema, argument,
   output or trajectory; a response quoting it back reads `***REDACTED***`. See
   [MULTI_CONTAINER_GUIDE.md § App worlds served over HTTP](MULTI_CONTAINER_GUIDE.md#app-worlds-served-over-http).
 - `build_check`: Zero-argument peer-service HTTP probe (compile / interface

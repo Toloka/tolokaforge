@@ -4,8 +4,8 @@ The caller's headers are dropped except ``Content-Type``, ``Accept`` and
 ``User-Agent``, so the agent can present no credential of its own. A credential
 comes from the runtime only: an app world (ADR-0058) hands the tool its actor's
 bearer token through :meth:`HTTPRequestTool.present_bearer`, and the tool sets
-``Authorization: Bearer <token>`` on requests to the world's hosts alone. The
-token is in no schema, argument or result.
+``Authorization: Bearer <token>`` on requests to the world's hosts alone, each
+redirect hop judged by its own url. The token is in no schema, argument or result.
 """
 
 from collections.abc import Collection
@@ -23,15 +23,42 @@ DEFAULT_ALLOWED_HOSTS: tuple[str, ...] = ("mock-web", "mock-web:8080", "localhos
 REDACTED_CREDENTIAL = "***REDACTED***"
 """What a presented token reads as if a response quotes it back."""
 
+MAX_REDIRECTS = 5
+"""Hops a credentialed request follows before it is refused as a redirect loop."""
+
 
 def host_listed(url: str, hosts: Collection[str]) -> bool:
-    """Whether ``url``'s host, bare or with its explicit port, is one of ``hosts``."""
+    """Whether ``url``'s host, bare or with its explicit port, is one of ``hosts``.
+
+    A bare ``host`` entry matches the host on every port; ``host:port`` matches
+    it on that explicit port alone.
+    """
     parsed = urlparse(url)
     if parsed.hostname is None:
         return False
     if parsed.hostname in hosts:
         return True
     return parsed.port is not None and f"{parsed.hostname}:{parsed.port}" in hosts
+
+
+def unreachable_hosts(hosts: Collection[str], allowed: Collection[str]) -> list[str]:
+    """The entries of ``hosts`` no request ``allowed`` admits could carry a credential to.
+
+    Both lists are read as :func:`host_listed` reads them at request time, so
+    ``world`` is reachable through an allowed ``world:8080`` (a request to that
+    port is admitted and credentialed alike) and ``world:8080`` through an
+    allowed ``world``; ``world:8080`` is not reachable through ``world:9090``.
+    Task validation and :meth:`HTTPRequestTool.present_bearer` ask this one
+    question, so a declaration one accepts the other presents.
+    """
+    return sorted(host for host in hosts if not _reachable(host, allowed))
+
+
+def _reachable(host: str, allowed: Collection[str]) -> bool:
+    name, _, port = host.partition(":")
+    if not port:
+        return any(entry.partition(":")[0] == name for entry in allowed)
+    return name in allowed or host in allowed
 
 
 @dataclass(frozen=True)
@@ -76,11 +103,7 @@ class HTTPRequestTool(Tool):
                 "http_request: a bearer token was already presented; one tool serves one "
                 "actor, which holds one token"
             )
-        unreachable = sorted(
-            host
-            for host in hosts
-            if host not in self.allowed_hosts and host.split(":")[0] not in self.allowed_hosts
-        )
+        unreachable = unreachable_hosts(hosts, self.allowed_hosts)
         if unreachable:
             raise ValueError(
                 f"http_request: the credential's hosts {unreachable!r} are not in "
@@ -138,12 +161,8 @@ class HTTPRequestTool(Tool):
 
     def _is_allowed_host(self, url: str) -> bool:
         """Check if URL is to an allowed host"""
-        parsed = urlparse(url)
-        host_with_port = f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
-
         return (
-            parsed.hostname in self.allowed_hosts
-            or host_with_port in self.allowed_hosts
+            host_listed(url, self.allowed_hosts)
             or url.startswith("http://mock-web")
             or url.startswith("http://localhost:8080")
         )
@@ -183,20 +202,11 @@ class HTTPRequestTool(Tool):
                 error=f"URL not allowed: {url}. Only mock services are accessible.",
             )
 
-        # Drop the caller's headers, then attach the runtime's credential for this host.
-        headers = {**self._scrub_headers(headers), **self._credential_headers(url)}
+        # Drop the caller's headers; the runtime's credential is attached per hop.
+        headers = self._scrub_headers(headers)
 
         try:
-            # Make request
-            response = httpx.request(
-                method=method,
-                url=url,
-                headers=headers,
-                json=json,
-                data=data,
-                timeout=self.policy.timeout_s,
-                follow_redirects=True,
-            )
+            response = self._request(method, url, headers, json, data)
 
             # Format response
             output = f"Status: {response.status_code}\n"
@@ -236,3 +246,48 @@ class HTTPRequestTool(Tool):
                 output="",
                 error=self._without_credential(f"HTTP request failed: {str(e)}"),
             )
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, Any] | None,
+        data: dict[str, Any] | None,
+    ) -> httpx.Response:
+        """Send the request, following redirects.
+
+        Without a credential httpx follows them. With one the tool follows them
+        itself: httpx drops ``Authorization`` on any cross-origin hop, a port
+        change included, so a world answering ``http://world`` with a redirect to
+        ``http://world:8080`` would see a bare request and the agent a bare 401.
+        Each hop carries the credential iff its own url is a world host, with
+        httpx's own rules for the hop's method and body.
+        """
+        if self._bearer is None:
+            return httpx.request(
+                method=method,
+                url=url,
+                headers=headers,
+                json=json,
+                data=data,
+                timeout=self.policy.timeout_s,
+                follow_redirects=True,
+            )
+        for _ in range(MAX_REDIRECTS + 1):
+            response = httpx.request(
+                method=method,
+                url=url,
+                headers={**headers, **self._credential_headers(url)},
+                json=json,
+                data=data,
+                timeout=self.policy.timeout_s,
+                follow_redirects=False,
+            )
+            if response.next_request is None:
+                return response
+            if response.next_request.method != method:
+                json = data = None  # a redirect that turns the request into a GET drops its body
+            method = response.next_request.method
+            url = str(response.next_request.url)
+        raise httpx.TooManyRedirects(f"Exceeded maximum allowed redirects ({MAX_REDIRECTS})")

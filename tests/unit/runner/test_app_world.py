@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -49,7 +51,11 @@ from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import AppWorldConfig, RunnerInitialStateConfig
 from tolokaforge.secrets import get_default
 from tolokaforge.secrets.log_filter import PLACEHOLDER, install_global_redactor
-from tolokaforge.tools.builtin.http_request import REDACTED_CREDENTIAL, HTTPRequestTool
+from tolokaforge.tools.builtin.http_request import (
+    REDACTED_CREDENTIAL,
+    HTTPRequestTool,
+    unreachable_hosts,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -342,6 +348,149 @@ def test_http_request_refuses_a_credential_it_could_never_present() -> None:
     tool.present_bearer("token-0123456789", [HOST])
     with pytest.raises(ValueError, match="already presented"):
         tool.present_bearer("token-9876543210", [HOST])
+
+
+@pytest.mark.parametrize(
+    ("hosts", "allowed", "unreachable"),
+    [
+        (["world"], ["world:8080"], []),
+        (["world:8080"], ["world"], []),
+        (["world:8080"], ["world:8080"], []),
+        (["world:8080"], ["world:9090"], ["world:8080"]),
+        (["world", "other"], ["world:8080"], ["other"]),
+    ],
+)
+def test_a_world_host_is_reachable_as_http_request_reads_hosts_at_request_time(
+    hosts: list[str], allowed: list[str], unreachable: list[str]
+) -> None:
+    """``host`` names every port, ``host:port`` one port, in the declaration and the tool alike."""
+    assert unreachable_hosts(hosts, allowed) == unreachable
+
+    task = _task()
+    for actor in ("agent", "user"):
+        task["tools"][actor] = {
+            "enabled": ["http_request"],
+            "http_request": {"allowed_hosts": allowed},
+        }
+    task["initial_state"]["app_world"] = {**WORLD, "hosts": hosts}
+    tool = HTTPRequestTool(allowed_hosts=allowed)
+    if unreachable:
+        with pytest.raises(ValidationError, match=re.escape(f"{unreachable!r} are not in")):
+            TaskConfig.model_validate(task)
+        with pytest.raises(ValueError, match=re.escape(f"{unreachable!r} are not in")):
+            tool.present_bearer("token-0123456789", hosts)
+    else:
+        TaskConfig.model_validate(task)
+        tool.present_bearer("token-0123456789", hosts)
+
+
+TOKEN = "runtime-token-0123456789"
+
+
+def _served_by(
+    handler: Callable[[httpx.Request], httpx.Response], monkeypatch: pytest.MonkeyPatch
+) -> list[tuple[str, str | None]]:
+    """Route the tool's requests through ``handler``; the (url, credential) each carried."""
+    seen: list[tuple[str, str | None]] = []
+
+    def recording(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers.get("authorization")))
+        return handler(request)
+
+    def request(method: str, url: str, **kwargs: Any) -> httpx.Response:
+        with httpx.Client(transport=httpx.MockTransport(recording)) as client:
+            return client.request(method, url, **kwargs)
+
+    monkeypatch.setattr("tolokaforge.tools.builtin.http_request.httpx.request", request)
+    return seen
+
+
+def _redirecting_to(target: str) -> Callable[[httpx.Request], httpx.Response]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == target:
+            return httpx.Response(200, json={"arrived": True})
+        return httpx.Response(307, headers={"location": target})
+
+    return handler
+
+
+def test_http_request_keeps_its_bearer_across_a_redirect_within_the_world(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """httpx drops Authorization on a port change; the world's hop is credentialed anew."""
+    seen = _served_by(_redirecting_to("http://world:8080/api/x"), monkeypatch)
+    tool = HTTPRequestTool(allowed_hosts=["world"])
+    tool.present_bearer(TOKEN, ["world"])
+
+    result = tool.execute("POST", "http://world/api/x", json={"subject": "s"})
+
+    assert result.success, result.error
+    assert seen == [
+        ("http://world/api/x", f"Bearer {TOKEN}"),
+        ("http://world:8080/api/x", f"Bearer {TOKEN}"),
+    ]
+
+
+def test_http_request_drops_its_bearer_when_a_redirect_leaves_the_world(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _served_by(_redirecting_to("http://elsewhere.example/api/x"), monkeypatch)
+    tool = HTTPRequestTool(allowed_hosts=["world", "elsewhere.example"])
+    tool.present_bearer(TOKEN, ["world"])
+
+    result = tool.execute("GET", "http://world/api/x")
+
+    assert result.success, result.error
+    assert seen == [
+        ("http://world/api/x", f"Bearer {TOKEN}"),
+        ("http://elsewhere.example/api/x", None),
+    ]
+
+
+def test_http_request_without_a_credential_follows_redirects_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _served_by(_redirecting_to("http://world:8080/api/x"), monkeypatch)
+
+    result = HTTPRequestTool(allowed_hosts=["world"]).execute("GET", "http://world/api/x")
+
+    assert result.success, result.error
+    assert [url for url, _ in seen] == ["http://world/api/x", "http://world:8080/api/x"]
+
+
+def test_a_credentialed_request_refuses_a_redirect_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _served_by(lambda _: httpx.Response(302, headers={"location": "/again"}), monkeypatch)
+    tool = HTTPRequestTool(allowed_hosts=["world"])
+    tool.present_bearer(TOKEN, ["world"])
+
+    result = tool.execute("GET", "http://world/api/x")
+
+    assert result.success is False
+    assert "redirects" in result.error
+    assert len(seen) == 6
+
+
+def test_a_world_answering_401_with_the_credential_echoed_leaks_it_nowhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whatever surface a refused response reaches, the token is masked there."""
+
+    def echoing_401(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401, json={"error": f"bad credential {request.headers.get('authorization')}"}
+        )
+
+    _served_by(echoing_401, monkeypatch)
+    tool = HTTPRequestTool(allowed_hosts=["world"])
+    tool.present_bearer(TOKEN, ["world"])
+
+    result = tool.execute("GET", "http://world/api/x")
+
+    assert result.success is False
+    assert result.metadata["status_code"] == 401
+    assert TOKEN not in result.output
+    assert TOKEN not in (result.error or "")
+    assert REDACTED_CREDENTIAL in result.output + (result.error or "")
 
 
 # -- the runner's lifecycle against a world service --------------------------------------

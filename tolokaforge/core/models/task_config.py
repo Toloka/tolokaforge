@@ -42,6 +42,7 @@ from tolokaforge.runner.models import (
     TraceChecksConfig,
     TranscriptRulesConfig,
 )
+from tolokaforge.tools.builtin.http_request import unreachable_hosts
 
 __all__ = [
     "ActorSpec",
@@ -880,9 +881,7 @@ def _app_world_hosts_refusal(actor: str, block: dict[str, Any], hosts: list[str]
             "lists no http_request to reach the world with"
         )
     allowed = (block.get("http_request") or {}).get("allowed_hosts") or []
-    unreachable = [
-        host for host in hosts if host not in allowed and host.split(":")[0] not in allowed
-    ]
+    unreachable = unreachable_hosts(hosts, allowed)
     if not unreachable:
         return None
     return (
