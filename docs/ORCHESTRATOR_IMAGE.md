@@ -83,14 +83,16 @@ The wrapper mounts, into the container:
 | output dir (`-o`) | `/work/out` | rw | run reports land here |
 | `.env` (`-e`) | `/work/.env` | ro | provider credentials |
 
-and runs `tolokaforge run --config /work/config/<config>`.
+and runs `tolokaforge run --config /work/config/<config> --output-dir /work/out`.
 
-Point your run config at the mounted paths:
+The wrapper passes `--output-dir /work/out`, so the report lands in the mounted
+output directory without your run config having to name it. The flag overrides
+`evaluation.output_dir` for the run; outside the wrapper, `tolokaforge run
+--output-dir <path>` targets any directory, and omitting it keeps the config's
+`evaluation.output_dir` (or the `results/run_<timestamp>` default).
 
-- `evaluation.output_dir: /work/out` — so the report lands in the mounted
-  output directory. (There is no `--output-dir` flag; the config decides.)
-- project / task paths under `/work/tasks` — so the tasks resolve inside the
-  container.
+Point your run config's project / task paths under `/work/tasks` so the tasks
+resolve inside the container.
 
 Anything after `--` is forwarded to `tolokaforge run`, e.g. a keyless dry run:
 
@@ -123,6 +125,55 @@ The `adapters` extra pulls the adapter packages from their own distributions.
 In an environment where those are not resolvable (offline, or before they are
 published), build the adapters you need from source into the context instead,
 or stay on the default `[dx]` image for native runs.
+
+### Running Harbor from the image
+
+The Harbor adapter delegates each trial to the real Harbor harness (`harbor run`
++ Terminus 2), so it needs the adapters-included image and nothing special
+beyond the socket the wrapper already mounts:
+
+```bash
+# 1. Build with the adapters extra (Harbor ships in it).
+make docker-build-orchestrator ORCHESTRATOR_EXTRAS=dx,adapters
+
+# 2. Keyless free smoke — Harbor's `oracle` agent runs the task's reference
+#    solution, so no provider key is needed. Point -t at the TB2 pack dir.
+scripts/docker/run-orchestrator.sh \
+    -i tolokaforge-orchestrator:local \
+    -c examples/harbor/run_harbor.yaml \
+    -t examples/harbor \
+    -o ./out \
+    -- --image-source build
+```
+
+For a real model run, set `models.agent.name` to the `provider/model` Terminus 2
+should run, keep `params.agent` at `terminus-2`, and drop the provider key in
+`.env` (`-e .env`); the engine forwards it into the trial container via
+`params.agent_provider_env`. Harbor itself needs the **host** Docker daemon:
+`harbor run -e docker` shells `docker compose` on the mounted `/var/run/docker.sock`
+to build **its own** sandbox (Docker-out-of-Docker, two levels deep). The wrapper
+already mounts that socket, so no extra flag is required — but the same DooD
+caveat as every child stack applies, doubly: Harbor builds its sandbox on the
+host daemon, outside tolokaforge's per-trial isolation, and a Harbor crash can
+orphan those sibling containers on the host.
+
+A **real Terminus** run (unlike the keyless oracle) adds three DooD realities to
+plan for:
+
+- **`staging_root` must be host-visible.** Point `params.staging_root` at a
+  directory under the mounted output dir (e.g. `/work/out/harbor-staging`), not a
+  container-only path like `/tmp`. Harbor's sandbox bind-mounts the job directory
+  through the host daemon, so a container-only staging root is invisible to it and
+  every trial silently produces no results. The adapter **fails loud** on a
+  non-host-visible `staging_root` when it detects it is containerised, rather than
+  producing empty results — but choosing a mounted path up front avoids the trip.
+- **The model call can originate on the host.** Because Harbor builds its sandbox
+  on the host daemon, the Terminus LLM/proxy call can leave from the **host**, not
+  from inside the trial container. Host name-resolution and egress to the provider
+  must work, not just the trial network's.
+- **The host needs `docker buildx`.** Harbor builds an egress sidecar for its
+  sandbox, which requires buildx on the host daemon (`docker buildx version`
+  should succeed before a keyed run).
 
 ## Status
 
