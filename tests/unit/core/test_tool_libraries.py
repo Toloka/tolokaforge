@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import importlib.metadata
 import json
+import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,13 @@ from tolokaforge.core.tool_libraries import (
     resolve_tool_libraries,
 )
 from tolokaforge.dx.cli.main import cli
-from tolokaforge.runner.models import AdapterType, TaskDescription
+from tolokaforge.runner.models import (
+    AdapterType,
+    InvocationStyle,
+    TaskDescription,
+    ToolSchema,
+    ToolSource,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -227,8 +234,59 @@ def test_two_libraries_bundling_one_path_are_refused(install: InstallLibraries) 
         ToolLibraryPin(name="acme_extra", version="0.1.0"),
     ]
 
-    with pytest.raises(ToolLibraryError, match="'acme_extra' bundles 2 path"):
+    with pytest.raises(ToolLibraryError, match=r"'acme_extra' bundles .*; 2 path\(s\)"):
         merge_tool_libraries(_description(), pins)
+
+
+@pytest.mark.parametrize(
+    "vendored",
+    [
+        "_shared/acme_tools/__init__.py",
+        "_shared/acme_tools.py",
+        "tools/acme_tools/core.py",
+        "acme_tools.py",
+    ],
+)
+def test_a_copy_of_the_library_on_an_import_path_is_refused(
+    acme: InMemoryToolLibrary, vendored: str
+) -> None:
+    """A copy under ``_shared/`` or ``tools/`` is found before the pinned one at the root."""
+    stale_copy = _description(**{vendored: b"# vendored\n", "_shared/mcp_server.py": b"#\n"})
+
+    with pytest.raises(
+        ToolLibraryError, match=rf"module\(s\) acme_tools; 1 path\(s\) .*{vendored}"
+    ):
+        merge_tool_libraries(stale_copy, [ToolLibraryPin(name="acme_tools", version="1.2.0")])
+
+
+def test_a_copy_beside_an_mcp_server_is_refused(acme: InMemoryToolLibrary) -> None:
+    """The server subprocess imports from its own directory first, wherever it lives."""
+    description = _description(
+        **{"testcases/a/mcp_server.py": b"#\n", "testcases/a/acme_tools/__init__.py": b"#\n"}
+    )
+    source = ToolSource(
+        toolset="t",
+        module_path="m",
+        class_name="c",
+        invocation_style=InvocationStyle.MCP_SERVER,
+        mcp_server_script="testcases/a/mcp_server.py",
+    )
+    tool = ToolSchema(name="ping", description="p", parameters={"type": "object"}, source=source)
+    description = description.model_copy(update={"agent_tools": [tool]})
+
+    with pytest.raises(ToolLibraryError, match=r"testcases/a/acme_tools/__init__.py"):
+        merge_tool_libraries(description, [ToolLibraryPin(name="acme_tools", version="1.2.0")])
+
+
+def test_a_same_named_entry_off_every_import_path_is_allowed(acme: InMemoryToolLibrary) -> None:
+    """Data under ``fixtures/`` or a ``.json`` at the root imports as nothing."""
+    description = _description(
+        **{"fixtures/acme_tools/seed.json": b"{}", "acme_tools.json": b"{}", "mcp_server.py": b""}
+    )
+
+    merged = merge_tool_libraries(description, [ToolLibraryPin(name="acme_tools", version="1.2.0")])
+
+    assert set(_decoded(merged)) >= {*_SHARED, "fixtures/acme_tools/seed.json", "acme_tools.json"}
 
 
 def test_an_application_the_library_does_not_ship_is_refused(acme: InMemoryToolLibrary) -> None:
@@ -254,6 +312,27 @@ def test_a_bundle_path_outside_the_artefact_root_is_refused(
 
     with pytest.raises(ToolLibraryError, match="not a relative POSIX path"):
         merge_tool_libraries(_description(), [ToolLibraryPin(name="acme_tools", version="1.2.0")])
+
+
+@pytest.mark.parametrize("path", ["./acme/x.py", "acme//x.py", "acme/./x.py", ".", "acme/"])
+def test_a_bundle_path_that_needs_normalising_is_refused(
+    install: InstallLibraries, path: str
+) -> None:
+    """``./a/x.py`` would land at ``a/x.py`` unseen by the collision check; ``.`` is no file."""
+    install(("acme_tools", InMemoryToolLibrary("acme_tools", "1.2.0", shared={path: b"x"})))
+
+    with pytest.raises(
+        ToolLibraryError, match=rf"{re.escape(repr(path))}, which is not a relative"
+    ):
+        merge_tool_libraries(_description(), [ToolLibraryPin(name="acme_tools", version="1.2.0")])
+
+
+def test_a_bundle_path_is_stored_as_bundled(acme: InMemoryToolLibrary) -> None:
+    merged = merge_tool_libraries(
+        _description(), [ToolLibraryPin(name="acme_tools", version="1.2.0", apps=["billing"])]
+    )
+
+    assert set(merged.tool_artifacts) == {*_SHARED, *_APPS["billing"]}
 
 
 # ---------------------------------------------------------------------------

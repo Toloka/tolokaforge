@@ -351,7 +351,8 @@ server under `_shared/` imports packages that sit at the root.
 
 The bundle is the adapter's part only. A task's pinned `tool_libraries` are
 merged afterwards by `BaseAdapter.describe_task`, and a file of the task
-directory that a pinned library also bundles is refused — see
+directory that a pinned library also bundles — or a copy of a bundled package
+under `_shared/` or `tools/`, where it would shadow the pinned one — is refused; see
 [`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifacts`](TASK_DESCRIPTION_SCHEMA.md#tool_artifacts-tool-code-and-the-shared-libraries-a-task-pins).
 
 **Bundling scope:**

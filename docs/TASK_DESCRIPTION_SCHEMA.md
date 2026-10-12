@@ -474,8 +474,8 @@ each pin and merges the library's bundle into `tool_artifacts`. It refuses:
 | another version is installed | the pinned and the installed version |
 | the same library is pinned twice | the name |
 | the entry point registers no `name` / `version` / `bundle()`, or another name | the entry point |
-| an empty bundle, or a path that is absolute or leaves the artefact root | the library and the path |
-| a path the adapter's own artefacts (or an earlier library) already hold | the colliding paths — drop the pack's own copy of the library |
+| an empty bundle, or a path that is absolute, leaves the artefact root or is not normalised (`./a/x.py`, `a//x.py`, `.`) | the library and the path |
+| a path the adapter's own artefacts (or an earlier library) already hold, or an artefact that would shadow a bundled top-level module on an import path of the trial — under `_shared/`, `tools/` or beside an MCP server script | the module and the artefact paths at fault — drop the pack's own copy of the library |
 
 `metadata["tool_libraries"]` records each merged library as
 `{name, version, apps, files}` (`apps` is `null` when the pin selects every

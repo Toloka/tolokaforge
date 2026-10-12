@@ -43,8 +43,10 @@ libraries the task pins (`TaskConfig.tool_libraries`,
 orchestrator, `run_trial` and the dry run all go through it, so an adapter never
 bundles a library itself: it only needs `get_task` to return the `TaskConfig` that
 carries the pins the author declared. Its own artefacts must not include a file a
-pinned library bundles; `describe_task` refuses the collision instead of
-overwriting either copy. The refusals are listed in
+pinned library bundles, nor a copy of a bundled top-level module anywhere a trial
+imports from (the artefact root, `tools/`, `_shared/`, the directory of an MCP
+server script); `describe_task` refuses the collision instead of letting one copy
+shadow the other. The refusals are listed in
 [`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifacts`](TASK_DESCRIPTION_SCHEMA.md#tool_artifacts-tool-code-and-the-shared-libraries-a-task-pins).
 
 An adapter that generates native packs from its own source format forwards a

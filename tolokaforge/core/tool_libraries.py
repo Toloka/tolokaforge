@@ -173,24 +173,27 @@ def merge_tool_libraries(
     """``description`` with every pinned library's bundle merged into ``tool_artifacts``.
 
     A path the description already holds — the adapter's own artefacts or an
-    earlier library's — is refused rather than overwritten: a pack that still
-    carries a copy of a library drops it when it pins the library. Provenance
-    (name, version, applications, file count per library) is recorded under
-    ``metadata["tool_libraries"]``. Without pins the description is returned
-    as is.
+    earlier library's — is refused rather than overwritten, and so is an
+    artefact that would shadow a bundled top-level module on an import path
+    of the trial (a copy under ``_shared/``, ``tools/`` or beside an MCP
+    server): a pack that still carries a copy of a library drops it when it
+    pins the library. Provenance (name, version, applications, file count per
+    library) is recorded under ``metadata["tool_libraries"]``. Without pins
+    the description is returned as is.
 
     Raises:
         ToolLibraryError: Any refusal of :func:`resolve_tool_libraries`, an
-            empty bundle, a bundle path that is absolute or leaves the
-            artefact root, a non-bytes file, or a path collision.
+            empty bundle, a bundle path that is absolute, leaves the artefact
+            root or is not normalised, a non-bytes file, or a collision.
     """
     if not pins:
         return description
     artifacts: dict[str, str] = dict(description.tool_artifacts)
+    import_roots = _import_roots(description)
     provenance: list[dict[str, Any]] = []
     for resolved in resolve_tool_libraries(pins):
         files = _checked_bundle(resolved)
-        _refuse_collisions(resolved.pin.name, files, artifacts)
+        _refuse_collisions(resolved.pin.name, files, artifacts, import_roots)
         artifacts.update(
             (path, base64.b64encode(content).decode("ascii")) for path, content in files.items()
         )
@@ -214,24 +217,95 @@ def _checked_bundle(resolved: ResolvedToolLibrary) -> dict[str, bytes]:
         raise ToolLibraryError(
             f"tool library {pin.name!r} produced an empty bundle for {selection}"
         )
+    checked: dict[str, bytes] = {}
     for path, content in files.items():
-        posix = PurePosixPath(path)
-        if not path or posix.is_absolute() or ".." in posix.parts or "\\" in path:
+        # ``PurePosixPath`` collapses ``a//x``, ``./a`` and ``a/./x`` silently, so
+        # the parts are split by hand: a path that needs normalising is refused,
+        # and the one stored is then exactly the one compared.
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.startswith("/")
+            or "\\" in path
+            or any(part in ("", ".", "..") for part in path.split("/"))
+        ):
             raise ToolLibraryError(
                 f"tool library {pin.name!r} bundles {path!r}, which is not a relative POSIX "
-                "path inside the artefact root"
+                "path inside the artefact root (no leading '/', no empty, '.' or '..' "
+                "component, no backslash)"
             )
         if not isinstance(content, bytes):
             raise ToolLibraryError(
                 f"tool library {pin.name!r} bundles {path!r} as {type(content).__name__}, not bytes"
             )
-    return files
+        checked[PurePosixPath(path).as_posix()] = content
+    return checked
 
 
-def _refuse_collisions(name: str, files: Mapping[str, bytes], artifacts: Mapping[str, str]) -> None:
-    collisions = sorted(set(files) & set(artifacts))
-    if not collisions:
+_ALWAYS_IMPORT_ROOTS = frozenset({"", "tools", "_shared"})
+"""Artefact directories every trial imports from, relative to the artefact root.
+
+The runner process puts the root and ``tools/`` on ``sys.path`` when it extracts
+the artefacts; an MCP server subprocess has its own directory first on its path,
+and a shared domain's server lives under ``_shared/``.
+"""
+
+
+def _import_roots(description: TaskDescription) -> frozenset[str]:
+    """The artefact directories a module of the trial can be imported from.
+
+    :data:`_ALWAYS_IMPORT_ROOTS` plus the directory of every MCP server script
+    the description names: Python starts that subprocess with the script's own
+    directory ahead of everything else, so a copy of a library beside the
+    server would win over the pinned one at the root.
+    """
+    roots = set(_ALWAYS_IMPORT_ROOTS)
+    for tool in (*description.agent_tools, *description.user_tools):
+        source = tool.source
+        if source is not None and source.mcp_server_script:
+            parent = PurePosixPath(source.mcp_server_script).parent.as_posix()
+            roots.add("" if parent == "." else parent)
+    return frozenset(roots)
+
+
+def _import_name(entry: str) -> str:
+    """The module a directory entry imports as: ``pkg/`` and ``pkg.py`` are both ``pkg``."""
+    return entry[: -len(".py")] if entry.endswith(".py") else entry
+
+
+def _refuse_collisions(
+    name: str,
+    files: Mapping[str, bytes],
+    artifacts: Mapping[str, str],
+    import_roots: frozenset[str],
+) -> None:
+    """Refuse an artefact that holds a bundle path or shadows a bundled top-level module.
+
+    Exact path matches are the obvious case. The subtle one is a pack that
+    vendored a copy of the library under a directory that comes before the
+    artefact root on some import path — ``_shared/<pkg>/…`` beside the MCP
+    server, or ``tools/<pkg>/…`` — which the pinned bundle would then never
+    be imported over. Both are reported with the artefact paths at fault.
+    """
+    bundled = {_import_name(PurePosixPath(path).parts[0]) for path in files}
+    offending: set[str] = set()
+    shadowed: set[str] = set()
+    for artifact in artifacts:
+        if artifact in files:
+            offending.add(artifact)
+            shadowed.add(_import_name(PurePosixPath(artifact).parts[0]))
+            continue
+        parts = PurePosixPath(artifact).parts
+        for depth in range(len(parts)):
+            if "/".join(parts[:depth]) not in import_roots:
+                continue
+            module = _import_name(parts[depth])
+            if module in bundled:
+                offending.add(artifact)
+                shadowed.add(module)
+    if not offending:
         return
+    collisions = sorted(offending)
     shown = ", ".join(collisions[:_COLLISIONS_SHOWN])
     more = (
         f" and {len(collisions) - _COLLISIONS_SHOWN} more"
@@ -239,6 +313,7 @@ def _refuse_collisions(name: str, files: Mapping[str, bytes], artifacts: Mapping
         else ""
     )
     raise ToolLibraryError(
-        f"tool library {name!r} bundles {len(collisions)} path(s) the task's artefacts "
-        f"already hold ({shown}{more}); remove the pack's own copy of the library"
+        f"tool library {name!r} bundles the top-level module(s) {', '.join(sorted(shadowed))}; "
+        f"{len(collisions)} path(s) of the task's artefacts hold or shadow them on the import "
+        f"path ({shown}{more}); remove the pack's own copy of the library"
     )
