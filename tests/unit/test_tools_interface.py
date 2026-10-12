@@ -324,6 +324,28 @@ class TestDecoratorSideEffects:
             description="Write.", annotations=ToolAnnotations(readOnlyHint=False)
         )
 
+    def test_the_tools_entry_carries_the_same_declaration_in_process(self):
+        """One declaration, two readers: the wire gets the annotation, an
+        in-process consumer that imports ``TOOLS`` (golden replay) reads the
+        same value off the entry — ``None`` when the tool declares nothing.
+        """
+
+        @self.registry.tool("Read.", mutates_state=False)
+        def read_tool(data: dict) -> str:
+            return "x"
+
+        @self.registry.tool("Write.", mutates_state=True)
+        def write_tool(data: dict) -> str:
+            return "x"
+
+        @self.registry.tool("Undeclared.")
+        def legacy_tool(data: dict) -> str:
+            return "x"
+
+        assert self.registry.TOOLS["read_tool"].mutates_state is False
+        assert self.registry.TOOLS["write_tool"].mutates_state is True
+        assert self.registry.TOOLS["legacy_tool"].mutates_state is None
+
     def test_data_stripped_from_mcp_signature(self):
         captured: list[Any] = []
         self.mock_mcp.tool.return_value = lambda fn: captured.append(fn) or fn

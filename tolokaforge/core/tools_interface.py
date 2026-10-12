@@ -5,7 +5,8 @@ registration. A single ``@registry.tool()`` decorator replaces two separate
 registrations that are otherwise needed:
 
 1. Manual ``TOOLS`` dict entry  → grading contract
-   ``GradingEngine`` calls ``TOOLS["name"].invoke(data=data, **kwargs)``
+   ``GradingEngine`` calls ``TOOLS["name"].invoke(data=data, **kwargs)``;
+   the entry's ``mutates_state`` is the author's declaration (ADR-0057)
 
 2. Manual ``@mcp.tool()`` wrapper → runtime MCP schema
    FastMCP generates ``inputSchema`` from type hints
@@ -211,8 +212,11 @@ class DomainToolRegistry:
             Whether a call can change the state (ADR-0057). Declared on the MCP
             tool as the ``readOnlyHint`` annotation (``readOnlyHint = not
             mutates_state``), which the native adapter reads back into
-            ``ToolSchema.mutates_state``. Left ``None``, the tool carries no
-            annotation and the engine treats it as possibly mutating.
+            ``ToolSchema.mutates_state``, and carried as ``mutates_state`` on
+            the ``TOOLS`` entry, so an in-process consumer (golden replay
+            imports ``TOOLS``) reads the same declaration the wire carries.
+            Left ``None``, the tool carries no annotation, the entry says
+            ``None``, and the engine treats it as possibly mutating.
 
         Example
         -------
@@ -244,10 +248,14 @@ class DomainToolRegistry:
             #    Grading passes raw YAML dicts; MCP runtime passes typed objects
             #    (FastMCP coerces them). Bridge the gap by calling model_validate
             #    only when we actually see a dict where a model is expected.
+            #    The entry also carries the author's mutates_state, so the one
+            #    declaration is readable in-process as well as on the wire.
             # ------------------------------------------------------------------
             _hints = get_type_hints(func, include_extras=True)
 
             class _ToolClass:
+                mutates_state: bool | None = None
+
                 @staticmethod
                 def invoke(data: dict, **kwargs: Any) -> Any:
                     coerced: dict[str, Any] = {}
@@ -279,6 +287,7 @@ class DomainToolRegistry:
 
             _ToolClass.__name__ = tool_name
             _ToolClass.__qualname__ = tool_name
+            _ToolClass.mutates_state = mutates_state
             self.TOOLS[tool_name] = _ToolClass
             sig = inspect.signature(func)
             new_params = [p for name, p in sig.parameters.items() if name != "data"]

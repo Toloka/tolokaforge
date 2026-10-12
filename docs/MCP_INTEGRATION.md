@@ -36,6 +36,10 @@ annotation, its schema carries no `mutates_state`, and the engine treats it as
 possibly mutating — today's behaviour. Nothing consumes the flag yet;
 `category` is unrelated and stays as it is.
 
+The same declaration is readable in-process: `registry.TOOLS[name].mutates_state`
+carries the decorator's value (`None` when undeclared), so golden replay and any
+other consumer that imports `TOOLS` reads the one declaration the wire carries.
+
 ### A committed cache wins
 
 The native adapter reads a committed `fixtures/tools.json` first and never
