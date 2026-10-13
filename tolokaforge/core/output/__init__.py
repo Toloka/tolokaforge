@@ -52,13 +52,21 @@ from tolokaforge.core.output.artifacts import (
     TrialArtifactWriter,
     model_id_slug,
 )
+from tolokaforge.core.output.measurement_fidelity import (
+    FidelityRule,
+    FidelityViolation,
+    check_run_bundle,
+)
 
 __all__ = [
+    "FidelityRule",
+    "FidelityViolation",
     "FileAggregateWriter",
     "FileArtifactWriter",
     "InMemoryAggregateWriter",
     "RunAggregateBundle",
     "RunAggregateWriter",
     "TrialArtifactWriter",
+    "check_run_bundle",
     "model_id_slug",
 ]

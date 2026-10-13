@@ -27,11 +27,17 @@ class TerminationReason(str, Enum):
     MAX_TURNS = "max_turns"  # Maximum turns limit reached
     MAX_STEPS = "max_steps"  # Opt-in half-duplex simulation step budget
     TOO_MANY_ERRORS = "too_many_errors"  # Opt-in cumulative environment-error budget
+    TRIAL_TOKEN_BUDGET = "trial_token_budget"  # Opt-in cumulative per-trial token budget exceeded
     USER_TOOL_LOOP_LIMIT = "user_tool_loop_limit"  # Isolated user turn took too many tool steps
     ERROR = "error"  # Runtime error occurred
     RATE_LIMIT = "rate_limit"  # API rate limit error
     API_TIMEOUT = "api_timeout"  # API call timed out after retries
     API_ERROR = "api_error"  # Other API errors
+    PROVIDER_REFUSED_ALL_REQUESTS = (
+        # Every provider request the trial made was refused, read off the
+        # proxy's own per-request records
+        "provider_refused_all_requests"
+    )
     EMPTY_COMPLETION = "empty_completion"  # Provider returned no text and no tool calls
     REASONING_WITHOUT_ACTION = (
         "reasoning_without_action"  # Billed reasoning tokens but returned no text and no tool call

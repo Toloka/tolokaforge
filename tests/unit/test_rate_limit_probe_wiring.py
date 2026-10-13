@@ -199,7 +199,7 @@ class TestBudgetInvariantAtLoadTime:
         validate_rate_limit_probe_budget(None, 60.0, source="test")
 
 
-def _spec() -> MagicMock:
+def _spec(user_model_config: ModelConfig | None = None) -> MagicMock:
     """A ``TrialSpec`` stand-in whose ``task.metadata`` is a real mapping.
 
     ``TaskDescription.metadata`` is a ``dict`` field with a ``{}`` default, so
@@ -210,6 +210,11 @@ def _spec() -> MagicMock:
     """
     spec = MagicMock()
     spec.task.metadata = {}
+    # ``TrialSpec.user_model_config`` is ``ModelConfig | None`` and the conductor
+    # branches on ``is not None``. A Mock here reaches preset validation as a
+    # bogus ``reasoning_history`` value; these cases wire timeouts, not a user
+    # simulator, so the honest stand-in is "no user model".
+    spec.user_model_config = user_model_config
     return spec
 
 
@@ -430,7 +435,12 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path), AGENT_LOOP_IDENTITY)
+            conductor._run_agent_loop(
+                _spec(ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6")),
+                task,
+                self._setup(tmp_path),
+                AGENT_LOOP_IDENTITY,
+            )
 
         simulator = runner_cls.call_args.kwargs["user_simulator"]
         assert simulator.llm_client is not None

@@ -730,6 +730,55 @@ class TestGenerateReports:
         assert warnings[0].kwargs["infrastructure_aborts"] == {"rate_limit": 1}
         assert warnings[0].kwargs["pass_at_k_without_coverage"] == [5]
 
+    def test_an_abandoned_retry_is_not_counted_as_a_trial(self, tmp_path: Path) -> None:
+        """A trial directory is ``trials/<task>/<index>`` with no attempt
+        component, so a retried attempt overwrites the one it supersedes and
+        only the last one is on disk. Recording both made the per-task row
+        claim a trial nobody can open, and the abandoned attempt's
+        harness-synthesised 0.0 entered the mean."""
+        from unittest.mock import MagicMock
+
+        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.output.measurement_fidelity import (
+            FidelityRule,
+            check_run_bundle,
+        )
+
+        orch = Orchestrator(_make_run_config())
+        orch.logger = MagicMock()
+        orch.tasks = [_make_task_config("T1")]
+
+        abandoned = _make_trajectory(
+            "T1",
+            0,
+            status=TrialStatus.ERROR,
+            termination_reason=TerminationReason.ERROR,
+            score=0.0,
+            binary_pass=False,
+        )
+        abandoned.grade = Grade(
+            binary_pass=False,
+            score=0.0,
+            components=GradeComponents(),
+            reasons="Trial failed with status: error",
+            synthesized_by_termination_reason=TerminationReason.ERROR,
+        )
+        orch._record_attempt(abandoned)
+        orch._record_attempt(_make_trajectory("T1", 0, score=1.0))
+
+        assert len(orch.results) == 1, "the abandoned attempt is still being counted"
+
+        # Only the surviving attempt left a directory — the retry wrote over it.
+        (tmp_path / "trials" / "T1" / "0").mkdir(parents=True)
+        orch._generate_reports(tmp_path)
+
+        rows = json.loads((tmp_path / "per_task_metrics.json").read_text())
+        assert rows[0]["total_trials"] == 1
+        assert rows[0]["avg_score"] == 1.0, "the abandoned attempt's 0.0 entered the mean"
+        assert [
+            v for v in check_run_bundle(tmp_path) if v.rule is FidelityRule.DISK_RECONCILIATION
+        ] == []
+
     def test_a_clean_run_announces_no_degraded_coverage(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock
 

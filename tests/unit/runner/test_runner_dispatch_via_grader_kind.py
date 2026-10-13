@@ -11,9 +11,10 @@ Five outcome cells:
 - **Tool absent** — the substrate reports ``tool_absent=True``; the kind
   raises :class:`GraderKindRefusedError`; the dispatcher maps it to
   ``GradeTrialResponse(success=False, error=<reason>)``.
-- **Script raised** — the substrate reports ``script_exec_error``; the
-  kind returns ``Grade(0.0, "test.sh execution failed: ...")``; the
-  dispatcher wraps it in ``success=True``.
+- **Script raised** — the substrate reports ``script_exec_error``; the suite
+  never ran, so the kind raises :class:`GraderKindRefusedError` and the
+  dispatcher maps it to ``GradeTrialResponse(success=False, error=<reason>)``
+  with no grade attached.
 - **Happy rc=0** — reward parseable, score matches the reward.
 - **Happy rc≠0 (regression lock)** — a rc≠0 script that wrote a valid
   reward is scored by the reward. The dispatch does NOT gate on
@@ -147,9 +148,12 @@ def test_grading_failure_carries_structured_judge_usage_on_runner_wire(
     assert json.loads(response.failure_evidence_json)["judge_usage"]["cost_usd"] == 0.03
 
 
-def test_script_exec_error_maps_to_success_true_with_execution_failed_reasons(
+def test_script_exec_error_maps_to_success_false_with_the_refusal_as_error(
     service: RunnerServiceImpl, mock_grpc_context: Any
 ) -> None:
+    """A verifier the subprocess killed leaves the trial ungradeable on the
+    wire, not scored zero: the kind refuses and the dispatcher maps the
+    refusal to ``success=False`` with the message as ``error``."""
     trial_id = "script_raised:0"
     _register_and_return_trial_id(service, mock_grpc_context, trial_id, _task("test_execution"))
     _script_run_test_suite(
@@ -160,18 +164,17 @@ def test_script_exec_error_maps_to_success_true_with_execution_failed_reasons(
             stdout="",
             tool_absent=False,
             tool_absent_reason="",
-            script_exec_error="Command 'bash test.sh' timed out after 300.0 seconds",
+            script_exec_error="Command 'bash test.sh' timed out after 120.0 seconds",
         ),
     )
 
     response = service.GradeTrial(pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context)
 
-    assert response.success is True
-    assert response.grade.binary_pass is False
-    assert response.grade.score == pytest.approx(0.0)
-    assert response.grade.reasons == (
-        "test.sh execution failed: Command 'bash test.sh' timed out after 300.0 seconds"
+    assert response.success is False
+    assert response.error == (
+        "test.sh execution failed: Command 'bash test.sh' timed out after 120.0 seconds"
     )
+    assert response.HasField("grade") is False
 
 
 def test_happy_rc_zero_scored_by_reward(service: RunnerServiceImpl, mock_grpc_context: Any) -> None:

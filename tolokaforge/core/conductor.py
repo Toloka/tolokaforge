@@ -42,6 +42,7 @@ from tolokaforge.core.env_state import EnvironmentState
 from tolokaforge.core.judge_prompt import effective_judge_system_prompt
 from tolokaforge.core.llm import LLMClient, build_capabilities
 from tolokaforge.core.llm.presets import (
+    resolve_context_controls,
     resolve_effective_preset,
     resolve_policy_names,
 )
@@ -182,8 +183,15 @@ def _build_resolved_block(model_config: ModelConfig) -> dict[str, Any]:
 
     Shape: ``{"effective_preset": ..., "schema_sanitizer": ..., ...}``.
     See :func:`tolokaforge.core.llm.presets.resolve_policy_names` for the
-    named policy slots included in the fingerprint. Analytics tools diff
-    this across runs to detect preset / capability drift.
+    named policy slots and
+    :func:`tolokaforge.core.llm.presets.resolve_context_controls` for the
+    scalar context-control values included in the fingerprint. Analytics tools
+    diff this across runs to detect preset / capability drift.
+
+    The block records what the run resolved to, not what the config asked for:
+    the requested values are already on ``model_config.<role>.capabilities``,
+    and a setting a route overrode is only visible as the difference between
+    the two.
     """
     capabilities = build_capabilities(
         model_config.name,
@@ -193,6 +201,7 @@ def _build_resolved_block(model_config: ModelConfig) -> dict[str, Any]:
     return {
         "effective_preset": resolve_effective_preset(model_config.name, model_config.provider),
         **resolve_policy_names(capabilities),
+        **resolve_context_controls(capabilities),
     }
 
 
@@ -911,6 +920,14 @@ class InProcessConductor:
             self.agent_client.capabilities.default_max_turns,
         )
 
+        # Opt-in per-trial token ceiling: a task value overrides the run-level
+        # default, and both default to None (uncapped).
+        max_trial_tokens = (
+            task.max_trial_tokens
+            if task.max_trial_tokens is not None
+            else self.config.orchestrator.max_trial_tokens
+        )
+
         # Scale turn budget for complex multi-app mobile tasks only when task max_turns
         # is not explicitly pinned.
         if task.max_turns is None:
@@ -967,6 +984,7 @@ class InProcessConductor:
             max_environment_errors=task.max_environment_errors,
             turn_timeout_s=turn_timeout_s,
             episode_timeout_s=episode_timeout_s,
+            max_trial_tokens=max_trial_tokens,
             stuck_detector=stuck_detector,
             user_tool_executor=setup.user_tool_executor,
             request_limiter=self.request_limiter,
@@ -1472,8 +1490,10 @@ class InProcessConductor:
         """Serialize model config for trial output.
 
         Each role's block carries a ``resolved:`` sub-block with the preset
-        fingerprint (effective preset name plus the six registered-policy
-        names from :func:`tolokaforge.core.llm.presets.resolve_policy_names`).
+        fingerprint (effective preset name, the registered-policy names from
+        :func:`tolokaforge.core.llm.presets.resolve_policy_names`, and the
+        context-control values from
+        :func:`tolokaforge.core.llm.presets.resolve_context_controls`).
         Analytics tools diff this across runs to detect config drift without
         having to re-match the preset YAML.
 
@@ -1538,10 +1558,12 @@ class InProcessConductor:
     def _build_system_prompt(
         self, task: TaskConfig, tool_schemas: list[dict[str, Any]], task_dir: Path
     ) -> str:
+        capabilities = self.agent_client.capabilities
         return build_system_prompt(
             task=task,
             task_dir=task_dir,
-            default_prompt_contract=self.agent_client.capabilities.default_agent_prompt_contract,
+            default_prompt_contract=capabilities.default_agent_prompt_contract,
+            observation_window=capabilities.observation_window,
         )
 
 

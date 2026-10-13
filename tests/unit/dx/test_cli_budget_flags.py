@@ -17,7 +17,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
-from tests.utils.orchestrator_stubs import complete_run
+from tests.utils.orchestrator_stubs import complete_run, fidelity_clean_run_dir
 from tolokaforge.core.budgets import (
     CompositeBudget,
     CostBudget,
@@ -92,7 +92,7 @@ class TestCostLimit:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         expected_dir = (tmp_path / "results" / "run").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         captured: dict[str, Any] = {}
         monkeypatch.setattr(
             cli_main,
@@ -133,7 +133,7 @@ class TestCostLimit:
             )
         )
         expected_dir = (tmp_path / "results" / "run").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         captured: dict[str, Any] = {}
         monkeypatch.setattr(
             cli_main,
@@ -156,7 +156,7 @@ class TestTimeLimit:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         expected_dir = (tmp_path / "results" / "run").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         captured: dict[str, Any] = {}
         monkeypatch.setattr(
             cli_main,
@@ -195,7 +195,7 @@ class TestComposedFlags:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         expected_dir = (tmp_path / "results" / "run").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         captured: dict[str, Any] = {}
         monkeypatch.setattr(
             cli_main,
@@ -232,7 +232,7 @@ class TestNoLimits:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         expected_dir = (tmp_path / "results" / "run").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         captured: dict[str, Any] = {}
         monkeypatch.setattr(
             cli_main,

@@ -178,6 +178,21 @@ class LoopConfig:
     before the message is appended; ``None`` on both axes threads tool output
     through verbatim.
 
+    ``observation_window`` keeps that many of the most recent ``role=tool``
+    messages at full length on the wire and collapses older ones to a line
+    naming what was dropped. It bounds the cost of *replaying* observations,
+    which ``tool_output_max_chars`` does not: a cap bounds one message once,
+    while a window bounds what every later turn re-sends. ``None`` sends every
+    observation in full, which is the pre-opt-in behaviour.
+
+    ``observation_window_polling`` is how many turns the window boundary holds
+    still before it advances, so between ``observation_window`` and
+    ``observation_window + polling - 1`` observations are live at any moment.
+    Collapsing an observation rewrites the wire history at its position, and a
+    boundary that moves every turn therefore rewrites the prefix every turn;
+    holding it still lets the provider's cache survive the turns in between.
+    ``1`` advances every turn.
+
     ``max_context_tokens``, ``context_watermark`` and ``summarize_policy``
     arm the context-window summarize seam (see
     :mod:`tolokaforge.core.summarize_policy`). The pre-turn watermark check
@@ -185,10 +200,19 @@ class LoopConfig:
     ``MetricsSink.last_prompt_tokens + context_watermark >=
     max_context_tokens``; any ``None`` leaves the loop's pre-opt-in
     behaviour intact.
+
+    ``max_trial_tokens`` is an opt-in per-trial ceiling on cumulative model
+    tokens (prompt + completion across every call). Checked before each turn
+    against ``MetricsSink.cumulative_tokens``; once the spend to date meets
+    the ceiling the loop stops with
+    :attr:`TerminationReason.TRIAL_TOKEN_BUDGET`, so a trial looping without
+    progress cannot run out the whole wall-clock budget. ``None`` (the
+    default) keeps the loop uncapped on tokens.
     """
 
     max_turns: int = 50
     episode_timeout_s: int = 1200
+    max_trial_tokens: int | None = None
     api_error_retries: int = 1
     api_error_backoff_s: float = 1.0
     empty_retry_count: int = 0
@@ -197,6 +221,8 @@ class LoopConfig:
     output_length_retry_count: int = 0
     parser_error_retry_count: int = 0
     tool_output_max_chars: int | None = None
+    observation_window: int | None = None
+    observation_window_polling: int = 1
     max_context_tokens: int | None = None
     context_watermark: int | None = None
     summarize_policy: SummarizePolicy | None = None
@@ -293,6 +319,15 @@ class MetricsSink(Protocol):
 
     @property
     def last_prompt_tokens(self) -> int | None:
+        return None
+
+    @property
+    def cumulative_tokens(self) -> int | None:
+        """Total model tokens charged so far this trial (prompt + completion).
+
+        The loop reads it to arm the opt-in ``max_trial_tokens`` ceiling. A
+        subclass that never overrides inherits ``None`` and never trips it.
+        """
         return None
 
     def record_tool_output_truncated(self, omitted_chars: int) -> None:
@@ -930,6 +965,57 @@ class ToolCallFunnel:
             call.arguments = normalized_args
 
 
+def _with_collapsed_observations(
+    wire: list[Message], *, keep_last: int, turn: int, polling: int
+) -> list[Message]:
+    """*wire* with all but the most recent *keep_last* observations collapsed.
+
+    An observation is a ``role=tool`` message. The ones outside the window keep
+    their position and their identity in the conversation — only their content
+    becomes a line saying how much was dropped — so the model still sees that a
+    command ran and in what order, and can re-run it if it needs the output
+    again.
+
+    The boundary advances once per *polling* turns rather than once per turn.
+    Each advance rewrites the message at that position and so invalidates the
+    provider's cached prefix from there on; holding the boundary still between
+    advances is what keeps that cost occasional rather than continuous.
+    """
+    if keep_last < 0 or not wire:
+        return wire
+    live = keep_last + (turn % polling if polling > 1 else 0)
+    indices = [i for i, m in enumerate(wire) if m.role is MessageRole.TOOL]
+    if len(indices) <= live:
+        return wire
+    collapse = set(indices[: len(indices) - live])
+    out = list(wire)
+    for i in collapse:
+        content = out[i].content or ""
+        out[i] = out[i].model_copy(
+            update={"content": f"[earlier output, {len(content)} characters, not shown]"}
+        )
+    return out
+
+
+def _without_last_assistant_reasoning(wire: list[Message]) -> list[Message]:
+    """*wire* with reasoning dropped from its most recent assistant message.
+
+    Returns the list unchanged when the last assistant message carries no
+    reasoning, so a resample on a route that never replays reasoning sends the
+    identical object it would have sent anyway.
+    """
+    for index in range(len(wire) - 1, -1, -1):
+        message = wire[index]
+        if message.role is not MessageRole.ASSISTANT:
+            continue
+        if message.reasoning is None:
+            return wire
+        stripped = list(wire)
+        stripped[index] = message.model_copy(update={"reasoning": None})
+        return stripped
+    return wire
+
+
 def _opening(wire: list[Message]) -> list[Message]:
     """The head of *wire* a summarize keeps: everything through the first user turn.
 
@@ -1160,6 +1246,9 @@ class ToolCallingLoop:
             timeout_decision = self._check_episode_timeout(start_time)
             if timeout_decision is not None:
                 return timeout_decision
+            budget_decision = self._check_trial_token_budget()
+            if budget_decision is not None:
+                return budget_decision
             try:
                 return self._run_turn(turn, system_prompt, messages)
             except Exception as exc:  # noqa: BLE001 — classified, then surfaced via status
@@ -1557,26 +1646,31 @@ class ToolCallingLoop:
         self, turn: int, system_prompt: str, *, replay_reasoning: bool = True
     ) -> GenerationResult:
         """One agent call. ``replay_reasoning=False`` sends the history with the
-        model's own prior deliberation stripped off the wire.
+        deliberation that produced the actionless turn stripped off the wire.
 
         A resample that replays the reasoning which just produced an actionless
         turn is close to re-rolling the same dice, and measurably behaves like
-        it. Only the wire copy is stripped — the recorded messages the grader
+        it. Only that one message is stripped: earlier assistant turns reasoned
+        their way into actions, so their deliberation is not what is being
+        re-rolled, and rewriting them would change every byte of the prompt
+        after the first — on a route whose codec replays reasoning, that
+        discards the provider's cached prefix and bills the whole context
+        afresh. Only the wire copy is touched; the recorded messages the grader
         reads keep their reasoning, so nothing leaves the trajectory.
         """
         self.logger.debug("Requesting agent response", turn=turn)
         if self.request_limiter is not None:
             self.request_limiter.acquire()
         wire = self._wire_messages
+        if self.config.observation_window is not None:
+            wire = _with_collapsed_observations(
+                wire,
+                keep_last=self.config.observation_window,
+                turn=turn,
+                polling=self.config.observation_window_polling,
+            )
         if not replay_reasoning:
-            wire = [
-                (
-                    m.model_copy(update={"reasoning": None})
-                    if m.role == MessageRole.ASSISTANT and m.reasoning is not None
-                    else m
-                )
-                for m in wire
-            ]
+            wire = _without_last_assistant_reasoning(wire)
         return self.llm_client.generate(
             system=system_prompt,
             messages=wire,
@@ -1637,6 +1731,32 @@ class ToolCallingLoop:
 
     def _check_episode_timeout(self, start_time: float) -> TerminationDecision | None:
         return episode_timeout_decision(start_time, self.config.episode_timeout_s, self.logger)
+
+    def _check_trial_token_budget(self) -> TerminationDecision | None:
+        """Stop the trial when cumulative tokens reach ``max_trial_tokens``.
+
+        A no-op unless the ceiling is configured and the sink reports a running
+        total. Checked before a turn runs, so the spend that crosses the line is
+        the turn already recorded, not the one about to start.
+
+        The decision leaves ``status`` as ``None`` so the trial keeps the
+        optimistic ``COMPLETED`` status: a deliberate budget stop is not an
+        error or a timeout, and promoting it to ``TIMEOUT`` would make the
+        orchestrator classify it retryable and re-burn the same ceiling.
+        """
+        limit = self.config.max_trial_tokens
+        if limit is None:
+            return None
+        spent = self.metrics.cumulative_tokens
+        if spent is None or spent < limit:
+            return None
+        self.logger.warning("Per-trial token budget reached", tokens=spent, budget=limit)
+        return TerminationDecision(
+            reason=TerminationReason.TRIAL_TOKEN_BUDGET,
+            system_message=(
+                f"Per-trial token budget reached ({spent} >= {limit} tokens). Dialogue terminated."
+            ),
+        )
 
     def _capture_effective_prompt(self, result: GenerationResult) -> None:
         if result.effective_system_prompt and not self._captured:

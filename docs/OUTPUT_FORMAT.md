@@ -336,7 +336,8 @@ it and resolves the default simulator — while `interaction_mode` and
 
 Computed by the orchestrator at trial-start via
 [`tolokaforge.core.llm.presets.resolve_effective_preset`](../tolokaforge/core/llm/presets.py)
-+ [`resolve_policy_names`](../tolokaforge/core/llm/presets.py). Shape:
++ [`resolve_policy_names`](../tolokaforge/core/llm/presets.py)
++ [`resolve_context_controls`](../tolokaforge/core/llm/presets.py). Shape:
 
 | Field | Values | Source |
 |---|---|---|
@@ -349,6 +350,18 @@ Computed by the orchestrator at trial-start via
 | `cache_policy` | `none` \| `anthropic_ephemeral` | policy registry |
 | `message_assembly_policy` | `null` \| `nova` (only `aws_nova` / `aws_nova_openrouter` carry `nova`; every other preset resolves to `null`) | policy registry |
 | `assistant_text_policy` | `passthrough` (every shipped preset today; out-of-tree subclasses land via the `--presets-file` overlay) | policy registry |
+| `reasoning_history` | `all` \| `none` \| `last` — the **effective** setting after the route has had its say, never `auto` | [`effective_reasoning_history`](../tolokaforge/core/llm/reasoning_history.py) |
+| `observation_window` | integer \| `null` — how many of the most recent observations stayed full-length on the wire; `null` sends every observation in full | capability value |
+| `observation_window_polling` | integer ≥ 1 — turns the window boundary held still before advancing; inert when `observation_window` is `null` | capability value |
+
+The three context-control fields record what the trial **ran under**, which is
+not always what its config asked for. `model_config.<role>.capabilities` carries
+the request; `resolved.*` carries the resolution. `reasoning_history` is where
+the two most often diverge: a codec that declares `forced_history` — the
+Anthropic route does, because the provider requires thinking blocks to
+round-trip intact — overrides the preset, so a config asking for `last` on that
+route records `all` here. Comparing the two fields is the only way to assert
+after a run that a requested setting survived.
 
 `params_policy` is intentionally omitted from `resolved.*` — it is a
 stateful [`GenerationParams`](../tolokaforge/core/llm/params_policy.py)
@@ -946,6 +959,7 @@ reasoning_recovered_by_fallback: 0 # readable reasoning the preset's codec does 
 reasoning_channel_unknown: 0       # billed for reasoning that arrived in no channel we know
 reasoning_replay_dropped: false    # reasoning was extracted and then never sent back
 tool_calls: 7
+tool_commands: 11                  # shell commands issued; a batching tool makes one call carry several
 tool_success_rate: 1.0
 stuck_detected: false
 tool_usage:
@@ -985,7 +999,14 @@ time measured around each call, failures included.
 `executor` and `latency_seconds` it aggregates live in
 [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
 
-`tool_calls` and `tool_success_rate` count the **agent's** calls — the same
+`tool_commands` counts the shell commands behind those calls. A tool whose
+argument is an array of commands records one `tool_calls` entry for the whole
+array and one `tool_commands` entry per element; every other call contributes
+one to each. `tool_commands / turns` therefore reads as work per turn whichever
+shell tool a run selected, while `tool_calls / turns` does not.
+
+`tool_calls`, `tool_commands` and `tool_success_rate` count the **agent's**
+calls — the same
 scoping stuck detection and `transcript_rules.tool_expectations` apply, so a
 trial whose user actor called a tool of its own does not read as the agent having
 used one. `tool_usage` and `tool_log.yaml` carry every executor's calls, so on a
@@ -2013,10 +2034,10 @@ to be readable:
 
 | Key | Meaning |
 |---|---|
-| `total_trials` | Every attempt the run made |
+| `total_trials` | Every trial the run recorded — one per directory under `trials/<task_id>/`. A trial directory carries no attempt component, so a retried attempt overwrites the one it supersedes and replaces it here rather than being counted beside it |
 | `measured_trials` | The denominator the run holds itself accountable for — every rate in the row except `avg_score` is over it |
 | `scored_trials` | The measured attempts that produced a grade — `avg_score`'s denominator, and the weight `avg_score_micro` uses. Below `measured_trials` on any run that hit an `ungradeable` attempt or a `trial_lost` one |
-| `infrastructure_aborts` | Per reason, the attempts excluded from that denominator: `{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`. All three keys are always present |
+| `infrastructure_aborts` | Per reason, the attempts excluded from that denominator: `{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`. Every excluded reason's key is always present, zero or not — a zero is a fact about the run, a missing key only a fact about the writer |
 | `harness_errors` | Attempts that failed on a defect of ours. Counted **inside** `measured_trials`; a non-zero value is a run-health signal |
 | `ungradeable` | Attempts whose grading refused. Also **inside** `measured_trials`, and a non-pass in `success_rate` / `pass@k`; the cause is in that trial's `trajectory.yaml` under `grading_error`. A non-zero count makes `tolokaforge run` / `worker` exit `1` ([CLI.md § Run and worker exit codes](CLI.md#run-and-worker-exit-codes)), so this is the number to read when a completed run failed its CI step |
 | `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`. An ungradeable attempt terminates the way a graded one does, so it is keyed `ungradeable_<reason>`: `{"ungradeable_agent_done": {"class": "ungradeable", "count": 1}}`. A trial whose runner no longer held it is keyed `trial_lost` with class `harness_error`, and carries no grade — a runner lost *after* the trial's last tool call instead lands under `ungradeable_<reason>`, because the agent finished and grading refused |
@@ -2046,7 +2067,7 @@ evidence about us, and our own defects stay counted. See
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator's built-in prompt body or the conversation context it sees. The context `actors.user.tool_turns: isolated` builds is identified by `user_actor.tool_turns`, not by this stamp; a non-built-in simulator (`actors.user.simulator`) writes its own prompt, recorded in `prompts.yaml` |
 | `metrics.yaml` | `schema_version` | `7` | The per-trial bundle's file set or field semantics change |
-| `aggregate.json` | `schema_version` | `4` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, or the per-role spend plane. A new termination reason only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
+| `aggregate.json` | `schema_version` | `5` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, or the per-role spend plane. Also whenever the `infrastructure_aborts` key set changes, because those keys are part of the generation: the stamp is how a reader knows which excluded reasons a file could have reported. A termination reason that is *not* excluded only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `task.yaml.user_actor` | — (struct-typed) | n/a | Mirrors `UserSimulatorConfig`; fields grow, removing one is a breaking change |

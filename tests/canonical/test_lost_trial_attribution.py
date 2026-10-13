@@ -29,7 +29,11 @@ from tests.utils.mock_clients import MockAsyncClient
 from tests.utils.runner_requests import execute_request
 from tests.utils.servicer_runtime import ServicerBackend
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
-from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
+from tolokaforge.core.failure_attribution import (
+    EXCLUDED_TYPED_REASONS,
+    TrialOutcomeClass,
+    classify_trial_outcome,
+)
 from tolokaforge.core.grading.trace_timeline import (
     TraceEventKind,
     TrialTimeline,
@@ -256,10 +260,6 @@ def test_a_lost_trial_is_counted_against_the_run_and_scored_not_at_all(
     assert metrics["avg_score"] == 1.0
     assert metrics["successful_trials"] == 1
     assert metrics["success_rate"] == 0.5
-    assert sorted(metrics["infrastructure_aborts"]) == [
-        "api_timeout",
-        "empty_completion",
-        "provision_error",
-        "rate_limit",
-        "reasoning_without_action",
-    ]
+    assert sorted(metrics["infrastructure_aborts"]) == sorted(
+        reason.value for reason in EXCLUDED_TYPED_REASONS
+    )

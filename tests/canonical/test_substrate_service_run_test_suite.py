@@ -196,9 +196,10 @@ def test_tool_absent_is_first_class_outcome_not_rpc_error() -> None:
 def test_script_exec_exception_populates_error_field_without_grpc_internal() -> None:
     """A subprocess exception (TimeoutExpired, OSError, …) from the script
     call populates ``script_exec_error``. The RPC returns OK — a gRPC
-    ``INTERNAL`` status would flip the wire to ``success=False`` and lose
-    the observable grade outcome (``Grade(0.0, "test.sh execution failed:
-    {e}")``) the kind renders from this first-class field."""
+    ``INTERNAL`` status would collapse this into a transport fault and lose
+    the field itself, which is what the kind reads to decide that the suite
+    never ran. The kind then refuses the trial rather than grading it; this
+    RPC's job is only to report the error faithfully."""
     tool = _StubBashTool(
         responses=[
             subprocess.TimeoutExpired(cmd="bash test.sh", timeout=300.0),
