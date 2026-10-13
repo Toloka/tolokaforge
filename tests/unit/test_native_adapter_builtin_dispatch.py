@@ -485,6 +485,51 @@ def test_search_kb_without_override_preserves_canonical_schema(tmp_path: Path):
     assert tool.output_max_chars is None
 
 
+def test_search_kb_declares_itself_read_only(tmp_path: Path):
+    """The engine builds the search tool over the trial's index and never writes
+    through it, so the schema it emits declares ``mutates_state=False`` (ADR-0061)
+    — on the model and in its JSON dump, where an undeclared flag would be absent.
+    """
+    from tolokaforge.adapters._task_loader import (
+        declared_search_backend,
+        search_declaration,
+        search_tool_schema,
+    )
+
+    base_dir = _task_dir_with_stub_block(tmp_path, "search_kb", {})
+    adapter = NativeAdapter({"tasks_glob": "*/task.yaml", "base_dir": str(base_dir)})
+    task, _ = load_task_yaml(base_dir / "override_task" / "task.yaml")
+    search = search_declaration(task)
+
+    schema = search_tool_schema(search, declared_search_backend(search))
+    td = adapter.to_task_description("override_task")
+    tool = next(t for t in td.agent_tools if t.name == "search_kb")
+
+    assert schema.mutates_state is False
+    assert tool.mutates_state is False
+    assert tool.model_dump()["mutates_state"] is False
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected"),
+    [("read_file", False), ("write_file", True), ("bash", None)],
+)
+def test_builtin_schemas_on_the_wire_carry_the_policy_declared_flag(
+    tmp_path: Path, tool_name: str, expected: bool | None
+):
+    """What ``_builtin_tool_schemas`` derives from ``ToolPolicy.category`` reaches
+    ``ToolSchema.mutates_state`` through the generic branch, and a ``compute``
+    tool's schema dumps without the field.
+    """
+    base_dir = _task_dir_with_stub_block(tmp_path, tool_name, {})
+    adapter = NativeAdapter({"tasks_glob": "*/task.yaml", "base_dir": str(base_dir)})
+    td = adapter.to_task_description("override_task")
+
+    tool = next(t for t in td.agent_tools if t.name == tool_name)
+    assert tool.mutates_state is expected
+    assert ("mutates_state" in tool.model_dump()) is (expected is not None)
+
+
 def test_tool_configs_strips_output_max_chars_and_keeps_other_kwargs(tmp_path: Path):
     """``tool_configs`` returns a mapping the runner can splat verbatim: the
     reserved ``output_max_chars`` key never appears, and other kwargs pass

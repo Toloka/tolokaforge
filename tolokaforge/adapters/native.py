@@ -29,6 +29,7 @@ from tolokaforge.adapters._task_loader import (
     seeded_tables_from_task,
     tool_configs,
     tool_output_max_chars_overrides,
+    warn_tool_cache_predating_mutates_state,
 )
 from tolokaforge.adapters.base import (
     AdapterEnvironment,
@@ -252,6 +253,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
                 source=source,
                 tool_config=configs.get(tool_name, {}),
                 output_max_chars=emitted_cap,
+                mutates_state=rich.get("mutates_state"),
             )
         )
     return schemas
@@ -899,6 +901,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
 
         agent_tools = _actor_tool_schemas(task, task_dir, ToolActor.AGENT)
         user_tools = _actor_tool_schemas(task, task_dir, ToolActor.USER)
+        warn_tool_cache_predating_mutates_state(task, task_dir)
         mcp_server_ref: str | None = actor_tool_block(task, ToolActor.AGENT).get("mcp_server")
 
         initial_tables = seeded_tables_from_task(task, task_dir)
