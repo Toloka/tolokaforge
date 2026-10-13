@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from tolokaforge_adapter_terminal_bench.task_parser import (
+    TaskShape,
     TerminalBenchArtifact,
+    detect_shape,
     discover_tasks,
 )
 
@@ -44,10 +46,31 @@ memory_mb = 4096
 def test_v21_task_is_not_v4(tmp_path: Path) -> None:
     _write_task(tmp_path, "plain", _V21_TOML)
     task = discover_tasks(tmp_path)["plain"]
+    assert task.shape is TaskShape.SINGLE_CONTAINER
     assert task.is_v4 is False
     assert task.environment_mode is None
     assert task.artifacts == []
     assert task.has_tests_dockerfile is False
+
+
+@pytest.mark.parametrize(
+    ("environment_mode", "artifacts", "has_tests_dockerfile", "expected"),
+    [
+        (None, [], False, TaskShape.SINGLE_CONTAINER),
+        ("separate", [], False, TaskShape.SEPARATE_VERIFIER),
+        (None, ["/app"], False, TaskShape.SEPARATE_VERIFIER),
+        (None, [], True, TaskShape.SEPARATE_VERIFIER),
+    ],
+)
+def test_detect_shape_markers(environment_mode, artifacts, has_tests_dockerfile, expected) -> None:
+    assert (
+        detect_shape(
+            environment_mode=environment_mode,
+            artifacts=artifacts,
+            has_tests_dockerfile=has_tests_dockerfile,
+        )
+        is expected
+    )
 
 
 def test_environment_mode_marks_v4(tmp_path: Path) -> None:

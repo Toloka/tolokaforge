@@ -4,11 +4,47 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import tomllib
 import yaml
+
+
+class TaskShape(Enum):
+    """Where a terminal-bench task runs its verifier.
+
+    The axis that actually changed across terminal-bench versions is verifier
+    placement, not the version number, so the adapter dispatches on this rather
+    than on a release label. A new shape slots in as one more member plus a rule
+    in :func:`detect_shape`; call sites branch on the member they care about.
+
+    * ``SINGLE_CONTAINER`` — the 2.1 shape: the suite runs inside the agent's own
+      container, reading its reward from a shared log path.
+    * ``SEPARATE_VERIFIER`` — the 4.0 shape: the suite runs in a dedicated
+      verifier container built from ``tests/Dockerfile``, into which the task's
+      declared ``artifacts`` are re-materialised from the agent container first.
+    """
+
+    SINGLE_CONTAINER = "single_container"
+    SEPARATE_VERIFIER = "separate_verifier"
+
+
+def detect_shape(
+    *, environment_mode: str | None, artifacts: list[Any], has_tests_dockerfile: bool
+) -> TaskShape:
+    """The task's shape, from the three independent separate-verifier markers.
+
+    Any one of a shipped ``tests/Dockerfile``, a declared
+    ``[verifier].environment_mode``, or top-level ``artifacts`` means the suite
+    runs in its own container; a task carrying none of them is the
+    single-container shape. The markers are OR-ed, not required together,
+    because a real converted task may carry only a subset.
+    """
+    if has_tests_dockerfile or environment_mode is not None or bool(artifacts):
+        return TaskShape.SEPARATE_VERIFIER
+    return TaskShape.SINGLE_CONTAINER
 
 
 @dataclass(frozen=True)
@@ -66,6 +102,10 @@ class TerminalBenchTask:
     has_tests_dockerfile: bool = False
     """Whether the task ships ``tests/Dockerfile``, i.e. a self-contained verifier
     image. One of the three markers that identify the separate-verifier shape."""
+    shape: TaskShape = TaskShape.SINGLE_CONTAINER
+    """Where this task runs its verifier; see :class:`TaskShape`. Derived from the
+    three markers at discovery, so call sites dispatch on one field rather than
+    re-deriving the rule. Defaults to the single-container shape."""
     harness_skills_dir: str | None = None
     """Task-relative directory of skills the pack ships for a coding-harness
     CLI, as ``task.yaml`` declared it, or ``None`` when it declares none.
@@ -81,14 +121,10 @@ class TerminalBenchTask:
     def is_v4(self) -> bool:
         """Whether this task runs its tests in a separate verifier container.
 
-        True when any of the three independent markers is present: the task ships
-        ``tests/Dockerfile``, declares ``[verifier].environment_mode``, or lists
-        top-level ``artifacts``. A task missing all three is the single-container
-        shape and takes the unchanged in-agent verification path.
+        A convenience over :attr:`shape` for the common separate-verifier check;
+        the suite runs in its own container rather than the agent's.
         """
-        return (
-            self.has_tests_dockerfile or self.environment_mode is not None or bool(self.artifacts)
-        )
+        return self.shape is TaskShape.SEPARATE_VERIFIER
 
 
 def _load_task_yaml(task_dir: Path) -> dict[str, Any]:
@@ -294,6 +330,9 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
                 f"string; got {environment_mode!r}."
             )
 
+        artifacts = _parse_artifacts(task_id, toml_data)
+        has_tests_dockerfile = (task_dir / "tests" / "Dockerfile").is_file()
+
         tasks[task_id] = TerminalBenchTask(
             task_id=task_id,
             task_dir=task_dir,
@@ -306,8 +345,13 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
             cpus=environment.get("cpus", 2),
             memory_mb=environment.get("memory_mb", 4096),
             environment_mode=environment_mode,
-            artifacts=_parse_artifacts(task_id, toml_data),
-            has_tests_dockerfile=(task_dir / "tests" / "Dockerfile").is_file(),
+            artifacts=artifacts,
+            has_tests_dockerfile=has_tests_dockerfile,
+            shape=detect_shape(
+                environment_mode=environment_mode,
+                artifacts=artifacts,
+                has_tests_dockerfile=has_tests_dockerfile,
+            ),
             harness_skills_dir=_parse_harness_skills_dir(task_id, task_dir, yaml_data),
         )
 
