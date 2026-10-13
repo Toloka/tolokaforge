@@ -2,7 +2,7 @@
 
 The caller's headers are dropped except ``Content-Type``, ``Accept`` and
 ``User-Agent``, so the agent can present no credential of its own. A credential
-comes from the runtime only: an app world (ADR-0058) hands the tool its actor's
+comes from the runtime only: an app world (ADR-0062) hands the tool its actor's
 bearer token through :meth:`HTTPRequestTool.present_bearer`, and the tool sets
 ``Authorization: Bearer <token>`` on requests to the world's hosts alone, each
 redirect hop judged by its own url. The token is in no schema, argument or result.
@@ -58,7 +58,7 @@ class HTTPRequestTool(Tool):
         """Set ``Authorization: Bearer <token>`` on every later request to ``hosts``.
 
         The runtime's call, once per tool: an app world mints the token for the
-        actor this tool is built for (ADR-0058). Requests to any other host carry
+        actor this tool is built for (ADR-0062). Requests to any other host carry
         no credential.
 
         Raises:

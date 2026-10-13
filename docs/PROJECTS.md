@@ -1645,7 +1645,7 @@ Two consistency rules run on the resolved document:
   time.
 - **A world service is ephemeral only.** A task whose
   `initial_state.app_world.url` names a service
-  ([ADR-0058](adr/0058-app-world-served-over-http.md)) keeps the trial's
+  ([ADR-0062](adr/0062-app-world-served-over-http.md)) keeps the trial's
   whole state there and claims the service's admin token at registration,
   so that service must be labelled `ephemeral` in the resolved manifest —
   the project's `default_environment` and the task's patch together. A

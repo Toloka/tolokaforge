@@ -198,7 +198,7 @@ class InitialStateConfig(BaseModel):
     system_prompt: str | None = None  # Path to system prompt file (e.g., wiki.md)
     initialization_actions: list[InitializationAction] | None = None
     app_world: AppWorldConfig | None = None
-    """An application world a service of the task's stack serves over HTTP (ADR-0058).
+    """An application world a service of the task's stack serves over HTTP (ADR-0062).
     ``json_db`` is that world as tables, which the runner loads into the service."""
 
     omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"app_world"})

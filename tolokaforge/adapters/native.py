@@ -659,7 +659,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         actions call — the two facts :func:`require_replayable_golden_actions` reads
         at grade time, read here at authoring. ``initial_state.app_world`` holds the
         world in a service of the stack instead, which the runner replays against
-        through the agent's own ``http_request`` (ADR-0058).
+        through the agent's own ``http_request`` (ADR-0062).
         """
         return ReplayWorld(
             initial_state=classify_initial_state(task.initial_state.json_db),

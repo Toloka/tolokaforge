@@ -190,7 +190,7 @@ class InitialStateConfig(BaseModel):
     # Agent-visible files: dest_path → text content
     filesystem: Dict[str, str] = Field(default_factory=dict)
 
-    # A world served over HTTP by a service of the trial's stack (ADR-0058).
+    # A world served over HTTP by a service of the trial's stack (ADR-0062).
     # Left out of the dump while absent, so an image predating the field
     # accepts every pack that does not declare it.
     app_world: Optional[AppWorldConfig] = None

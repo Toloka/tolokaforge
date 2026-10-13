@@ -637,7 +637,7 @@ class TrialContextRuntime:
         # artifacts_dir and work_dir rather than a reconstruction of them.
         self.lifecycle_ctx: ToolLifecycleContext | None = None
         # The service holding the trial's world when the task declares
-        # ``initial_state.app_world`` (ADR-0058); None otherwise.
+        # ``initial_state.app_world`` (ADR-0062); None otherwise.
         self.app_world: AppWorldClient | None = None
         self._unusable_tools: dict[tuple[ToolExecutorIdentity, str], str] = {}
 
@@ -3282,7 +3282,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     # =========================================================================
 
     def _open_app_world(self, trial_context: TrialContextRuntime) -> str | None:
-        """Claim and load the trial's app world (ADR-0058); the refusal, or ``None``.
+        """Claim and load the trial's app world (ADR-0062); the refusal, or ``None``.
 
         A refusal cleans the trial up: the world is not this trial's to grade.
         """
@@ -3327,7 +3327,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     ) -> AppWorldClient | MCPServerToolWrapper | None:
         """What holds the trial's state instead of the db-service, or ``None``.
 
-        The app world service (ADR-0058), else the first MCP server among the agent's
+        The app world service (ADR-0062), else the first MCP server among the agent's
         tools. Both answer ``get_state()`` and ``reset_state(tables)``; task validation
         refuses a task declaring both.
         """

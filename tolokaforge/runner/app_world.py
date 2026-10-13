@@ -1,4 +1,4 @@
-"""The runner's side of an application world served over HTTP (ADR-0058).
+"""The runner's side of an application world served over HTTP (ADR-0062).
 
 A task declaring ``initial_state.app_world`` keeps its state in a service of the
 trial's stack rather than in an MCP server subprocess. At ``RegisterTrial`` the

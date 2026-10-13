@@ -617,7 +617,7 @@ Substrate Grading; the `multi_service_lot_ops` pack below is the worked example.
 
 A service of the stack can hold the trial's whole state, the way an MCP server
 subprocess does for an MCP pack, while the agent calls the vendors' REST APIs with
-`http_request` ([ADR-0058](adr/0058-app-world-served-over-http.md)). Declare it
+`http_request` ([ADR-0062](adr/0062-app-world-served-over-http.md)). Declare it
 in `task.yaml`:
 
 ```yaml

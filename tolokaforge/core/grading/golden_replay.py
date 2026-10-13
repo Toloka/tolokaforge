@@ -295,7 +295,7 @@ def require_golden_replay_world(
 ) -> GoldenReplayWorld:
     """The world the authored golden actions are replayed against, or raise.
 
-    A world served over HTTP (``initial_state.app_world``, ADR-0058) is refused
+    A world served over HTTP (``initial_state.app_world``, ADR-0062) is refused
     outright: it lives in a service of the trial's stack, which this replay cannot
     reach, so only the runner builds its golden world.
 

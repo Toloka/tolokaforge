@@ -280,7 +280,7 @@ AppWorldActor = Literal["agent", "user"]
 
 
 class AppWorldConfig(BaseModel):
-    """An application world a service of the trial's stack serves over HTTP (ADR-0058).
+    """An application world a service of the trial's stack serves over HTTP (ADR-0062).
 
     The service holds the trial's state, as an MCP server subprocess does for a
     pack that declares one. The runner administers it under ``url`` with a
@@ -419,7 +419,7 @@ class RunnerInitialStateConfig(BaseModel):
     filesystem: dict[str, str] = Field(default_factory=dict)
 
     # An application world served over HTTP by a service of the trial's stack
-    # (ADR-0058). ``tables`` above is that world as the runner loads it.
+    # (ADR-0062). ``tables`` above is that world as the runner loads it.
     app_world: AppWorldConfig | None = None
 
     model_config = {"extra": "forbid"}

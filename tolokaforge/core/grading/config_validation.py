@@ -439,7 +439,7 @@ class ReplayWorld:
     :attr:`SkipKind.STRUCTURAL` to keep the constructor uniform.
     """
     app_world: bool = False
-    """Whether ``initial_state.app_world`` names a service holding the world (ADR-0058).
+    """Whether ``initial_state.app_world`` names a service holding the world (ADR-0062).
 
     The runner replays the golden actions against that service through the agent's
     own tools, so it stands in for ``mcp_server`` as the place the world is held."""

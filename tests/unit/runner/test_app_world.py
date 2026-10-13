@@ -1,4 +1,4 @@
-"""An application world served over HTTP by a service of the trial's stack (ADR-0058).
+"""An application world served over HTTP by a service of the trial's stack (ADR-0062).
 
 The task declares ``initial_state.app_world``; validation refuses a world nothing can
 hold alone, the native adapter carries it to the runner, and the runner mints the

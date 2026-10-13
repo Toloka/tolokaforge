@@ -47,7 +47,7 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
   `tools.<actor>.http_request.allowed_hosts` (default `mock-web`, `mock-web:8080`,
   `localhost:8080`) and drops every caller header except `Content-Type`, `Accept`
   and `User-Agent`, so the agent presents no credential of its own. Under
-  `initial_state.app_world` (ADR-0058) the tool is built once per actor and sets
+  `initial_state.app_world` (ADR-0062) the tool is built once per actor and sets
   `Authorization: Bearer <token>` with the token the runner minted for that actor,
   on requests to `app_world.hosts` only, each redirect hop judged by its own url
   (a hop leaving those hosts carries no credential; a credentialed request follows

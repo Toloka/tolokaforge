@@ -1,4 +1,4 @@
-"""One world graded identically whichever holder serves it (ADR-0058).
+"""One world graded identically whichever holder serves it (ADR-0062).
 
 The same help-desk world is held once by a stdio MCP server, as an MCP pack holds it,
 and once by a world service over HTTP, as a compose pack declaring

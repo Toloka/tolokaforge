@@ -1,4 +1,4 @@
-"""A made-up world service answering the app world administration protocol (ADR-0058).
+"""A made-up world service answering the app world administration protocol (ADR-0062).
 
 :func:`fake_app_world` builds a small ASGI app holding one help-desk world: a
 ``tickets`` table behind a vendor-shaped REST API, administered under ``/_admin``

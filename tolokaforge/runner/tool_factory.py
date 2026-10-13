@@ -1079,7 +1079,7 @@ class BuiltinGenericToolWrapper(ToolWrapper):
         """The builtin instance this wrapper delegates to.
 
         The runtime arms it with what no schema may carry, such as the bearer
-        token an app world mints for an actor's ``http_request`` (ADR-0058).
+        token an app world mints for an actor's ``http_request`` (ADR-0062).
         """
         return self._tool
 
