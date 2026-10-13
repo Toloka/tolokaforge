@@ -331,6 +331,22 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
                 tool_absent_reason=error_msg,
             )
 
+        if request.service:
+            from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
+
+            if not isinstance(bash_tool, DockerComposeExecToolWrapper):
+                return pb2.RunTestSuiteResponse(
+                    tool_absent=True,
+                    tool_absent_reason=(
+                        f"test-execution grading asked to run in service '{request.service}' "
+                        "but this trial's env tool is not a compose-backed executor, so a "
+                        "sibling container cannot be resolved."
+                    ),
+                )
+            exec_tool = bash_tool.for_service(request.service)
+        else:
+            exec_tool = bash_tool
+
         script_timeout = request.timeout_s if request.timeout_s > 0.0 else _DEFAULT_SCRIPT_TIMEOUT_S
         reward_read_timeout = (
             request.reward_read_timeout_s
@@ -339,7 +355,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         )
 
         try:
-            exit_code, stdout = bash_tool.exec_in_env_with_exit_code(
+            exit_code, stdout = exec_tool.exec_in_env_with_exit_code(
                 f"cd $(dirname {request.script_path}) && bash {request.script_path} 2>&1",
                 script_timeout,
             )
@@ -352,7 +368,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
             )
 
         try:
-            _rc, reward_str = bash_tool.exec_in_env_with_exit_code(
+            _rc, reward_str = exec_tool.exec_in_env_with_exit_code(
                 f"cat {request.reward_path} 2>/dev/null || echo 0.0",
                 reward_read_timeout,
             )
@@ -374,6 +390,30 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
             reward_bytes=reward_bytes,
             stdout=stdout[:_STDOUT_WIRE_CAP_BYTES],
         )
+
+    def MaterialisePath(  # noqa: N802
+        self,
+        request: pb2.MaterialisePathRequest,
+        context: grpc.ServicerContext,  # noqa: ARG002
+    ) -> pb2.MaterialisePathResponse:
+        """Re-create a path in one trial container from another (empty-then-copy).
+
+        Delegates to the runner's cross-container copy helper. A source that the
+        agent never produced is not an error — the destination is left empty and
+        ``ok`` is True; an unreachable container surfaces as ``ok=False`` with the
+        reason, which the client raises as :class:`SubstrateUnreachableError`.
+        """
+        try:
+            self._runner._materialise_path(
+                src_service=request.src_service or None,
+                dst_service=request.dst_service,
+                path=request.path,
+                exclude=list(request.exclude),
+                trial_id=request.trial_id,
+            )
+        except SubstrateUnreachableError as exc:
+            return pb2.MaterialisePathResponse(ok=False, error=str(exc))
+        return pb2.MaterialisePathResponse(ok=True)
 
     # ------------------------------------------------------------------
     # Health

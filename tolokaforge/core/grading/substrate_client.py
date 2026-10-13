@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -217,6 +218,7 @@ class GrpcSubstrateClient:
         reward_path: str,
         timeout_s: float,
         reward_read_timeout_s: float,
+        service: str | None = None,
     ) -> RunTestSuiteResult:
         try:
             response = self._stub.RunTestSuite(
@@ -226,6 +228,7 @@ class GrpcSubstrateClient:
                     reward_path=reward_path,
                     timeout_s=timeout_s,
                     reward_read_timeout_s=reward_read_timeout_s,
+                    service=service or "",
                 )
             )
         except grpc.RpcError as err:
@@ -238,6 +241,29 @@ class GrpcSubstrateClient:
             tool_absent_reason=response.tool_absent_reason,
             script_exec_error=response.script_exec_error,
         )
+
+    def materialise_path(
+        self,
+        *,
+        src_service: str | None,
+        dst_service: str,
+        path: str,
+        exclude: Sequence[str] = (),
+    ) -> None:
+        try:
+            response = self._stub.MaterialisePath(
+                pb2.MaterialisePathRequest(
+                    trial_id=self._trial_id,
+                    src_service=src_service or "",
+                    dst_service=dst_service,
+                    path=path,
+                    exclude=list(exclude),
+                )
+            )
+        except grpc.RpcError as err:
+            raise SubstrateUnreachableError(str(err)) from err
+        if not response.ok:
+            raise SubstrateUnreachableError(response.error)
 
     def health_check(self) -> str:
         try:
