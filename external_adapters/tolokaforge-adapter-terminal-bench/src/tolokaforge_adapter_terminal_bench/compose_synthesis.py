@@ -1076,14 +1076,20 @@ def _runner_service_body(runner_image: str) -> dict[str, Any]:
 
 
 def _db_service_body(db_service_image: str) -> dict[str, Any]:
-    # The engine's ``tolokaforge-db-service`` image ships ``curl`` and no
-    # ``wget``; matches the image's own ``HEALTHCHECK`` while tightening the
-    # timings for per-trial provisioning.
+    # The engine's ``tolokaforge-db-service`` image is a slim base with no curl,
+    # and probes ``/health`` with a stdlib ``urllib`` call — the same shape as its
+    # own baked ``HEALTHCHECK`` and the mock_web/rag images. Mirror that here (a
+    # curl probe never passes: the binary is not in the image) while tightening
+    # the timings for per-trial provisioning.
     return {
         "image": db_service_image,
         "ports": ["8000"],
         "healthcheck": {
-            "test": ["CMD-SHELL", "curl -fs http://localhost:8000/health || exit 1"],
+            "test": [
+                "CMD-SHELL",
+                'python -c "import urllib.request; '
+                "urllib.request.urlopen('http://localhost:8000/health')\" || exit 1",
+            ],
             "interval": "2s",
             "timeout": "3s",
             "retries": 30,
