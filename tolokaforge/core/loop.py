@@ -1738,6 +1738,11 @@ class ToolCallingLoop:
         A no-op unless the ceiling is configured and the sink reports a running
         total. Checked before a turn runs, so the spend that crosses the line is
         the turn already recorded, not the one about to start.
+
+        The decision leaves ``status`` as ``None`` so the trial keeps the
+        optimistic ``COMPLETED`` status: a deliberate budget stop is not an
+        error or a timeout, and promoting it to ``TIMEOUT`` would make the
+        orchestrator classify it retryable and re-burn the same ceiling.
         """
         limit = self.config.max_trial_tokens
         if limit is None:
@@ -1751,7 +1756,6 @@ class ToolCallingLoop:
             system_message=(
                 f"Per-trial token budget reached ({spent} >= {limit} tokens). Dialogue terminated."
             ),
-            status=TrialStatus.TIMEOUT,
         )
 
     def _capture_effective_prompt(self, result: GenerationResult) -> None:

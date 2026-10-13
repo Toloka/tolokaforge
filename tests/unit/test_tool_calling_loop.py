@@ -366,7 +366,9 @@ def test_trial_token_budget_terminates_when_cumulative_tokens_reach_ceiling():
     outcome = loop.run("sys", [], time.time())
 
     assert outcome.termination_reason == TerminationReason.TRIAL_TOKEN_BUDGET
-    assert outcome.status == TrialStatus.TIMEOUT
+    # A deliberate budget stop keeps the optimistic COMPLETED status so the
+    # orchestrator does not classify it retryable and re-burn the same ceiling.
+    assert outcome.status == TrialStatus.COMPLETED
     assert client.calls == 2
 
 

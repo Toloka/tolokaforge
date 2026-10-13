@@ -82,9 +82,9 @@ pytestmark = pytest.mark.canonical
 # The reasons a trial can end with and still be graded by the runner. Each names
 # a trial the agent drove to an end the harness planned for: it had no further
 # action to take and no counterparty could ask for one, it called a completion
-# tool to say so itself, the simulated user closed the dialogue, or a turn or
-# simulation budget ran out. Task graders see these completed trials and
-# decide which termination reasons their grading contract accepts.
+# tool to say so itself, the simulated user closed the dialogue, or a turn,
+# token, or simulation budget ran out. Task graders see these completed trials
+# and decide which termination reasons their grading contract accepts.
 GRADED_REASONS = frozenset(
     {
         TerminationReason.AGENT_DONE,
@@ -93,6 +93,7 @@ GRADED_REASONS = frozenset(
         TerminationReason.MAX_TURNS,
         TerminationReason.MAX_STEPS,
         TerminationReason.TOO_MANY_ERRORS,
+        TerminationReason.TRIAL_TOKEN_BUDGET,
         TerminationReason.USER_TOOL_LOOP_LIMIT,
     }
 )
