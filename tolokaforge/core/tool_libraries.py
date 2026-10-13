@@ -306,6 +306,11 @@ _ALWAYS_IMPORT_ROOTS = frozenset({"", "tools", "_shared"})
 The runner process puts the root and ``tools/`` on ``sys.path`` when it extracts
 the artefacts; an MCP server subprocess has its own directory first on its path,
 and a shared domain's server lives under ``_shared/``.
+
+``_shared`` is the native adapter's directory name for a domain's shared server.
+It only widens the shadowing check, which refuses a pack copy of a pinned library
+in that directory. It does not branch on the task, and it blocks no other
+adapter: a directory that does not exist shadows nothing.
 """
 
 
