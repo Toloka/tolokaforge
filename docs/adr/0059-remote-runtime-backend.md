@@ -1,6 +1,6 @@
 # 0059. The remote runtime backend and node registry
 
-- **Status:** Accepted
+- **Status:** Accepted — the backend's per-trial RPC dispatch is replaced by whole-trial dispatch in [ADR-0060](0060-whole-trial-node-service-and-dispatch-seam.md); the registry and the run-start gating stand
 - **Date:** 2026-10-13
 - **Deciders:** @CiroGamboa
 - **Supersedes:** none

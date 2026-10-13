@@ -24,6 +24,15 @@ ten methods, three concerns:
 Every implementation ships all ten. The orchestrator holds one backend
 instance for the whole run; the conductor calls it per-trial.
 
+A backend whose substrate runs the *whole* trial additionally implements the
+`TrialOwningBackend` Protocol (`run_trial_node(inputs) -> TrialResult`).
+`build_trial_execution_unit` routes such a backend through `RemoteTrialExecutor`
+and every other backend through `ProvisioningTrialExecutor`; the check is
+`isinstance(backend, TrialOwningBackend)` and nothing else, so `shared`,
+`per_trial` and `in_memory` are untouched. Such a backend's per-trial RPC methods
+exist only to satisfy `RuntimeBackend` and refuse — `RemoteRuntimeBackend` below
+is the only one.
+
 ```mermaid
 graph TB
     subgraph Process["Orchestrator process"]
@@ -101,37 +110,48 @@ each get independent containers, networks, and volumes. Every
 `RuntimeBackend` method is a straight delegation onto the internal
 backend — the class body is a dataclass, not a re-implementation.
 
-**`RemoteRuntimeBackend`** (`remote`) — dispatches each trial to a runner
-node leased from a node registry, over the same `GrpcRunnerClient` the
-other backends use. `orchestrator.remote.nodes` seeds an in-process
-`InMemoryNodeRegistry` with `host:port` addresses; `provision(spec)`
-leases one node for the trial (blocking until a node frees, up to
-`orchestrator.remote.lease_timeout_s`, default 300) and dials it,
-`endpoints(handle)` returns that node's runner URL, per-trial RPCs
-connect lazily on the first call and go to the leased client, and
-`teardown` forgets the trial on the node, closes the client, and
-releases the lease. Each node serves one trial at a time, so the node
-count bounds trial concurrency. The backend exposes no `runner_address`,
-so the trial grader is wired through the in-process shim to the trial's
-leased client. Native and delegated trials dispatch identically: both
-bottom out at `execute_tool` / `grade_trial` on the leased client.
+**`RemoteRuntimeBackend`** (`remote`) — hands each *whole trial* to a trial
+node leased from a node registry ([ADR-0060](adr/0060-whole-trial-node-service-and-dispatch-seam.md),
+[`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)). It is the only backend that
+implements the `TrialOwningBackend` Protocol (`run_trial_node(inputs) -> TrialResult`),
+which is what routes a unit's trials through `RemoteTrialExecutor` instead of
+`ProvisioningTrialExecutor`. `orchestrator.remote.nodes` seeds an in-process
+`InMemoryNodeRegistry` with `host:port` addresses of nodes started with
+`tolokaforge trial-node`. `run_trial_node` leases one node for the trial (blocking
+until a node frees, up to `orchestrator.remote.lease_timeout_s`, default 300),
+connects within the run's runner connect budget — which also checks protocol and
+message-size skew — ships the serialized `TrialNodeInputs` over the `RunTrial` RPC,
+and releases the lease whatever the outcome. The node runs the conductor, the agent
+loop, the grader and the trial's substrate itself; the control plane builds a grader
+and conductor for the unit but never invokes them, and writes a reduced bundle
+(`trajectory.yaml`, `tool_log.yaml`, `metrics.yaml`, `grade.yaml`) from the returned
+trajectory. Each node serves one trial at a time, so the node count bounds trial
+concurrency. The backend exposes no `runner_address`, and its per-trial RPC methods
+(`register_trial`, `execute_tool`, `grade_trial`, `get_state`, `reset_trial`) exist
+only to satisfy the `RuntimeBackend` Protocol and raise `NotImplementedError`.
 
 ```yaml
 orchestrator:
   runtime: remote
   auto_start_services: false
   remote:
-    nodes: ["10.0.0.5:50051", "10.0.0.6:50051"]
+    nodes: ["10.0.0.5:50061", "10.0.0.6:50061"]
     lease_timeout_s: 300
 ```
 
-Current limits, each refused at run start rather than degraded:
+Run shapes refused at run start rather than degraded:
 
-- No task-declared stacks: a task declaring an `environment_manifest` fails the run.
-- `runner_rpc` grading only: `grader_rpc` and `queue` need a static runner address the backend does not expose.
-- No grade bundle: `grader.snapshot.enabled` is unsupported.
-- No local stack: the run must not set `auto_start_services: true`; set it to `false`.
-- Selection rides the deprecated `orchestrator.runtime` knob (or `--runtime remote`), so it emits that knob's `DeprecationWarning`.
+- A task declaring an `environment_manifest`: the node cannot yet receive task-declared stacks. Run those tasks under `shared` or `per_trial`.
+- A non-native adapter or coding-harness mode (`models.agent.harness`): the remote runtime runs only the native adapter without harness mode.
+- `grader_rpc` and `queue` graders (they need a static runner address); `runner_rpc` only.
+- `grader.snapshot.enabled`: no grade bundle is produced.
+- `auto_start_services: true`: no local stack is started; set it to `false`.
+- Run settings the node does not carry, named in one error: `orchestrator.timeouts`, `orchestrator.max_turns`, `orchestrator.stuck_heuristics`, `orchestrator.agent_loop`, `compute.log_tail` / `compute.capture_logs_on_success`, `max_requests_per_second`, a fallback model chain, a custom `conductor_factory`, and the `orchestrator.typesense` search plane. Leaving them at their defaults is accepted.
+- Worker mode (`run_worker`): each process would build its own node registry.
+
+A configured `observability.tracing` exporter does not refuse: it logs a warning, because the node emits no live traces and the exporter sees only the reduced bundle.
+
+Selection rides the deprecated `orchestrator.runtime` knob (or `--runtime remote`), so it emits that knob's `DeprecationWarning`.
 
 **`InMemoryRuntimeBackend`** — test-only. Records every method call on a
 `RuntimeBackendCallLog`; no Docker daemon required. Used by canonical
@@ -1054,7 +1074,7 @@ The runner and db-service images are also published to Docker Hub (see [STANDALO
 
 - `tolokaforge/core/per_trial_runtime.py` — the preset (delegates every method onto the composer-driven `SharedStackRuntimeBackend`).
 - `tolokaforge/core/runtime.py` — the `RuntimeBackend` Protocol + `InMemoryRuntimeBackend`.
-- `tolokaforge/core/remote_runtime.py` + `tolokaforge/core/node_registry.py` — the remote backend and its node registry ([ADR-0059](adr/0059-remote-runtime-backend.md)).
+- `tolokaforge/core/remote_runtime.py` + `tolokaforge/core/node_registry.py` — the remote backend and its node registry ([ADR-0059](adr/0059-remote-runtime-backend.md), [ADR-0060](adr/0060-whole-trial-node-service-and-dispatch-seam.md)); `tolokaforge/trial_node/` — the node service ([`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)).
 - `tolokaforge/core/shared_stack_runtime.py` — `SharedStackRuntimeBackend` + `RunnerClient` Protocol + `GrpcRunnerClient`.
 - `tolokaforge/core/default_substrate_composer.py` — the sequencer that walks the composition plan and stitches materialiser + dispatchers together.
 - `tolokaforge/core/docker_compose_materialiser.py` — the docker-compose materialiser (compose lifecycle, log routing, per-service capture).
