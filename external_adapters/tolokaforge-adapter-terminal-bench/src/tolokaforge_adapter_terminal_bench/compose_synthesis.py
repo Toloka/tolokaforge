@@ -99,6 +99,11 @@ _TASK_STACK_ID = "task"
 _ENGINE_RUNNER_SERVICE = "runner"
 _ENGINE_DB_SERVICE = "db-service"
 _INJECTED_SERVICE_NAMES = (_ENGINE_RUNNER_SERVICE, _ENGINE_DB_SERVICE)
+_VERIFIER_SERVICE = "verifier"
+"""Trial-scope service injected for the separate-verifier shape: it builds the
+task's ``tests/Dockerfile`` and idles so the grader can exec the suite in it
+rather than in the agent's container. Not an engine service — it lives on the
+task stack alongside the agent."""
 _TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER = "${TOLOKAFORGE_TRIAL_SLUG}"
 
 _HARNESS_STAGING_DIR = "_harness"
@@ -160,6 +165,12 @@ class MaterialisedEnvironment:
     The orchestrator must build this service before the agent service, whose
     Dockerfile is ``FROM`` the base image. ``None`` when there is a single
     image to build (or pull)."""
+
+    verifier_service: str | None = None
+    """Trial-scope service that builds and idles the task's separate verifier
+    image, or ``None`` for the single-container shape whose tests run in the
+    agent's container. When set, the grader execs the test suite here and
+    re-materialises the task's declared artifacts into it first."""
 
 
 def materialise_task_environment(
@@ -250,13 +261,15 @@ def materialise_task_environment(
         task_services = original["services"]
     agent_service = _resolve_agent_service(meta.task_id, task_services)
     base_service = f"{agent_service}{_HARNESS_BASE_SERVICE_SUFFIX}"
-    # The base service exists only under harness mode, so only harness mode can
-    # collide with a task that happens to declare that name.
-    _check_no_reserved_service_collisions(
-        meta.task_id,
-        task_services,
-        base_service if agent_harness != ENGINE_LOOP else None,
-    )
+    # The base service exists only under harness mode and the verifier service
+    # only for the separate-verifier shape, so each is reserved only when the
+    # adapter is actually about to inject it.
+    extra_reserved: list[str] = []
+    if agent_harness != ENGINE_LOOP:
+        extra_reserved.append(base_service)
+    if meta.is_v4:
+        extra_reserved.append(_VERIFIER_SERVICE)
+    _check_no_reserved_service_collisions(meta.task_id, task_services, extra_reserved)
 
     resolver = DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
     delivery = DEFAULT_SKILL_DELIVERY if skill_delivery is None else skill_delivery
@@ -354,6 +367,7 @@ def materialise_task_environment(
         base_build_service=base_build_service,
         base_image=_agent_image(meta.task_id, image_registry, image_tag),
         agent_image=task_doc["services"][agent_service]["image"],
+        verifier_service=_VERIFIER_SERVICE if meta.is_v4 else None,
     )
 
 
@@ -428,7 +442,7 @@ def _reroot_build_contexts(doc: dict[str, Any]) -> None:
                     build["context"] = moved
 
 
-def _agent_volumes(declared: Any) -> list[Any]:
+def _agent_volumes(declared: Any, *, include_tests_mount: bool = True) -> list[Any]:
     """The agent service's mounts: the task's own, plus ours for tests and logs.
 
     84 of the canonical compose files mount a named volume on the agent service
@@ -441,9 +455,17 @@ def _agent_volumes(declared: Any) -> list[Any]:
     Both are the harness's directories rather than the task's — the verifier
     reads its reward from under ``/logs`` and the suite it runs from ``/tests``
     — and two mounts on one target leave which of them wins up to compose.
+
+    *include_tests_mount* is ``False`` for the separate-verifier shape, where the
+    suite runs in its own container: the agent never sees ``/tests`` and only the
+    log mount is appended.
     """
-    ours = ["./tests:/tests", f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}"]
-    reserved = {"/tests", CONTAINER_LOGS_DIR}
+    ours: list[Any] = []
+    reserved = {CONTAINER_LOGS_DIR}
+    if include_tests_mount:
+        ours.append("./tests:/tests")
+        reserved.add("/tests")
+    ours.append(f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}")
     kept = [
         mount
         for mount in (declared or [])
@@ -552,9 +574,9 @@ def _resolve_agent_service(task_id: str, services: dict[str, Any]) -> str:
 
 
 def _check_no_reserved_service_collisions(
-    task_id: str, services: dict[str, Any], base_service: str | None
+    task_id: str, services: dict[str, Any], extra_reserved: Sequence[str] = ()
 ) -> None:
-    reserved_names = _INJECTED_SERVICE_NAMES + ((base_service,) if base_service else ())
+    reserved_names = _INJECTED_SERVICE_NAMES + tuple(extra_reserved)
     for reserved in reserved_names:
         if reserved in services:
             raise ValueError(
@@ -853,7 +875,9 @@ def _build_synthesised_compose(
     if image_registry:
         agent_body.pop("build", None)
     agent_body["container_name"] = agent_container_name
-    agent_body["volumes"] = _agent_volumes(agent_body.get("volumes"))
+    agent_body["volumes"] = _agent_volumes(
+        agent_body.get("volumes"), include_tests_mount=not meta.is_v4
+    )
     agent_body["environment"] = _set_env_key(agent_body.get("environment"), "TEST_DIR", "/tests")
     for key in sorted(provider_env_keys):
         agent_body["environment"] = _set_env_key(
@@ -876,6 +900,12 @@ def _build_synthesised_compose(
         if task_build is not None and not image_registry:
             services[base_service] = _harness_base_service_body(base_image, task_build)
             base_build_service = base_service
+
+    if meta.is_v4:
+        # The verifier image is always built from the task's own ``tests/`` — there
+        # is no registry artifact for it — so it carries a ``build`` even when the
+        # agent image is pulled.
+        services[_VERIFIER_SERVICE] = _verifier_service_body()
 
     _stamp_trial_container_names(services)
 
@@ -909,6 +939,23 @@ def _stamp_trial_container_names(task_services: dict[str, Any]) -> None:
         if not isinstance(body, dict):
             continue
         body["container_name"] = _trial_scoped_container_name(name)
+
+
+def _verifier_service_body() -> dict[str, Any]:
+    """Trial-scope service that builds and idles the task's separate verifier image.
+
+    The separate-verifier shape ships ``tests/Dockerfile``, a self-contained
+    image that bakes the suite in under ``/tests``. The build context is the
+    staged ``tests/`` directory (which carries its own ``environment/`` replay
+    and ``.dockerignore``). A ``command`` keeps the container alive so the grader
+    can exec the suite in it and copy the task's declared artifacts across first;
+    the log mount is where that suite writes the reward the grader reads back.
+    """
+    return {
+        "build": {"context": "./tests", "dockerfile": "Dockerfile"},
+        "command": ["sh", "-c", "sleep infinity"],
+        "volumes": [f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}"],
+    }
 
 
 def _engine_compose_doc(runner_image: str, db_service_image: str) -> dict[str, Any]:
