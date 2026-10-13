@@ -1422,6 +1422,8 @@ class Orchestrator:
             unsupported.append("orchestrator.timeouts")
         if orchestrator.max_turns != defaults.max_turns:
             unsupported.append("orchestrator.max_turns")
+        if orchestrator.max_trial_tokens != defaults.max_trial_tokens:
+            unsupported.append("orchestrator.max_trial_tokens")
         if orchestrator.stuck_heuristics != defaults.stuck_heuristics:
             unsupported.append("orchestrator.stuck_heuristics")
         if orchestrator.agent_loop != defaults.agent_loop:

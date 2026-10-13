@@ -497,6 +497,8 @@ class RemoteConfig(BaseModel):
             host, sep, port = node.rpartition(":")
             if not (sep and host and port.isdigit()):
                 raise ValueError(f"remote node {node!r} must be shaped 'host:port'")
+            if not (1 <= int(port) <= 65535):
+                raise ValueError(f"remote node {node!r} has a port outside 1-65535")
         duplicates = sorted({node for node in nodes if nodes.count(node) > 1})
         if duplicates:
             raise ValueError(

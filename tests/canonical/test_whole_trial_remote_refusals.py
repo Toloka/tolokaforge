@@ -84,6 +84,7 @@ def test_settings_explicitly_set_to_their_defaults_are_not_refused(tmp_path: Pat
         orchestrator={
             "timeouts": {"turn_s": 60, "episode_s": 1800},
             "max_turns": 50,
+            "max_trial_tokens": None,
             "agent_loop": "engine-loop",
             "auto_start_services": False,
         },
@@ -98,6 +99,7 @@ def test_settings_explicitly_set_to_their_defaults_are_not_refused(tmp_path: Pat
     [
         ({"orchestrator": {"timeouts": {"episode_s": 600}}}, "orchestrator.timeouts"),
         ({"orchestrator": {"max_turns": 10}}, "orchestrator.max_turns"),
+        ({"orchestrator": {"max_trial_tokens": 200000}}, "orchestrator.max_trial_tokens"),
         (
             {"orchestrator": {"stuck_heuristics": {"max_repeated_tool_calls": 3}}},
             "orchestrator.stuck_heuristics",

@@ -57,3 +57,13 @@ def test_remote_config_rejects_duplicate_nodes() -> None:
 def test_remote_config_rejects_malformed_nodes(node: str) -> None:
     with pytest.raises(ValidationError, match="host:port"):
         RemoteConfig(nodes=[node])
+
+
+@pytest.mark.parametrize("node", ["host:0", "host:99999"])
+def test_remote_config_rejects_a_port_outside_the_valid_range(node: str) -> None:
+    with pytest.raises(ValidationError, match="outside 1-65535"):
+        RemoteConfig(nodes=[node])
+
+
+def test_remote_config_accepts_a_valid_port() -> None:
+    assert RemoteConfig(nodes=["host:50061"]).nodes == ["host:50061"]
