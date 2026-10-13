@@ -1,4 +1,4 @@
-# 0056. Shared tool libraries reach the trial through `tool_artifacts`, pinned by the task and added by the engine
+# 0060. Shared tool libraries reach the trial through `tool_artifacts`, pinned by the task and added by the engine
 
 - **Status:** Proposed
 - **Date:** 2026-10-09
@@ -25,7 +25,7 @@ benchmarks, would have to be copied into every pack the same way.
 A pack can already use such a library without any engine change: it vendors a
 generated copy of the library's bundle (Option 1 below). This ADR is about
 removing that copy, not about making the library usable at all. It is
-independent of ADR-0057 and ADR-0058.
+independent of ADR-0061 and ADR-0062.
 
 ## Decision Drivers
 
@@ -111,5 +111,5 @@ does not serve in-process tools.
 
 ## Links
 
-- Related ADRs: [0011](0011-seam-and-declaration-conventions.md) (entry-point registries), [0057](0057-mutates-state-on-the-tool-wire.md), [0058](0058-app-world-served-over-http.md).
+- Related ADRs: [0011](0011-seam-and-declaration-conventions.md) (entry-point registries), [0061](0061-mutates-state-on-the-tool-wire.md), [0062](0062-app-world-served-over-http.md).
 - Related code: `runner/service.py` (artefact extraction), `core/grading/tool_artifacts.py`, `adapters/native.py` (`_bundle_task_artifacts`), `core/plugin_registry.py`.

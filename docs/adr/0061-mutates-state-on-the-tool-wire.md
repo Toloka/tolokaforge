@@ -1,4 +1,4 @@
-# 0057. Carry `mutates_state` on the tool wire schema, declared by the tool's author
+# 0061. Carry `mutates_state` on the tool wire schema, declared by the tool's author
 
 - **Status:** Proposed
 - **Date:** 2026-10-09
@@ -19,13 +19,13 @@ property lives only in adapter- or domain-local code:
 - the native `DomainToolRegistry` has no marker at all, so state sync and
   golden replay re-execute every call.
 
-A shared tool library (ADR-0056) brings hundreds of tools whose `mutates_state`
+A shared tool library (ADR-0060) brings hundreds of tools whose `mutates_state`
 is known and tested. Without a wire field the engine cannot replay only the
 mutating calls, report read/write metrics, run a read-only trial, or reuse a
 library's read tools for the judge.
 
 This ADR adds the field only. Each consumer of the flag is its own later
-change. It is independent of ADR-0056 and ADR-0058.
+change. It is independent of ADR-0060 and ADR-0062.
 
 ## Decision Drivers
 
@@ -103,6 +103,6 @@ mode.
 
 ## Links
 
-- Related ADRs: [0017](0017-persistent-agent-shell-and-editor-tools.md), [0056](0056-shared-tool-libraries-through-tool-artifacts.md).
+- Related ADRs: [0017](0017-persistent-agent-shell-and-editor-tools.md), [0060](0060-shared-tool-libraries-through-tool-artifacts.md).
 - Related code: `runner/models.py::ToolSchema`, `runner/runner.proto` (`message ToolSchema`), `core/tools_interface.py::DomainToolRegistry.tool`, `adapters/_task_loader.py::_fetch_mcp_tool_schemas`.
 - External references: MCP tool annotations (`readOnlyHint`).
