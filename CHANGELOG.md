@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.31.0 (2026-10-13)
+
+### BREAKING CHANGE
+
+- tolokaforge, tolokaforge-models, tolokaforge-langfuse,
+tolokaforge-coding-harnesses and tolokaforge-adapter-terminal-bench require
+Python >=3.12; on 3.10/3.11 a resolver keeps the last release that supports
+them. Install a 3.12 interpreter (uv python install 3.12) before upgrading.
+
+### Feat
+
+- **loop**: context controls and cost instrumentation for agent trials (#1809)
+
 ## v0.30.2 (2026-10-13)
 
 ### Feat
