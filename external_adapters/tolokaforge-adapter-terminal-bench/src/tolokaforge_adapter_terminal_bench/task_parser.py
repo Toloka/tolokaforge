@@ -11,6 +11,20 @@ import tomllib
 import yaml
 
 
+@dataclass(frozen=True)
+class TerminalBenchArtifact:
+    """A path the separate verifier reads out of the agent's container.
+
+    Declared top-level in a v4 ``task.toml``. ``source`` is the absolute path of
+    a state root in the agent container; ``exclude`` lists glob patterns the task
+    does not want carried across (caches, regenerable build output). For the
+    single-container 2.1 shape this list is empty.
+    """
+
+    source: str
+    exclude: list[str] = field(default_factory=list)
+
+
 @dataclass
 class TerminalBenchTask:
     """Parsed metadata for a single terminal-bench task."""
@@ -38,6 +52,20 @@ class TerminalBenchTask:
     """
     cpus: float = 2
     memory_mb: int = 4096
+    environment_mode: str | None = None
+    """How the task runs its verifier: ``"separate"`` for a task whose tests run
+    in their own container, ``None`` for the single-container shape whose tests
+    run in the agent's container. Read from ``[verifier].environment_mode``.
+    """
+    artifacts: list[TerminalBenchArtifact] = field(default_factory=list)
+    """State roots the separate verifier re-materialises from the agent container.
+
+    Empty for the single-container shape, which has no container boundary to
+    carry files across.
+    """
+    has_tests_dockerfile: bool = False
+    """Whether the task ships ``tests/Dockerfile``, i.e. a self-contained verifier
+    image. One of the three markers that identify the separate-verifier shape."""
     harness_skills_dir: str | None = None
     """Task-relative directory of skills the pack ships for a coding-harness
     CLI, as ``task.yaml`` declared it, or ``None`` when it declares none.
@@ -48,6 +76,19 @@ class TerminalBenchTask:
     — one more image layer under the shipped default. The bundle rides with the
     task rather than with the operator's home directory, so what the agent could
     read is versioned alongside the tests it is scored against."""
+
+    @property
+    def is_v4(self) -> bool:
+        """Whether this task runs its tests in a separate verifier container.
+
+        True when any of the three independent markers is present: the task ships
+        ``tests/Dockerfile``, declares ``[verifier].environment_mode``, or lists
+        top-level ``artifacts``. A task missing all three is the single-container
+        shape and takes the unchanged in-agent verification path.
+        """
+        return (
+            self.has_tests_dockerfile or self.environment_mode is not None or bool(self.artifacts)
+        )
 
 
 def _load_task_yaml(task_dir: Path) -> dict[str, Any]:
@@ -138,6 +179,51 @@ def _parse_verifier_timeout(task_id: str, data: Mapping[str, Any]) -> float | No
     return float(declared)
 
 
+def _parse_artifacts(task_id: str, toml_data: Mapping[str, Any]) -> list[TerminalBenchArtifact]:
+    """State roots the separate verifier re-materialises, from top-level ``artifacts``.
+
+    Each entry is either a bare string path or a table with a ``source`` key and
+    an optional ``exclude`` list. ``artifacts`` is deliberately read from the top
+    level, not from ``[verifier]``: a nested table is dropped on the wire, so a
+    task that put it there would silently lose its re-materialisation set.
+    """
+    declared = toml_data.get("artifacts")
+    if declared is None:
+        return []
+    if not isinstance(declared, list):
+        raise ValueError(
+            f"terminal-bench task {task_id!r}: top-level artifacts must be a list; "
+            f"got {declared!r}."
+        )
+    parsed: list[TerminalBenchArtifact] = []
+    for entry in declared:
+        if isinstance(entry, str):
+            parsed.append(TerminalBenchArtifact(source=entry))
+            continue
+        if isinstance(entry, Mapping):
+            source = entry.get("source")
+            if not isinstance(source, str) or not source.strip():
+                raise ValueError(
+                    f"terminal-bench task {task_id!r}: each artifact table needs a "
+                    f"non-blank 'source'; got {entry!r}."
+                )
+            exclude_raw = entry.get("exclude", [])
+            if not isinstance(exclude_raw, list) or not all(
+                isinstance(x, str) for x in exclude_raw
+            ):
+                raise ValueError(
+                    f"terminal-bench task {task_id!r}: artifact 'exclude' for {source!r} "
+                    f"must be a list of strings; got {exclude_raw!r}."
+                )
+            parsed.append(TerminalBenchArtifact(source=source, exclude=list(exclude_raw)))
+            continue
+        raise ValueError(
+            f"terminal-bench task {task_id!r}: each artifact must be a path string or a "
+            f"table with a 'source' key; got {entry!r}."
+        )
+    return parsed
+
+
 def _find_compose(task_dir: Path) -> Path | None:
     """The task's compose file, or ``None`` when it declares one container.
 
@@ -201,6 +287,13 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
         verifier = toml_data.get("verifier", {})
         environment = toml_data.get("environment", {})
 
+        environment_mode = verifier.get("environment_mode")
+        if environment_mode is not None and not isinstance(environment_mode, str):
+            raise ValueError(
+                f"terminal-bench task {task_id!r}: verifier.environment_mode must be a "
+                f"string; got {environment_mode!r}."
+            )
+
         tasks[task_id] = TerminalBenchTask(
             task_id=task_id,
             task_dir=task_dir,
@@ -212,6 +305,9 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
             verifier_timeout_sec=_parse_verifier_timeout(task_id, verifier),
             cpus=environment.get("cpus", 2),
             memory_mb=environment.get("memory_mb", 4096),
+            environment_mode=environment_mode,
+            artifacts=_parse_artifacts(task_id, toml_data),
+            has_tests_dockerfile=(task_dir / "tests" / "Dockerfile").is_file(),
             harness_skills_dir=_parse_harness_skills_dir(task_id, task_dir, yaml_data),
         )
 
