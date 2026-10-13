@@ -139,9 +139,13 @@ class HTTPRequestTool(Tool):
             else:
                 output += f"Response:\n{response.text[:1000]}"
 
+            # A 4xx/5xx is an answer the caller must read: the runner shows a
+            # failed call's ``error`` to the agent and records it for grading,
+            # never its ``output``.
             return ToolResult(
                 success=response.is_success,
                 output=output,
+                error=None if response.is_success else output,
                 metadata={
                     "status_code": response.status_code,
                     "content_type": response.headers.get("content-type"),
