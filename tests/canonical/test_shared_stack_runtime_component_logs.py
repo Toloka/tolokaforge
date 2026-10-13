@@ -186,7 +186,7 @@ def _connect_run_scope(
     _patch_resolvers(monkeypatch)
     composer = DefaultSubstrateComposer(
         materialiser=DockerComposeMaterialiser(docker_compose_factory=lambda **_: fake_compose),
-        runner_client_factory=lambda _addr, _events: MagicMock(),
+        runner_client_factory=lambda _addr, _events, _max_mb: MagicMock(),
     )
     backend = SharedStackRuntimeBackend(
         env_manifest=manifest,

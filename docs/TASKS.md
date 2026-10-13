@@ -348,7 +348,13 @@ max_trial_tokens: 2000000     # absent: no token budget
   that batch holds.
 - An environment error is a tool reply the environment completed with an error flag
   (an MCP `isError: true` reply, recorded as `tool_status: environment_error`). Every
-  such reply in a batch counts, so one step can add several errors.
+  such reply in a batch counts, so one step can add several errors. A reply that
+  declares the caller's arguments refused is not one: an MCP tool says so with the
+  JSON-RPC error `-32602` (Invalid params) or with `isError: true` and
+  `_meta: {"tolokaforge/error_category": "invalid_arguments"}`, and the call is
+  recorded as `invalid_arguments`, which the budget does not count — the caller can
+  correct its input. An untyped `isError`, or any other category, stays an
+  environment error.
 - The budget is checked after a message that calls no tools and after each
   environment batch, never between a message and its tool results: a message's calls
   always run. The opening turn's steps count too.

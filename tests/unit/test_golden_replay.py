@@ -72,6 +72,7 @@ from tolokaforge.runner.models import (
 from tolokaforge.runner.service import (
     RunnerServiceImpl,
     TrialContextRuntime,
+    _LiveStateSync,
     _tool_registered_for_trial,
 )
 from tolokaforge.runner.tool_factory import ToolCallOutcome
@@ -571,7 +572,10 @@ async def test_an_unresolvable_name_fails_the_grade_before_the_trial_state_moves
 
     with pytest.raises(UnresolvableGoldenAction, match="place_ordr"):
         await service._execute_hash_grading(
-            context.trial_id, context, _replaying(GoldenAction(tool_name="place_ordr"))
+            context.trial_id,
+            context,
+            _replaying(GoldenAction(tool_name="place_ordr")),
+            _LiveStateSync(service, context.trial_id, context),
         )
 
 
@@ -585,7 +589,10 @@ async def test_a_resolvable_name_reaches_the_db_client_the_refusal_guards() -> N
 
     with pytest.raises(AssertionError, match="ran before golden actions resolved"):
         await service._execute_hash_grading(
-            context.trial_id, context, _replaying(GoldenAction(tool_name="place_order"))
+            context.trial_id,
+            context,
+            _replaying(GoldenAction(tool_name="place_order")),
+            _LiveStateSync(service, context.trial_id, context),
         )
 
 
@@ -771,6 +778,7 @@ async def _replay_as_the_runner_does(
         context.trial_id,
         context,
         _replaying(GoldenAction(tool_name="confirm_payment", arguments={"order_id": "O-999"})),
+        _LiveStateSync(service, context.trial_id, context),
     )
 
 

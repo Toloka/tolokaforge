@@ -61,6 +61,7 @@ from tolokaforge.core.grading.rubric import (
     build_submit_report_tool,
     parse_submit_report,
 )
+from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.judge_prompt import (
     _compose_judge_system_prompt,
     effective_judge_system_prompt,
@@ -119,6 +120,39 @@ class DBReader(Protocol):
     def get_state(self, tables: list[str] | None = None) -> dict[str, Any]: ...
 
     def query(self, jsonpath: str) -> dict[str, Any]: ...
+
+
+class _RefusalRecordingDBReader:
+    """A :class:`DBReader` that keeps the substrate's refusal of a judge read.
+
+    The judge's tools run under :class:`~tolokaforge.tools.registry.ToolExecutor`,
+    which answers any raise with a tool error the judge reads and grades past. A
+    substrate that cannot reach the trial's final state is no tool error: a
+    verdict must not stand on it. The first :class:`SubstrateUnreachableError` is
+    kept here, and :meth:`LLMJudge.run` raises it once the judge loop stops.
+    """
+
+    def __init__(self, reader: DBReader) -> None:
+        self._reader = reader
+        self.refusal: SubstrateUnreachableError | None = None
+
+    def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
+        try:
+            return self._reader.get_state(tables)
+        except SubstrateUnreachableError as exc:
+            self.refusal = self.refusal or exc
+            raise
+
+    def query(self, jsonpath: str) -> dict[str, Any]:
+        try:
+            return self._reader.query(jsonpath)
+        except SubstrateUnreachableError as exc:
+            self.refusal = self.refusal or exc
+            raise
+
+    def raise_refusal(self) -> None:
+        if self.refusal is not None:
+            raise self.refusal
 
 
 # ---------------------------------------------------------------------------
@@ -694,9 +728,15 @@ class LLMJudge:
         exhaustion, or an LLM/tool error classified terminal by the loop — yields
         :data:`JudgeStatus.ERRORED` with NO numeric score. There is no path that
         returns ``0.0`` / ``0.5`` on failure.
+
+        Raises:
+            SubstrateUnreachableError: a DB read through the judge's tools could
+                not reach the trial's final state. The verdict would rest on a
+                state the judge never saw, so none is returned.
         """
         logger = self._logger or get_logger("rubric_judge")
         metrics = _JudgeMetricsSink()
+        guarded_reader = _RefusalRecordingDBReader(db_reader) if db_reader is not None else None
 
         client: JudgeModel
         if self._llm_client is not None:
@@ -706,7 +746,7 @@ class LLMJudge:
 
         registry, kb_tools_offered, kb_tools_withheld, read_tools_offered = _build_judge_registry(
             rubric,
-            db_reader=db_reader,
+            db_reader=guarded_reader,
             kb_search=kb_search,
             extra_read_tools=extra_read_tools,
             workspace_dir=workspace_dir,
@@ -758,6 +798,8 @@ class LLMJudge:
             try:
                 outcome = loop.run(system_prompt, messages, start_time=time.time())
             except Exception as exc:  # noqa: BLE001 — fail loud, never score on judge crash
+                if guarded_reader is not None:
+                    guarded_reader.raise_refusal()
                 logger.error("Judge loop raised", error=str(exc), error_type=type(exc).__name__)
                 return _build_errored_judge_result(
                     metrics,
@@ -771,6 +813,9 @@ class LLMJudge:
                     read_tools_offered=read_tools_offered,
                     state_diff=state_diff,
                 )
+
+            if guarded_reader is not None:
+                guarded_reader.raise_refusal()
 
             if termination.captured_args is None:
                 # Loop ended without submit_report — turn / wall-time / API error.

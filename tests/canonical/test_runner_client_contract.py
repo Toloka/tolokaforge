@@ -98,13 +98,19 @@ def test_grpc_runner_client_satisfies_protocol() -> None:
 
 @pytest.mark.parametrize(
     "runner_version",
-    [0, 2, 3],
-    ids=["unversioned_image", "first_versioned_response", "predating_the_linear_regex_default"],
+    [0, 2, 3, 4],
+    ids=[
+        "unversioned_image",
+        "first_versioned_response",
+        "predating_the_linear_regex_default",
+        "predating_typed_argument_refusals",
+    ],
 )
 def test_new_host_refuses_an_old_runner_before_the_trial_starts(runner_version: int) -> None:
     """An image predating ``runner_protocol_version`` reads back as 0. Version 3 is the
     last image predating the RE2 grading default; it is refused for every pack, not left
-    to refuse only a grading config carrying ``regex_engine``."""
+    to refuse only a grading config carrying ``regex_engine``. Version 4 is the last
+    image recording an MCP tool's typed argument refusal as an environment error."""
     client = GrpcRunnerClient()
     requests = []
     client.stub = SimpleNamespace(

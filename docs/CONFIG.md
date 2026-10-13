@@ -104,6 +104,7 @@ Notes:
 - `max_attempt_retries` retries transient failures (`rate_limit`, `api_error`, `timeout`) before marking a trial failed.
 - `compute.log_tail` (default `500`, must be `>= 1`) bounds the `docker compose logs --tail` line count captured per service when a multi-service trial fails or grades red on the per-trial backend.
 - `compute.capture_logs_on_success` (default `false`) is a debug escape hatch: when `true`, per-service logs are captured for successful trials too, not only failures.
+- `compute.grpc_max_message_mb` (default `50`, accepted `4`–`2047`) is the largest gRPC message, in MiB, sent or accepted between the engine, the runner and the grader: a trial's registration (which carries `initial_state` inline), the captured final state (`GetState`), the grader's `Grade` request and its substrate reads of the runner's state. The engine bounds its own channels with it and passes it to every runner container it starts as `TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`; a separately deployed runner or grader sets that variable to the same value. A message above the bound fails the call with an error naming this setting. See [RUNNER.md § gRPC message size](RUNNER.md#grpc-message-size).
 - `queue_backend: postgres` enables distributed queue/state using Postgres; set `queue_postgres_dsn`.
 - If `evaluation.task_packs` is empty, `tasks_glob` is resolved relative to the working directory.
 - If `evaluation.task_packs` is set, relative `tasks_glob` patterns are resolved under each task-pack root and merged.

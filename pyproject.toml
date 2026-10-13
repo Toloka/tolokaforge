@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge"
-version = "0.29.0"
+version = "0.30.1"
 description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -541,6 +541,7 @@ only-include = [
     "tolokaforge/core/tool_call_ids.py",
     "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
+    "tolokaforge/core/tools_interface.py",
     "tolokaforge/core/trial.py",
     "tolokaforge/core/unknown_keys.py",
 ]

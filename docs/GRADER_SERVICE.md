@@ -288,7 +288,12 @@ tolokaforge.grader`. Reads `--port` (or `$GRADER_SERVICE_PORT`, default
 `GEMINI_API_KEY` / `TOLOKAFORGE_SECRETS_JSON` — populated from
 `deploy/standalone/.env`. The grader requires a provider key only when
 the task exercises `llm_judge`; the other four grading components run
-against the keyless stack.
+against the keyless stack. `TOLOKAFORGE_GRPC_MAX_MESSAGE_MB` (default `50`)
+bounds both the `Grade` RPC the grader serves and the substrate channel it
+opens to the runner; the compose file sets it on the runner and the grader
+from one variable, which must match the run config's
+`compute.grpc_max_message_mb` (see
+[RUNNER.md § gRPC message size](RUNNER.md#grpc-message-size)).
 
 `deploy/standalone/examples/grader_rpc/` documents the run-config shape
 that routes grading through the standalone service
@@ -491,8 +496,8 @@ The eight RPCs:
 | RPC | What it returns |
 | --- | --- |
 | `ReadInitialState` | The trial's pre-execution state (`{table: [rows]}` JSON) — same shape `TaskDescription.initial_state.tables` carries. |
-| `ReadFinalDBState` | RAW final DB state, mirroring `db_client.get_state`. The shape judge state-diff and custom_checks read; unfiltered rows. |
-| `ReadFinalDBStateStable` | STABLE final DB state, mirroring `db_client.get_stable_state`. The shape jsonpath state-checks grading reads; unstable fields filtered server-side by the DB service. |
+| `ReadFinalDBState` | RAW final DB state, mirroring `db_client.get_state`. The shape judge state-diff and custom_checks read; unfiltered rows. A trial whose state lives in an MCP subprocess has its mirror synced from it first; a failed sync answers `UNAVAILABLE`. `trial_not_found` answers a trial with no database on this runner; a trial the runner holds whose database the db-service lost answers `UNAVAILABLE`. |
+| `ReadFinalDBStateStable` | STABLE final DB state, mirroring `db_client.get_stable_state`. The shape jsonpath state-checks grading reads; unstable fields filtered server-side by the DB service. Synced like `ReadFinalDBState`. |
 | `ReadFilesystemPath` | One file under `AGENT_WORK_DIR`; `is_file` + `content_utf8` for text, `is_file` + `content_bytes_b64` for binary. Symlinks / non-files / missing paths return `exists=false`. |
 | `ListFilesystemDir` | Relative POSIX paths of every non-symlink UTF-8-decodable file under `AGENT_WORK_DIR`, alphabetically sorted. Same filter and exclusion policy as `tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem` — prunes `.git`, `.venv`, `node_modules`, `dist`, `.next` subtrees at any depth. |
 | `KBSearch` | Trial's per-trial KB hits. `kb_available: false` is a first-class "this trial has no KB" signal; the callback substrate returns `None` from `knowledge_search()` when it is false. |

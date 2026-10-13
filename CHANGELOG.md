@@ -2,6 +2,38 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.30.1 (2026-10-12)
+
+### Fix
+
+- **standalone**: keep baked .pyc for fast rag boot; poll service readiness in smoke (#1862)
+- **ci**: drop type=gha build cache that reintroduced the base-pull 401 (#1861)
+- **ci**: build standalone multi-arch on native per-arch runners + build/size opts (#1858)
+
+## v0.30.0 (2026-10-12)
+
+### BREAKING CHANGE
+
+- ENGINE_PROTOCOL_VERSION is 5: an engine and a runner image on
+different sides of this change refuse each other at registration, for every
+pack — rebuild the image (make docker-build-core) with the engine.
+- tolokaforge, tolokaforge-models, tolokaforge-langfuse,
+tolokaforge-coding-harnesses and tolokaforge-adapter-terminal-bench require
+Python >=3.12; on 3.10/3.11 a resolver keeps the last release that supports
+them. Install a 3.12 interpreter (uv python install 3.12) before upgrading.
+
+### Feat
+
+- **docker**: add all-in-one tolokaforge-standalone image (#1765)
+- **langfuse**: name an agent transcript's model calls analyzer (#1826)
+- **langfuse**: post a write again when the receiver refused it without reading it (#1825)
+
+### Fix
+
+- **runner**: refused tool arguments are safe feedback and stay invalid_arguments (#1843)
+- **runner**: ship core/tools_interface.py in the runner subset (#1834) (#1837)
+- **grpc**: one configurable message-size bound on every engine/runner/grader channel (#1844)
+
 ## v0.29.0 (2026-10-05)
 
 ### BREAKING CHANGE

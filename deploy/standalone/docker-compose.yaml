@@ -81,6 +81,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       TOLOKAFORGE_SECRETS_JSON: ${TOLOKAFORGE_SECRETS_JSON:-}
+      # Largest gRPC message (MiB) the grader serves and reads from the
+      # runner's SubstrateService. Keep it equal to the runner's value and to
+      # the run config's `compute.grpc_max_message_mb`.
+      TOLOKAFORGE_GRPC_MAX_MESSAGE_MB: ${TOLOKAFORGE_GRPC_MAX_MESSAGE_MB:-50}
     depends_on:
       # The grader's `GraderCompositeDispatch` dials the runner's
       # SubstrateService per trial, so the runner must be up and healthy
@@ -104,6 +108,11 @@ services:
       # it per trial for initial-state / final-state / filesystem / KB reads.
       # ADR-0040 covers the substrate contract.
       RUNNER_EXPOSE_SUBSTRATE: "true"
+      # Largest gRPC message (MiB) the runner sends or accepts — a trial's
+      # registration carries its initial state, GetState returns the whole
+      # final state. Keep it equal to the grader's value and to the run
+      # config's `compute.grpc_max_message_mb`.
+      TOLOKAFORGE_GRPC_MAX_MESSAGE_MB: ${TOLOKAFORGE_GRPC_MAX_MESSAGE_MB:-50}
       # LLM provider credentials — optional for a keyless bring-up, required for
       # real (paid) trials. Set them in a sibling `.env` (see `.env.example`),
       # which docker compose auto-loads for interpolation. Supply either a

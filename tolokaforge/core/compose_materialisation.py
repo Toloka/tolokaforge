@@ -45,6 +45,7 @@ from tolokaforge.core.netpolicy_constants import (
 from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
 from tolokaforge.runner.compose_naming import compose_trial_slug
+from tolokaforge.runner.grpc_limits import MAX_MESSAGE_ENV_VAR, validate_max_message_mb
 from tolokaforge.runner.models import bind_mount_source
 from tolokaforge.secrets import (
     CONTAINER_SECRETS_ENV_VAR,
@@ -368,18 +369,42 @@ def _merge_service_networks(existing: Any, additions: list[str]) -> Any:
     """Add each name in ``additions`` to a service-level ``networks:`` value,
     preserving its declared shape (list or mapping) and any per-network config
     (aliases, static IPs). Absent ``existing`` yields a plain list. Idempotent:
-    a name already present is left untouched."""
+    a name already present is left untouched.
+
+    The aliases a service declares on its own networks are carried onto the
+    injected internal network. The policy moves the runner onto the injected
+    networks only, and Docker resolves an alias only on the network it is
+    declared on: without the copy a service reachable as ``api.vendor.test`` in
+    the task's compose is unreachable by that name from the runner, and a name
+    that also exists publicly resolves through the edge network to the real
+    host. Every alias is carried, one that several services declare included:
+    Docker answers such a name with all of them in turn, which keeps the
+    lookup inside the sandbox. Aliases never ride the edge network, the one
+    attachment with public egress."""
     if isinstance(existing, dict):
         merged = dict(existing)
+        aliases = _declared_aliases(existing)
         for name in additions:
             if name not in merged:
-                merged[name] = None
+                carried = aliases if name == NETPOLICY_INTERNAL_NETWORK else []
+                merged[name] = {"aliases": list(carried)} if carried else None
         return merged
     current = list(existing) if isinstance(existing, list) else []
     for name in additions:
         if name not in current:
             current.append(name)
     return current
+
+
+def _declared_aliases(networks: dict[str, Any]) -> list[str]:
+    """The aliases a service declares across its own networks, in declaration order."""
+    aliases: list[str] = []
+    for config in networks.values():
+        if isinstance(config, dict):
+            for alias in config.get("aliases") or []:
+                if alias not in aliases:
+                    aliases.append(alias)
+    return aliases
 
 
 def apply_network_policy_to_compose_file(
@@ -475,6 +500,38 @@ def inject_substrate_env_into_runner(compose_file: Path, runner_service: str) ->
     validation, kept so an internal inconsistency is loud rather than
     silently un-exposed.
     """
+    _set_runner_env_unless_declared(
+        compose_file, runner_service, RUNNER_EXPOSE_SUBSTRATE_ENV_VAR, "true"
+    )
+
+
+def inject_grpc_limit_env_into_runner(
+    compose_file: Path, runner_service: str, max_message_mb: int
+) -> None:
+    """Set ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` on ``runner_service`` in place.
+
+    The built-in shared stack's ``core_stack`` factory sets the variable on
+    the engine-owned runner from ``compute.grpc_max_message_mb``; a
+    task-declared runner gets the same value here, so the runner serves with
+    the bound the engine's client channel uses. A compose file that declares
+    the variable itself keeps its own value. Raises ``ValueError`` when
+    ``runner_service`` is not declared, like
+    :func:`inject_substrate_env_into_runner`.
+    """
+    _set_runner_env_unless_declared(
+        compose_file,
+        runner_service,
+        MAX_MESSAGE_ENV_VAR,
+        str(validate_max_message_mb(max_message_mb)),
+    )
+
+
+def _set_runner_env_unless_declared(
+    compose_file: Path, runner_service: str, name: str, value: str
+) -> None:
+    """Add ``name=value`` to ``runner_service``'s environment in place unless
+    the service already declares ``name`` (mapping key, ``KEY=value`` or bare
+    ``KEY`` list entry)."""
     with compose_file.open() as f:
         doc = yaml.safe_load(f)
     services: dict[str, Any] = doc["services"]
@@ -484,11 +541,9 @@ def inject_substrate_env_into_runner(compose_file: Path, runner_service: str) ->
             f"{compose_file.name!r}; declared services are {sorted(services)!r}."
         )
     service = services[runner_service]
-    if _service_declares_env_var(service.get("environment"), RUNNER_EXPOSE_SUBSTRATE_ENV_VAR):
+    if _service_declares_env_var(service.get("environment"), name):
         return
-    service["environment"] = _merge_service_env(
-        service.get("environment"), {RUNNER_EXPOSE_SUBSTRATE_ENV_VAR: "true"}
-    )
+    service["environment"] = _merge_service_env(service.get("environment"), {name: value})
     with compose_file.open("w") as f:
         yaml.safe_dump(doc, f, sort_keys=False)
 

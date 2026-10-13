@@ -75,7 +75,7 @@ in how *you* reach them, not in what the runner does underneath.
 
 ## Published images
 
-The four first-party images are published to Docker Hub, so a host with only
+The first-party images are published to Docker Hub, so a host with only
 Docker installed can `docker pull` them instead of building from a repo
 checkout:
 
@@ -85,8 +85,13 @@ checkout:
 | db-service | `docker.io/tolokasoft1/tolokaforge-db-service` | JSON state store the runner and tasks read/write |
 | rag-service | `docker.io/tolokasoft1/tolokaforge-rag-service` | retrieval service backing the `search_kb` judge tool |
 | mock-web | `docker.io/tolokasoft1/tolokaforge-mock-web` | deterministic web fixtures for browser tasks |
+| grader | `docker.io/tolokasoft1/tolokaforge-grader` | standalone detached grader service ([ADR-0038](adr/0038-grader-detachment.md)) |
+| standalone | `docker.io/tolokasoft1/tolokaforge-standalone` | all-in-one single container running the whole stack ([ADR-0056](adr/0056-all-in-one-image.md)) |
 
-All four share one coordinated semver tag axis:
+The five per-component images are the distributed/scale-out shape; `standalone`
+collapses them into one container for "runs anywhere Docker does" use — see
+[`deploy/single-container/`](../deploy/single-container/README.md). They share
+one coordinated semver tag axis:
 
 | Tag | Kind | Points at |
 |---|---|---|
@@ -143,6 +148,7 @@ committed "service is up" signal.
 | `RAG_SERVICE_URL` | no | *(none — honest absence)* | URL of the rag-service. Present iff a rag-service is running; unset means the runner reaches no rag-service and refuses to register a trial whose search backend declares the `rag_service` stack service. |
 | `TYPESENSE_HOST` | no | *(none — honest absence)* | Host the TypeSense server answers on, as reachable from this container. Present iff the run configured a TypeSense plane; unset means the runner falls back to the connection details its task descriptions carry. |
 | `TYPESENSE_PORT` | no | *(none — honest absence)* | Port paired with `TYPESENSE_HOST`. Set together with it — a container given one without the other is a half-configured stack, and the runner refuses rather than falling back. |
+| `TOLOKAFORGE_GRPC_MAX_MESSAGE_MB` | no | `50` | Largest gRPC message, in MiB, the runner sends or accepts (`4`–`2047`); set it to the driving engine's `compute.grpc_max_message_mb`. Any other value fails startup. See [RUNNER.md § gRPC message size](RUNNER.md#grpc-message-size). |
 
 The TypeSense API key is deliberately absent from this table: it arrives inside
 `TOLOKAFORGE_SECRETS_JSON` under `TYPESENSE_API_KEY`, like every other

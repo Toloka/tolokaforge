@@ -760,12 +760,12 @@ def test_build_and_prepare_builds_images_and_networks_without_starting_container
     stack.destroy(remove_networks=False)
 
 
-@pytest.mark.parametrize("service", ["runner", "grader"])
+@pytest.mark.parametrize("service", ["runner", "grader", "standalone"])
 def test_full_source_image_context_resolves_from_installed_wheel(
     service: str, tmp_path: Path, monkeypatch
 ) -> None:
-    """On a wheel install, runner and grader — which compile the identical full
-    source set in-container — resolve their context to the PACKAGED
+    """On a wheel install, runner, grader and standalone — which compile the
+    identical full source set in-container — resolve their context to the PACKAGED
     ``_subset_build`` copies, not the absent repo-root paths.
 
     ``repo_root()`` is ``site-packages`` once installed as a wheel, so the
@@ -809,7 +809,7 @@ def test_full_source_image_context_resolves_from_installed_wheel(
         shutil.rmtree(build_dir, ignore_errors=True)
 
 
-@pytest.mark.parametrize("service", ["runner", "grader"])
+@pytest.mark.parametrize("service", ["runner", "grader", "standalone"])
 def test_full_source_image_context_fails_loud_when_wheel_lacks_packaged_inputs(
     service: str, tmp_path: Path, monkeypatch
 ) -> None:

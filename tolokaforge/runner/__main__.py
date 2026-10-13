@@ -20,6 +20,9 @@ Environment Variables:
         :class:`RunnerService` on the same listen port. Unset / any other
         value => the surface is off and every ``SubstrateService/*`` call
         returns ``UNIMPLEMENTED``.
+    TOLOKAFORGE_GRPC_MAX_MESSAGE_MB: Largest gRPC message, in MiB, the server
+        sends or accepts (default 50, accepted 4..2047). The engine sets it
+        from ``compute.grpc_max_message_mb``; an invalid value fails startup.
     LOG_LEVEL: Logging level (default: INFO)
     TOLOKAFORGE_SECRETS_JSON: JSON-serialized credential map injected by the
         orchestrator at container start. Bootstraps the SecretManager
@@ -42,6 +45,11 @@ from tolokaforge.runner import (
     add_SubstrateServiceServicer_to_server,
 )
 from tolokaforge.runner.db_client import DBServiceClient
+from tolokaforge.runner.grpc_limits import (
+    DEFAULT_MAX_MESSAGE_MB,
+    channel_options,
+    max_message_mb_from_env,
+)
 from tolokaforge.runner.rag_client import RAGServiceClient
 from tolokaforge.runner.service import RunnerServiceImpl
 from tolokaforge.runner.substrate_service import SubstrateServicer
@@ -135,6 +143,7 @@ def get_config() -> dict:
         "expose_substrate": os.environ.get("RUNNER_EXPOSE_SUBSTRATE", "").strip().lower() == "true",
         "log_level": os.environ.get("LOG_LEVEL", DEFAULT_LOG_LEVEL),
         "max_workers": int(os.environ.get("MAX_WORKERS", DEFAULT_MAX_WORKERS)),
+        "grpc_max_message_mb": max_message_mb_from_env(),
     }
 
 
@@ -155,6 +164,7 @@ class RunnerServer:
         max_workers: int = DEFAULT_MAX_WORKERS,
         rag_service_url: str | None = None,
         expose_substrate: bool = False,
+        grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
     ):
         """
         Initialize the Runner server.
@@ -167,12 +177,15 @@ class RunnerServer:
             expose_substrate: When true, register the read-only
                 :class:`SubstrateService` gRPC servicer alongside
                 :class:`RunnerService` on the same listen port.
+            grpc_max_message_mb: Largest gRPC message, in MiB, the server
+                sends or accepts — the engine's ``compute.grpc_max_message_mb``.
         """
         self.db_service_url = db_service_url
         self.rag_service_url = rag_service_url
         self.port = port
         self.max_workers = max_workers
         self.expose_substrate = expose_substrate
+        self.grpc_max_message_mb = grpc_max_message_mb
         self.server: grpc.Server | None = None
         self.db_client: DBServiceClient | None = None
         self.rag_client: RAGServiceClient | None = None
@@ -205,10 +218,7 @@ class RunnerServer:
         # Create gRPC server
         self.server = grpc.server(
             futures.ThreadPoolExecutor(max_workers=self.max_workers),
-            options=[
-                ("grpc.max_send_message_length", 50 * 1024 * 1024),  # 50MB
-                ("grpc.max_receive_message_length", 50 * 1024 * 1024),  # 50MB
-            ],
+            options=channel_options(self.grpc_max_message_mb),
         )
 
         # Add service to server
@@ -328,6 +338,7 @@ async def run_server() -> None:
     logger.info(f"  RAG Service URL: {config['rag_service_url'] or 'not configured'}")
     logger.info(f"  Runner Port: {config['runner_port']}")
     logger.info(f"  Expose SubstrateService: {config['expose_substrate']}")
+    logger.info(f"  gRPC Max Message Size: {config['grpc_max_message_mb']} MiB")
     logger.info(f"  Log Level: {config['log_level']}")
     logger.info(f"  Max Workers: {config['max_workers']}")
     logger.info("=" * 60)
@@ -339,6 +350,7 @@ async def run_server() -> None:
         max_workers=config["max_workers"],
         rag_service_url=config["rag_service_url"],
         expose_substrate=config["expose_substrate"],
+        grpc_max_message_mb=config["grpc_max_message_mb"],
     )
 
     # Setup signal handlers

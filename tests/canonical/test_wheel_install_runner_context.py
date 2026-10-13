@@ -190,7 +190,7 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
 
         # Confirm the venv actually looks like a wheel install — this is
         # the trigger condition for the wheel-install branch of
-        # ``_runner_definition``. If a false-positive source checkout
+        # ``_full_source_definition``. If a false-positive source checkout
         # were detected, the resolver would return repo-relative paths
         # and the assembly below would fail with a misleading error.
         root = repo_root()
@@ -300,7 +300,7 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
     )
     assert probe_data["wheel_install"], (
         f"probe found a pyproject.toml under {resolved_repo_root} — the "
-        "wheel-install branch of ``_runner_definition`` was NOT triggered, "
+        "wheel-install branch of ``_full_source_definition`` was NOT triggered, "
         "so this test would only exercise the source-checkout path. "
         "Check that the base wheel does not ship a top-level pyproject.toml."
     )

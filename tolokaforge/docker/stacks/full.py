@@ -24,6 +24,7 @@ from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.ports import PortConfig
 from tolokaforge.docker.stack import BuildContextSpec, EngineStack, ServiceDefinition
 from tolokaforge.docker.stacks.core import TypeSenseAddress, core_stack
+from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
 
 
 def full_stack(
@@ -40,6 +41,7 @@ def full_stack(
     mount_docker_socket: bool = False,
     typesense_address: TypeSenseAddress | None = None,
     expose_substrate: bool = False,
+    grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
 ) -> EngineStack:
     """Create a full service stack with all services.
 
@@ -67,6 +69,7 @@ def full_stack(
         mount_docker_socket: Forwarded to ``core_stack``.
         typesense_address: Forwarded to ``core_stack``.
         expose_substrate: Forwarded to ``core_stack``.
+        grpc_max_message_mb: Forwarded to ``core_stack``.
 
     Returns:
         EngineStack configured with all services.
@@ -83,6 +86,7 @@ def full_stack(
         mount_docker_socket=mount_docker_socket,
         typesense_address=typesense_address,
         expose_substrate=expose_substrate,
+        grpc_max_message_mb=grpc_max_message_mb,
         # The full stack provisions a rag-service below, so the runner's
         # RAG_SERVICE_URL points at a service that actually runs. Both the
         # container name and the ``rag-service`` alias resolve on runner-net;
