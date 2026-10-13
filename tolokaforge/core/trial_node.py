@@ -234,13 +234,14 @@ def build_trial_execution_unit(ctx: TrialExecutionContext) -> TrialExecutionUnit
         )
         executor: TrialExecutor
         if isinstance(ctx.runtime_backend, TrialOwningBackend):
+            probe = ctx.config.orchestrator.rate_limit_probe
             executor = RemoteTrialExecutor(
                 backend=ctx.runtime_backend,
                 runtime=_NODE_RUNTIME,
                 conductor=_NODE_CONDUCTOR,
                 grader_config=grader_config,
                 grpc_max_message_mb=ctx.grpc_max_message_mb,
-                rate_limit_probe=ctx.config.orchestrator.rate_limit_probe,
+                rate_limit_probe=probe if probe.enabled else None,
                 logger=ctx.logger,
                 output_dir=ctx.output_dir,
                 artifact_writer=ctx.artifact_writer,

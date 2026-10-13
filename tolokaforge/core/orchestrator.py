@@ -74,6 +74,7 @@ from tolokaforge.core.models import (
     ComputeConfig,
     GradingFindingSeverity,
     ModelConfig,
+    OrchestratorConfig,
     ProjectConfig,
     RunConfig,
     ServiceSpec,
@@ -1346,12 +1347,12 @@ class Orchestrator:
     def _refuse_unsupported_remote_run(self) -> None:
         """Fail loud on run shapes the ``remote`` runtime cannot serve.
 
-        The remote backend leases a runner node per trial and starts no local
-        stack, so it refuses an explicit ``auto_start_services: true``, tasks
-        that declare an ``environment_manifest`` (it does not materialise
-        task-declared stacks), and trial graders that dial a static runner
-        address (``grader_rpc`` / ``queue``) — only ``runner_rpc`` grading
-        reaches the leased node.
+        The remote backend hands each whole trial to a leased node and starts no
+        local stack, so it refuses an explicit ``auto_start_services: true``,
+        tasks that declare an ``environment_manifest`` (the node does not yet
+        receive task-declared stacks), trial graders that dial a static runner
+        address (``grader_rpc`` / ``queue``), and every run setting the node does
+        not carry (see :meth:`_refuse_settings_the_node_does_not_carry`).
         """
         orchestrator = self.config.orchestrator
         if (
@@ -1359,15 +1360,15 @@ class Orchestrator:
             and "auto_start_services" in orchestrator.model_fields_set
         ):
             raise ValueError(
-                "orchestrator.runtime='remote' leases runner nodes from "
+                "orchestrator.runtime='remote' leases nodes from "
                 "orchestrator.remote and starts no local stack; it contradicts "
                 "orchestrator.auto_start_services=true. Set auto_start_services: false."
             )
         if self._any_task_declares_environment_manifest():
             raise ValueError(
-                "orchestrator.runtime='remote' does not materialise task-declared "
-                "stacks, but at least one task declares an environment_manifest. "
-                "Run those tasks under the shared or per_trial runtime."
+                "orchestrator.runtime='remote' runs each trial on a node that cannot yet "
+                "receive task-declared stacks, but at least one task declares an "
+                "environment_manifest. Run those tasks under the shared or per_trial runtime."
             )
         grader_name = self.config.grader.name if self.config.grader else None
         if not grader_name and self.adapter is not None:
@@ -1377,6 +1378,75 @@ class Orchestrator:
                 f"orchestrator.runtime='remote' cannot use grader {grader_name!r}: it dials a "
                 "static runner address the remote backend does not expose. Use "
                 "the 'runner_rpc' grader."
+            )
+        self._refuse_settings_the_node_does_not_carry()
+        self._warn_observability_the_node_does_not_carry()
+
+    def _refuse_settings_the_node_does_not_carry(self) -> None:
+        """Refuse run settings a node would silently drop.
+
+        A node rebuilds its run configuration from the trial inputs and its own
+        defaults, so a run-level setting that is not part of those inputs would
+        be ignored there while the run reported it as applied. Each setting
+        explicitly moved off its default is named in one error.
+        """
+        defaults = OrchestratorConfig()
+        orchestrator = self.config.orchestrator
+        unsupported: list[str] = []
+        if self._conductor_factory is not None:
+            unsupported.append(
+                "a custom conductor_factory (the node runs its own in_process conductor)"
+            )
+        if any(task.adapter_type != "native" for task in self.tasks) or (
+            _configured_harness(self.config) is not None
+        ):
+            unsupported.append(
+                "a non-native adapter or coding-harness mode (the remote runtime runs only "
+                "the native adapter without harness mode)"
+            )
+        if orchestrator.timeouts != defaults.timeouts:
+            unsupported.append("orchestrator.timeouts")
+        if orchestrator.max_turns != defaults.max_turns:
+            unsupported.append("orchestrator.max_turns")
+        if orchestrator.stuck_heuristics != defaults.stuck_heuristics:
+            unsupported.append("orchestrator.stuck_heuristics")
+        if orchestrator.agent_loop != defaults.agent_loop:
+            unsupported.append("orchestrator.agent_loop")
+        compute_defaults = ComputeConfig()
+        compute = self.config.compute
+        if compute is not None and (
+            compute.log_tail != compute_defaults.log_tail
+            or compute.capture_logs_on_success != compute_defaults.capture_logs_on_success
+        ):
+            unsupported.append("compute.log_tail / compute.capture_logs_on_success")
+        if self.config.effective_max_requests_per_second is not None:
+            unsupported.append("max_requests_per_second")
+        if self._agent_client_factory is not None or any(
+            model.fallbacks for model in self.config.models.values()
+        ):
+            unsupported.append("a fallback model chain")
+        if orchestrator.effective_typesense() is not None:
+            unsupported.append("the orchestrator.typesense search plane")
+        if unsupported:
+            raise ValueError(
+                "orchestrator.runtime='remote' runs each trial on a node that does not carry "
+                f"{', '.join(unsupported)}. Remove them, or run under the shared or "
+                "per_trial runtime."
+            )
+
+    def _warn_observability_the_node_does_not_carry(self) -> None:
+        """Warn that a configured trace exporter sees only the reduced bundle.
+
+        The node runs the trial with no observer, so the control plane can attach
+        only what it writes from the returned trajectory.
+        """
+        observability = self.config.observability
+        tracing = observability.tracing if observability is not None else None
+        if tracing is not None and tracing.exporter != "none":
+            self.logger.warning(
+                "observability.tracing is configured, but orchestrator.runtime='remote' runs "
+                "trials on nodes that emit no live traces; exporters see the reduced bundle only",
+                exporter=tracing.exporter,
             )
 
     def _build_node_registry(self) -> NodeRegistry:
