@@ -415,6 +415,9 @@ class TaskDescription(BaseModel):
     generated_at: Optional[datetime] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)      # Adapter-specific extras
 
+    # --- Tool code ---
+    tool_artifacts: Dict[str, str] = Field(default_factory=dict)  # relative path -> base64 content
+
     model_config = {"extra": "forbid"}
 ```
 
@@ -442,6 +445,53 @@ class TaskDescription(BaseModel):
 hold their default (an empty mapping, `search_kb`), so a task that declares neither
 serialises without them, and an older image, which forbids a key it does not declare,
 accepts it.
+
+### `tool_artifacts`: tool code, and the shared libraries a task pins
+
+`tool_artifacts` is the only channel by which tool code reaches the runner and the
+grader. The runner extracts it into the trial's directory and puts that directory on
+`sys.path`; the grader extracts the same set for `custom_checks`. Each adapter
+bundles its own files — the native adapter the task directory, or the domain root
+with `_shared/`.
+
+A task may also pin shared tool libraries installed next to the engine (ADR-0060),
+on `task.yaml`, on a shared `domain.yaml` or in a project's `task_defaults`:
+
+```yaml
+tool_libraries:
+  - name: acme_tools        # the entry-point name under tolokaforge.tool_libraries
+    version: 1.2.0          # compared verbatim with the installed library's version
+    apps: [billing]         # optional: the library bundles only these applications
+```
+
+`BaseAdapter.describe_task` — the one path the orchestrator, `run_trial` and the dry
+run build a description on — calls the adapter's `to_task_description`, then resolves
+each pin and merges the library's bundle into `tool_artifacts`. It refuses:
+
+| Refusal | Message names |
+|---|---|
+| the library is not installed | the pinned name and every installed library |
+| another version is installed | the pinned and the installed version |
+| the same library is pinned twice | the name |
+| the entry point registers no `name` / `version` / `bundle()`, or another name | the entry point |
+| an empty bundle, or a path that is absolute, leaves the artefact root or is not normalised (`./a/x.py`, `a//x.py`, `.`) | the library and the path |
+| a path the adapter's own artefacts (or an earlier library) already hold, or an artefact that would shadow a bundled top-level module on an import path of the trial — under `_shared/`, `tools/` or beside an MCP server script | the module and the artefact paths at fault — drop the pack's own copy of the library |
+
+`metadata["tool_libraries"]` records each merged library as
+`{name, version, apps, files}` (`apps` is `null` when the pin selects every
+application); a task that pins nothing gets no such key. The runner starts MCP server
+subprocesses with the extracted artefact root, and its `tools/` directory when there is
+one, ahead of `PYTHONPATH` — the entries extraction puts on the runner's own `sys.path`
+— so a server under `_shared/` imports a library rooted at the artefact directory as the
+runner process does. When a trial's artefacts are torn down — the runner's trial cleanup
+and shutdown, the end of an offline grade — every module imported from them is dropped
+from `sys.modules`, so a later trial that pins another version of a library imports that
+version rather than the cached one. A library imports only packages the runner already depends on, because its
+bundle runs on the runner's interpreter. `tolokaforge validate` resolves each pin and
+builds its bundle the same way, so every refusal above but the collision with the
+adapter's own artefacts is a `✗` line before any run. The encoded bundle of a library
+is built once per process for a given selection, so the descriptions of tasks sharing
+a pin share it rather than each holding a copy.
 
 ---
 

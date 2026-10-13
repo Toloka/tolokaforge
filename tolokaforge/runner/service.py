@@ -79,6 +79,7 @@ from tolokaforge.core.grading.substrate import (
     RunTestSuiteResult,
     SubstrateUnreachableError,
 )
+from tolokaforge.core.grading.tool_artifacts import purge_modules_under
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
@@ -905,18 +906,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         # Clean up extracted artifact directories
         for trial_id, artifact_dir in self._artifact_dirs.items():
-            try:
-                # Remove extracted dir from sys.path
-                dir_str = str(artifact_dir)
-                if dir_str in sys.path:
-                    sys.path.remove(dir_str)
-                tools_str = str(artifact_dir / "tools")
-                if tools_str in sys.path:
-                    sys.path.remove(tools_str)
-                shutil.rmtree(artifact_dir, ignore_errors=True)
-                logger.debug(f"Cleaned up artifact dir for trial {trial_id}: {artifact_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up artifact dir {artifact_dir}: {e}")
+            self._discard_artifact_dir(trial_id, artifact_dir)
         self._artifact_dirs.clear()
 
         if self._loop and self._loop.is_running():
@@ -981,15 +971,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         artifact_dir = self._artifact_dirs.pop(trial_id, None)
         if artifact_dir is None:
             return
+        self._discard_artifact_dir(trial_id, artifact_dir)
+
+    @staticmethod
+    def _discard_artifact_dir(trial_id: str, artifact_dir: Path) -> None:
+        """Take a trial's extracted artefacts off this process: ``sys.path``, ``sys.modules``, disk.
+
+        A module imported in process from the directory — a tool module, the
+        grader's ``checks.py`` helpers, a pinned tool library — would otherwise
+        stay cached and be served to a later trial that ships another version
+        of it (ADR-0060).
+        """
         try:
-            dir_str = str(artifact_dir)
-            if dir_str in sys.path:
-                sys.path.remove(dir_str)
-            tools_str = str(artifact_dir / "tools")
-            if tools_str in sys.path:
-                sys.path.remove(tools_str)
+            for entry in (str(artifact_dir), str(artifact_dir / "tools")):
+                if entry in sys.path:
+                    sys.path.remove(entry)
+            purged = purge_modules_under(artifact_dir)
             shutil.rmtree(artifact_dir, ignore_errors=True)
-            logger.debug(f"Cleaned up artifact dir for trial {trial_id}: {artifact_dir}")
+            logger.debug(
+                f"Cleaned up artifact dir for trial {trial_id}: {artifact_dir} "
+                f"(purged modules: {purged})"
+            )
         except Exception as e:
             logger.warning(f"Failed to clean up artifact dir {artifact_dir}: {e}")
 
@@ -1292,6 +1294,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 id_fields=id_fields,
                 search_tool_name=search_config.tool_name,
                 search_index=search_index,
+                artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
             )
 
             # Set domain on DB proxy so search_policy tools can resolve

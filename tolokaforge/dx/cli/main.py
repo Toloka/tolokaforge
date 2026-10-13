@@ -1935,6 +1935,7 @@ def validate(tasks: str, strict_authoring: bool):
         SkipKind,
     )
     from tolokaforge.core.grading.migration_declaration import inspect_migration_declaration
+    from tolokaforge.core.tool_libraries import checked_bundles
 
     task_files = glob.glob(tasks, recursive=True)
     if not task_files:
@@ -1948,6 +1949,11 @@ def validate(tasks: str, strict_authoring: bool):
     for task_file in task_files:
         try:
             task_config, task_dir, project_combine = _load_task_under_its_project(Path(task_file))
+            # A pin the run would refuse when describing the task (ADR-0060): the
+            # bundle is built as describe_task builds it, so an application the
+            # library does not ship fails here with the run's message. Only a
+            # collision with the adapter's own artefacts needs the description.
+            checked_bundles(task_config.tool_libraries)
             source = grading_source_under_adapter(task_config, task_dir, task_config.adapter_type)
             if source.kind is GradingSourceKind.WITHHELD:
                 raise ValueError(source.reason)

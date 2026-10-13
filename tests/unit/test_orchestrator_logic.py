@@ -1447,7 +1447,7 @@ def _orchestrator_with_tasks(config: RunConfig, judge_flags: dict[str, bool]):
     orch = Orchestrator(config)
     orch.tasks = [_make_task_config(tid) for tid in judge_flags]
     adapter = MagicMock()
-    adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+    adapter.describe_task.side_effect = lambda tid: _task_description_with_judge(
         tid, has_judge=judge_flags[tid]
     )
     adapter.requires_judge_model.side_effect = judge_flags.__getitem__
@@ -1516,11 +1516,11 @@ class TestJudgeModelGate:
         orch = Orchestrator(config, deps=OrchestratorDeps(conductor_factory=conductor_factory))
         orch.tasks = [_make_task_config("TASK-needs-judge")]
         adapter = MagicMock()
-        adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+        adapter.describe_task.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=True
         )
         adapter.requires_judge_model.side_effect = lambda tid: (
-            adapter.to_task_description(tid).grading.llm_judge is not None
+            adapter.describe_task(tid).grading.llm_judge is not None
         )
         orch.adapter = adapter
 
@@ -1545,11 +1545,11 @@ class TestJudgeModelGate:
         orch = Orchestrator(config)
         orch.tasks = [_make_task_config("TASK-001")]
         adapter = MagicMock()
-        adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+        adapter.describe_task.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=False
         )
         adapter.requires_judge_model.side_effect = lambda tid: (
-            adapter.to_task_description(tid).grading.llm_judge is not None
+            adapter.describe_task(tid).grading.llm_judge is not None
         )
         orch.adapter = adapter
 
@@ -1649,14 +1649,14 @@ class TestPrepareRunIdempotency:
         orch = Orchestrator(_make_run_config())
         orch.tasks = [_make_task_config("TASK-001"), _make_task_config("TASK-002")]
         adapter = MagicMock()
-        adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+        adapter.describe_task.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=False
         )
         _write_grading_yaml(tmp_path)
         adapter.get_task_dir.return_value = tmp_path
         adapter.fingerprint.return_value = None
         adapter.requires_judge_model.side_effect = lambda tid: (
-            adapter.to_task_description(tid).grading.llm_judge is not None
+            adapter.describe_task(tid).grading.llm_judge is not None
         )
         orch.adapter = adapter
         return orch
