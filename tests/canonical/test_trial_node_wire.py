@@ -9,6 +9,9 @@ run on in production. No Docker, no LLM.
 
 from __future__ import annotations
 
+import socket
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -240,3 +243,34 @@ def test_the_keepalive_options_ping_while_a_single_call_runs() -> None:
     assert options["grpc.keepalive_permit_without_calls"] == 1
     assert options["grpc.http2.max_pings_without_data"] == 0
     assert options["grpc.http2.min_ping_interval_without_data_ms"] <= KEEPALIVE_TIME_MS
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@pytest.mark.parametrize("via_cli", [False, True], ids=["python-m", "tolokaforge-cli"])
+def test_the_node_process_entry_serves_the_trial_node_api(tmp_path: Path, via_cli: bool) -> None:
+    port = _free_port()
+    command = (
+        [str(Path(sys.executable).parent / "tolokaforge"), "trial-node"]
+        if via_cli
+        else [sys.executable, "-m", "tolokaforge.trial_node"]
+    )
+    process = subprocess.Popen(
+        [*command, "--port", str(port), "--output-root", str(tmp_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        with TrialNodeClient(f"127.0.0.1:{port}") as client:
+            client.connect(timeout=60.0, retry_interval=0.25)
+            health = client._connected_stub().HealthCheck(trial_node_pb2.HealthCheckRequest())
+    finally:
+        process.terminate()
+        process.wait(timeout=15)
+
+    assert (health.status, health.node_protocol_version) == ("ready", NODE_PROTOCOL_VERSION)
+    assert health.node_max_message_mb == 50
