@@ -526,12 +526,12 @@ class OrchestratorConfig(BaseModel):
 
     auto_start_services: bool = True  # Auto-start Docker services via EngineStack
 
-    fail_on_zero_coverage: bool = False
+    fail_on_zero_coverage: bool = True
     """Exit ``2`` when the run measured no trials on a config that had trials
-    to measure (``total_attempts > 0``). Off by default preserves the shipped
-    "infrastructure aborts do not fail the run" contract; opt in from CI when
-    a zero-coverage run should fail the pipeline. See
-    ``docs/adr/0041-zero-coverage-exit-signal.md``."""
+    to measure (``total_attempts > 0``). On by default: a run that measured
+    nothing fails instead of exiting ``0``. Opt out explicitly with
+    ``fail_on_zero_coverage: false`` where infrastructure aborts must not
+    fail the run. See ``docs/adr/0041-zero-coverage-exit-signal.md``."""
 
     fail_on_zero_judge_graded: bool = False
     """Exit ``2`` when every produced grade has ``judge_status == ERRORED``.

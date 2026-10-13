@@ -722,8 +722,8 @@ def _run_dry_run(
     is_flag=True,
     default=False,
     help=(
-        "Exit 2 when the run finished with no measured trials. Overrides "
-        "orchestrator.fail_on_zero_coverage in the run config when set. "
+        "Exit 2 when the run finished with no measured trials. On by default; "
+        "opt out with orchestrator.fail_on_zero_coverage: false in the run config. "
         "See docs/CLI.md § Run and worker exit codes."
     ),
 )
@@ -1679,8 +1679,8 @@ def prepare(
     is_flag=True,
     default=False,
     help=(
-        "Exit 2 when the worker finished with no measured attempts. Overrides "
-        "orchestrator.fail_on_zero_coverage in the run config when set. "
+        "Exit 2 when the worker finished with no measured attempts. On by default; "
+        "opt out with orchestrator.fail_on_zero_coverage: false in the run config. "
         "See docs/CLI.md § Run and worker exit codes."
     ),
 )

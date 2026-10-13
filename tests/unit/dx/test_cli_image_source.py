@@ -62,7 +62,10 @@ def _make_capturing_orchestrator(captured: dict[str, Any], *, run_return: Path) 
 
         def run(self, **_: object) -> Path:
             self.grading_completeness = GradingCompleteness(
-                total_attempts=1, ungradeable_trial_ids=()
+                total_attempts=1,
+                ungradeable_trial_ids=(),
+                measured_trials=1,
+                scored_trials=1,
             )
             return run_return
 

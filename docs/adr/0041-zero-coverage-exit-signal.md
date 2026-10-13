@@ -1,6 +1,6 @@
 # 0041. Zero-coverage exit signal on `run_state.json`
 
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-10-12: `fail_on_zero_coverage` now defaults to `true`)
 - **Date:** 2026-08-28
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
@@ -51,6 +51,19 @@ CI parsers already parse shell exit codes; they should not have to
 open `aggregate.json` to distinguish "nothing was measured" or "no
 grade succeeded" from a clean run.
 
+## Amendment: zero-coverage fails by default
+
+`OrchestratorConfig.fail_on_zero_coverage` now defaults to `true`. A run
+that measured nothing exits `2` unless the run config sets
+`orchestrator.fail_on_zero_coverage: false`. Rationale: a run that measured
+nothing and silently exits `0` is a footgun, since downstream consumers
+treat the run as a result when it carries no signal; failing loudly is the
+safer default, and the opt-out is one explicit line. The `--fail-on-zero-coverage`
+CLI flag remains and is redundant under the default. `fail_on_zero_judge_graded`
+is unchanged and stays opt-in. Where the text below describes the zero-coverage
+gate as opt-in or its default as `False`, read it as the original decision
+that this amendment supersedes.
+
 ## Decision Drivers
 
 - **CI parsers read shell exit codes, not JSON.** The signal has to
@@ -58,7 +71,8 @@ grade succeeded" from a clean run.
 - **The signal must be opt-in.** Existing pipelines rely on
   "infrastructure aborts do not fail the run"
   ([`docs/CLI.md`](../CLI.md) § "Run and worker exit codes"). Flipping
-  that default silently would break them.
+  that default silently would break them. *(Superseded for the
+  zero-coverage gate by the amendment above.)*
 - **The signal must be inspectable even when the flag is off.** A
   triage dashboard reading `run_state.json` should distinguish the two
   failure modes without re-parsing `aggregate.json`.
@@ -149,7 +163,7 @@ Two fields on
 [`OrchestratorConfig`](../../tolokaforge/core/models/run_config.py):
 
 ```python
-fail_on_zero_coverage: bool = False
+fail_on_zero_coverage: bool = True  # amended; originally False
 fail_on_zero_judge_graded: bool = False
 ```
 
@@ -281,9 +295,9 @@ more specific exit-`2` signal outranks exit-`1` in the overlap
   set — and the `docs/CLI.md` § "Run and worker exit codes" contract
   that "a trial the provider or the substrate killed … does not
   trigger the gate" — is preserved verbatim.
-- **Not making zero-coverage a default fail.** Both flags default
-  `False`; the shipped exit-`0` semantics for infrastructure-abort
-  runs stand until an operator opts in.
+- **Not making zero-judge-graded a default fail.** `fail_on_zero_judge_graded`
+  defaults `False`. (The original decision also kept zero-coverage
+  opt-in; the amendment above flips that one default.)
 
 ## Prior art
 

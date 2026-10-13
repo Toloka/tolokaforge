@@ -110,8 +110,16 @@ from tolokaforge.core.plugin_registry import (
     load_trial_grader,
     load_user_simulator,
 )
-from tolokaforge.core.pricing import pricing_table_metadata, resolve_pricing
-from tolokaforge.core.pricing_freshness import compare_against_source, live_prices
+from tolokaforge.core.pricing import (
+    normalize_model_name,
+    pricing_table_metadata,
+    resolve_pricing,
+)
+from tolokaforge.core.pricing_freshness import (
+    compare_against_source,
+    live_prices,
+    reconcile_with_pinned_providers,
+)
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
@@ -752,8 +760,8 @@ class GradingCompleteness:
     def zero_coverage(self) -> bool:
         """No trial produced an agent-measured verdict on a run that had trials.
 
-        Two triggers, both fail-loud on the CLI when
-        ``--fail-on-zero-coverage`` is set: nothing reached the measurement
+        Two triggers, both fail-loud on the CLI unless
+        ``orchestrator.fail_on_zero_coverage`` is set to ``false``: nothing reached the measurement
         point (``measured_trials == 0``), or every measurement was a
         harness-synthesised auto-fail from
         ``ERROR``/``TIMEOUT``/``STUCK_DETECTED``/``EMPTY_COMPLETION``
@@ -2636,6 +2644,19 @@ class Orchestrator:
             "the bundled table lacks), or drop the limit and run without a cap."
         )
 
+    def _pinned_openrouter_providers(self) -> dict[str, list[str]]:
+        """Resolved pricing key → providers a run is restricted to.
+
+        Only a pin with ``allow_fallbacks: false`` restricts billing to the
+        listed providers; with fallbacks the run may be billed by any.
+        """
+        pins: dict[str, list[str]] = {}
+        for model in (self.config.models or {}).values():
+            routing = model.openrouter
+            if model.name and routing and routing.provider_order and not routing.allow_fallbacks:
+                pins[normalize_model_name(model.name)] = list(routing.provider_order)
+        return pins
+
     def _refuse_prices_it_cannot_vouch_for(self) -> None:
         """Refuse before any trial when the table disagrees with its source.
 
@@ -2694,7 +2715,11 @@ class Orchestrator:
                 source_url=metadata.source_url,
             )
             return
-        drifts = compare_against_source(configured, source)
+        drifts = reconcile_with_pinned_providers(
+            compare_against_source(configured, source),
+            self._pinned_openrouter_providers(),
+            metadata.source_url,
+        )
         if not drifts:
             self.logger.info("Pricing table agrees with its source", models=len(configured))
             return

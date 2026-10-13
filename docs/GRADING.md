@@ -939,7 +939,7 @@ Two downstream properties depend on the marker:
 - `GradingCompleteness.zero_coverage` fires when
   `synthesized_trials == measured_trials` on a run that had trials to
   measure — every "measurement" was harness-synthesised, so
-  `--fail-on-zero-coverage` exits non-zero. The extended formula is in
+  the run exits non-zero under the default `fail_on_zero_coverage`. The extended formula is in
   [ADR-0041 § Field derivations](adr/0041-zero-coverage-exit-signal.md).
 
 ### The event

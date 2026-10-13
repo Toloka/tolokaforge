@@ -179,16 +179,18 @@ def test_run_state_defaults_the_two_completion_gate_booleans_to_false() -> None:
 
 
 def test_orchestrator_config_carries_both_completion_gate_flags() -> None:
-    """The two flags are opt-in — both default False.
+    """Zero-coverage fails the run by default; zero-judge-graded is opt-in.
 
-    Locks the "infrastructure aborts do not fail the run" back-compat contract
-    ADR-0041 preserves.
+    Opting out of the zero-coverage gate is an explicit ``False``. See ADR-0041.
     """
     from tolokaforge.core.models.run_config import OrchestratorConfig
 
     default = OrchestratorConfig()
-    assert default.fail_on_zero_coverage is False
+    assert default.fail_on_zero_coverage is True
     assert default.fail_on_zero_judge_graded is False
+
+    opted_out = OrchestratorConfig(fail_on_zero_coverage=False)
+    assert opted_out.fail_on_zero_coverage is False
 
     opted_in = OrchestratorConfig(fail_on_zero_coverage=True, fail_on_zero_judge_graded=True)
     assert opted_in.fail_on_zero_coverage is True

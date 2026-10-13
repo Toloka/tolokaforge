@@ -233,7 +233,10 @@ class TestRunStdoutContract:
             _make_stub_orchestrator(
                 run_return=expected_dir,
                 completeness=GradingCompleteness(
-                    total_attempts=4, ungradeable_trial_ids=("TASK-A:1", "TASK-B:0")
+                    total_attempts=4,
+                    ungradeable_trial_ids=("TASK-A:1", "TASK-B:0"),
+                    measured_trials=4,
+                    scored_trials=2,
                 ),
             ),
         )
@@ -289,7 +292,12 @@ class TestRunStdoutContract:
             "Orchestrator",
             _make_stub_orchestrator(
                 run_return=expected_dir,
-                completeness=GradingCompleteness(total_attempts=10, ungradeable_trial_ids=refused),
+                completeness=GradingCompleteness(
+                    total_attempts=10,
+                    ungradeable_trial_ids=refused,
+                    measured_trials=10,
+                    scored_trials=10 - len(refused),
+                ),
             ),
         )
 
@@ -321,7 +329,10 @@ class TestRunStdoutContract:
             _make_stub_orchestrator(
                 run_return=expected_dir,
                 completeness=GradingCompleteness(
-                    total_attempts=2, ungradeable_trial_ids=("task[v2]:0",)
+                    total_attempts=2,
+                    ungradeable_trial_ids=("task[v2]:0",),
+                    measured_trials=2,
+                    scored_trials=1,
                 ),
             ),
         )
@@ -409,16 +420,15 @@ class TestRunCompletenessGates:
         assert "0 of 3 grades succeeded" in result.stderr
         assert "See judge_status in trajectory.json" in result.stderr
 
-    def test_zero_coverage_without_flag_exits_zero(
+    def test_zero_coverage_exits_two_by_default(
         self,
         runner: CliRunner,
         valid_config: Path,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Opt-in is opt-in: an unflagged run whose only trials were infra-aborts
-        still exits ``0``, preserving the shipped "infra aborts do not fail
-        the run" contract."""
+        """Zero-coverage fails by default: an unflagged run whose only trials
+        were infra-aborts exits ``2``."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
         expected_dir.mkdir(parents=True)
         monkeypatch.setattr(
@@ -437,6 +447,53 @@ class TestRunCompletenessGates:
         )
 
         result = runner.invoke(cli, ["run", "--config", str(valid_config)])
+
+        assert result.exit_code == 2, result.stderr
+
+    def test_zero_coverage_opt_out_in_config_exits_zero(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``orchestrator.fail_on_zero_coverage: false`` restores exit ``0`` for
+        a run whose only trials were infra-aborts."""
+        config_path = tmp_path / "run.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                    "evaluation": {
+                        "output_dir": str(tmp_path / "out"),
+                        "tasks_glob": str(tmp_path / "tasks" / "*"),
+                    },
+                    "orchestrator": {
+                        "repeats": 1,
+                        "auto_start_services": False,
+                        "fail_on_zero_coverage": False,
+                    },
+                    "compute": {"workers": 1},
+                }
+            )
+        )
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=2,
+                    ungradeable_trial_ids=(),
+                    measured_trials=0,
+                    scored_trials=0,
+                    judge_errored_trials=0,
+                ),
+            ),
+        )
+
+        result = runner.invoke(cli, ["run", "--config", str(config_path)])
 
         assert result.exit_code == 0, result.stderr
 
@@ -686,7 +743,10 @@ class TestWorkerCompletenessGate:
             "Orchestrator",
             _make_stub_orchestrator(
                 completeness=GradingCompleteness(
-                    total_attempts=3, ungradeable_trial_ids=("TASK-A:2",)
+                    total_attempts=3,
+                    ungradeable_trial_ids=("TASK-A:2",),
+                    measured_trials=3,
+                    scored_trials=2,
                 )
             ),
         )
