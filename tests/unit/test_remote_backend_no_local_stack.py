@@ -4,6 +4,7 @@ The backend-only tests cannot see the orchestrator's auto-start block, which
 builds an ``EngineStack`` whenever ``auto_start_services`` is on (its default).
 These runs drive ``Orchestrator.run`` over a real on-disk pack and patch the
 stack builders to raise, so a regression that starts a local stack fails here.
+The trial itself runs on an in-process node.
 """
 
 from __future__ import annotations
@@ -15,36 +16,22 @@ from typing import Any
 import pytest
 import yaml
 
-from tolokaforge.core.conductor import InMemoryConductor
+from tests.canonical._node_fakes import InProcessNode, InProcessNodeClientFactory
 from tolokaforge.core.models import (
     EvaluationConfig,
     GraderConfig,
     ModelConfig,
     OrchestratorConfig,
     RunConfig,
-    TaskConfig,
 )
+from tolokaforge.core.node_registry import InMemoryNodeRegistry
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.remote_runtime import RemoteRuntimeBackend
-from tolokaforge.core.runtime import InMemoryRuntimeBackend
-from tolokaforge.core.trial import TrialResult, TrialSpec
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("env_backed_secrets")]
 
 _FIXTURES = Path(__file__).parent.parent / "canonical" / "fixtures" / "environment_manifest"
-_NODES = ["node-a:50051", "node-b:50051"]
-
-
-class _SpecRecordingConductor(InMemoryConductor):
-    """Records the spec each trial is handed, so the endpoints it got are observable."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.specs: list[TrialSpec] = []
-
-    def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
-        self.specs.append(spec)
-        return super().run(spec, task_config)
+_NODES = ["node-a:50061", "node-b:50061"]
 
 
 @pytest.fixture(autouse=True)
@@ -88,9 +75,9 @@ def _orchestrator(
     *,
     orchestrator: dict[str, Any],
     grader: GraderConfig | None = None,
-    runtime_backend: InMemoryRuntimeBackend | None = None,
-) -> tuple[Orchestrator, _SpecRecordingConductor]:
-    conductor = _SpecRecordingConductor()
+) -> tuple[Orchestrator, InProcessNode, InProcessNodeClientFactory]:
+    node = InProcessNode(out / "node-out")
+    factory = InProcessNodeClientFactory(node)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         config = RunConfig(
@@ -110,37 +97,31 @@ def _orchestrator(
             evaluation=EvaluationConfig(output_dir=str(out), projects=[str(root)]),
             grader=grader,
         )
-    return (
-        Orchestrator(
-            config,
-            deps=OrchestratorDeps(
-                runtime_backend=runtime_backend, conductor_factory=lambda _ctx: conductor
-            ),
-        ),
-        conductor,
+    backend = RemoteRuntimeBackend(
+        registry=InMemoryNodeRegistry(_NODES, lease_timeout_s=5), node_client_factory=factory
     )
+    return Orchestrator(config, deps=OrchestratorDeps(runtime_backend=backend)), node, factory
 
 
 def test_default_auto_start_builds_no_stack_and_each_trial_gets_a_leased_node(
     tmp_path: Path,
 ) -> None:
     _write_pack(tmp_path / "pack")
-    orch, conductor = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
+    orch, node, factory = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
     assert orch.config.orchestrator.auto_start_services is True
 
-    orch.run()
+    orch.run(run_id="r", output_dir=tmp_path / "run")
 
-    runner_urls = {spec.env_endpoints.runner_url for spec in conductor.specs}
-    assert len(conductor.specs) == 2
-    assert runner_urls <= {f"http://{node}" for node in _NODES}
-    assert all(spec.env_endpoints.db_url is None for spec in conductor.specs)
+    assert len(node.received) == 2
+    assert {client.address for client in factory.clients} <= set(_NODES)
+    assert all(client.closed for client in factory.clients)
 
 
 def test_the_orchestrator_builds_the_remote_backend_from_the_configured_nodes(
     tmp_path: Path,
 ) -> None:
     _write_pack(tmp_path / "pack")
-    orch, _ = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
+    orch, _, _ = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
 
     backend = orch._construct_runtime_backend("unused:1")
 
@@ -149,52 +130,39 @@ def test_the_orchestrator_builds_the_remote_backend_from_the_configured_nodes(
     assert backend.registry.lease("t:1").runner_address == _NODES[1]
 
 
-def test_an_injected_backend_is_used_as_is_and_no_stack_is_built(tmp_path: Path) -> None:
-    _write_pack(tmp_path / "pack")
-    backend = InMemoryRuntimeBackend()
-    orch, conductor = _orchestrator(
-        tmp_path / "pack", tmp_path / "out", orchestrator={}, runtime_backend=backend
-    )
-
-    orch.run()
-
-    assert len(conductor.specs) == 2
-    assert backend.call_log.provisioned_trials == ["flat:0", "flat:1"]
-
-
 def test_explicit_auto_start_services_with_remote_fails_loud(tmp_path: Path) -> None:
     _write_pack(tmp_path / "pack")
-    orch, conductor = _orchestrator(
+    orch, node, _ = _orchestrator(
         tmp_path / "pack", tmp_path / "out", orchestrator={"auto_start_services": True}
     )
 
     with pytest.raises(ValueError, match="contradicts orchestrator.auto_start_services"):
-        orch.run()
+        orch.run(run_id="r", output_dir=tmp_path / "run")
 
-    assert conductor.specs == []
+    assert node.received == []
 
 
 def test_explicit_auto_start_false_with_remote_runs(tmp_path: Path) -> None:
     _write_pack(tmp_path / "pack")
-    orch, conductor = _orchestrator(
+    orch, node, _ = _orchestrator(
         tmp_path / "pack", tmp_path / "out", orchestrator={"auto_start_services": False}
     )
 
-    orch.run()
+    orch.run(run_id="r", output_dir=tmp_path / "run")
 
-    assert len(conductor.specs) == 2
+    assert len(node.received) == 2
 
 
 def test_a_task_declaring_an_environment_manifest_fails_loud_before_any_trial(
     tmp_path: Path,
 ) -> None:
     _write_pack(tmp_path / "pack", manifest=True)
-    orch, conductor = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
+    orch, node, _ = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
 
-    with pytest.raises(ValueError, match="does not materialise task-declared stacks"):
-        orch.run()
+    with pytest.raises(ValueError, match="cannot yet receive task-declared stacks"):
+        orch.run(run_id="r", output_dir=tmp_path / "run")
 
-    assert conductor.specs == []
+    assert node.received == []
 
 
 @pytest.mark.parametrize("grader_name", ["grader_rpc", "queue"])
@@ -202,7 +170,7 @@ def test_a_grader_needing_a_static_runner_address_fails_loud(
     tmp_path: Path, grader_name: str
 ) -> None:
     _write_pack(tmp_path / "pack")
-    orch, conductor = _orchestrator(
+    orch, node, _ = _orchestrator(
         tmp_path / "pack",
         tmp_path / "out",
         orchestrator={},
@@ -210,16 +178,16 @@ def test_a_grader_needing_a_static_runner_address_fails_loud(
     )
 
     with pytest.raises(ValueError, match="static runner address"):
-        orch.run()
+        orch.run(run_id="r", output_dir=tmp_path / "run")
 
-    assert conductor.specs == []
+    assert node.received == []
 
 
 def test_worker_mode_under_the_remote_runtime_fails_loud(tmp_path: Path) -> None:
     _write_pack(tmp_path / "pack")
-    orch, conductor = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
+    orch, node, _ = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
 
     with pytest.raises(ValueError, match="not supported in worker mode"):
         orch.run_worker(tmp_path / "out")
 
-    assert conductor.specs == []
+    assert node.received == []
