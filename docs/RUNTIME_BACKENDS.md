@@ -101,6 +101,38 @@ each get independent containers, networks, and volumes. Every
 `RuntimeBackend` method is a straight delegation onto the internal
 backend — the class body is a dataclass, not a re-implementation.
 
+**`RemoteRuntimeBackend`** (`remote`) — dispatches each trial to a runner
+node leased from a node registry, over the same `GrpcRunnerClient` the
+other backends use. `orchestrator.remote.nodes` seeds an in-process
+`InMemoryNodeRegistry` with `host:port` addresses; `provision(spec)`
+leases one node for the trial (blocking until a node frees, up to
+`orchestrator.remote.lease_timeout_s`, default 300) and dials it,
+`endpoints(handle)` returns that node's runner URL, per-trial RPCs
+connect lazily on the first call and go to the leased client, and
+`teardown` forgets the trial on the node, closes the client, and
+releases the lease. Each node serves one trial at a time, so the node
+count bounds trial concurrency. The backend exposes no `runner_address`,
+so the trial grader is wired through the in-process shim to the trial's
+leased client. Native and delegated trials dispatch identically: both
+bottom out at `execute_tool` / `grade_trial` on the leased client.
+
+```yaml
+orchestrator:
+  runtime: remote
+  auto_start_services: false
+  remote:
+    nodes: ["10.0.0.5:50051", "10.0.0.6:50051"]
+    lease_timeout_s: 300
+```
+
+Current limits, each refused at run start rather than degraded:
+
+- No task-declared stacks: a task declaring an `environment_manifest` fails the run.
+- `runner_rpc` grading only: `grader_rpc` and `queue` need a static runner address the backend does not expose.
+- No grade bundle: `grader.snapshot.enabled` is unsupported.
+- No local stack: the run must not set `auto_start_services: true`; set it to `false`.
+- Selection rides the deprecated `orchestrator.runtime` knob (or `--runtime remote`), so it emits that knob's `DeprecationWarning`.
+
 **`InMemoryRuntimeBackend`** — test-only. Records every method call on a
 `RuntimeBackendCallLog`; no Docker daemon required. Used by canonical
 contract tests.
@@ -1022,6 +1054,7 @@ The runner and db-service images are also published to Docker Hub (see [STANDALO
 
 - `tolokaforge/core/per_trial_runtime.py` — the preset (delegates every method onto the composer-driven `SharedStackRuntimeBackend`).
 - `tolokaforge/core/runtime.py` — the `RuntimeBackend` Protocol + `InMemoryRuntimeBackend`.
+- `tolokaforge/core/remote_runtime.py` + `tolokaforge/core/node_registry.py` — the remote backend and its node registry ([ADR-0059](adr/0059-remote-runtime-backend.md)).
 - `tolokaforge/core/shared_stack_runtime.py` — `SharedStackRuntimeBackend` + `RunnerClient` Protocol + `GrpcRunnerClient`.
 - `tolokaforge/core/default_substrate_composer.py` — the sequencer that walks the composition plan and stitches materialiser + dispatchers together.
 - `tolokaforge/core/docker_compose_materialiser.py` — the docker-compose materialiser (compose lifecycle, log routing, per-service capture).

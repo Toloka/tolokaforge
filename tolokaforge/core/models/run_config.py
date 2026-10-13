@@ -57,6 +57,7 @@ __all__ = [
     "RATE_LIMIT_PROBE_ATTEMPT_CEILING_S",
     "RATE_LIMIT_PROBE_MIN_EPISODE_S",
     "RateLimitProbeConfig",
+    "RemoteConfig",
     "RunConfig",
     "RunDefaults",
     "S3BundleStoreConfig",
@@ -473,6 +474,37 @@ DOCKER_RUNTIME_ALIAS_TARGET = "shared"
 """Registered runtime-backend name :data:`LEGACY_DOCKER_RUNTIME_ALIAS` maps to."""
 
 
+REMOTE_RUNTIME_NAME = "remote"
+"""Registered runtime-backend name that dispatches trials to remote runner nodes."""
+
+
+class RemoteConfig(BaseModel):
+    """Runner nodes the ``remote`` runtime backend dispatches trials to."""
+
+    model_config = {"extra": "forbid"}
+
+    nodes: list[str]
+    """``host:port`` gRPC address of each runner node. Each node serves one trial
+    at a time, so the list length bounds trial concurrency."""
+
+    lease_timeout_s: float = Field(default=300.0, gt=0.0)
+    """How long a trial waits for a free node before the run fails."""
+
+    @field_validator("nodes")
+    @classmethod
+    def _nodes_are_unique_host_ports(cls, nodes: list[str]) -> list[str]:
+        for node in nodes:
+            host, sep, port = node.rpartition(":")
+            if not (sep and host and port.isdigit()):
+                raise ValueError(f"remote node {node!r} must be shaped 'host:port'")
+        duplicates = sorted({node for node in nodes if nodes.count(node) > 1})
+        if duplicates:
+            raise ValueError(
+                f"remote nodes must be unique; each entry is one runner slot: {duplicates}"
+            )
+        return nodes
+
+
 class OrchestratorConfig(BaseModel):
     """Orchestrator configuration"""
 
@@ -628,6 +660,20 @@ class OrchestratorConfig(BaseModel):
             stacklevel=2,
         )
         return value
+
+    remote: RemoteConfig | None = None
+    """Runner nodes for ``runtime: remote``; required by it, ignored otherwise."""
+
+    @model_validator(mode="after")
+    def _require_nodes_for_remote_runtime(self) -> Self:
+        if self.runtime != REMOTE_RUNTIME_NAME:
+            return self
+        if self.remote is None or not self.remote.nodes:
+            raise ValueError(
+                "orchestrator.runtime='remote' requires orchestrator.remote.nodes "
+                "to list at least one runner node as 'host:port'."
+            )
+        return self
 
     @model_validator(mode="before")
     @classmethod
