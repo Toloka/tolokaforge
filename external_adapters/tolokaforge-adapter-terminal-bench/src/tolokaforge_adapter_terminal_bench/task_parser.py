@@ -36,13 +36,15 @@ def detect_shape(
 ) -> TaskShape:
     """The task's shape, from the three independent separate-verifier markers.
 
-    Any one of a shipped ``tests/Dockerfile``, a declared
-    ``[verifier].environment_mode``, or top-level ``artifacts`` means the suite
-    runs in its own container; a task carrying none of them is the
-    single-container shape. The markers are OR-ed, not required together,
-    because a real converted task may carry only a subset.
+    Any one of a shipped ``tests/Dockerfile``, ``[verifier].environment_mode``
+    set to ``"separate"``, or top-level ``artifacts`` means the suite runs in its
+    own container; a task carrying none of them is the single-container shape. The
+    markers are OR-ed, not required together, because a real converted task may
+    carry only a subset. The mode is matched on the value ``"separate"``, not on
+    presence — ``environment_mode = "shared"`` is the single-container mode and
+    must not be read as a separate-verifier marker.
     """
-    if has_tests_dockerfile or environment_mode is not None or bool(artifacts):
+    if has_tests_dockerfile or environment_mode == "separate" or bool(artifacts):
         return TaskShape.SEPARATE_VERIFIER
     return TaskShape.SINGLE_CONTAINER
 
@@ -332,6 +334,21 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
 
         artifacts = _parse_artifacts(task_id, toml_data)
         has_tests_dockerfile = (task_dir / "tests" / "Dockerfile").is_file()
+        shape = detect_shape(
+            environment_mode=environment_mode,
+            artifacts=artifacts,
+            has_tests_dockerfile=has_tests_dockerfile,
+        )
+        if shape is TaskShape.SEPARATE_VERIFIER and not has_tests_dockerfile:
+            # The verifier container is built from ``tests/Dockerfile``; a task that
+            # declares the separate-verifier shape (via artifacts or environment_mode)
+            # without shipping it cannot be run. Fail here with the reason rather than
+            # letting the per-trial compose build die on a missing Dockerfile.
+            raise ValueError(
+                f"terminal-bench task {task_id!r}: declares the separate-verifier shape "
+                "(top-level artifacts or verifier.environment_mode='separate') but ships no "
+                "tests/Dockerfile to build its verifier container from."
+            )
 
         tasks[task_id] = TerminalBenchTask(
             task_id=task_id,
@@ -347,11 +364,7 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
             environment_mode=environment_mode,
             artifacts=artifacts,
             has_tests_dockerfile=has_tests_dockerfile,
-            shape=detect_shape(
-                environment_mode=environment_mode,
-                artifacts=artifacts,
-                has_tests_dockerfile=has_tests_dockerfile,
-            ),
+            shape=shape,
             harness_skills_dir=_parse_harness_skills_dir(task_id, task_dir, yaml_data),
         )
 

@@ -141,7 +141,7 @@ from tolokaforge.runner.db_client import (
 from tolokaforge.runner.db_client import (
     ValidationError as DBValidationError,
 )
-from tolokaforge.runner.env_exec import first_env_exec_tool
+from tolokaforge.runner.env_exec import exec_tool_for_service, first_env_exec_tool
 from tolokaforge.runner.grading import (
     compute_state_diff,
     grade_to_runner_wire,
@@ -2054,24 +2054,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 script_exec_error="",
             )
 
-        if service is None:
-            exec_tool = bash_tool
-        elif isinstance(bash_tool, DockerComposeExecToolWrapper):
-            exec_tool = bash_tool.for_service(service)
-        else:
+        exec_tool, service_reason = exec_tool_for_service(bash_tool, service)
+        if service_reason is not None:
             return RunTestSuiteResult(
                 exit_code=0,
                 reward_bytes=b"",
                 stdout="",
                 tool_absent=True,
-                tool_absent_reason=(
-                    f"test-execution grading asked to run in service {service!r} "
-                    "but this trial's env tool is not a compose-backed executor, so "
-                    "a sibling container cannot be resolved. A separate verifier "
-                    "requires a docker-compose runtime."
-                ),
+                tool_absent_reason=service_reason,
                 script_exec_error="",
             )
+        assert exec_tool is not None  # service_reason is None ⇒ a tool was resolved
 
         try:
             exit_code, stdout = exec_tool.exec_in_env_with_exit_code(
@@ -2208,35 +2201,62 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     f"(rc={probe.returncode}, stderr={probe.stderr.strip()!r})."
                 )
             # Stream path from src to dst: `docker cp src:path -` emits a tar whose
-            # top member is <base>; `docker cp - dst:parent` extracts it under parent.
+            # top member is the basename; `docker cp - dst:parent` extracts it under
+            # parent. docker cp tars through the daemon, so neither container needs tar.
             src_proc = _run(
                 ["docker", "cp", f"{src_container}:{path}", "-"], stdout=subprocess.PIPE
             )
             dst_proc = _run(
                 ["docker", "cp", "-", f"{dst_container}:{parent}"], stdin=src_proc.stdout
             )
-            if src_proc.stdout is not None:
-                src_proc.stdout.close()  # let src see SIGPIPE if dst exits early
-            dst_rc = dst_proc.wait(timeout=_MATERIALISE_PATH_TIMEOUT_S)
-            src_rc = src_proc.wait(timeout=_MATERIALISE_PATH_TIMEOUT_S)
+            try:
+                if src_proc.stdout is not None:
+                    src_proc.stdout.close()  # let src see SIGPIPE if dst exits early
+                dst_rc = dst_proc.wait(timeout=_MATERIALISE_PATH_TIMEOUT_S)
+                src_rc = src_proc.wait(timeout=_MATERIALISE_PATH_TIMEOUT_S)
+            finally:
+                # A stalled daemon (the case the timeout exists for) leaves a child
+                # hung; Popen does not reap on GC, so kill anything still running.
+                for proc in (src_proc, dst_proc):
+                    if proc.poll() is None:
+                        proc.kill()
+                        proc.wait()
             if src_rc != 0 or dst_rc != 0:
                 raise SubstrateUnreachableError(
                     f"Trial {trial_id!r}: docker cp of {path!r} from {src_service or 'agent'!r} "
                     f"to {dst_service!r} failed (src rc={src_rc}, dst rc={dst_rc})."
                 )
+            # Prune excludes in the destination. ``find -name`` matches at every depth,
+            # so a nested ``__pycache__`` / ``*.pyc`` is removed too, not just a
+            # top-level one. A prune that does not fully apply is logged, not silently
+            # dropped — the verifier would otherwise score against files the task asked
+            # to exclude.
             for glob in exclude:
-                subprocess.run(
+                pruned = subprocess.run(
                     [
                         "docker",
                         "exec",
                         dst_container,
                         "sh",
                         "-c",
-                        f"rm -rf {shlex.quote(path.rstrip('/'))}/{glob}",
+                        f"find {shlex.quote(path)} -name {shlex.quote(glob)} "
+                        "-prune -exec rm -rf {} +",
                     ],
-                    check=False,
+                    capture_output=True,
+                    text=True,
                     timeout=_MATERIALISE_PATH_TIMEOUT_S,
                 )
+                if pruned.returncode != 0:
+                    logger.warning(
+                        "RunnerServiceImpl._materialise_path: trial %r pruning exclude %r under "
+                        "%r in %r did not fully apply (rc=%s): %s",
+                        trial_id,
+                        glob,
+                        path,
+                        dst_service,
+                        pruned.returncode,
+                        pruned.stderr.strip(),
+                    )
         except (subprocess.SubprocessError, OSError) as exc:
             raise SubstrateUnreachableError(
                 f"Trial {trial_id!r}: materialising {path!r} from {src_service or 'agent'!r} "

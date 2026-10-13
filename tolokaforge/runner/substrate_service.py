@@ -44,7 +44,7 @@ from tolokaforge.runner.db_client import (
 from tolokaforge.runner.db_client import (
     TrialNotFoundError as DBTrialNotFoundError,
 )
-from tolokaforge.runner.env_exec import first_env_exec_tool
+from tolokaforge.runner.env_exec import exec_tool_for_service, first_env_exec_tool
 from tolokaforge.runner.models import StableStateResponse, StateResponse, provisions_database
 
 if TYPE_CHECKING:
@@ -331,21 +331,9 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
                 tool_absent_reason=error_msg,
             )
 
-        if request.service:
-            from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
-
-            if not isinstance(bash_tool, DockerComposeExecToolWrapper):
-                return pb2.RunTestSuiteResponse(
-                    tool_absent=True,
-                    tool_absent_reason=(
-                        f"test-execution grading asked to run in service '{request.service}' "
-                        "but this trial's env tool is not a compose-backed executor, so a "
-                        "sibling container cannot be resolved."
-                    ),
-                )
-            exec_tool = bash_tool.for_service(request.service)
-        else:
-            exec_tool = bash_tool
+        exec_tool, service_reason = exec_tool_for_service(bash_tool, request.service or None)
+        if service_reason is not None:
+            return pb2.RunTestSuiteResponse(tool_absent=True, tool_absent_reason=service_reason)
 
         script_timeout = request.timeout_s if request.timeout_s > 0.0 else _DEFAULT_SCRIPT_TIMEOUT_S
         reward_read_timeout = (

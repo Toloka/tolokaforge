@@ -58,6 +58,8 @@ def test_v21_task_is_not_v4(tmp_path: Path) -> None:
     [
         (None, [], False, TaskShape.SINGLE_CONTAINER),
         ("separate", [], False, TaskShape.SEPARATE_VERIFIER),
+        ("shared", [], False, TaskShape.SINGLE_CONTAINER),
+        ("single", [], False, TaskShape.SINGLE_CONTAINER),
         (None, ["/app"], False, TaskShape.SEPARATE_VERIFIER),
         (None, [], True, TaskShape.SEPARATE_VERIFIER),
     ],
@@ -78,7 +80,7 @@ def test_environment_mode_marks_v4(tmp_path: Path) -> None:
         "[verifier]\ntimeout_sec = 300.0",
         '[verifier]\ntimeout_sec = 300.0\nenvironment_mode = "separate"',
     )
-    _write_task(tmp_path, "sep", toml)
+    _write_task(tmp_path, "sep", toml, tests_dockerfile=True)
     task = discover_tasks(tmp_path)["sep"]
     assert task.is_v4 is True
     assert task.environment_mode == "separate"
@@ -96,7 +98,7 @@ def test_top_level_artifacts_parse_and_mark_v4(tmp_path: Path) -> None:
         'artifacts = ["/app", { source = "/srv/data", exclude = ["__pycache__", "*.pyc"] }]\n'
         + _V21_TOML
     )
-    _write_task(tmp_path, "arts", toml)
+    _write_task(tmp_path, "arts", toml, tests_dockerfile=True)
     task = discover_tasks(tmp_path)["arts"]
     assert task.is_v4 is True
     assert task.artifacts == [
@@ -129,6 +131,14 @@ def test_artifacts_under_verifier_are_not_top_level(tmp_path: Path) -> None:
 )
 def test_malformed_artifacts_raise(tmp_path: Path, artifacts_line: str) -> None:
     _write_task(tmp_path, "bad", artifacts_line + "\n" + _V21_TOML)
+    with pytest.raises(ValueError):
+        discover_tasks(tmp_path)
+
+
+def test_separate_verifier_without_tests_dockerfile_raises(tmp_path: Path) -> None:
+    # Declares the separate-verifier shape via artifacts but ships no tests/Dockerfile
+    # to build the verifier container from — must fail clearly at discovery.
+    _write_task(tmp_path, "noverif", 'artifacts = ["/app"]\n' + _V21_TOML)
     with pytest.raises(ValueError):
         discover_tasks(tmp_path)
 
