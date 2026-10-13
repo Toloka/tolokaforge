@@ -84,6 +84,7 @@ __all__ = [
     "build_single_task_adapter",
     "build_trial_execution_unit",
     "compute_task_pack_hash",
+    "install_container_secrets",
     "run_trial_from_inputs",
 ]
 
@@ -288,7 +289,7 @@ def run_trial_from_inputs(inputs: TrialNodeInputs) -> TrialResult:
     task = inputs.task
     spec = inputs.trial_spec
     _verify_task_pack(inputs)
-    _install_container_secrets()
+    install_container_secrets()
 
     logger = get_logger(spec.run_id)
     adapter = build_single_task_adapter(task, inputs.task_pack_dir)
@@ -369,7 +370,7 @@ def _verify_task_pack(inputs: TrialNodeInputs) -> None:
         )
 
 
-def _install_container_secrets() -> None:
+def install_container_secrets() -> None:
     """Install the process secret manager from the container secret payload.
 
     The payload is the same ``TOLOKAFORGE_SECRETS_JSON`` mapping the runner

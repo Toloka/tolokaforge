@@ -22,7 +22,7 @@ def get_dockerfile_path(name: str) -> str:
     """Return the absolute path to a bundled Dockerfile.
 
     Args:
-        name: Dockerfile stem (e.g. "db_service", "runner", "rag", "mock_web").
+        name: Dockerfile stem (e.g. "db_service", "runner", "rag", "mock_web", "grader", "trial_node").
               The ".Dockerfile" suffix is added automatically.
 
     Returns:
