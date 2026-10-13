@@ -497,13 +497,7 @@ def register_runtime_secret(key: str, value: str) -> SecretManager:
         )
 
     current = get_default()
-    registered: dict[str, str] = {}
-    inherited: list[SecretProvider] = []
-    for provider in current.providers:
-        if isinstance(provider, RuntimeSecretProvider):
-            registered.update(provider.as_dict())
-        else:
-            inherited.append(provider)
+    registered, inherited = _split_runtime_registrations(current)
 
     if registered.get(key) == value:
         return current
@@ -513,3 +507,46 @@ def register_runtime_secret(key: str, value: str) -> SecretManager:
     return init_default_from(
         SecretManager([RuntimeSecretProvider({**registered, key: value}), *inherited])
     )
+
+
+def forget_runtime_secret(key: str) -> SecretManager:
+    """Drop a credential :func:`register_runtime_secret` admitted, once it has expired.
+
+    The inverse of registration, for a credential whose life ended with the thing
+    it authenticated (a trial's world service tokens, for example): without it the
+    default manager and the log redactor's scrub set grow for the process's
+    lifetime, one entry per registration. From the call on the value resolves
+    nowhere and is no longer redacted, so forget a credential only once nothing
+    will log it; the name is free to take another value.
+
+    The singleton is replaced, as on registration, so the redactor's identity-keyed
+    cache refreshes. Forgetting a name that is not registered is a no-op: the only
+    question a caller asks is that the name is gone.
+
+    Args:
+        key: The registered secret name.
+
+    Returns:
+        The manager now installed as the default.
+    """
+    current = get_default()
+    registered, inherited = _split_runtime_registrations(current)
+    if key not in registered:
+        return current
+    remaining = {name: value for name, value in registered.items() if name != key}
+    runtime: list[SecretProvider] = [RuntimeSecretProvider(remaining)] if remaining else []
+    return init_default_from(SecretManager([*runtime, *inherited]))
+
+
+def _split_runtime_registrations(
+    manager: SecretManager,
+) -> tuple[dict[str, str], list[SecretProvider]]:
+    """The manager's runtime registrations, and the rest of its chain in order."""
+    registered: dict[str, str] = {}
+    inherited: list[SecretProvider] = []
+    for provider in manager.providers:
+        if isinstance(provider, RuntimeSecretProvider):
+            registered.update(provider.as_dict())
+        else:
+            inherited.append(provider)
+    return registered, inherited

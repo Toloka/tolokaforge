@@ -148,6 +148,15 @@ class TestHTTPRequestTool:
         assert tool._is_allowed_host("http://myhost.local/api") is True
         assert tool._is_allowed_host("http://other.host/api") is False
 
+    def test_a_bare_allowed_host_admits_every_port_and_host_port_one(self) -> None:
+        bare = HTTPRequestTool(allowed_hosts=["world"])
+        assert bare._is_allowed_host("http://world/api") is True
+        assert bare._is_allowed_host("http://world:8080/api") is True
+        with_port = HTTPRequestTool(allowed_hosts=["world:8080"])
+        assert with_port._is_allowed_host("http://world:8080/api") is True
+        assert with_port._is_allowed_host("http://world/api") is False
+        assert with_port._is_allowed_host("http://world:9090/api") is False
+
     def test_scrub_headers_allowed(self) -> None:
         tool = HTTPRequestTool()
         headers = {
