@@ -12,7 +12,10 @@ failure maps onto the orchestrator's retry classes. No Docker, no LLM.
 
 from __future__ import annotations
 
+import json
+import re
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +41,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.node_registry import InMemoryNodeRegistry
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.output.artifacts import FileArtifactWriter
+from tolokaforge.core.plugin_registry import UnknownImplementationError
 from tolokaforge.core.remote_runtime import RemoteRuntimeBackend
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.trial import TrialNodeInputs, TrialResult, TrialSpec
@@ -49,6 +53,7 @@ from tolokaforge.core.trial_node import (
     build_trial_execution_unit,
     compute_task_pack_hash,
 )
+from tolokaforge.secrets import get_default
 from tolokaforge.trial_node.protocol import NodeTransientError
 
 pytestmark = [pytest.mark.canonical, pytest.mark.usefixtures("env_backed_secrets")]
@@ -211,6 +216,18 @@ def test_the_node_receives_inputs_it_can_run_the_trial_from(tmp_path: Path, make
     assert inputs.output_dir == tmp_path / "node-out" / "remote-run"
 
 
+def _string_leaves(node: Any) -> Iterator[str]:
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from _string_leaves(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _string_leaves(item)
+
+
 def test_the_node_sees_no_secret_values(tmp_path: Path, make_unit) -> None:
     node = _node(tmp_path)
     harness = make_unit(node)
@@ -219,7 +236,19 @@ def test_the_node_sees_no_secret_values(tmp_path: Path, make_unit) -> None:
 
     (client,) = harness.factory.clients
     (request,) = client.requests
-    assert "sk-openrouter-test" not in request.trial_node_inputs_json
+    wire = json.loads(request.trial_node_inputs_json)
+    leaves = list(_string_leaves(wire))
+    names = {"OPENROUTER_API_KEY"}
+    for leaf in leaves:
+        names.update(re.findall(r"\$\{secret:([^}]+)\}", leaf))
+    secrets = get_default()
+    resolved = {name: secrets.get_secret(name) for name in names}
+    assert resolved["OPENROUTER_API_KEY"] == "sk-openrouter-test"
+    for name, value in resolved.items():
+        if not value:
+            continue
+        leaking = [leaf for leaf in leaves if value in leaf]
+        assert not leaking, f"the value of secret {name} reached the node's wire payload"
 
 
 def test_the_reduced_bundle_is_written_from_the_returned_trajectory(
@@ -307,7 +336,11 @@ def test_a_node_provision_error_is_a_non_retryable_provision_failure(
     [
         (TaskPackDriftError("pack drifted"), "TaskPackDrift", "pack drifted"),
         (NotImplementedError("adapter is not node-runnable"), "NotImplemented", "node-runnable"),
-        (ValueError("no user simulator"), "InvalidConfig", "no user simulator"),
+        (
+            UnknownImplementationError("nope", "tolokaforge.graders", ["runner_rpc"]),
+            "InvalidConfig",
+            "nope",
+        ),
     ],
 )
 def test_a_deterministic_node_refusal_is_a_non_retryable_loud_failure(
@@ -380,6 +413,17 @@ def test_an_internal_node_failure_raises_so_the_orchestrator_retries(
     harness = make_unit(_node(tmp_path, run_trial=_raising(RuntimeError("node blew up"))))
 
     with pytest.raises(NodeTransientError, match="node blew up"):
+        harness.execute()
+
+    _assert_both_nodes_are_free(harness)
+
+
+def test_a_stray_value_error_deep_in_a_trial_is_not_an_invalid_config(
+    tmp_path: Path, make_unit
+) -> None:
+    harness = make_unit(_node(tmp_path, run_trial=_raising(ValueError("deep in the trial"))))
+
+    with pytest.raises(NodeTransientError, match="deep in the trial"):
         harness.execute()
 
     _assert_both_nodes_are_free(harness)

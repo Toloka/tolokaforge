@@ -132,6 +132,8 @@ docker run -d -p 50061:50061 \
   tolokaforge-trial-node
 ```
 
+The image is built locally (`tolokaforge docker build --service trial_node`); publishing it to a registry is a separate follow-up.
+
 The node builds no images. `tolokaforge-runner:local` and
 `tolokaforge-db-service:local` must already exist on the Docker daemon the node
 drives (`make docker-build-core` at node bootstrap, or pull and tag them), and a

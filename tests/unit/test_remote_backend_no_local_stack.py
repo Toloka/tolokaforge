@@ -159,7 +159,7 @@ def test_a_task_declaring_an_environment_manifest_fails_loud_before_any_trial(
     _write_pack(tmp_path / "pack", manifest=True)
     orch, node, _ = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
 
-    with pytest.raises(ValueError, match="cannot yet receive task-declared stacks"):
+    with pytest.raises(ValueError, match="does not receive task-declared stacks"):
         orch.run(run_id="r", output_dir=tmp_path / "run")
 
     assert node.received == []

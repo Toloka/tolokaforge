@@ -141,7 +141,7 @@ orchestrator:
 
 Run shapes refused at run start rather than degraded:
 
-- A task declaring an `environment_manifest`: the node cannot yet receive task-declared stacks. Run those tasks under `shared` or `per_trial`.
+- A task declaring an `environment_manifest`: the node does not receive task-declared stacks. Run those tasks under `shared` or `per_trial`.
 - A non-native adapter or coding-harness mode (`models.agent.harness`): the remote runtime runs only the native adapter without harness mode.
 - `grader_rpc` and `queue` graders (they need a static runner address); `runner_rpc` only.
 - `grader.snapshot.enabled`: no grade bundle is produced.

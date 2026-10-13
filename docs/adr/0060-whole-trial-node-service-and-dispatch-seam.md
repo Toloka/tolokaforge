@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-13
 - **Deciders:** @CiroGamboa
-- **Supersedes:** none (replaces the per-trial RPC dispatch of [ADR-0059](0059-remote-runtime-backend.md))
+- **Supersedes:** [ADR-0059](0059-remote-runtime-backend.md) (its per-trial RPC dispatch only)
 - **Superseded by:** none
 
 ## Context and Problem Statement
@@ -125,7 +125,7 @@ unchanged: nothing under `tolokaforge/trial_node/` joins it.
   cancellation. A cancelled run cannot stop a trial already on a node.
 - A remote trial emits no live traces; exporters see the reduced bundle.
 - Delegated adapters, harness mode, task-declared stacks and the run-level
-  settings above are refused until the inputs carry them.
+  settings above are refused because the inputs do not carry them.
 
 ## References
 

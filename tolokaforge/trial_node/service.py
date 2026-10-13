@@ -134,7 +134,7 @@ class TrialNodeServiceImpl(trial_node_pb2_grpc.TrialNodeServiceServicer):
             return self._failure(NodeErrorType.TASK_PACK_DRIFT, "task_pack", str(exc))
         except NotImplementedError as exc:
             return self._failure(NodeErrorType.NOT_IMPLEMENTED, "adapter", str(exc))
-        except (ValueError, UnknownImplementationError) as exc:
+        except UnknownImplementationError as exc:
             return self._failure(NodeErrorType.INVALID_CONFIG, "inputs", str(exc))
         except Exception as exc:
             self._logger.error(

@@ -1366,7 +1366,7 @@ class Orchestrator:
             )
         if self._any_task_declares_environment_manifest():
             raise ValueError(
-                "orchestrator.runtime='remote' runs each trial on a node that cannot yet "
+                "orchestrator.runtime='remote' runs each trial on a node that does not "
                 "receive task-declared stacks, but at least one task declares an "
                 "environment_manifest. Run those tasks under the shared or per_trial runtime."
             )

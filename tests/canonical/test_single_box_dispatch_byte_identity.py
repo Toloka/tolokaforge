@@ -5,7 +5,7 @@ and nothing else, so only the remote backend may take it. These tests lock the
 two halves of that promise: no single-box backend satisfies the Protocol and every
 one still gets the provisioning executor, and the bundles the provisioning
 executor writes — a completed trial and a trial whose environment never came up —
-match golden bytes captured before the seam existed.
+match the golden snapshots.
 """
 
 from __future__ import annotations

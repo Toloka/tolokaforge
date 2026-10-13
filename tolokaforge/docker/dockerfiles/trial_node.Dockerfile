@@ -3,10 +3,11 @@
 # Ships the tolokaforge trial node (see docs/TRIAL_NODE_SERVICE.md) as an
 # independently-deployable image. The engine's ``--runtime remote`` ships a
 # trial's inputs to one of these over the ``RunTrial`` RPC; the node runs the
-# conductor, the agent loop and the trial's substrate itself, so unlike the
-# runner image it needs the whole ``tolokaforge`` distribution (orchestration,
-# adapters, conductor) rather than the runner subset wheel, plus the Docker CLI
-# to bring a per-trial stack up on the host daemon.
+# conductor and the agent loop itself, brings up per-trial stacks over the
+# mounted docker socket, and dials a co-located runner at EXECUTOR_ADDRESS for
+# tasks without a per-trial stack. Unlike the runner image,
+# it needs the whole ``tolokaforge`` distribution (orchestration, adapters,
+# conductor) rather than the runner subset wheel, plus the Docker CLI.
 #
 # Deployment contract:
 #   * mount the host Docker socket at /var/run/docker.sock;

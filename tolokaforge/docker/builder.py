@@ -219,6 +219,15 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
+    # Trial node service. Its Dockerfile compiles the same full source set as
+    # the grader and runs ``python -m tolokaforge.trial_node``.
+    "trial_node": {
+        "name": "tolokaforge-trial-node",
+        "dockerfile": "tolokaforge/docker/dockerfiles/trial_node.Dockerfile",
+        "context": ".",
+        "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
+        "build_args": dict(_PYTHON_BUILD_ARGS),
+    },
     # All-in-one (single-image, multi-service) image — db-service, rag-service,
     # mock-web, and the runner in one container under supervisord. Its
     # Dockerfile compiles the same full source set as the grader (base +
@@ -241,10 +250,10 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
 # fits in IMAGE_DEFINITIONS verbatim.
 _DYNAMIC_DEFINITIONS: dict[str, Callable[[], dict[str, Any]]] = {}
 
-# Service groups for selective building. ``grader`` and ``standalone`` are in no
-# group: like the grader, the all-in-one image is built on demand via
-# ``tolokaforge docker build --service standalone`` and never joins the default
-# ``build_all_images`` sweep.
+# Service groups for selective building. ``grader``, ``trial_node`` and
+# ``standalone`` are in no group: like the grader, the trial-node and all-in-one
+# images are built on demand via ``tolokaforge docker build --service <name>``
+# and never join the default ``build_all_images`` sweep.
 CORE_IMAGES: list[str] = ["db-service", "runner"]
 EXTENDED_IMAGES: list[str] = ["rag-service", "mock-web"]
 
@@ -411,10 +420,10 @@ def _packaged_sibling_entries() -> list[Path]:
 #: both workspace-sibling wheels). They share one build-context mapping: the
 #: repo-root slice on a source checkout, the packaged ``_subset_build`` copies on
 #: a wheel install (where ``repo_root()`` is ``site-packages``). The runner's
-#: stage is ``hatchling build --target custom`` (ADR-0025); grader and standalone
-#: build the full base wheel; standalone additionally COPYs env-service apps and
+#: stage is ``hatchling build --target custom`` (ADR-0025); grader, trial_node and
+#: standalone build the full base wheel; standalone additionally COPYs env-service apps and
 #: the supervisor config, which already ride under the copied ``tolokaforge/``.
-_FULL_SOURCE_IMAGES: tuple[str, ...] = ("runner", "grader", "standalone")
+_FULL_SOURCE_IMAGES: tuple[str, ...] = ("runner", "grader", "trial_node", "standalone")
 
 
 def _full_source_definition(service: str) -> dict[str, Any]:

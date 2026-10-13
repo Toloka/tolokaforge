@@ -43,7 +43,8 @@ message RunTrialResponse {
   string trial_result_json = 2;
 
   // Set when !success. One of ProvisionError, SecretPreflight, TaskPackDrift,
-  // NotImplemented, VersionSkew, NodeBusy, Internal.
+  // NotImplemented, VersionSkew, NodeBusy, InvalidConfig, Internal; see
+  // NodeErrorType for the source of truth.
   string error_type = 3;
   string stage = 4;
   string reason = 5;

@@ -475,7 +475,7 @@ DOCKER_RUNTIME_ALIAS_TARGET = "shared"
 
 
 REMOTE_RUNTIME_NAME = "remote"
-"""Registered runtime-backend name that dispatches trials to remote runner nodes."""
+"""Registered runtime-backend name that dispatches trials to remote trial nodes."""
 
 
 class RemoteConfig(BaseModel):
@@ -484,7 +484,7 @@ class RemoteConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     nodes: list[str]
-    """``host:port`` gRPC address of each runner node. Each node serves one trial
+    """``host:port`` gRPC address of each trial node. Each node serves one trial
     at a time, so the list length bounds trial concurrency."""
 
     lease_timeout_s: float = Field(default=300.0, gt=0.0)
@@ -671,7 +671,7 @@ class OrchestratorConfig(BaseModel):
         if self.remote is None or not self.remote.nodes:
             raise ValueError(
                 "orchestrator.runtime='remote' requires orchestrator.remote.nodes "
-                "to list at least one runner node as 'host:port'."
+                "to list at least one trial node as 'host:port'."
             )
         return self
 
