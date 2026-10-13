@@ -29,9 +29,12 @@ Because the two are welded together, three things are hard:
   where one brain should hand work to many simple, interchangeable hands.
 - **You cannot run just one trial.** There is no way to run a single trial
   without dragging the entire orchestrator along.
-- **The runner and the grader cannot stand on their own.** They are built inside
-  the orchestrator, so they cannot live on a different machine or be swapped
-  independently.
+- **There is no portable "run one trial" unit.** The runner and the grader can each
+  already run as separate services (the runner as a standalone image, the grader as a
+  service, a queue, or offline from a bundle). What is still welded into the
+  orchestrator is the piece that *composes and drives* a trial — the conductor and the
+  agent loop — so a trial cannot be built and run as one self-contained unit on another
+  machine.
 
 ## Decision Drivers
 

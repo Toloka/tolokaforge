@@ -37,9 +37,15 @@ Because the two are welded together:
 - **Scaling means cloning the whole brain.** More machines = more `tolokaforge worker` processes,
   and *every worker is a complete orchestrator*. Fine on one laptop; the wrong shape for a managed
   service where one brain should feed many simple, interchangeable hands.
-- **You cannot run just one trial** without dragging the whole orchestrator along.
-- **The runner and grader cannot stand on their own** — they are built inside the orchestrator, so
-  they cannot live on a different machine or be swapped independently.
+- **You cannot run just one trial** without dragging the whole orchestrator along — the conductor and
+  the agent↔user loop live in the orchestrator process.
+
+**What is already separable today** (so this work does *not* re-do it): the **runner** already runs as a
+standalone service and published image with no orchestrator (the orchestrator is just one of its clients),
+and the **grader** is already detachable — as a service (`grader_rpc`), a pool of queue workers (`queue`),
+or fully **offline**, grading from a persisted grade bundle with no live runner (`tolokaforge grade` /
+`grade-run`). The coupling this work removes is the **control loop** — the orchestrator being both brain
+and hands — not the runner or the grader, which already stand on their own.
 
 This single-box behaviour is what `pip install` + one command gives today, and the proposal keeps it
 exactly as-is.
@@ -73,8 +79,10 @@ Four load-bearing ideas:
 3. **The node owns the whole trial.** The conductor, the agent loop, the sandbox and the grader all
    run on the node; the control plane ships inputs once and receives a graded result once. *(ADR-0063,
    evolving ADR-0059)*
-4. **The grader is a separate, addressable component** — one, or several different ones, wherever they
-   need to live. *(ADR-0058, building on existing grader detachment)*
+4. **The grader is already a separable component** — a service, a queue of workers, or fully offline from a
+   grade bundle (existing work). The node reuses the in-process grading seam; whether whole-trial remote
+   should also compose with the *standalone* grader service is an open question (§9). *(ADR-0038/0040/0043,
+   ADR-0058)*
 
 ---
 
@@ -106,6 +114,14 @@ implementation is config-seeded and in-process), instead of starting a local san
 bounds concurrency: asking for a node when none is free waits rather than double-booking. A run shape
 the backend cannot serve is **refused at run start**, not degraded mid-run.
 
+**Where `remote` sits among the runtime modes.** The runtime is chosen by `orchestrator.runtime`. Today's
+modes are all *local* — they stand the sandbox up on the same machine: **`shared`** (the default — one
+compose stack for the whole run), **`per_trial`** (a fresh stack per trial, for tasks whose services must
+reset between trials), and **`in_memory`** (a test double). `remote` is the new mode: it stands up no local
+stack and instead leases a node and dispatches the trial there. Multi-container compose stacks
+(`environment_manifest`) are a property of `shared` / `per_trial`; `remote` does not materialise them on
+the node yet (§7).
+
 ### 4.4 The node owns the whole trial — ADR-0063
 
 ADR-0059's first cut kept the agent loop on the control plane and sent each tool call over the network
@@ -126,7 +142,7 @@ ships the inputs once over a single `RunTrial` call and receives a graded result
 | Run a single trial | Not possible without the orchestrator | A standalone, portable unit — with or without the orchestrator |
 | Where the agent loop runs | In the orchestrator process | On the node that owns the trial |
 | Native vs delegated harness | Separate handling | One dispatch seam — the hands do not tell them apart |
-| Grader | Built inside the orchestrator | A separate, addressable component |
+| Grader | **Already detachable** — a service (`grader_rpc`), a queue of workers, or offline from a grade bundle | Unchanged; the remote node grades **in-process** (composing with the standalone grader is an open question) |
 | Single-box experience | The only mode | **The default, byte-for-byte unchanged** (detaching is opt-in) |
 
 ---
@@ -141,7 +157,7 @@ Delivered as a stack of small PRs; the single-box path is locked byte-for-byte b
 |---|---|---|
 | 1 | The portable trial unit + standalone entry; delegated harnesses node-runnable | Done (on the integration branch) |
 | 2 | `remote` backend + node registry — lease a node per trial | Done (merged to the integration branch) |
-| 3 | The node owns the whole trial — trial-node service + dispatch seam | In progress (slice 3a in review; 3b–3e planned) |
+| 3 | The node owns the whole trial — trial-node service + dispatch seam | In progress (3a merged; 3b–3e planned) |
 | 4 | Reshape `worker` into a thin node; the orchestrator becomes control-plane-only | Planned |
 | 5 | One control plane dispatching **native + delegated** trials across nodes | Planned (needs the multi-harness heterogeneity layer) |
 
@@ -155,6 +171,14 @@ Delivered as a stack of small PRs; the single-box path is locked byte-for-byte b
   time (concurrency is bounded by the number of nodes). This keeps secret handling simple and isolated.
 - **Reduced control-plane bundle, for now.** The control plane rebuilds a bundle from the returned
   trajectory; the node keeps a fuller bundle locally. Live tracing for node-run trials is not wired yet.
+- **Whole-trial remote does not yet use the detached grader.** Grading already runs detached today (a
+  service, a queue, or offline from a bundle), but the remote node grades **in-process** against its
+  co-located runner — `grader_rpc`, `queue`, and offline/snapshot-bundle grading are all *refused* under
+  `remote`. "Detached grader" and "detached whole-trial execution" are two separate mechanisms that do not
+  compose yet.
+- **Multi-container is not on the node yet.** Tasks that declare an `environment_manifest` (a compose
+  stack) are refused under `remote`; they run under `shared` / `per_trial`. The node brings up only the
+  built-in single-runner (or runner + db) stack against its co-located runner.
 - **Nodes must be pre-provisioned.** A node needs Docker and the engine's base images present; it builds
   none itself.
 - **One unary call per trial, for now.** No streaming progress and no mid-trial cancellation yet; a
@@ -187,6 +211,9 @@ Delivered as a stack of small PRs; the single-box path is locked byte-for-byte b
    call, given trials can run minutes to hours?
 5. **The brain↔hands trust model.** What is the authn/authz and network trust story once nodes live on
    other machines (and eventually other tenants)?
+6. **Should whole-trial remote compose with the detached grader?** Today the node grades in-process and
+   refuses the standalone grader service, the queue, and offline bundles. Do we want a remote trial to be
+   gradeable by the separate grader service or to emit an offline bundle, or is node-local grading the model?
 
 ---
 
