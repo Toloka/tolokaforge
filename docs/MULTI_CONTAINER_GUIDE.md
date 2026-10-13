@@ -397,6 +397,15 @@ an edge network so LLM-judge grading can still reach model providers.
 unrestricted egress (fetching an arbitrary remote resource, calling any
 third-party API under test).
 
+Under `no_internet` and `limited_internet` the runner joins only the injected
+networks, not the ones your compose file declares. Network aliases your
+services declare (`networks: {default: {aliases: [api.vendor.test]}}`) are
+carried onto the injected internal network, so the runner still resolves a
+mock by its public-looking name — and the lookup never leaves the sandbox. An
+alias two services declare resolves to either of them, as it would on one
+shared compose network; give each a distinct alias when the runner must reach a
+specific one. Aliases are never carried onto the edge network.
+
 `limited_internet` sits between the two: application services may reach a
 declared allowlist of hosts and nothing else. Declaring it requires a
 `limited_internet_allowlist` on the same `stack:` block; the two are validated
