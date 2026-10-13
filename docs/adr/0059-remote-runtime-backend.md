@@ -1,10 +1,10 @@
 # 0059. The remote runtime backend and node registry
 
-- **Status:** Accepted (per-trial RPC dispatch superseded by [ADR-0060](0060-whole-trial-node-service-and-dispatch-seam.md)); the registry and the run-start gating stand
+- **Status:** Accepted (per-trial RPC dispatch superseded by [ADR-0063](0063-whole-trial-node-service-and-dispatch-seam.md)); the registry and the run-start gating stand
 - **Date:** 2026-10-13
 - **Deciders:** @CiroGamboa
 - **Supersedes:** none
-- **Superseded by:** [ADR-0060](0060-whole-trial-node-service-and-dispatch-seam.md) (dispatch only)
+- **Superseded by:** [ADR-0063](0063-whole-trial-node-service-and-dispatch-seam.md) (dispatch only)
 
 ## Context and Problem Statement
 

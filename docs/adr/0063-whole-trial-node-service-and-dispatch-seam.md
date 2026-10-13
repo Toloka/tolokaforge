@@ -1,4 +1,4 @@
-# 0060. The whole-trial node service and dispatch seam
+# 0063. The whole-trial node service and dispatch seam
 
 - **Status:** Accepted
 - **Date:** 2026-10-13

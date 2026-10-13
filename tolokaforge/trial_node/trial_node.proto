@@ -1,6 +1,6 @@
 // Trial Node Protocol
 // Control plane <-> trial node: the node owns one whole trial.
-// See docs/TRIAL_NODE_SERVICE.md and ADR-0060 for the design record.
+// See docs/TRIAL_NODE_SERVICE.md and ADR-0063 for the design record.
 //
 // The control plane ships one serialized TrialNodeInputs to a leased node; the
 // node runs the trial (conductor, agent loop and substrate all node-side) and

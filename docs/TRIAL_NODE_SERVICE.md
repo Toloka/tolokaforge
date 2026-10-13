@@ -5,7 +5,7 @@ A trial node runs one whole trial per request. The control plane's
 result back; the node runs the conductor, the agent's LLM loop, the grader and
 the trial's substrate itself. This document is the reference for the node's wire
 contract, its behaviour and its deployment. For the design record see
-[ADR-0060](adr/0060-whole-trial-node-service-and-dispatch-seam.md); for the
+[ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md); for the
 backend that dials nodes see [`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md).
 
 ```

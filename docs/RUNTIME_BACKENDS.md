@@ -111,7 +111,7 @@ each get independent containers, networks, and volumes. Every
 backend — the class body is a dataclass, not a re-implementation.
 
 **`RemoteRuntimeBackend`** (`remote`) — hands each *whole trial* to a trial
-node leased from a node registry ([ADR-0060](adr/0060-whole-trial-node-service-and-dispatch-seam.md),
+node leased from a node registry ([ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md),
 [`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)). It is the only backend that
 implements the `TrialOwningBackend` Protocol (`run_trial_node(inputs) -> TrialResult`),
 which is what routes a unit's trials through `RemoteTrialExecutor` instead of
@@ -1074,7 +1074,7 @@ The runner and db-service images are also published to Docker Hub (see [STANDALO
 
 - `tolokaforge/core/per_trial_runtime.py` — the preset (delegates every method onto the composer-driven `SharedStackRuntimeBackend`).
 - `tolokaforge/core/runtime.py` — the `RuntimeBackend` Protocol + `InMemoryRuntimeBackend`.
-- `tolokaforge/core/remote_runtime.py` + `tolokaforge/core/node_registry.py` — the remote backend and its node registry ([ADR-0059](adr/0059-remote-runtime-backend.md), [ADR-0060](adr/0060-whole-trial-node-service-and-dispatch-seam.md)); `tolokaforge/trial_node/` — the node service ([`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)).
+- `tolokaforge/core/remote_runtime.py` + `tolokaforge/core/node_registry.py` — the remote backend and its node registry ([ADR-0059](adr/0059-remote-runtime-backend.md), [ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md)); `tolokaforge/trial_node/` — the node service ([`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)).
 - `tolokaforge/core/shared_stack_runtime.py` — `SharedStackRuntimeBackend` + `RunnerClient` Protocol + `GrpcRunnerClient`.
 - `tolokaforge/core/default_substrate_composer.py` — the sequencer that walks the composition plan and stitches materialiser + dispatchers together.
 - `tolokaforge/core/docker_compose_materialiser.py` — the docker-compose materialiser (compose lifecycle, log routing, per-service capture).
