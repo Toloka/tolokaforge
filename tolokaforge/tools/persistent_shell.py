@@ -65,6 +65,11 @@ _STAGE_PREFIX = ".tolokaforge-session-"
 # How long a surviving shell gets to relay the staged files and print the
 # sentinel once its runaway foreground command has been killed.
 _RELAY_GRACE_S = 2.0
+# How long a surviving shell gets to drain an in-flight stage relay and answer a
+# fresh sentinel before the session is reset. A command that ignored the kill's
+# SIGINT keeps relaying a large stage after SIGKILL; draining it here keeps that
+# output from bleeding into the next command.
+_RESYNC_GRACE_S = 10.0
 _COLLECT_TIMEOUT_S = 10.0
 
 
@@ -340,6 +345,19 @@ class _PtyBashSession:
                 return CommandResult(
                     output=_truncate_middle(parsed[0]), exit_code=None, timed_out=True
                 )
+            # No sentinel in the grace window: the shell either aborted the
+            # command line on SIGINT and is idle, or ignored it and is still
+            # relaying a large stage after SIGKILL. Read the stage files
+            # directly, then resync the pty to a clean prompt so an in-flight
+            # relay cannot bleed into the next command; a shell that will not
+            # resync is reset.
+            output = _decode(buf) + self._collect_stage(stage, remove=True)
+            return CommandResult(
+                output=_truncate_middle(output),
+                exit_code=None,
+                timed_out=True,
+                session_reset=not self._resync(),
+            )
         output = _decode(buf) + self._collect_stage(stage, remove=same_shell)
         return CommandResult(
             output=_truncate_middle(output),
@@ -347,6 +365,25 @@ class _PtyBashSession:
             timed_out=True,
             session_reset=not same_shell,
         )
+
+    def _resync(self) -> bool:
+        """Drain any in-flight stage relay and confirm a clean prompt.
+
+        Writes a fresh sentinel and reads the pty until it arrives, discarding
+        everything before it — including a stage relay the shell is still
+        writing after a SIGKILL. Returns whether the shell answered in time; a
+        shell that closed the pipe or stayed silent is closed here so the next
+        command reopens a clean session.
+        """
+        sentinel = f"{_SENTINEL_PREFIX}{uuid.uuid4().hex}__"
+        self._write(f"printf '%s\\n' {shlex.quote(sentinel)}\n")
+        _, parsed, closed = self._read_until_sentinel(
+            b"", sentinel.encode(), time.monotonic() + _RESYNC_GRACE_S
+        )
+        if parsed is not None and not closed:
+            return True
+        self.close()
+        return False
 
     def _on_process_exit(self, buf: bytes, stage: _Stage) -> CommandResult:
         """The pipe closed mid-command: the shell exited, and the session with it.

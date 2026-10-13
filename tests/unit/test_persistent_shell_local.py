@@ -118,6 +118,28 @@ def test_background_writer_stays_out_of_later_output_and_survives_a_timeout(sess
         session.run("kill -9 $(cat writer.pid); rm -f writer.pid", 5)
 
 
+def test_a_sigint_ignoring_runaway_does_not_bleed_into_the_next_command(session, monkeypatch):
+    """A command that ignores the kill's SIGINT keeps relaying its stage after
+    SIGKILL. With the relay still in flight when the grace expires, the timeout
+    path must drain it so none of it leaks into the next command."""
+    import tolokaforge.tools.persistent_shell as ps
+
+    # Expire the relay grace at once so the drain path runs while the shell is
+    # still relaying, which is the window the stale tail would otherwise escape.
+    monkeypatch.setattr(ps, "_RELAY_GRACE_S", 0.01)
+
+    result = session.run(
+        "trap '' INT; yes BLEED | head -c 2000000; sleep 300",
+        2,
+    )
+    assert result.timed_out is True
+
+    later = session.run("echo clean", 5)
+    assert later.output.strip() == "clean"
+    assert later.exit_code == 0
+    assert "BLEED" not in later.output
+
+
 def test_stdin_reader_gets_eof(session):
     start = time.monotonic()
     result = session.run("read -r line; echo rc=$?", 10)
