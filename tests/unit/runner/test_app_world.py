@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from tests.canonical._factories import write_yaml_file
 from tests.utils.fake_app_world import (
+    ADMIN_HEADER,
     INITIAL_TABLES,
     MCP_WORLD_SERVER,
     FakeAppWorld,
@@ -600,6 +601,26 @@ def test_registration_claims_the_world_loads_its_callers_then_its_tables(
     minted = {world.admin_token, *world.callers}
     assert len(minted) == 3
     assert minted <= get_default().known_values()
+
+
+def test_a_claimed_world_refuses_any_later_admin_token(
+    trial: _Trial, world: FakeAppWorld, world_url: str
+) -> None:
+    """The first claim binds the runner's token; a later claimant is refused and changes nothing."""
+    trial.register(_description(world_url))
+    bound = world.admin_token
+
+    later = httpx.put(
+        f"{world_url}/_admin/tokens",
+        headers={ADMIN_HEADER: "a-later-claimant"},
+        json={"forged-bearer": None},
+        timeout=10,
+    )
+
+    assert later.status_code == 403
+    assert world.admin_token == bound
+    assert "forged-bearer" not in world.callers
+    assert world.tables == INITIAL_TABLES
 
 
 def test_each_actor_reaches_the_world_as_its_own_caller(

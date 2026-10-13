@@ -97,7 +97,9 @@ No credential appears in the declaration. Task validation refuses:
 
 - `app_world` without `json_db`;
 - `app_world` next to a `tools.<actor>.mcp_server` (one state holder per trial);
-- a host in `hosts` that is not in that actor's `http_request.allowed_hosts`.
+- for an actor named in `actors`, a host in `hosts` that is not in that
+  actor's `tools.<actor>.http_request.allowed_hosts`. Every host in `hosts`
+  must be allowed for every actor in `actors`.
 
 ### Isolation
 
@@ -256,7 +258,12 @@ that does not declare it.
   - concurrent trials against per-trial stacks keep separate worlds;
   - `shared` and `reset` isolation are refused;
   - no token appears in the trajectory, tool output or logs;
-  - no credential is attached to a host outside `app_world.hosts`.
+  - no credential is attached to a host outside `app_world.hosts`;
+  - the first claim binds the runner's admin token, and a later
+    `PUT /_admin/tokens` with another token is answered `403` and changes
+    nothing;
+  - a claim the runner loses fails the registration, so the trial is not
+    graded.
 
 ## Links
 
