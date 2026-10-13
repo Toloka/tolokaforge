@@ -30,24 +30,7 @@ A single orchestrator process welds together two different jobs:
 2. **The hands (execution):** run *one* trial — stand up its sandbox, drive the agent↔user loop,
    call the LLM, execute tool calls against the runner, grade it.
 
-```mermaid
-flowchart TB
-    subgraph ORCH["tolokaforge orchestrator (one process)"]
-        direction TB
-        brain["BRAIN: plan batch · dispatch · collect · report"]
-        hands["HANDS: per trial — conductor + agent loop + grading"]
-        brain --> hands
-    end
-    hands -->|tool calls| runner["runner (Docker sandbox)"]
-    hands -->|grade| grader["grader (built inside)"]
-
-    subgraph SCALE["Scaling today = clone the whole brain"]
-        w1["worker = full orchestrator"]
-        w2["worker = full orchestrator"]
-        w3["worker = full orchestrator"]
-    end
-    queue[("shared queue")] --- w1 & w2 & w3
-```
+![Current state: one orchestrator process is both brain and hands; scaling means cloning the whole brain](assets/detached-cur.svg)
 
 Because the two are welded together:
 
@@ -78,27 +61,7 @@ a single trial standalone.
 **Separate the brain from the hands, and make "run one trial" a portable unit.** One control plane
 leases a node per trial and ships the whole trial to it; the node runs it and returns a graded result.
 
-```mermaid
-flowchart LR
-    subgraph CP["Control plane (the brain)"]
-        plan["plan batch · dispatch · collect · report"]
-        reg[["node registry<br/>lease a node per trial"]]
-        plan --- reg
-    end
-
-    subgraph NODES["Execution nodes (the hands) — many machines"]
-        n1["trial node<br/>conductor + agent loop + sandbox + grading"]
-        n2["trial node"]
-        n3["trial node"]
-    end
-
-    reg -->|"ship one trial (inputs)"| n1
-    reg --> n2
-    reg --> n3
-    n1 -->|"graded result"| plan
-
-    single["Single-box (default, unchanged):<br/>brain + hands in one process"]
-```
+![Proposed: one control plane leases a node per trial and ships the whole trial to it; single-box stays the default](assets/detached-prop.svg)
 
 Four load-bearing ideas:
 
@@ -134,13 +97,7 @@ runtime/conductor names, and the task pack's **content hash**. A standalone entr
 
 Native and delegated trials converge on the same path, so the hands need no per-kind logic.
 
-```mermaid
-flowchart TB
-    native["native agent loop"] --> seam
-    delegated["delegated harness<br/>(terminal-bench, and further harnesses)"] --> seam
-    seam{{"one trial-execution seam"}}
-    seam --> result["graded TrialResult"]
-```
+![One dispatch seam: native and delegated trials converge on the same path](assets/detached-seam.svg)
 
 ### 4.3 Remote backend + node registry — ADR-0059
 
@@ -157,23 +114,7 @@ ADR-0063 moves the whole trial onto the node: a dedicated **trial-node service**
 and grader services, with its own versioned contract) hosts `run_trial_from_inputs`. The control plane
 ships the inputs once over a single `RunTrial` call and receives a graded result once.
 
-```mermaid
-sequenceDiagram
-    participant CP as Control plane
-    participant REG as Node registry
-    participant N as Trial node
-    participant G as Grader (on node)
-
-    CP->>REG: lease a node for this trial
-    REG-->>CP: node address
-    CP->>N: RunTrial(inputs: task, models, grader, pack hash — no secret bytes)
-    Note over N: resolve ${secret:NAME} locally · verify pack hash
-    Note over N: bring up sandbox · run conductor + agent loop
-    N->>G: grade
-    G-->>N: grade
-    N-->>CP: graded TrialResult (one response)
-    Note over CP: rebuild reduced bundle · release the lease
-```
+![Whole-trial dispatch: the control plane ships inputs once and receives a graded result once](assets/detached-seq.svg)
 
 ---
 
@@ -194,14 +135,7 @@ sequenceDiagram
 
 Delivered as a stack of small PRs; the single-box path is locked byte-for-byte by test at every step.
 
-```mermaid
-flowchart LR
-    s1["1 · portable trial unit<br/>(ADR-0057)"] --> s2["2 · remote backend<br/>+ node registry (ADR-0059)"]
-    s2 --> s3["3 · node owns the trial<br/>(ADR-0063)"]
-    s3 --> s4["4 · thin node;<br/>control-plane-only brain"]
-    s4 --> s5["5 · cross-node proof:<br/>native + delegated"]
-    s3 -.->|slices| s3a["3a base case<br/>3b task stacks<br/>3c config+seeds<br/>3d durability+cancel<br/>3e full bundle+tracing"]
-```
+![The staged roadmap, delivered as a stack of small PRs](assets/detached-road.svg)
 
 | Step | What it adds | State |
 |---|---|---|
