@@ -75,7 +75,7 @@ def purge_modules_under(root: Path) -> list[str]:
     """Drop from ``sys.modules`` every module loaded from under ``root``; their names, sorted.
 
     A module the trial imported in process — a tool module, a helper of
-    ``checks.py``, a pinned tool library (ADR-0056) — stays cached after its
+    ``checks.py``, a pinned tool library (ADR-0060) — stays cached after its
     directory is removed, and a later trial that ships another version of the
     same module under a fresh directory would be served the stale one. Called
     wherever an extracted directory is torn down, before the ``rmtree``.

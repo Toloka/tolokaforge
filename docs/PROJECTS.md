@@ -1023,7 +1023,7 @@ sharing task-level fields across every task in a project:
   `[{name, version, apps}]`. The engine resolves each pin among the
   libraries installed next to it and delivers the library's sources
   with every trial, so the project carries no copy of them
-  ([ADR-0056](adr/0056-shared-tool-libraries-through-tool-artifacts.md),
+  ([ADR-0060](adr/0060-shared-tool-libraries-through-tool-artifacts.md),
   [`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifacts`](TASK_DESCRIPTION_SCHEMA.md#tool_artifacts-tool-code-and-the-shared-libraries-a-task-pins)).
   An adapter's shared `domain.yaml` may pin them the same way; the
   layering is the one `tools` follows.

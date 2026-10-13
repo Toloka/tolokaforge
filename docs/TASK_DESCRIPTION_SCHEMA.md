@@ -454,7 +454,7 @@ grader. The runner extracts it into the trial's directory and puts that director
 bundles its own files — the native adapter the task directory, or the domain root
 with `_shared/`.
 
-A task may also pin shared tool libraries installed next to the engine (ADR-0056),
+A task may also pin shared tool libraries installed next to the engine (ADR-0060),
 on `task.yaml`, on a shared `domain.yaml` or in a project's `task_defaults`:
 
 ```yaml

@@ -39,7 +39,7 @@ tools, state, grading and its own `tool_artifacts`. The engine never calls it
 directly. It calls `BaseAdapter.describe_task(task_id)` — concrete and `@final` —
 which takes that description and merges in the bundles of the shared tool
 libraries the task pins (`TaskConfig.tool_libraries`,
-[ADR-0056](adr/0056-shared-tool-libraries-through-tool-artifacts.md)). The
+[ADR-0060](adr/0060-shared-tool-libraries-through-tool-artifacts.md)). The
 orchestrator, `run_trial` and the dry run all go through it, so an adapter never
 bundles a library itself: it only needs `get_task` to return the `TaskConfig` that
 carries the pins the author declared. Its own artefacts must not include a file a

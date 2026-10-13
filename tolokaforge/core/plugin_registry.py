@@ -863,7 +863,7 @@ def load_substrate_composer(name: str) -> type[SubstrateComposer]:
 
 
 def load_tool_library(name: str) -> ToolLibrary:
-    """Resolve a registered shared-tool-library name to the library object (ADR-0056).
+    """Resolve a registered shared-tool-library name to the library object (ADR-0060).
 
     The entry point names the object itself — ``name``, ``version`` and
     ``bundle(apps)`` — not a factory. Whether it satisfies the

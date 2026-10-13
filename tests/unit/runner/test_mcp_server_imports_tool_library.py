@@ -1,4 +1,4 @@
-"""An MCP server under ``_shared/`` imports a pinned tool library (ADR-0056).
+"""An MCP server under ``_shared/`` imports a pinned tool library (ADR-0060).
 
 The runner extracts ``tool_artifacts`` into the trial's directory and starts each
 MCP server as a subprocess of its own interpreter. The script's own directory

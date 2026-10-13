@@ -557,7 +557,7 @@ class MCPServerProcess(BaseModel):
 
     The runner passes the trial's artefact root and its ``tools/`` directory
     (see :func:`_subprocess_python_path`), so a server under ``_shared/``
-    imports the packages delivered there — a pinned tool library (ADR-0056)
+    imports the packages delivered there — a pinned tool library (ADR-0060)
     among them — as the runner process itself does."""
     process: Any | None = None  # subprocess.Popen - can't type properly
     request_id: int = 0

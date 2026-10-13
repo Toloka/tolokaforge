@@ -1,4 +1,4 @@
-"""Shared tool libraries delivered through ``tool_artifacts`` (ADR-0056).
+"""Shared tool libraries delivered through ``tool_artifacts`` (ADR-0060).
 
 A task pins the libraries it needs — ``tool_libraries: [{name, version, apps}]``
 in ``task.yaml``, a shared ``domain.yaml`` or a project's ``task_defaults``. A

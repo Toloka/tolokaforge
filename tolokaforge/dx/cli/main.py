@@ -1949,7 +1949,7 @@ def validate(tasks: str, strict_authoring: bool):
     for task_file in task_files:
         try:
             task_config, task_dir, project_combine = _load_task_under_its_project(Path(task_file))
-            # A pin the run would refuse when describing the task (ADR-0056): the
+            # A pin the run would refuse when describing the task (ADR-0060): the
             # bundle is built as describe_task builds it, so an application the
             # library does not ship fails here with the run's message. Only a
             # collision with the adapter's own artefacts needs the description.

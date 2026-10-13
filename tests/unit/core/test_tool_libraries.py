@@ -1,4 +1,4 @@
-"""Shared tool libraries reach the trial through ``tool_artifacts`` (ADR-0056).
+"""Shared tool libraries reach the trial through ``tool_artifacts`` (ADR-0060).
 
 A task pins ``tool_libraries: [{name, version, apps}]``; the engine resolves each
 pin among the entry points of ``tolokaforge.tool_libraries``, refuses a missing

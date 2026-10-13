@@ -583,7 +583,7 @@ class BaseAdapter(ABC):
         The one path the engine builds a description on — the orchestrator,
         :func:`~tolokaforge.core.run_trial.run_trial` and the dry run all call
         it. :meth:`to_task_description` is the adapter's part; the bundles of
-        the task's ``tool_libraries`` (ADR-0056) are added here for every
+        the task's ``tool_libraries`` (ADR-0060) are added here for every
         adapter alike, so an adapter never bundles a library itself.
 
         Raises:

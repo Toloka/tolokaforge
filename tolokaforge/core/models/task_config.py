@@ -198,7 +198,7 @@ class InitialStateConfig(BaseModel):
 
 
 class ToolLibraryPin(BaseModel):
-    """One shared tool library a task pins (ADR-0056).
+    """One shared tool library a task pins (ADR-0060).
 
     The engine resolves ``name`` among the libraries installed next to it
     (entry-point group ``tolokaforge.tool_libraries``), refuses an installed
@@ -608,7 +608,7 @@ class TaskConfig(BaseModel):
     initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     tool_libraries: list[ToolLibraryPin] = Field(default_factory=list)
-    """Shared tool libraries whose bundles travel with the trial (ADR-0056).
+    """Shared tool libraries whose bundles travel with the trial (ADR-0060).
 
     Declared on the task, on a shared ``domain.yaml`` or in a project's
     ``task_defaults``, like ``tools``. ``BaseAdapter.describe_task`` merges

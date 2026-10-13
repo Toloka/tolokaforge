@@ -1,4 +1,4 @@
-"""A module imported from a trial's artefacts does not outlive the artefacts (ADR-0056).
+"""A module imported from a trial's artefacts does not outlive the artefacts (ADR-0060).
 
 The runner imports in-process tool modules, and the grader ``checks.py``, from
 the trial's extracted ``tool_artifacts``; Python caches them in ``sys.modules``.

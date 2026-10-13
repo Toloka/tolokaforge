@@ -980,7 +980,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         A module imported in process from the directory — a tool module, the
         grader's ``checks.py`` helpers, a pinned tool library — would otherwise
         stay cached and be served to a later trial that ships another version
-        of it (ADR-0056).
+        of it (ADR-0060).
         """
         try:
             for entry in (str(artifact_dir), str(artifact_dir / "tools")):
