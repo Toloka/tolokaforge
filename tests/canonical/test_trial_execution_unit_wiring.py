@@ -123,10 +123,10 @@ def test_unit_threads_the_same_objects_the_orchestrator_composes(
         assert ctx.config is orch.config
         assert ctx.adapter is orch.adapter
         assert ctx.output_dir == tmp_path
-        assert isinstance(unit.provisioning_executor, ProvisioningTrialExecutor)
-        assert unit.provisioning_executor.runtime_backend is backend
-        assert unit.provisioning_executor.conductor is unit.conductor
-        assert unit.provisioning_executor.artifact_writer is writer
+        assert isinstance(unit.executor, ProvisioningTrialExecutor)
+        assert unit.executor.runtime_backend is backend
+        assert unit.executor.conductor is unit.conductor
+        assert unit.executor.artifact_writer is writer
 
 
 def test_the_default_conductor_comes_from_the_registry(
