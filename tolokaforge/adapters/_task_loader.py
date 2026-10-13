@@ -1513,9 +1513,7 @@ def warn_tool_cache_predating_mutates_state(task: TaskConfig, task_dir: Path) ->
         "declared since the cache was written does not reach the wire until the cache is "
         "regenerated: delete the file and describe the task on the run path (a run, or "
         "`tolokaforge run --dry-run` on a config naming it), which queries the server's "
-        "tools/list and writes the cache anew, with the key on every tool",
-        path=str(tools_json_path),
-        tools=stale,
+        "tools/list and writes the cache anew, with the key on every tool"
     )
 
 

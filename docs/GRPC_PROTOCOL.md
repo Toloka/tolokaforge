@@ -761,8 +761,8 @@ builtin's `ToolPolicy.category` (`read` → `false`, `write` → `true`), the se
 tool's `false`, or an adapter's own sources. A tool that declares nothing leaves
 the field unset. The harness reads it back via `HasField("mutates_state")` and
 hands `None` on when it is unset; `None` is unknown and reads as mutating
-wherever the engine needs an answer, which is the behaviour every pack had
-before the field existed. The field is proto3-`optional`, so an older runner
+wherever the engine needs an answer, the conservative default every undeclared
+tool gets. The field is proto3-`optional`, so an older runner
 sends nothing and a newer harness reads every tool as undeclared, without a
 protocol version bump; nothing consumes the flag yet.
 
