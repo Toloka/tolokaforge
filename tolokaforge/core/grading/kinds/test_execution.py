@@ -35,7 +35,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from tolokaforge.core.grading.kinds._protocol import GraderKindRefusedError
 from tolokaforge.core.models.grade import Grade
@@ -47,9 +47,23 @@ if TYPE_CHECKING:
     from tolokaforge.runner.models import RunnerGradingConfig
 
 __all__ = [
+    "ArtifactSpec",
     "TestExecutionGraderKind",
     "TestExecutionKindConfig",
 ]
+
+
+class ArtifactSpec(BaseModel):
+    """One path the verifier reads, carried from the agent container into it.
+
+    ``source`` is an absolute path in the agent's container; ``exclude`` lists
+    glob patterns pruned from the copy (caches, regenerable build output).
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source: str
+    exclude: list[str] = Field(default_factory=list)
 
 
 class TestExecutionKindConfig(BaseModel):
@@ -60,6 +74,12 @@ class TestExecutionKindConfig(BaseModel):
     script timeout, 10s reward-cat timeout, 65536-char output truncation
     for the reasons string — the runner's wire cap on verifier stdout, so
     the grade keeps the whole traceback the runner shipped.
+
+    ``service`` and ``artifacts`` cover the separate-verifier shape: the suite
+    runs in ``service``'s container rather than the agent's, and each
+    ``artifacts`` path is re-materialised from the agent container into it
+    first. Both default to the single-container behaviour — no service, nothing
+    to carry across.
     """
 
     model_config = {"extra": "forbid"}
@@ -69,6 +89,17 @@ class TestExecutionKindConfig(BaseModel):
     timeout_s: float = Field(default=300.0, gt=0.0)
     reward_read_timeout_s: float = Field(default=10.0, gt=0.0)
     output_truncation_chars: int = Field(default=65_536, ge=0)
+    service: str | None = None
+    artifacts: list[ArtifactSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _artifacts_need_a_service(self) -> TestExecutionKindConfig:
+        if self.artifacts and self.service is None:
+            raise ValueError(
+                "artifacts are re-materialised into the verifier's own container, so "
+                "a 'service' must be set when 'artifacts' is non-empty."
+            )
+        return self
 
 
 class TestExecutionGraderKind:
@@ -87,11 +118,21 @@ class TestExecutionGraderKind:
         logger: StructuredLogger,  # noqa: ARG002
     ) -> Grade | None:
         cfg = TestExecutionKindConfig(**(dict(kind_config) if kind_config else {}))
+        for artifact in cfg.artifacts:
+            # The suite runs in a container the agent never touched, so the files
+            # it is scored against are carried across first (empty-then-copy).
+            substrate.materialise_path(
+                src_service=None,
+                dst_service=cfg.service,
+                path=artifact.source,
+                exclude=artifact.exclude,
+            )
         result = substrate.run_test_suite(
             script_path=cfg.script_path,
             reward_path=cfg.reward_path,
             timeout_s=cfg.timeout_s,
             reward_read_timeout_s=cfg.reward_read_timeout_s,
+            service=cfg.service,
         )
         if result.tool_absent:
             raise GraderKindRefusedError(result.tool_absent_reason)

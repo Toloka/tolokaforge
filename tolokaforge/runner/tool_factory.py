@@ -1486,6 +1486,29 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         self._container = compose_container_name(ctx.trial_id, self._service, self._project_prefix)
 
     @property
+    def container_name(self) -> str | None:
+        """The resolved container this wrapper execs into, or ``None`` before start()."""
+        return self._container
+
+    def for_service(self, service: str) -> "DockerComposeExecToolWrapper":
+        """A sibling exec wrapper bound to another service in the same trial stack.
+
+        The agent and a separate verifier are two services in one per-trial
+        compose project; grading that runs the suite in the verifier needs an
+        executor for that container. This reuses the started wrapper's resolved
+        trial id and project prefix, so both target the same stack.
+        """
+        if self._trial_id is None:
+            raise RuntimeError(
+                "DockerComposeExecToolWrapper.for_service() called before start(): "
+                "no trial is bound yet, so the sibling container cannot be resolved."
+            )
+        sibling = DockerComposeExecToolWrapper(self.tool_schema, service, self._project_prefix)
+        sibling._trial_id = self._trial_id
+        sibling._container = compose_container_name(self._trial_id, service, self._project_prefix)
+        return sibling
+
+    @property
     def own_budget_s(self) -> float:
         return self.timeout_s or _COMPOSE_EXEC_DEFAULT_TIMEOUT_S
 
