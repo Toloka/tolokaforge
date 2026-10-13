@@ -127,7 +127,7 @@ message ToolSchema {
   optional int32 output_max_chars = 6;
 
   // Whether a call can change the graded state, as the tool's author declares
-  // it (ADR-0057). Optional (proto3): unset means unknown, which reads as
+  // it (ADR-0061). Optional (proto3): unset means unknown, which reads as
   // mutating wherever the engine needs an answer; a runner predating this
   // field never sets it.
   optional bool mutates_state = 7;

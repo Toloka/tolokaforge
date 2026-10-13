@@ -125,7 +125,7 @@ are set. `None` (the default) defers to the per-model cap; a tool that declares
 no cap in a pack that overrides no cap, run under a preset that declares no cap,
 passes its message content through verbatim.
 
-`ToolSchema.mutates_state` ([ADR-0057](adr/0057-mutates-state-on-the-tool-wire.md))
+`ToolSchema.mutates_state` ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md))
 is the tool author's declaration of whether a call can change the graded state.
 `None` means unknown and reads as `True` wherever the engine needs an answer. The
 field is left out of the serialised schema while it is `None`, so an image that

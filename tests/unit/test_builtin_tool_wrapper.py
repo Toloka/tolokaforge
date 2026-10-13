@@ -74,7 +74,7 @@ class TestBuiltinToolSchemas:
 
     @pytest.mark.unit
     def test_mutates_state_is_the_policy_category_read_as_a_declaration(self):
-        """ADR-0057: the engine authors its builtins, so ``ToolPolicy.category`` is
+        """ADR-0061: the engine authors its builtins, so ``ToolPolicy.category`` is
         the declaration — ``read`` never mutates, ``write`` does, and ``compute``
         (a shell, an HTTP client) says nothing and stays off the wire, exactly
         like an MCP tool with no ``readOnlyHint``.

@@ -487,7 +487,7 @@ def test_search_kb_without_override_preserves_canonical_schema(tmp_path: Path):
 
 def test_search_kb_declares_itself_read_only(tmp_path: Path):
     """The engine builds the search tool over the trial's index and never writes
-    through it, so the schema it emits declares ``mutates_state=False`` (ADR-0057)
+    through it, so the schema it emits declares ``mutates_state=False`` (ADR-0061)
     — on the model and in its JSON dump, where an undeclared flag would be absent.
     """
     from tolokaforge.adapters._task_loader import (

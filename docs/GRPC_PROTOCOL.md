@@ -242,7 +242,7 @@ message ToolSchema {
   // Python None on the host and reads as "no per-tool cap".
   optional int32 output_max_chars = 6;
   // Whether a call can change the graded state, as the tool's author declares
-  // it (ADR-0057). Optional (proto3): unset arrives as Python None on the host
+  // it (ADR-0061). Optional (proto3): unset arrives as Python None on the host
   // and means unknown, which reads as mutating; an older runner never sets it.
   optional bool mutates_state = 7;
 }
@@ -754,7 +754,7 @@ the harness reads it as no per-tool cap declared, without a version bump.
 Each `ToolSchema` the runner returns in `RegisterTrialResponse.tool_schemas` may
 carry an optional `mutates_state: bool` — whether a call can change the graded
 state, as the tool's author declares it
-([ADR-0057](adr/0057-mutates-state-on-the-tool-wire.md)). The field is
+([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)). The field is
 tri-state. The runner sets it only when the task description declares it: an
 MCP tool's `readOnlyHint` annotation read back by the native adapter, a
 builtin's `ToolPolicy.category` (`read` → `false`, `write` → `true`), the search

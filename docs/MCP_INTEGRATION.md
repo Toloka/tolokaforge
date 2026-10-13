@@ -16,7 +16,7 @@ The MCP server should expose a `TOOLS` mapping (function name → tool spec) and
 ## Declaring whether a tool changes state
 
 A tool built with `DomainToolRegistry` declares whether a call can change the
-graded state ([ADR-0057](adr/0057-mutates-state-on-the-tool-wire.md)):
+graded state ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)):
 
 ```python
 @registry.tool("Look up one order.", mutates_state=False)

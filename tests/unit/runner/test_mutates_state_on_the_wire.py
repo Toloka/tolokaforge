@@ -1,4 +1,4 @@
-"""``mutates_state`` crosses every tool wire as its author declares it (ADR-0057).
+"""``mutates_state`` crosses every tool wire as its author declares it (ADR-0061).
 
 A tool declares it through ``DomainToolRegistry.tool(..., mutates_state=...)``,
 which sets MCP's ``readOnlyHint`` annotation on the server. The native adapter

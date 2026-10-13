@@ -6,7 +6,7 @@ registrations that are otherwise needed:
 
 1. Manual ``TOOLS`` dict entry  → grading contract
    ``GradingEngine`` calls ``TOOLS["name"].invoke(data=data, **kwargs)``;
-   the entry's ``mutates_state`` is the author's declaration (ADR-0057)
+   the entry's ``mutates_state`` is the author's declaration (ADR-0061)
 
 2. Manual ``@mcp.tool()`` wrapper → runtime MCP schema
    FastMCP generates ``inputSchema`` from type hints
@@ -179,7 +179,7 @@ class DomainToolRegistry:
         reset_state used by the Runner's hash-based grader).
 
         They are the engine's own tools, so the engine declares their
-        ``mutates_state`` (ADR-0057): reading the snapshot does not change the
+        ``mutates_state`` (ADR-0061): reading the snapshot does not change the
         state, replacing it does. They show up in ``tools/list`` and so in the
         ``fixtures/tools.json`` cache, where an undeclared entry would read as a
         gap in the author's declarations.
@@ -219,7 +219,7 @@ class DomainToolRegistry:
             Human-readable description forwarded to FastMCP and shown to the
             LLM agent as the tool description.
         mutates_state:
-            Whether a call can change the state (ADR-0057). Declared on the MCP
+            Whether a call can change the state (ADR-0061). Declared on the MCP
             tool as the ``readOnlyHint`` annotation (``readOnlyHint = not
             mutates_state``), which the native adapter reads back into
             ``ToolSchema.mutates_state``, and carried as ``mutates_state`` on

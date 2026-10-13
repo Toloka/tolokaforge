@@ -192,7 +192,7 @@ class ToolSchema(BaseModel):
 
     mutates_state: bool | None = None
     """Whether a call can change the graded state, as the tool's author declares it
-    (ADR-0057).
+    (ADR-0061).
 
     ``None`` is unknown and reads as ``True`` wherever the engine needs an answer.
     An MCP server declares it through the ``readOnlyHint`` tool annotation

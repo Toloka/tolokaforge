@@ -839,7 +839,7 @@ def search_tool_schema(declaration: SearchDeclaration, backend: SearchBackend) -
         timeout_s=SEARCH_TOOL_TIMEOUT_S,
         source=None,
         # The engine builds this tool over the trial's index and never writes
-        # through it, so the engine declares it read-only (ADR-0057).
+        # through it, so the engine declares it read-only (ADR-0061).
         mutates_state=False,
     )
 
@@ -1350,7 +1350,7 @@ BUILTIN_MUTATES_STATE_BY_CATEGORY: dict[ToolCategory, bool | None] = {
     ToolCategory.COMPUTE: None,
 }
 """What a builtin tool's :attr:`~tolokaforge.tools.registry.ToolPolicy.category`
-declares about ``mutates_state`` (ADR-0057).
+declares about ``mutates_state`` (ADR-0061).
 
 The engine authors its builtin tools, so their policy category is the author's
 declaration: a ``read`` tool never changes the graded state and a ``write`` tool
@@ -1477,11 +1477,11 @@ def _read_tool_cache(tools_json_path: Path) -> dict[str, dict]:
 
 
 def warn_tool_cache_predating_mutates_state(task: TaskConfig, task_dir: Path) -> None:
-    """One warning per description when the task's tool cache predates ADR-0057.
+    """One warning per description when the task's tool cache predates ADR-0061.
 
     The cache is written once from the server's ``tools/list`` and read ever
     after, so a ``readOnlyHint`` the server gained later is invisible on the
-    wire until the file is regenerated. Since ADR-0057 the writer persists the
+    wire until the file is regenerated. Since ADR-0061 the writer persists the
     key for every tool — ``null`` for one that declares nothing — so an entry
     *without* the key is unambiguously older than the field, while a present
     ``null`` is the author's deliberate non-declaration and stays silent.
@@ -1571,7 +1571,7 @@ def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:
             "description": tool.get("description", f"Tool: {name}"),
             "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
         }
-        # ADR-0057: the server's ``readOnlyHint`` is the author's declaration; a tool
+        # ADR-0061: the server's ``readOnlyHint`` is the author's declaration; a tool
         # carrying no hint stays undeclared (``None``) rather than defaulting either
         # way. The key is always written, so a cache entry without it is one
         # written before the field existed (``warn_tool_cache_predating_mutates_state``).

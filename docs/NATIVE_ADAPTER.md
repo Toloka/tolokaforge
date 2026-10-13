@@ -252,7 +252,7 @@ what the agent is handed. The same declaration sets the task's `search` block:
 `backend_config` / `tool_name` ride along when they are not at their defaults
 (see [TASK_DESCRIPTION_SCHEMA.md](TASK_DESCRIPTION_SCHEMA.md)).
 
-`ToolSchema.mutates_state` ([ADR-0057](adr/0057-mutates-state-on-the-tool-wire.md))
+`ToolSchema.mutates_state` ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md))
 is declared by whoever authored the tool. A builtin's schema derives it from the
 tool's `ToolPolicy.category` (`read` → `False`, `write` → `True`, `compute` →
 undeclared); the search tool is `False`; an MCP tool carries whatever its server's
@@ -290,7 +290,7 @@ undeclared); the search tool is `False`; an MCP tool carries whatever its server
 ```
 
 `mutates_state` is `true`, `false`, or `null` for a tool that declares nothing
-([ADR-0057](adr/0057-mutates-state-on-the-tool-wire.md)).
+([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)).
 
 > **Note:** If `fixtures/tools.json` is absent and the live MCP query fails or
 > reports no tools, the run fails with a `RuntimeError` naming the server.  An

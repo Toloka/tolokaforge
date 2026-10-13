@@ -328,7 +328,7 @@ class TestDecoratorSideEffects:
         """The engine's own get/set state tools carry the engine's declaration:
         the snapshot read is read-only, the replace mutates. They reach
         ``tools/list`` like every other tool, so an undeclared pair would read as
-        a cache predating ADR-0057 on every pack built on the registry.
+        a cache predating ADR-0061 on every pack built on the registry.
         """
         internal = {
             c.kwargs["description"]: c.kwargs["annotations"]
