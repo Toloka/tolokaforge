@@ -563,6 +563,8 @@ Each task loads under its enclosing project. `validate` walks up from the `task.
 
 `project.default_environment` is not layered: it binds into a `TaskDescription`'s `EnvironmentManifest`, and `validate` builds no `TaskDescription`.
 
+A task's `tool_libraries` pins are resolved against the libraries installed in this environment, as a run resolves them before any container starts: a library that is not installed, or is installed at another version than the pin names, is a `✗` line carrying the same message the run would refuse the task with ([ADR-0060](adr/0060-shared-tool-libraries-through-tool-artifacts.md)). Each resolved library's bundle is then built as `describe_task` builds it, so an `apps` entry the library does not ship, an empty bundle or a bundle path outside the artefact root is a `✗` line too. `validate` builds no `TaskDescription`, so a collision between the bundle and the pack's own artefacts is reported only by a run.
+
 `make validate` wraps the command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, with `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target prints a skip reason and exits `0` when `TASKS_DIR` is absent and `TASKS_GLOB` is still the default derived from it, instead of failing on an empty glob. A `TASKS_GLOB` you name runs whatever `TASKS_DIR` holds — pointing the target at a pack elsewhere is never skipped. The dev MCP's `validate_tasks` guards its own default identically.
 
 ### `--strict-authoring`
@@ -588,11 +590,26 @@ A `candidate` entry converts nothing, so its verdict is reported and gates nothi
 | Outcome | Exit code |
 |---|---|
 | every attempt reached a verdict, and no opted-in gate fires | `0` |
+| the written bundle reports a number nothing measured — a **measurement-fidelity** violation | `3`, after every artifact is written, the end banner is printed and the run directory is on stdout |
 | `--fail-on-zero-coverage` set and no trial produced an agent-measured verdict (every attempt was an infrastructure abort or a harness-synthesised auto-fail) | `2`, after every artifact is written, the end banner is printed and the run directory is on stdout |
 | `--fail-on-zero-judge-graded` set and every produced grade has `judge_status == ERRORED` | `2`, same emission order |
 | the run completed and any trial is **`ungradeable`** (and no exit-2 gate fires) | `1`, after every artifact is written, the end banner is printed and the run directory is on stdout |
 | the run was **paused** by a budget cap with trials still pending | the same gates, applied to the attempts that ran, after every artifact is written |
 | the run never happened — bad config, orchestrator raise, zero tasks | non-zero with **empty** stdout; see [§ stdout / stderr contract](#stdout--stderr-contract) |
+
+### Measurement fidelity
+
+`tolokaforge run` checks the bundle it just wrote before it applies any completion gate, and exits `3` when the bundle reports a number nothing measured. The rules are mechanical, read only the run directory, and run in milliseconds:
+
+| Rule | What it asserts |
+|---|---|
+| **R1** | A grade whose components are all `None` measured nothing, so unless it declares itself harness-synthesised it must not report a score. |
+| **R2** | `total_trials == measured_trials + sum(infrastructure_aborts)`, and `infrastructure_aborts` carries a key for every reason in `EXCLUDED_TYPED_REASONS` — so a termination reason added there cannot become silently uncountable. |
+| **R3** | Each `per_task_metrics.json` row's `total_trials` equals the number of trial directories on disk for that task. |
+| **R4** | `synthesized_by_termination_reason` is set if and only if every grade component is `None`. The marker and the empty components are one statement about whether an evaluator ran, not two. |
+| **R5** | A trial with `cost_usd: null` and no tokens in either direction never reached the model, so it must not carry a score. A declared `oracle` harness is the one exception: it spends nothing by design and still earns a real verifier verdict. |
+
+Exit `3` outranks the completion gates below. Those report what a run honestly failed to measure; this reports what it measured dishonestly, and a wrong number travels further than a missing one. The console names up to ten violations with their rule ids; `tolokaforge check-run <run-dir>` prints the full list over any finished bundle, including a collected shard or a merged one, and exits on the same terms. Bundles written before `measured_trials` existed carry no denominator to close, so R2 and R3 skip them rather than firing on every archived run; R1, R4 and R5 read grades directly and apply to every bundle.
 
 An **ungradeable** trial is one the run attempted and measured and then could not grade: `trajectory.yaml` carries a `grading_error` and no `grade`. A run that reports success while an arbitrary, model-correlated subset of its grades is missing is the failure mode this gate exists to remove.
 

@@ -42,7 +42,7 @@ class _FakeAdapter:
     def register_preloaded_task(self, task: Any, task_dir: Path) -> None:
         pass
 
-    def to_task_description(self, task_id: str) -> Any:
+    def describe_task(self, task_id: str) -> Any:
         return self._task_desc
 
 

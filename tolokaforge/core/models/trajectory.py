@@ -690,6 +690,14 @@ class Metrics(BaseModel):
     history in which it had never reasoned."""
 
     tool_calls: int = 0
+    tool_commands: int = 0
+    """Shell commands the agent issued, which a batching tool decouples from calls.
+
+    ``tool_calls`` counts calls, so a tool whose argument is an array of commands
+    records one call for the whole array. This counts the array's elements, and
+    one for every other call, so ``tool_commands / turns`` reads as work per turn
+    whichever shell tool a run selected."""
+
     tool_success_rate: float = 0.0
     stuck_detected: bool = False
     tool_usage: list[ToolUsage] = Field(default_factory=list)

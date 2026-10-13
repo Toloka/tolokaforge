@@ -77,7 +77,9 @@ from tolokaforge.core.grading.substrate import (
     GradingSubstrate,
     InProcessGradingSubstrate,
     RunTestSuiteResult,
+    SubstrateUnreachableError,
 )
+from tolokaforge.core.grading.tool_artifacts import purge_modules_under
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
@@ -123,13 +125,18 @@ from tolokaforge.core.search.stack_services import (
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
+from tolokaforge.runner.app_world import AppWorldClient, AppWorldError, open_app_world
 from tolokaforge.runner.capabilities import BUILTIN_ADAPTERS
 from tolokaforge.runner.db_client import (
     DBServiceClient,
     DBServiceError,
+    TableNotFoundError,
 )
 from tolokaforge.runner.db_client import (
     TrialNotFoundError as DBTrialNotFoundError,
+)
+from tolokaforge.runner.db_client import (
+    ValidationError as DBValidationError,
 )
 from tolokaforge.runner.env_exec import first_env_exec_tool
 from tolokaforge.runner.grading import (
@@ -163,6 +170,7 @@ from tolokaforge.runner.models import (
     StateDiff,
     TaskDescription,
     ToolExecutorIdentity,
+    ToolSchema,
     TraceChecksConfig,
     TraceChecksResult,
     TranscriptEvaluationResult,
@@ -208,6 +216,16 @@ AGENT_WORK_DIR = "/work"
 # ``ExecuteTool``. Both enforce the same tool budget, so on an equal deadline the
 # winner is scheduler noise — and an outer win reports a genuine timeout as ERROR.
 _TOOL_TIMEOUT_SLACK_S = 5.0
+
+# Bound on one grading read through the judge's DB tools (``get_db_state`` /
+# ``query_db``), the read a judge waits on mid-loop.
+_JUDGE_DB_READ_TIMEOUT_S = 30.0
+
+# Bound on reading an MCP subprocess's live state for a mirror sync. A child that
+# hangs instead of dying would otherwise stall every final-state read for as long
+# as the reader waits; it stays inside the judge's read bound so the reader sees
+# the sync's own cause rather than its own timeout.
+_MCP_STATE_READ_TIMEOUT_S = 20.0
 
 # The documented read-only mcp_core TypeSense KB connector the agent uses. The
 # judge is allowed to reuse this ONE reconstructed tool (read-only passthrough)
@@ -528,6 +546,26 @@ def _unreachable_state_checks_refusal(
     return None
 
 
+def _wire_tool_schema(tool: ToolSchema) -> pb2.ToolSchema:
+    """``tool`` as ``RegisterTrialResponse`` returns it to the engine.
+
+    The proto3-optional fields are set only when the description declares them,
+    so the engine reads an unset one as "not declared" (``HasField`` is false).
+    """
+    schema = pb2.ToolSchema(
+        name=tool.name,
+        description=tool.description,
+        parameters_json=json.dumps(tool.parameters),
+        category=tool.category,
+        timeout_s=tool.timeout_s,
+    )
+    if tool.output_max_chars is not None:
+        schema.output_max_chars = tool.output_max_chars
+    if tool.mutates_state is not None:
+        schema.mutates_state = tool.mutates_state
+    return schema
+
+
 def _backstop_seconds(tool: Any, trial_default: float) -> float:
     """The band the runner applies around a call on *tool*.
 
@@ -598,6 +636,9 @@ class TrialContextRuntime:
         # tool whose session the backstop poisoned is rebuilt against the same
         # artifacts_dir and work_dir rather than a reconstruction of them.
         self.lifecycle_ctx: ToolLifecycleContext | None = None
+        # The service holding the trial's world when the task declares
+        # ``initial_state.app_world`` (ADR-0062); None otherwise.
+        self.app_world: AppWorldClient | None = None
         self._unusable_tools: dict[tuple[ToolExecutorIdentity, str], str] = {}
 
     def mark_tool_unusable(
@@ -737,6 +778,42 @@ class TrialContextRuntime:
         self.tool_call_history.clear()
 
 
+class _LiveStateSync:
+    """One MCP-subprocess → DB-mirror sync shared by every read of one grading call.
+
+    A trial whose tools run in an MCP subprocess keeps its state in that
+    process; the db-service only mirrors it. Each grading read of the mirror
+    awaits :meth:`ensure` first, so the grade sees what the subprocess holds
+    now rather than whatever an earlier ``GetState`` left in the mirror. The
+    sync runs once per call: hash grading replays the golden path into the
+    same subprocess, and a resync after that would grade the golden state.
+
+    A failed sync is kept and re-raised to every later reader as
+    :class:`SubstrateUnreachableError` — the mirror is stale, so nothing in
+    this call may be graded from it. A trial that provisions no database has
+    no mirror to sync, so nothing is synced for it.
+    """
+
+    def __init__(
+        self, service: "RunnerServiceImpl", trial_id: str, trial_context: TrialContextRuntime
+    ) -> None:
+        self._service = service
+        self._trial_id = trial_id
+        self._wrapper = service._mirrored_state_holder(trial_context)
+        self._sync: asyncio.Future[None] | None = None
+
+    async def ensure(self) -> None:
+        if self._wrapper is None:
+            return
+        if self._sync is None:
+            self._sync = asyncio.ensure_future(
+                self._service._sync_live_state(self._trial_id, self._wrapper)
+            )
+        # Shielded: a reader that gives up waiting must not cancel the sync the
+        # call's other readers share.
+        await asyncio.shield(self._sync)
+
+
 # =============================================================================
 # Runner Service Implementation
 # =============================================================================
@@ -854,18 +931,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         # Clean up extracted artifact directories
         for trial_id, artifact_dir in self._artifact_dirs.items():
-            try:
-                # Remove extracted dir from sys.path
-                dir_str = str(artifact_dir)
-                if dir_str in sys.path:
-                    sys.path.remove(dir_str)
-                tools_str = str(artifact_dir / "tools")
-                if tools_str in sys.path:
-                    sys.path.remove(tools_str)
-                shutil.rmtree(artifact_dir, ignore_errors=True)
-                logger.debug(f"Cleaned up artifact dir for trial {trial_id}: {artifact_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up artifact dir {artifact_dir}: {e}")
+            self._discard_artifact_dir(trial_id, artifact_dir)
         self._artifact_dirs.clear()
 
         if self._loop and self._loop.is_running():
@@ -930,15 +996,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         artifact_dir = self._artifact_dirs.pop(trial_id, None)
         if artifact_dir is None:
             return
+        self._discard_artifact_dir(trial_id, artifact_dir)
+
+    @staticmethod
+    def _discard_artifact_dir(trial_id: str, artifact_dir: Path) -> None:
+        """Take a trial's extracted artefacts off this process: ``sys.path``, ``sys.modules``, disk.
+
+        A module imported in process from the directory — a tool module, the
+        grader's ``checks.py`` helpers, a pinned tool library — would otherwise
+        stay cached and be served to a later trial that ships another version
+        of it (ADR-0060).
+        """
         try:
-            dir_str = str(artifact_dir)
-            if dir_str in sys.path:
-                sys.path.remove(dir_str)
-            tools_str = str(artifact_dir / "tools")
-            if tools_str in sys.path:
-                sys.path.remove(tools_str)
+            for entry in (str(artifact_dir), str(artifact_dir / "tools")):
+                if entry in sys.path:
+                    sys.path.remove(entry)
+            purged = purge_modules_under(artifact_dir)
             shutil.rmtree(artifact_dir, ignore_errors=True)
-            logger.debug(f"Cleaned up artifact dir for trial {trial_id}: {artifact_dir}")
+            logger.debug(
+                f"Cleaned up artifact dir for trial {trial_id}: {artifact_dir} "
+                f"(purged modules: {purged})"
+            )
         except Exception as e:
             logger.warning(f"Failed to clean up artifact dir {artifact_dir}: {e}")
 
@@ -1241,6 +1319,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 id_fields=id_fields,
                 search_tool_name=search_config.tool_name,
                 search_index=search_index,
+                artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
             )
 
             # Set domain on DB proxy so search_policy tools can resolve
@@ -1299,45 +1378,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     tool.start(trial_context.lifecycle_ctx)
                 except Exception as e:
                     logger.error(f"RegisterTrial: Failed to start tool lifecycle: {e}")
-                    try:
-                        self._run_async(self.cleanup_trial(trial_id))
-                    except Exception as cleanup_error:
-                        # The start failure is the answer the caller needs; a
-                        # cleanup that also failed is logged, not returned.
-                        logger.error(
-                            f"RegisterTrial: Cleanup after the failed lifecycle start of "
-                            f"{trial_id} also failed: {cleanup_error}"
-                        )
+                    self._abandon_registration(trial_id, "lifecycle start")
                     return pb2.RegisterTrialResponse(
                         success=False,
                         error=f"Tool lifecycle start failed: {e}",
                     )
 
-        # Build tool schemas for response
-        tool_schemas = []
-        for tool in task_description.agent_tools:
-            schema = pb2.ToolSchema(
-                name=tool.name,
-                description=tool.description,
-                parameters_json=json.dumps(tool.parameters),
-                category=tool.category,
-                timeout_s=tool.timeout_s,
-            )
-            if tool.output_max_chars is not None:
-                schema.output_max_chars = tool.output_max_chars
-            tool_schemas.append(schema)
+        app_world_error = self._open_app_world(trial_context)
+        if app_world_error is not None:
+            return pb2.RegisterTrialResponse(success=False, error=app_world_error)
 
-        for tool in task_description.user_tools:
-            schema = pb2.ToolSchema(
-                name=tool.name,
-                description=tool.description,
-                parameters_json=json.dumps(tool.parameters),
-                category=tool.category,
-                timeout_s=tool.timeout_s,
-            )
-            if tool.output_max_chars is not None:
-                schema.output_max_chars = tool.output_max_chars
-            tool_schemas.append(schema)
+        # Agent slice first, then the user's: the engine partitions at num_agent_tools.
+        tool_schemas = [
+            _wire_tool_schema(tool)
+            for tool in (*task_description.agent_tools, *task_description.user_tools)
+        ]
 
         logger.info(
             f"RegisterTrial: {trial_id} - {len(task_description.agent_tools)} agent tools, "
@@ -1839,7 +1894,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
 
     def _build_grading_substrate(
-        self, trial_id: str, trial_context: TrialContextRuntime
+        self, trial_id: str, trial_context: TrialContextRuntime, live_state: _LiveStateSync
     ) -> GradingSubstrate:
         """The single :class:`InProcessGradingSubstrate` the composite reads.
 
@@ -1856,26 +1911,64 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         snapshotted from inside its own container via the exec-wrapper;
         every other trial reads back the runner's own ``AGENT_WORK_DIR``
         via :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`.
+
+        Every DB read awaits ``live_state`` first, so a trial whose state lives
+        in an MCP subprocess is graded on that state, not on the mirror an
+        earlier ``GetState`` left. For a trial that provisions a database, a
+        failed or timed-out sync or read raises :class:`SubstrateUnreachableError`
+        — the trial is ungradeable, never graded on empty or stale tables. A read
+        the db-service refuses as malformed (a jsonpath that does not parse, a
+        table that is not there) is not a lost state and keeps its own error, so
+        a judge can correct it. A trial that provisions no database keeps the
+        DB client's own errors, which the evaluators already read as "no database".
         """
-        loop = self._loop
         db_client = self.db_client
+        provisions_db = provisions_database(trial_context.task_description.initial_state)
+
+        def _unreadable(cause: str) -> SubstrateUnreachableError:
+            return SubstrateUnreachableError(
+                f"Trial {trial_id!r}: its DB state could not be read for grading ({cause})"
+            )
+
+        async def _read_mirror(read: Callable[[], Any]) -> Any:
+            await live_state.ensure()
+            try:
+                return await read()
+            except (DBValidationError, TableNotFoundError):
+                # The service refused the read itself — a jsonpath that does not
+                # parse, a table that is not there. The state is intact; the
+                # caller (a judge, typically) gets the refusal and can correct it.
+                raise
+            except Exception as exc:
+                if not provisions_db:
+                    raise
+                raise _unreadable(f"{type(exc).__name__}: {exc}") from exc
+
+        def _bridged_read(read: Callable[[], Any], timeout_s: float) -> Any:
+            """Run one mirror read on the runner's event loop from a grading worker thread."""
+            try:
+                return self._run_async(_read_mirror(read), timeout=timeout_s)
+            except TimeoutError as exc:
+                if not provisions_db:
+                    raise
+                raise _unreadable(f"timed out after {timeout_s:g}s") from exc
 
         class _LoopBridgeDBReader:
-            """Sync :class:`DBReader` seam bridging to the async DB client on ``loop``."""
+            """Sync :class:`DBReader` seam bridging to the async DB client on the runner's loop."""
 
             def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
-                fut = asyncio.run_coroutine_threadsafe(db_client.get_state(trial_id, tables), loop)
-                return fut.result(timeout=30.0).data
+                read = partial(db_client.get_state, trial_id, tables)
+                return _bridged_read(read, _JUDGE_DB_READ_TIMEOUT_S).data
 
             def query(self, jsonpath: str) -> dict[str, Any]:
-                fut = asyncio.run_coroutine_threadsafe(db_client.query(trial_id, jsonpath), loop)
-                return {"results": fut.result(timeout=30.0).results}
+                read = partial(db_client.query, trial_id, jsonpath)
+                return {"results": _bridged_read(read, _JUDGE_DB_READ_TIMEOUT_S).results}
 
         def _get_raw_state() -> dict[str, Any]:
-            return self._run_async(self.db_client.get_state(trial_id)).data
+            return _bridged_read(partial(db_client.get_state, trial_id), 300.0).data
 
         def _get_stable_state() -> dict[str, Any]:
-            return self._run_async(self.db_client.get_stable_state(trial_id)).data
+            return _bridged_read(partial(db_client.get_stable_state, trial_id), 300.0).data
 
         def _get_filesystem_state() -> dict[str, str]:
             return self._read_filesystem_for_state(trial_id)
@@ -2012,7 +2105,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         parity with the pre-move tool-absent shape.
         """
         kind_cls = load_grader_kind(method_name)
-        substrate = self._build_grading_substrate(trial_id, trial_context)
+        substrate = self._build_grading_substrate(
+            trial_id, trial_context, _LiveStateSync(self, trial_id, trial_context)
+        )
         try:
             evaluate_call = partial(
                 kind_cls().evaluate,
@@ -2158,7 +2253,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # config never reaches for costs no DB round-trip and no filesystem
         # walk (jsonpath scoring reads STABLE, judge state-diff + custom_checks
         # read RAW, jsonpath reshaping merges the filesystem in).
-        substrate = self._build_grading_substrate(trial_id, trial_context)
+        live_state = _LiveStateSync(self, trial_id, trial_context)
+        substrate = self._build_grading_substrate(trial_id, trial_context, live_state)
 
         # Get state_checks config (may name a hash source)
         state_checks_config = grading_config.state_checks
@@ -2186,7 +2282,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             try:
                 hash_result = await self._execute_hash_grading(
-                    trial_id, trial_context, state_checks_config
+                    trial_id, trial_context, state_checks_config, live_state
                 )
                 components.hash_match = hash_result.hash_match
                 if not hash_result.hash_unscorable:
@@ -2795,6 +2891,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id: str,
         trial_context: TrialContextRuntime,
         state_checks: RunnerStateChecksConfig,
+        live_state: _LiveStateSync,
     ) -> HashGradingResult:
         """
         Execute hash-based grading algorithm.
@@ -2874,23 +2971,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             match=_tool_registered_for_trial,
         )
 
-        # Detect MCP server wrappers — their state lives in a subprocess, not
-        # in the db-service, so we must sync before hashing and reset the MCP
-        # subprocess state when the db-service is reset.
-        mcp_wrapper = self._find_mcp_server_wrapper(trial_context)
+        # An MCP server subprocess or an app world service holds the state
+        # rather than the db-service, so we must sync before hashing and reset
+        # the holder when the db-service is reset.
+        state_holder = self._state_holder(trial_context)
 
         # 1. Get current trial stable hash
         # For MCP_SERVER tasks the db-service was never updated during the trial
         # (the MCP subprocess holds state in memory), so sync first.
-        if mcp_wrapper is not None:
-            logger.info(f"GradeTrial: {trial_id} - Syncing MCP server state to db-service (trial)")
-            try:
-                loop = asyncio.get_event_loop()
-                mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
-                await self._sync_mcp_state_to_db(trial_id, mcp_state)
-            except Exception as e:
-                logger.error(f"GradeTrial: Failed to sync MCP state before trial_hash: {e}")
-                raise
+        # The sync is the grading call's one sync, so the reads that follow the
+        # golden replay do not pull the golden state back into the mirror.
+        await live_state.ensure()
 
         # Fast path: hash server-side. Slow path (compare_columns declared):
         # fetch raw state now and defer hashing until we hold both sides.
@@ -2918,20 +3009,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         await self.db_client.reset_trial(trial_id)
         logger.debug("GradeTrial: Reset to initial state")
 
-        # For MCP_SERVER tasks also reset the subprocess state so golden actions
-        # execute from a clean initial state (not from the agent's final state).
-        if mcp_wrapper is not None:
+        # Also reset the state holder so golden actions execute from a clean
+        # initial state (not from the agent's final state).
+        if state_holder is not None:
             initial_tables = (
                 trial_context.task_description.initial_state.tables
                 if trial_context.task_description and trial_context.task_description.initial_state
                 else {}
             )
-            logger.info(f"GradeTrial: {trial_id} - Resetting MCP server state to initial")
+            logger.info(f"GradeTrial: {trial_id} - Resetting the held state to initial")
             try:
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, lambda: mcp_wrapper.reset_state(initial_tables))
+                await loop.run_in_executor(None, lambda: state_holder.reset_state(initial_tables))
             except Exception as e:
-                logger.error(f"GradeTrial: Failed to reset MCP state: {e}")
+                logger.error(f"GradeTrial: Failed to reset the held state: {e}")
                 raise
 
         # 4. Execute golden path actions
@@ -2985,16 +3076,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             replay_failures.append(FailedGoldenAction.from_reported_failure(i, tool_name, reported))
 
-        # For MCP_SERVER tasks: sync subprocess state to db-service so the
-        # hash reflects what the golden actions actually produced.
-        if mcp_wrapper is not None:
-            logger.info(f"GradeTrial: {trial_id} - Syncing MCP server state to db-service (golden)")
+        # Sync the holder's state to db-service so the hash reflects what the
+        # golden actions actually produced.
+        if state_holder is not None:
+            logger.info(f"GradeTrial: {trial_id} - Syncing the held state to db-service (golden)")
             try:
-                loop = asyncio.get_event_loop()
-                golden_mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
-                await self._sync_mcp_state_to_db(trial_id, golden_mcp_state)
+                await self._sync_held_state_to_db(trial_id, state_holder)
             except Exception as e:
-                logger.error(f"GradeTrial: Failed to sync MCP state after golden actions: {e}")
+                logger.error(f"GradeTrial: Failed to sync the held state after golden actions: {e}")
                 raise
 
         # 5. Snapshot golden state (for diff if mismatch)
@@ -3053,6 +3142,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # 7. Restore trial state
         await self.db_client.restore_snapshot(trial_id, "pre_golden")
         logger.debug("GradeTrial: Restored snapshot 'pre_golden'")
+        if state_holder is not None:
+            # The replay ran in the trial's own holder: hand it back the trial's
+            # state, or a later read would sync the golden world as the agent's.
+            trial_tables = (await self.db_client.get_state(trial_id)).data
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: state_holder.reset_state(trial_tables)
+            )
 
         golden_replay_record = GoldenReplayRecord(
             authored=len(golden_actions), failures=tuple(replay_failures)
@@ -3185,15 +3281,136 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     # MCP-server grading helpers
     # =========================================================================
 
+    def _open_app_world(self, trial_context: TrialContextRuntime) -> str | None:
+        """Claim and load the trial's app world (ADR-0062); the refusal, or ``None``.
+
+        A refusal cleans the trial up: the world is not this trial's to grade.
+        """
+        trial_id = trial_context.trial_id
+        initial_state = trial_context.task_description.initial_state
+        if initial_state.app_world is None:
+            return None
+        try:
+            trial_context.app_world = open_app_world(
+                initial_state.app_world,
+                initial_state.tables,
+                {"agent": trial_context.agent_tools, "user": trial_context.user_tools},
+            )
+        except AppWorldError as e:
+            error = f"App world load failed: {e}"
+            logger.error(f"RegisterTrial: {trial_id} - {error}")
+            self._abandon_registration(trial_id, "app world load")
+            return error
+        logger.info(
+            f"RegisterTrial: {trial_id} - loaded the app world at "
+            f"{initial_state.app_world.url} ({len(initial_state.tables)} tables)"
+        )
+        return None
+
+    def _abandon_registration(self, trial_id: str, failed_step: str) -> None:
+        """Clean a trial up after ``failed_step`` of its registration failed.
+
+        The step's failure is the answer the caller needs; a cleanup that also
+        failed is logged, not raised.
+        """
+        try:
+            self._run_async(self.cleanup_trial(trial_id))
+        except Exception as cleanup_error:
+            logger.error(
+                f"RegisterTrial: Cleanup after the failed {failed_step} of {trial_id} "
+                f"also failed: {cleanup_error}"
+            )
+
     @staticmethod
-    def _find_mcp_server_wrapper(
+    def _state_holder(
         trial_context: "TrialContextRuntime",
-    ) -> MCPServerToolWrapper | None:
-        """Return the first MCPServerToolWrapper found in agent_tools, or None."""
+    ) -> AppWorldClient | MCPServerToolWrapper | None:
+        """What holds the trial's state instead of the db-service, or ``None``.
+
+        The app world service (ADR-0062), else the first MCP server among the agent's
+        tools. Both answer ``get_state()`` and ``reset_state(tables)``; task validation
+        refuses a task declaring both.
+        """
+        if trial_context.app_world is not None:
+            return trial_context.app_world
         for wrapper in trial_context.agent_tools.values():
             if isinstance(wrapper, MCPServerToolWrapper):
                 return wrapper
         return None
+
+    @classmethod
+    def _mirrored_state_holder(
+        cls, trial_context: "TrialContextRuntime"
+    ) -> AppWorldClient | MCPServerToolWrapper | None:
+        """The state holder the trial's DB mirror must follow, if any.
+
+        Only a trial that provisions a database has a mirror in the db-service;
+        a trial that provisions none keeps its holder's state to itself.
+        """
+        if not provisions_database(trial_context.task_description.initial_state):
+            return None
+        return cls._state_holder(trial_context)
+
+    async def _refresh_db_mirror(self, trial_id: str) -> None:
+        """Sync the mirror of a registered trial whose state lives in a state holder.
+
+        The db-service is never updated during such a trial, so every read of
+        its final state comes after this. A failed sync raises
+        :class:`SubstrateUnreachableError` rather than leaving the stale
+        mirror to be read.
+
+        A trial this runner does not hold has no holder here to sync, so
+        the read that follows answers the db-service as it stands. Such a trial
+        is one the runner lost. ``GradeTrial`` refuses it before any read;
+        ``GetState`` and ``SubstrateService``'s final-state reads do not, and
+        serve that mirror. The trial graders leave a ``TRIAL_LOST`` trial
+        ungraded before reading it, except the queue grader (#1848).
+        """
+        trial_context = self.trials.get(trial_id)
+        if trial_context is None:
+            return
+        holder = self._mirrored_state_holder(trial_context)
+        if holder is not None:
+            await self._sync_live_state(trial_id, holder)
+
+    async def _sync_live_state(
+        self, trial_id: str, holder: AppWorldClient | MCPServerToolWrapper
+    ) -> None:
+        """Bring the db-service mirror up to the state holder's live state.
+
+        Raises :class:`SubstrateUnreachableError` carrying the cause when the
+        holder cannot answer (within ``_MCP_STATE_READ_TIMEOUT_S``, so a hung
+        holder fails like a dead one) or the mirror cannot take the update — a
+        mirror that missed the sync still holds an earlier state, and handing
+        that out would grade the trial on evidence its tool calls never left.
+        """
+        kind = "app world" if isinstance(holder, AppWorldClient) else "MCP server"
+        try:
+            loop = asyncio.get_running_loop()
+            try:
+                held_state = await asyncio.wait_for(
+                    loop.run_in_executor(None, holder.get_state),
+                    timeout=_MCP_STATE_READ_TIMEOUT_S,
+                )
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"the {kind} did not answer within {_MCP_STATE_READ_TIMEOUT_S:g}s"
+                ) from exc
+            await self._sync_mcp_state_to_db(trial_id, held_state)
+        except Exception as exc:
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: the live state of its {kind} could not be "
+                f"synchronised to the DB mirror ({type(exc).__name__}: {exc})"
+            ) from exc
+        logger.info(f"Synced the {kind} state to the DB mirror for {trial_id}")
+
+    async def _sync_held_state_to_db(
+        self, trial_id: str, holder: AppWorldClient | MCPServerToolWrapper
+    ) -> None:
+        """Read the holder's state back and write it into the trial's db-service."""
+        loop = asyncio.get_event_loop()
+        held_state = await loop.run_in_executor(None, holder.get_state)
+        await self._sync_mcp_state_to_db(trial_id, held_state)
 
     async def _sync_mcp_state_to_db(
         self,
@@ -3274,6 +3491,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 success=False,
                 error=f"Trial '{trial_id}' not found in DB Service",
             )
+        except SubstrateUnreachableError as e:
+            logger.error(f"GetState: {e}")
+            return pb2.GetStateResponse(success=False, error=str(e))
         except DBServiceError as e:
             logger.error(f"GetState: DB Service error: {e}")
             return pb2.GetStateResponse(
@@ -3292,20 +3512,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id = request.trial_id
         tables = list(request.tables) if request.tables else None
 
-        # For native MCP-server tasks the db-service is never updated during
-        # the trial (the subprocess holds state in memory).  Sync first so the
-        # caller gets the real final state instead of the stale initial state.
-        trial_context = self.trials.get(trial_id)
-        if trial_context is not None:
-            mcp_wrapper = self._find_mcp_server_wrapper(trial_context)
-            if mcp_wrapper is not None:
-                try:
-                    loop = asyncio.get_event_loop()
-                    mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
-                    await self._sync_mcp_state_to_db(trial_id, mcp_state)
-                    logger.debug(f"GetState: synced MCP subprocess state for {trial_id}")
-                except Exception as e:
-                    logger.warning(f"GetState: could not sync MCP state for {trial_id}: {e}")
+        await self._refresh_db_mirror(trial_id)
 
         if request.include_unstable:
             # Get full state
@@ -3381,6 +3588,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # Reset state in DB Service
         reset_response = await self.db_client.reset_trial(trial_id)
+
+        # A state holder (an MCP subprocess, an app world service) keeps the
+        # state the agent acts on; restore it too.
+        trial_context = self.trials.get(trial_id)
+        holder = self._state_holder(trial_context) if trial_context is not None else None
+        if holder is not None:
+            initial_tables = trial_context.task_description.initial_state.tables
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: holder.reset_state(initial_tables)
+            )
 
         # Clear tool call history in trial context
         if trial_id in self.trials:
@@ -3553,6 +3770,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 cleanup_tools, trial_context.agent_tools, trial_context.user_tools
             )
             trial_context.tools_released = True
+        if trial_context is not None and trial_context.app_world is not None:
+            trial_context.app_world.close()
+            trial_context.app_world = None
 
         # KNOWN LIMITATION: the mcp_core TypeSense client handle registered by
         # ``_init_typesense_for_trial`` (via mcp_core's

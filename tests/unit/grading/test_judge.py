@@ -16,6 +16,7 @@ from tolokaforge.core.grading.judge import (
     _build_opening_message,
 )
 from tolokaforge.core.grading.judge_result import JudgeStatus
+from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.judge_prompt import (
     _JUDGE_MARKER_CONTRACT,
     _JUDGE_SYSTEM_PROMPT,
@@ -1165,6 +1166,58 @@ def test_judge_loop_crash_errors_not_scores():
     )
     assert result.status is JudgeStatus.ERRORED
     assert result.score is None
+
+
+class _FailingDBReader:
+    def __init__(self, error: Exception):
+        self._error = error
+
+    def get_state(self, tables=None):
+        raise self._error
+
+    def query(self, jsonpath):
+        raise self._error
+
+
+def _judge_with_reader(reader, script, **kwargs):
+    return _run_llm_judge(
+        rubric=_binary_rubric(),
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="policy",
+        transcript=[{"role": "user", "content": "hi"}],
+        db_reader=reader,
+        llm_client=ScriptedClient(script),
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize(
+    "read", [("get_db_state", {}), ("query_db", {"jsonpath": "$.orders[*].status"})]
+)
+def test_a_substrate_refusing_a_tool_read_leaves_no_verdict(read):
+    """The judge reads the refusal as a tool error and submits; its verdict must not stand."""
+    reader = _FailingDBReader(SubstrateUnreachableError("final state lost"))
+
+    with pytest.raises(SubstrateUnreachableError, match="final state lost"):
+        _judge_with_reader(reader, [[read], [("submit_report", _submit_args(refund_done=True))]])
+
+
+def test_a_refused_tool_read_outranks_turn_exhaustion():
+    reader = _FailingDBReader(SubstrateUnreachableError("final state lost"))
+
+    with pytest.raises(SubstrateUnreachableError, match="final state lost"):
+        _judge_with_reader(reader, [[("get_db_state", {})]] * 50, max_turns=3)
+
+
+def test_any_other_read_failure_stays_a_tool_error():
+    reader = _FailingDBReader(ValueError("unexpected shape"))
+
+    result = _judge_with_reader(
+        reader,
+        [[("get_db_state", {})], [("submit_report", _submit_args(refund_done=True))]],
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
 
 
 def test_agent_system_prompt_injected_into_opening_context():

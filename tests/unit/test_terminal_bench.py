@@ -27,6 +27,7 @@ from tolokaforge.runner.models import (
     ToolSource,
 )
 from tolokaforge.runner.tool_factory import (
+    _STAGED_STDIO_SCRIPT,
     DockerComposeExecToolWrapper,
     ToolConfigurationError,
     ToolExecutionError,
@@ -179,15 +180,9 @@ class TestDockerComposeExecWrapperExec:
             result = wrapper.exec_in_env("echo hello world", 30.0)
             assert result == "hello world\n"
             argv = mock_popen.call_args.args[0]
-            assert argv == [
-                "docker",
-                "exec",
-                "-i",
-                "tbench_task-1_0_main",
-                "bash",
-                "-c",
-                "echo hello world",
-            ]
+            assert argv[:6] == ["docker", "exec", "-i", "tbench_task-1_0_main", "bash", "-c"]
+            assert argv[6] == _STAGED_STDIO_SCRIPT
+            assert argv[-1] == "echo hello world"
 
     def test_exec_in_env_nonzero_exit(self, wrapper):
         wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
@@ -586,6 +581,37 @@ class TestSingleContainerTaskIsRunnable:
         td = adapter.to_task_description("echo-hello-single")
         assert td.grading.grading_method == "test_execution"
         assert td.grading.grading_method_config == {"timeout_s": 45.0}
+
+    def test_verifier_timeout_multiplier_scales_the_grading_budget(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(
+                    Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+                ),
+                "staging_root": str(tmp_path),
+                "verifier_timeout_multiplier": 3.0,
+            }
+        )
+        td = adapter.to_task_description("echo-hello-single")
+        assert td.grading.grading_method_config == {"timeout_s": 135.0}
+        assert td.metadata["verifier_timeout_sec"] == 45.0
+        assert td.metadata["verifier_timeout_budget_sec"] == 135.0
+
+    def test_verifier_timeout_multiplier_must_be_positive(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        with pytest.raises(ValueError, match="verifier_timeout_multiplier"):
+            TerminalBenchAdapter(
+                {
+                    "terminal_bench_dir": str(
+                        Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+                    ),
+                    "staging_root": str(tmp_path),
+                    "verifier_timeout_multiplier": 0,
+                }
+            )
 
 
 class TestComposeSynthesisHarborFormat:
@@ -3110,7 +3136,9 @@ class TestTerminalBenchAgentToolSelection:
     # -- refusals ------------------------------------------------------------
 
     def test_unknown_agent_tool_rejected_at_construction(self, fixture_dir, tmp_path):
-        with pytest.raises(ValueError, match=r"agent_tool 'tmux'.*\['bash', 'bash_session'\]"):
+        with pytest.raises(
+            ValueError, match=r"agent_tool 'tmux'.*\['bash', 'bash_session', 'bash_batch'\]"
+        ):
             self._adapter(fixture_dir, tmp_path, agent_tool="tmux")
 
     def test_bash_session_rejected_under_a_coding_harness(self, fixture_dir, tmp_path):

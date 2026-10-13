@@ -94,6 +94,69 @@ def test_timeout_is_kill_safe_and_state_survives(session):
     assert session.run("echo $SURVIVES", 5).output.strip() == "yes"
 
 
+def test_timeout_relays_what_the_command_printed(session):
+    result = session.run("echo partial; sleep 300", 3)
+    assert result.timed_out is True
+    assert result.session_reset is False
+    assert "partial" in result.output
+    assert session.run("echo alive", 5).output.strip() == "alive"
+
+
+def test_background_writer_stays_out_of_later_output_and_survives_a_timeout(session):
+    """A service started with ``&`` writes to its own files, not the session
+    pipe: later results carry only their own output, and the writer outlives a
+    timed-out command."""
+    session.run("(while :; do echo spam; sleep 0.01; done) & echo $! > writer.pid", 5)
+    try:
+        session.run("sleep 1", 5)
+        assert session.run("sleep 300", 3).timed_out is True
+        later = session.run("echo clean", 5)
+        assert later.output.strip() == "clean"
+        assert later.exit_code == 0
+        assert session.run("kill -0 $(cat writer.pid)", 5).exit_code == 0
+    finally:
+        session.run("kill -9 $(cat writer.pid); rm -f writer.pid", 5)
+
+
+def test_a_sigint_ignoring_runaway_does_not_bleed_into_the_next_command(session, monkeypatch):
+    """A command that ignores the kill's SIGINT keeps relaying its stage after
+    SIGKILL. With the relay still in flight when the grace expires, the timeout
+    path must drain it so none of it leaks into the next command."""
+    import tolokaforge.tools.persistent_shell as ps
+
+    # Expire the relay grace at once so the drain path runs while the shell is
+    # still relaying, which is the window the stale tail would otherwise escape.
+    monkeypatch.setattr(ps, "_RELAY_GRACE_S", 0.01)
+
+    result = session.run(
+        "trap '' INT; yes BLEED | head -c 2000000; sleep 300",
+        2,
+    )
+    assert result.timed_out is True
+
+    later = session.run("echo clean", 5)
+    assert later.output.strip() == "clean"
+    assert later.exit_code == 0
+    assert "BLEED" not in later.output
+
+
+def test_stdin_reader_gets_eof(session):
+    start = time.monotonic()
+    result = session.run("read -r line; echo rc=$?", 10)
+    assert time.monotonic() - start < 5
+    assert result.timed_out is False
+    assert result.output.strip() == "rc=1"
+
+
+def test_shell_exit_is_reported_with_its_code_and_output(session):
+    result = session.run("echo before; exit 3", 5)
+    assert result.shell_exited is True
+    assert result.timed_out is False
+    assert result.exit_code == 3
+    assert "before" in result.output
+    assert session.is_open is False
+
+
 def test_output_is_middle_truncated_with_grep_hint(session):
     result = session.run("for i in $(seq 1 20000); do printf X; done", 15)
     out = result.output
@@ -141,6 +204,24 @@ async def test_wrapper_timeout_resolved_from_tool_config(tmp_path):
         elapsed = time.monotonic() - start
         assert 4 < elapsed < 20
         assert "timed out" in output
+    finally:
+        wrapper.stop()
+
+
+async def test_wrapper_reports_a_shell_exit_and_reopens_on_the_next_call(tmp_path):
+    schema = ToolSchema(
+        name="bash_session",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+    )
+    wrapper = PersistentShellToolWrapper(schema)
+    wrapper.start(ToolLifecycleContext(trial_id="t", work_dir=str(tmp_path)))
+    try:
+        exited = await wrapper.execute({"command": "export FOO=bar; exit 3"})
+        assert "shell exited with exit code 3" in exited
+        assert "next call starts clean" in exited
+        assert "timed out" not in exited
+        assert (await wrapper.execute({"command": "echo back$FOO"})).strip() == "back"
     finally:
         wrapper.stop()
 

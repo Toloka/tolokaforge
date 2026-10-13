@@ -28,7 +28,7 @@ Canonical litellm message surface (v1.83+):
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
 
@@ -43,7 +43,19 @@ __all__ = [
 
 @runtime_checkable
 class ReasoningCodec(Protocol):
-    """Extract + replay contract for provider-specific reasoning shapes."""
+    """Extract + replay contract for provider-specific reasoning shapes.
+
+    Two optional class attributes are read by
+    :mod:`~tolokaforge.core.llm.reasoning_history` and deliberately *not*
+    declared here — a ``runtime_checkable`` Protocol carrying data members
+    fails ``isinstance``, and these codecs are checked that way:
+
+    * ``forced_history`` — the reasoning-history setting this route requires,
+      overriding any preset. Set only where the provider makes replay a
+      requirement rather than a choice. Absent leaves the choice to the preset.
+    * ``auto_history`` — what ``reasoning_history: auto`` means here. Absent
+      means ``"all"``, the faithful setting.
+    """
 
     def extract(self, response_message: Any) -> StructuredReasoning | None:
         """Build a :class:`StructuredReasoning` from a raw provider message.
@@ -124,7 +136,13 @@ class AnthropicReasoningCodec:
       regardless of which transport carried the structured shape.
     * Unknown block types / non-dict entries raise ``ValueError`` — we do
       not silently drop what we cannot interpret.
+
+    Replay is not optional on this route. Anthropic requires thinking blocks to
+    come back complete and unmodified alongside tool results, so the codec
+    declares ``forced_history`` and a preset cannot ask for less.
     """
+
+    forced_history: ClassVar[str | None] = "all"
 
     _ALLOWED_NATIVE_TYPES = frozenset({"thinking", "redacted_thinking"})
     _OPENROUTER_TEXT_TYPE = "reasoning.text"

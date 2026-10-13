@@ -13,6 +13,7 @@ failure, never a silent skip.
 from __future__ import annotations
 
 import subprocess
+import time
 
 import pytest
 
@@ -95,6 +96,63 @@ def test_timeout_is_kill_safe_and_session_usable(session):
     assert session.run("echo alive", 10).output.strip() == "alive"
 
 
+def _pid_alive(session, pid_file: str) -> bool:
+    return session.run(f"kill -0 $(cat {pid_file})", 10).exit_code == 0
+
+
+def test_timeout_reports_the_reset_and_leaves_the_command_running(session):
+    """S1: a command past its budget is still running after the reset, the
+    result says the session was reset, and what it printed before the deadline
+    is relayed."""
+    session.run("export BEFORE=yes", 10)
+    result = session.run("sleep 300 & echo $! > /tmp/s1.pid; echo partial; wait", 3)
+    try:
+        assert result.timed_out is True
+        assert result.session_reset is True
+        assert "partial" in result.output
+        assert _pid_alive(session, "/tmp/s1.pid")
+        assert session.run("echo $BEFORE", 10).output.strip() == ""
+    finally:
+        session.run("kill -9 $(cat /tmp/s1.pid); rm -f /tmp/s1.pid", 10)
+
+
+def test_background_writer_survives_a_later_timeout_and_stays_out_of_later_output(session):
+    """S2: a chatty service started with ``&`` neither blocks the session nor
+    dies when a later command times out and the shell is replaced, and its
+    output never lands in another command's result."""
+    session.run("(while :; do echo spam; sleep 0.01; done) & echo $! > /tmp/s2.pid", 10)
+    try:
+        session.run("sleep 1", 10)
+        assert session.run("sleep 300", 3).session_reset is True
+        later = session.run("echo clean", 10)
+        assert later.output.strip() == "clean"
+        assert later.exit_code == 0
+        assert _pid_alive(session, "/tmp/s2.pid")
+    finally:
+        session.run("kill -9 $(cat /tmp/s2.pid); rm -f /tmp/s2.pid", 10)
+
+
+def test_stdin_reader_gets_eof_and_the_session_stays_usable(session):
+    """S3: a command that reads stdin sees EOF at once instead of consuming the
+    sentinel and waiting out the budget."""
+    start = time.monotonic()
+    result = session.run("read -r line; echo rc=$?", 10)
+    assert time.monotonic() - start < 5
+    assert result.timed_out is False
+    assert result.output.strip() == "rc=1"
+    assert session.run("cat", 10).exit_code == 0
+    assert session.run("echo alive", 10).output.strip() == "alive"
+
+
+def test_shell_exit_is_reported_and_closes_the_session(session):
+    result = session.run("echo before; exit 3", 10)
+    assert result.shell_exited is True
+    assert result.timed_out is False
+    assert result.exit_code == 3
+    assert "before" in result.output
+    assert session.is_open is False
+
+
 def test_output_is_middle_truncated_with_grep_hint(session):
     result = session.run("for i in $(seq 1 20000); do printf X; done", 15)
     out = result.output
@@ -119,5 +177,33 @@ async def test_wrapper_drives_compose_backend_end_to_end(running_container):
         assert (await wrapper.execute({"command": "echo $TOKEN"})).strip() == "xyz"
         assert "restarted" in await wrapper.execute({"restart": True})
         assert (await wrapper.execute({"command": "echo $TOKEN"})).strip() == ""
+    finally:
+        wrapper.stop()
+
+
+async def test_wrapper_tells_the_agent_about_resets_and_exits(running_container):
+    """The text the agent reads names the reset after a timeout (with the
+    command possibly still running) and after a shell exit, and the call after
+    an exit runs in a fresh shell."""
+    schema = ToolSchema(
+        name="bash_session",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        tool_config={"service": _SERVICE, "compose_project_prefix": _PREFIX, "timeout_s": 3},
+    )
+    wrapper = PersistentShellToolWrapper(schema)
+    wrapper.start(ToolLifecycleContext(trial_id=_TRIAL_ID))
+    try:
+        timed_out = await wrapper.execute({"command": "sleep 300 & echo $! > /tmp/w.pid; wait"})
+        assert "timed out after 3s" in timed_out
+        assert "session was reset" in timed_out
+        assert "may still be running" in timed_out
+        await wrapper.execute({"command": "kill -9 $(cat /tmp/w.pid); rm -f /tmp/w.pid"})
+
+        exited = await wrapper.execute({"command": "exit 3"})
+        assert "shell exited with exit code 3" in exited
+        assert "next call starts clean" in exited
+        assert "timed out" not in exited
+        assert (await wrapper.execute({"command": "echo back"})).strip() == "back"
     finally:
         wrapper.stop()

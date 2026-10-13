@@ -120,6 +120,7 @@ class TestGroupedHelpLayout:
         assert _command_names_in(runs_body) == [
             "analyze",
             "browse",
+            "check-run",
             "curate",
             "grade",
             "grade-run",

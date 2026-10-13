@@ -1,8 +1,8 @@
-# Transcript-only rubric: docker-runtime grading does not evaluate
-# ``state_checks.jsonpaths`` against MCP-server state (it only supports
-# ``path_glob`` against the filesystem). For this example we lean on
-# transcript_rules.required_actions to verify the agent called the right
-# tool — a real task would add state_checks.hash + golden_actions.
+# Transcript-only rubric: this example leans on
+# transcript_rules.required_actions to verify the agent called the right tool.
+# Grading can also read the MCP server's state — the runner syncs the DB mirror
+# from the server before every grading read — so a real task would add
+# state_checks.jsonpaths or state_checks.hash + golden_actions.
 combine:
   method: weighted
   weights:

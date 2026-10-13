@@ -25,6 +25,10 @@ from tolokaforge.core.llm.message_assembly_policy import (
 from tolokaforge.core.llm.params_policy import GenerationParams
 from tolokaforge.core.llm.prompt_policy import NoPromptEnrichment, SystemPromptPolicy
 from tolokaforge.core.llm.reasoning_codec import NoReasoningCodec, ReasoningCodec
+from tolokaforge.core.llm.reasoning_history import (
+    DEFAULT_REASONING_HISTORY,
+    ReasoningHistory,
+)
 from tolokaforge.core.llm.response_policy import ResponsePolicy, StandardResponse
 from tolokaforge.core.llm.schema_sanitizer import PassthroughSchema, ToolSchemaSanitizer
 from tolokaforge.core.models.model_config import OpenRouterConfig
@@ -60,6 +64,18 @@ class ModelCapabilities:
 
     reasoning_codec: ReasoningCodec = field(default_factory=NoReasoningCodec)
     """Provider-specific extract + replay for structured reasoning."""
+
+    reasoning_history: ReasoningHistory = DEFAULT_REASONING_HISTORY
+    """How many assistant turns replay their reasoning: ``all``, ``none``, ``last``.
+
+    The codec decides the *shape* replayed reasoning takes; this decides how
+    many turns carry it, which is what costs input tokens on every later turn.
+    Measured on one terminal-bench leg, replayed reasoning was 35% of input.
+
+    ``auto`` — the default — defers to the route, so an existing run is
+    unchanged. A route that mandates replay overrides this entirely rather than
+    letting a config produce provider errors at run time.
+    """
 
     cache_policy: CachePolicy = field(default_factory=NoCache)
     """Attaches cache-control markers to cacheable request prefixes."""
@@ -206,6 +222,28 @@ class ModelCapabilities:
     dedicated budget. The default ``0`` accepts the ``{}``-coerced response
     as the assistant turn unchanged — the seam is opt-in per preset. Metrics
     record every resampled generation because the trial paid for each call.
+    """
+
+    observation_window: int | None = None
+    """How many of the most recent observations stay full-length on the wire.
+
+    ``tool_output_max_chars`` bounds one observation once; this bounds what
+    every later turn re-sends. In a long trial that is the larger number — a
+    74-turn trial resends its first observation 73 times — and it is the lever
+    the published context-management results measure. Older observations keep
+    their place and their order, with content replaced by a line naming how much
+    was dropped. ``None`` sends every observation in full.
+    """
+
+    observation_window_polling: int = 1
+    """Turns the observation-window boundary holds still before it advances.
+
+    Collapsing an observation rewrites the wire history at that position, so a
+    boundary that advances every turn rewrites the prefix every turn and the
+    provider's cached prefix never survives. Holding it still for several turns
+    makes that rewrite occasional instead, at the cost of carrying up to
+    ``polling - 1`` extra observations. Ignored when ``observation_window`` is
+    ``None``.
     """
 
     tool_output_max_chars: int | None = None

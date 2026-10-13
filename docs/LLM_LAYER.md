@@ -2664,7 +2664,7 @@ translation layer in
 
 ### Fingerprint helpers
 
-Two public helpers on [`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py)
+Three public helpers on [`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py)
 produce the JSON-serialisable preset fingerprint landed on
 `task.yaml.model_config.<role>.resolved` (see
 [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `task.yaml`).
@@ -2682,8 +2682,19 @@ produce the JSON-serialisable preset fingerprint landed on
   dataclass whose constructor kwargs are already serialised alongside
   the fingerprint via `model_config.<role>.capabilities`, not a
   single-named policy.
+* `resolve_context_controls(capabilities) -> dict[str, Any]` — the
+  context-control values the route actually runs under:
+  `reasoning_history`, `observation_window`,
+  `observation_window_polling`. `reasoning_history` is the **effective**
+  setting from
+  [`effective_reasoning_history`](../tolokaforge/core/llm/reasoning_history.py),
+  so a codec declaring `forced_history` is recorded as what it forced,
+  not as what the preset asked for. Compare it against the requested
+  `model_config.<role>.capabilities.reasoning_history` to assert that a
+  setting survived resolution.
 
-Both helpers raise `ValueError` on unknown inputs rather than returning
+`resolve_effective_preset` and `resolve_policy_names` raise `ValueError`
+on unknown inputs rather than returning
 placeholders — per AGENTS.md rule #1 we surface drift immediately. Unit
 guard: [`tests/unit/llm/test_preset_fingerprint.py`](../tests/unit/llm/test_preset_fingerprint.py)
 parametrises over every preset in

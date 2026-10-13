@@ -31,6 +31,7 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 
 Note: number 0043 is intentionally skipped — reserved for a draft that never landed on `main` (`HybridRuntimeBackend` as a distinct class). Superseded before merge by ADR-0044. See closed Milestone 40 (#1363) for the draft's history.
 
+
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions in ADRs | Accepted |
@@ -92,4 +93,7 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0057](0057-node-runnable-trial-unit.md) | The node-runnable trial unit and its standalone entry — one execution unit, a `TaskConfig`-based input contract with a task-pack hash, and an optional `register_preloaded_task` adapter seam | Accepted |
 | [0058](0058-detached-execution.md) | Detached execution: one control plane, portable trial units — split the orchestrator's "brain" (control) from its "hands" (execution) so a trial can run standalone, delegated harnesses run through one seam, and the grader detaches, with single-box as the default | Accepted |
 | [0059](0059-remote-runtime-backend.md) | The remote runtime backend and node registry — lease a runner endpoint per trial from a config-seeded, in-process registry and dispatch trials to it, with single-box unchanged | Accepted (per-trial RPC dispatch superseded by ADR-0063) |
+| [0060](0060-shared-tool-libraries-through-tool-artifacts.md) | Shared tool libraries reach the trial through `tool_artifacts` — a task pins `tool_libraries: [{name, version, apps}]`, the engine resolves the installed library (entry-point group `tolokaforge.tool_libraries`) and merges its bundle for every adapter | Accepted |
+| [0061](0061-mutates-state-on-the-tool-wire.md) | `mutates_state` on the tool wire schema, declared by the tool's author — MCP servers declare it as the `readOnlyHint` annotation, which the native adapter reads back | Accepted |
+| [0062](0062-app-world-served-over-http.md) | An application world served over HTTP holds one trial's state — `initial_state.app_world` names a trial-scoped service the runner loads, reads back and restores; the runner mints per-trial credentials that `http_request` attaches only for the world's hosts; the engine grades | Accepted |
 | [0063](0063-whole-trial-node-service-and-dispatch-seam.md) | The whole-trial node service and dispatch seam — a node that owns one trial over a dedicated `RunTrial` RPC, selected by a `TrialOwningBackend` Protocol, with the remote backend as its first implementation and single-box unchanged | Accepted |

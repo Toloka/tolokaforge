@@ -1019,6 +1019,14 @@ sharing task-level fields across every task in a project:
   [Actor composition](#actor-composition)).
 - `max_turns`, `policies`, `grading_defaults`, `adapter_settings`
   — shared knobs.
+- `tool_libraries` — the shared tool libraries every task pins,
+  `[{name, version, apps}]`. The engine resolves each pin among the
+  libraries installed next to it and delivers the library's sources
+  with every trial, so the project carries no copy of them
+  ([ADR-0060](adr/0060-shared-tool-libraries-through-tool-artifacts.md),
+  [`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifacts`](TASK_DESCRIPTION_SCHEMA.md#tool_artifacts-tool-code-and-the-shared-libraries-a-task-pins)).
+  An adapter's shared `domain.yaml` may pin them the same way; the
+  layering is the one `tools` follows.
 
 This covers the great majority of cross-task sharing needs. A project
 with three hundred customer-support tasks declares the shared
@@ -1635,6 +1643,17 @@ Two consistency rules run on the resolved document:
   load time and dispatches through the recipe registry (kind →
   module under `tolokaforge/runtime/reset_recipes/`) at reset
   time.
+- **A world service is ephemeral only.** A task whose
+  `initial_state.app_world.url` names a service
+  ([ADR-0062](adr/0062-app-world-served-over-http.md)) keeps the trial's
+  whole state there and claims the service's admin token at registration,
+  so that service must be labelled `ephemeral` in the resolved manifest —
+  the project's `default_environment` and the task's patch together. A
+  `shared` service would be one world for concurrent trials; a `reset` one
+  keeps its process, and the token the previous trial claimed, alive
+  across trials. The native adapter refuses both (naming the service) and
+  a `url` naming no service of the stack when it builds the task's
+  description, before any trial runs.
 
 **Per-service semantics live in the manifest, never in the
 substrate file.** The compose file defines what a service *is*;

@@ -44,6 +44,14 @@ from .protocols import PathResolver
 
 __all__ = ["HARNESS_USAGE_LOG_METADATA_KEY", "CodingHarnessAdapterMixin"]
 
+MAX_BATCH_COMMANDS = 10
+"""Commands one ``bash_batch`` call may carry.
+
+Bounds the tool's budget band: the declared ``timeout_s`` is the per-command
+ceiling times this number, so a full batch gets what the same commands would
+have got one call at a time, and a single turn still cannot run unbounded.
+"""
+
 
 HARNESS_USAGE_LOG_METADATA_KEY = "agent_harness_usage_log"
 """Metadata key carrying the *container* path of a trial's wire usage records.
@@ -249,6 +257,91 @@ class CodingHarnessAdapterMixin:
                 "toolset": toolset,
                 "module_path": "",
                 "class_name": "bash",
+                "invocation_style": "docker_compose_exec",
+                "extra": {
+                    "service": service,
+                    "compose_project_prefix": compose_project_prefix,
+                },
+            },
+        }
+
+    def emit_harness_batch_tool_schema(
+        self,
+        *,
+        service: str,
+        compose_project_prefix: str,
+        timeout_s: float,
+        toolset: str = "coding_harness",
+    ) -> dict[str, Any]:
+        """Batching sibling of :meth:`emit_harness_tool_schema`.
+
+        The parameter is a ``commands`` array rather than a ``command`` string,
+        so a turn carries every shell command the model can choose without
+        first reading another's output. Each command still runs as its own
+        ``docker exec`` against a fresh shell, exactly as the single-command
+        tool does — the array changes how many run per turn, not how any one
+        of them behaves — and the description states what that means for the
+        model: files persist, shell state resets, a failure does not halt the
+        rest. A required ``note`` string rides the call so the per-turn note
+        the reply contract asks for is a schema slot the model fills rather
+        than prose it may skip; it reaches ``tool_log.yaml`` and the assistant
+        message's ``tool_calls`` with the other arguments and runs nothing.
+
+        *timeout_s* is the per-command ceiling, the same one the single-command
+        tool applies. The declared budget is that ceiling times
+        :data:`MAX_BATCH_COMMANDS`, so a full batch gets what the same commands
+        would have got one call at a time; the wrapper divides it back out and
+        stops the array once the whole band is spent.
+        """
+        return {
+            "name": "bash_batch",
+            "description": (
+                "Run bash commands inside the task container, in order. Each "
+                "command gets its own shell: the working directory, shell "
+                "variables and `cd` reset for every command, while files, "
+                "installed packages and running services persist across "
+                "commands and across calls. A command that fails does not stop "
+                "the ones after it, and every command's output comes back "
+                "labelled in one result. Default to several commands per call: "
+                "running one at a time when more were already decided wastes a "
+                "turn — editing a file and then running its tests is one call, "
+                "and so is a batch of independent reads. Start a new call only "
+                "when the next command truly depends on reading this one's "
+                "output."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "note": {
+                        "type": "string",
+                        "description": (
+                            "A sentence or two: what the last output actually "
+                            "showed, what is still left, and what you expect "
+                            "these commands to produce."
+                        ),
+                    },
+                    "commands": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": MAX_BATCH_COMMANDS,
+                        "description": (
+                            "Shell commands to run in order, at most "
+                            f"{MAX_BATCH_COMMANDS} per call. Prefer to send "
+                            "several here at once; start a new call only when "
+                            "the next command depends on reading this call's "
+                            "output."
+                        ),
+                    },
+                },
+                "required": ["note", "commands"],
+            },
+            "category": "compute",
+            "timeout_s": timeout_s * MAX_BATCH_COMMANDS,
+            "source": {
+                "toolset": toolset,
+                "module_path": "",
+                "class_name": "bash_batch",
                 "invocation_style": "docker_compose_exec",
                 "extra": {
                     "service": service,

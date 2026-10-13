@@ -26,6 +26,7 @@ from tolokaforge_adapter_terminal_bench.adapter import AGENT_TOOLS, TerminalBenc
 from tolokaforge.runner.compose_naming import compose_container_name
 from tolokaforge.runner.env_exec import SupportsEnvExec, first_env_exec_tool
 from tolokaforge.runner.tool_factory import (
+    _STAGED_STDIO_SCRIPT,
     PersistentShellToolWrapper,
     ToolFactory,
     ToolLifecycleContext,
@@ -102,15 +103,10 @@ def test_grading_execs_into_the_same_container_whichever_tool_the_agent_had(
     with patch("subprocess.Popen", return_value=fake) as popen_mock:
         wrapper.exec_in_env("echo hi", 30.0)
 
-    assert popen_mock.call_args.args[0] == [
-        "docker",
-        "exec",
-        "-i",
-        expected_container,
-        "bash",
-        "-c",
-        "echo hi",
-    ]
+    argv = popen_mock.call_args.args[0]
+    assert argv[:6] == ["docker", "exec", "-i", expected_container, "bash", "-c"]
+    assert argv[6] == _STAGED_STDIO_SCRIPT
+    assert argv[-1] == "echo hi"
 
 
 def test_grading_does_not_run_inside_the_agents_live_shell(fixture_dir, tmp_path):

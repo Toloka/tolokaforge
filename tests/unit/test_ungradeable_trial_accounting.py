@@ -335,7 +335,7 @@ def _run_orchestrator(
     orch.tasks = [make_task_config("TASK-A")]
 
     adapter = MagicMock()
-    adapter.to_task_description.side_effect = _make_task_description
+    adapter.describe_task.side_effect = _make_task_description
     adapter.requires_judge_model.return_value = False
     adapter.docker_stack_requirements.return_value = None
     adapter.trial_grader_name = "runner_rpc"

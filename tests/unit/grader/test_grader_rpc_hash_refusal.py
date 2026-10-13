@@ -200,6 +200,7 @@ class TestRunnerRPCGoldenReplayRefusal:
             _trial_id: str,
             _trial_context: Any,
             _state_checks: Any,
+            _live_state: Any,
         ) -> HashGradingResult:
             return broken_result
 

@@ -113,7 +113,8 @@ def run_trial(
     resolved_models = _RunTrialModels.model_validate(models)
 
     adapter = build_single_task_adapter(task)
-    task_desc = adapter.to_task_description(task.task_id)
+    task_desc = adapter.describe_task(task.task_id)
+
     runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
     pack_dir = task.source_dir
 

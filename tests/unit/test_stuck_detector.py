@@ -141,6 +141,30 @@ class TestResultAwareRepetition:
         ]
         assert detector.is_stuck(logs) is True
 
+    def test_identical_bash_batch_calls_are_stuck(self) -> None:
+        """A ``bash_batch`` call repeated byte-for-byte is the stall shape too.
+
+        The arguments a batch carries are ``note`` + ``commands``; when both and
+        the result are identical across the window the detector fires, exactly as
+        for a single ``bash``. The identity is over the whole recorded call, so a
+        stall only hides from the detector when some recorded byte — a note, a
+        command, or the result — actually differs turn to turn.
+        """
+        detector = StuckDetector(max_repeated_tool_calls=10)
+        logs = [
+            recorded_call(
+                "bash_batch",
+                sequence=i,
+                arguments={
+                    "note": "Test go run",
+                    "commands": ["cat << 'EOF' > fix.go\npackage main\nEOF"],
+                },
+                output="wrote fix.go",
+            )
+            for i in range(12)
+        ]
+        assert detector.is_stuck(logs) is True
+
 
 # ---------------------------------------------------------------------------
 # Custom thresholds

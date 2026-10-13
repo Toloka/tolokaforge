@@ -203,6 +203,9 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         agent_client = MagicMock()
         agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
         agent_client.capabilities.default_max_turns = None
+        # The conductor reads ``agent_client.config`` and resolves capabilities
+        # from it; a Mock reaches preset validation as a bogus capability value.
+        agent_client.config = ModelConfig(provider="anthropic", name="stub")
         agent_client.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
 
         conductor = InProcessConductor(

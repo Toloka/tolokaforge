@@ -9,6 +9,7 @@ Cross-implementation parity lives in ``tests/canonical/test_conductor_contract.p
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ from tolokaforge.core.conductor import (
     _TrialSetup,
     resolve_max_turns,
 )
+from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     ActorSpec,
@@ -42,11 +44,13 @@ from tolokaforge.core.models import (
     RunConfig,
     ServiceSpec,
     TaskConfig,
+    TerminationReason,
     Trajectory,
     TrialStatus,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
+from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
 from tolokaforge.runner.models import TaskDescription, provisions_database
 
 pytestmark = pytest.mark.unit
@@ -333,6 +337,160 @@ class TestCaptureFinalState:
         conductor._capture_final_state(spec, self._setup(), _default_success_trajectory("t1", 0))
 
         conductor.runtime_backend.get_state.assert_not_called()
+
+    @staticmethod
+    def _db_spec() -> TrialSpec:
+        spec = _make_spec()
+        initial_state = spec.task.initial_state.model_copy(
+            update={"tables": {"users": [{"id": "u1", "balance": 100}]}}
+        )
+        spec = spec.model_copy(
+            update={"task": spec.task.model_copy(update={"initial_state": initial_state})}
+        )
+        assert provisions_database(spec.task.initial_state)
+        return spec
+
+    def _db_setup(self) -> MagicMock:
+        setup = self._setup()
+        setup.adapter_env.data = {"users": [{"id": "u1", "balance": 100}]}
+        return setup
+
+    @pytest.mark.parametrize(
+        ("answer", "cause"),
+        [
+            ({"success": False, "error": "MCP server closed connection"}, "closed connection"),
+            ({"success": False}, "no cause reported"),
+            ({"success": True, "state_json": ""}, "unreadable state"),
+            ({"success": True, "state_json": "[]"}, "not a state object"),
+        ],
+    )
+    def test_an_unreadable_runner_state_is_reported_not_replaced(
+        self, answer: dict[str, Any], cause: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The pre-trial snapshot is not the final state of a trial whose DB is the Runner's."""
+        conductor = self._conductor()
+        conductor.logger = StructuredLogger("test.conductor.capture")
+        conductor.runtime_backend.get_state.return_value = answer
+        setup = self._db_setup()
+        setup.trial_idx = 0
+        setup.env_state.get_final_state.return_value = {
+            "agent": {"users": []},
+            "user": {"device": {}},
+            "db": {"users": []},
+            "filesystem": {"notes.txt": "kept"},
+            "mock_web_url": "http://mock-web:8080",
+        }
+        trajectory = _default_success_trajectory("t1", 0)
+
+        conductor._capture_final_state(self._db_spec(), setup, trajectory)
+
+        stash = trajectory.final_env_state
+        assert not {"agent", "user", "db"} & stash.keys()
+        assert stash["filesystem"] == {"notes.txt": "kept"}
+        assert stash["mock_web_url"] == "http://mock-web:8080"
+        assert cause in stash["final_state_error"]
+        (record,) = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert record.getMessage() == "Could not capture the trial's final state"
+        assert (record.task_id, record.trial_index, record.trial_id) == ("t1", 0, "t1:0")
+        assert cause in record.error
+
+    def test_a_raising_get_state_is_reported_not_replaced(self) -> None:
+        conductor = self._conductor()
+        conductor.runtime_backend.get_state.side_effect = ConnectionError("runner gone")
+        trajectory = _default_success_trajectory("t1", 0)
+
+        conductor._capture_final_state(self._db_spec(), self._db_setup(), trajectory)
+
+        assert "db" not in trajectory.final_env_state
+        assert "ConnectionError: runner gone" in trajectory.final_env_state["final_state_error"]
+
+    def test_an_empty_runner_state_is_the_final_state(self) -> None:
+        conductor = self._conductor()
+        conductor.runtime_backend.get_state.return_value = {"success": True, "state_json": "{}"}
+        setup = self._db_setup()
+        trajectory = _default_success_trajectory("t1", 0)
+
+        conductor._capture_final_state(self._db_spec(), setup, trajectory)
+
+        assert setup.env_state.db_state == {}
+        assert "final_state_error" not in trajectory.final_env_state
+
+    def _run_with_lost_state(self, trajectory: Trajectory) -> InProcessConductor:
+        """Run one trial whose final ``GetState`` fails, through the production grader."""
+        conductor = self._conductor()
+        conductor.runtime_backend.get_state.return_value = {
+            "success": False,
+            "error": "the live state of its MCP server could not be synchronised",
+        }
+        conductor.runtime_backend.grade_trial.return_value = {
+            "success": False,
+            "error": "Grading error: SubstrateUnreachableError: could not be synchronised",
+        }
+        conductor.trial_grader = RunnerRPCTrialGrader(
+            runner_address="unused:0",
+            logger=MagicMock(),
+            runtime_backend=conductor.runtime_backend,
+        )
+        setup = self._db_setup()
+        setup.trial_idx = 0
+        conductor._setup_trial = MagicMock(return_value=setup)
+        runner = MagicMock(effective_system_prompt=None)
+        conductor._run_agent_loop = MagicMock(return_value=(trajectory, runner, "sys"))
+        conductor._produce_grade_bundle = MagicMock()
+        conductor._write_artifacts = MagicMock()
+
+        conductor.run(self._db_spec(), MagicMock())
+
+        conductor._write_artifacts.assert_called_once()
+        return conductor
+
+    def test_a_lost_final_state_leaves_a_completed_trial_to_the_runners_refusal(
+        self,
+    ) -> None:
+        """The grader still runs; the Runner refuses the state it cannot capture."""
+        trajectory = _default_success_trajectory("t1", 0).model_copy(update={"grade": None})
+
+        conductor = self._run_with_lost_state(trajectory)
+
+        conductor.runtime_backend.grade_trial.assert_called_once()
+        assert trajectory.grade is None
+        assert trajectory.status == TrialStatus.COMPLETED
+        assert classify_trial_outcome(trajectory) is TrialOutcomeClass.UNGRADEABLE
+        assert "SubstrateUnreachableError" in trajectory.grading_error
+
+    def test_a_lost_trial_stays_a_harness_error(self) -> None:
+        trajectory = _default_success_trajectory("t1", 0).model_copy(
+            update={
+                "grade": None,
+                "status": TrialStatus.ERROR,
+                "termination_reason": TerminationReason.TRIAL_LOST,
+            }
+        )
+
+        conductor = self._run_with_lost_state(trajectory)
+
+        conductor.runtime_backend.grade_trial.assert_not_called()
+        assert trajectory.grade is None
+        assert trajectory.grading_error is None
+        assert classify_trial_outcome(trajectory) is TrialOutcomeClass.HARNESS_ERROR
+        assert "could not be synchronised" in trajectory.final_env_state["final_state_error"]
+
+    def test_a_timed_out_trial_keeps_its_measured_auto_fail(self) -> None:
+        trajectory = _default_success_trajectory("t1", 0).model_copy(
+            update={
+                "grade": None,
+                "status": TrialStatus.TIMEOUT,
+                "termination_reason": TerminationReason.TIMEOUT,
+            }
+        )
+
+        conductor = self._run_with_lost_state(trajectory)
+
+        conductor.runtime_backend.grade_trial.assert_not_called()
+        assert trajectory.grade is not None
+        assert trajectory.grade.binary_pass is False
+        assert trajectory.grading_error is None
+        assert classify_trial_outcome(trajectory) is TrialOutcomeClass.MEASURED
 
 
 class TestResolveMaxTurns:

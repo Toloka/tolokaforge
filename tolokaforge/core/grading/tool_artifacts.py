@@ -11,23 +11,24 @@ during agent execution), the grader side at grade time (so
 :func:`extract_tool_artifacts` writes each entry to a fresh temp directory
 and prepends both ``extract_dir`` and ``extract_dir / "tools"`` (when the
 subdir exists) to ``sys.path`` so ``checks.py``'s ``from mcp_core import
-X`` and every adapter's own tool package resolves. Cleanup — path removal
-and ``rmtree`` — is the caller's responsibility; the runner tracks the
-directory on ``self._artifact_dirs[trial_id]`` for teardown, the grader
-scopes it to a local ``try/finally`` on the grade call.
+X`` and every adapter's own tool package resolves. Cleanup — path removal,
+:func:`purge_modules_under` and ``rmtree`` — is the caller's responsibility;
+the runner tracks the directory on ``self._artifact_dirs[trial_id]`` for
+teardown, the grader scopes it to a local ``try/finally`` on the grade call.
 """
 
 from __future__ import annotations
 
 import base64
 import logging
+import os
 import sys
 import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["extract_tool_artifacts"]
+__all__ = ["extract_tool_artifacts", "purge_modules_under"]
 
 
 def extract_tool_artifacts(trial_id: str, artifacts: dict[str, str]) -> Path:
@@ -68,3 +69,37 @@ def extract_tool_artifacts(trial_id: str, artifacts: dict[str, str]) -> Path:
     )
 
     return extract_dir
+
+
+def purge_modules_under(root: Path) -> list[str]:
+    """Drop from ``sys.modules`` every module loaded from under ``root``; their names, sorted.
+
+    A module the trial imported in process — a tool module, a helper of
+    ``checks.py``, a pinned tool library (ADR-0060) — stays cached after its
+    directory is removed, and a later trial that ships another version of the
+    same module under a fresh directory would be served the stale one. Called
+    wherever an extracted directory is torn down, before the ``rmtree``.
+
+    Only a module whose ``__file__`` or ``__path__`` lies under ``root`` — as
+    given, or resolved through symlinks — qualifies; nothing loaded from
+    elsewhere is touched.
+    """
+    prefixes = tuple({f"{os.fspath(root).rstrip(os.sep)}{os.sep}", f"{root.resolve()}{os.sep}"})
+    purged: list[str] = []
+    for name, module in list(sys.modules.items()):
+        locations: list[str] = []
+        file = getattr(module, "__file__", None)
+        if isinstance(file, str):
+            locations.append(file)
+        path = getattr(module, "__path__", None)
+        if path is not None:
+            try:
+                locations.extend(os.fspath(entry) for entry in path)
+            except TypeError:
+                pass
+        if any(location.startswith(prefixes) for location in locations):
+            del sys.modules[name]
+            purged.append(name)
+    if purged:
+        logger.debug("Purged %d module(s) loaded from %s: %s", len(purged), root, purged)
+    return sorted(purged)

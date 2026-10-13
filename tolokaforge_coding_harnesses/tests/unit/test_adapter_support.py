@@ -21,6 +21,7 @@ import shlex
 from pathlib import Path
 
 import pytest
+from tolokaforge_coding_harnesses.adapter_support import MAX_BATCH_COMMANDS
 
 from tolokaforge_coding_harnesses import (
     ENGINE_LOOP,
@@ -190,6 +191,78 @@ class TestEmitHarnessToolSchema:
             "service": "agent",
             "compose_project_prefix": "tolokaforge-tbench",
         }
+
+    def test_batch_payload_takes_an_array_and_keeps_the_exec_source(
+        self, adapter: _Adapter
+    ) -> None:
+        # The batching tool differs from its single-command sibling in exactly
+        # one place the model can see — a required ``commands`` array instead of
+        # a ``command`` string. Everything the runner reads to resolve the
+        # container is unchanged, so the same compose-exec wrapper serves it.
+        payload = adapter.emit_harness_batch_tool_schema(
+            service="agent",
+            compose_project_prefix="tolokaforge-tbench",
+            timeout_s=600.0,
+            toolset="terminal_bench",
+        )
+
+        assert payload["name"] == "bash_batch"
+        params = payload["parameters"]
+        assert params["required"] == ["note", "commands"]
+        assert params["properties"]["commands"]["type"] == "array"
+        assert params["properties"]["commands"]["items"] == {"type": "string"}
+        assert params["properties"]["commands"]["minItems"] == 1
+        assert params["properties"]["commands"]["maxItems"] == MAX_BATCH_COMMANDS
+        assert "command" not in params["properties"]
+
+        source = payload["source"]
+        assert source["invocation_style"] == "docker_compose_exec"
+        assert source["toolset"] == "terminal_bench"
+        assert source["extra"] == {
+            "service": "agent",
+            "compose_project_prefix": "tolokaforge-tbench",
+        }
+        # The declared band is the per-command ceiling times the batch size, so
+        # a full batch gets what the same commands would have got one call at a
+        # time rather than sharing one command's worth of budget.
+        assert payload["timeout_s"] == 600.0 * MAX_BATCH_COMMANDS
+
+    def test_batch_payload_carries_a_required_note_ahead_of_the_commands(
+        self, adapter: _Adapter
+    ) -> None:
+        # The per-turn note is a schema slot, not prose: a model fills required
+        # arguments where it follows a standing instruction about half the
+        # time. ``note`` precedes ``commands`` so it is written before them.
+        payload = adapter.emit_harness_batch_tool_schema(
+            service="agent", compose_project_prefix="p", timeout_s=60.0
+        )
+        params = payload["parameters"]
+
+        assert list(params["properties"]) == ["note", "commands"]
+        note = params["properties"]["note"]
+        assert note["type"] == "string"
+        for question in ("what the last output", "what is still left", "what you expect"):
+            assert question in note["description"]
+
+    def test_batch_description_states_what_persists_what_resets_and_when_to_stop(
+        self, adapter: _Adapter
+    ) -> None:
+        # One ``docker exec … bash -c`` per element on one container: files
+        # persist, shell state does not, a non-zero exit stops nothing, and the
+        # only reason to split a batch is needing to read an output first.
+        payload = adapter.emit_harness_batch_tool_schema(
+            service="agent", compose_project_prefix="p", timeout_s=60.0
+        )
+        description = payload["description"]
+        commands = payload["parameters"]["properties"]["commands"]["description"]
+
+        assert "files, installed packages and running services persist" in description
+        assert "working directory, shell variables and `cd` reset" in description
+        assert "A command that fails does not stop the ones after it" in description
+        assert "Default to several commands per call" in description
+        assert "depends on reading this one's output" in description
+        assert "depends on reading this call's output" in commands
+        assert "does not depend on another" not in commands
 
     def test_toolset_override_reaches_the_source(self, adapter: _Adapter) -> None:
         payload = adapter.emit_harness_tool_schema(

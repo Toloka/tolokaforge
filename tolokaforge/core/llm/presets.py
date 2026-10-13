@@ -56,6 +56,11 @@ from tolokaforge.core.llm.reasoning_codec import (
     OpenAIReasoningCodec,
     ReasoningCodec,
 )
+from tolokaforge.core.llm.reasoning_history import (
+    DEFAULT_REASONING_HISTORY,
+    REASONING_HISTORY_VALUES,
+    effective_reasoning_history,
+)
 from tolokaforge.core.llm.response_policy import (
     ArrayDictMapResponse,
     JsonCoerceResponse,
@@ -89,6 +94,7 @@ __all__ = [
     "get_resolved_presets",
     "ignored_sampling_params",
     "litellm_model_entries",
+    "resolve_context_controls",
     "resolve_effective_preset",
     "resolve_overlay_path",
     "resolve_policy_names",
@@ -172,6 +178,58 @@ _POLICY_REGISTRIES: dict[str, dict[str, type[Any]]] = {
     "message_assembly_policy": _MESSAGE_ASSEMBLY_POLICIES,
     "assistant_text_policy": _ASSISTANT_TEXT_POLICIES,
 }
+
+
+def _validated_reasoning_history(value: object, where: str) -> str:
+    """A preset's ``reasoning_history``, or the default when it declares none.
+
+    Validated here rather than left to fail at request time, because the
+    overlay checker only verifies slot names and silently accepts an unknown
+    scalar key — a typo would otherwise reach the wire as the default and look
+    like the setting had no effect.
+    """
+    if value is None:
+        return DEFAULT_REASONING_HISTORY
+    if value not in REASONING_HISTORY_VALUES:
+        raise ValueError(
+            f"{where}: reasoning_history {value!r} is not one of {list(REASONING_HISTORY_VALUES)}."
+        )
+    return str(value)
+
+
+def _validated_observation_window(value: object, where: str) -> int | None:
+    """A preset's ``observation_window``, or ``None`` when it declares none.
+
+    Validated here rather than coerced at the loop boundary, because the overlay
+    checker only verifies slot names and silently accepts an unknown scalar key
+    — a typo would otherwise reach the loop as the default and look like the
+    setting had no effect. ``None`` is a value, not an absence: it sends every
+    observation in full and is how a config clears a preset's window.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(
+            f"{where}: observation_window {value!r} is not a non-negative integer or null."
+        )
+    return value
+
+
+def _validated_observation_window_polling(value: object, where: str) -> int:
+    """A preset's ``observation_window_polling``, or the default when it declares none.
+
+    Validated here for the same reason as :func:`_validated_observation_window`:
+    a typo must be refused rather than silently reverting the boundary to
+    advancing every turn, which is the behaviour the setting exists to avoid.
+    Zero turns is not a slower boundary, it is no boundary, so the floor is one.
+    """
+    if value is None:
+        return 1
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"{where}: observation_window_polling {value!r} is not a positive integer."
+        )
+    return value
 
 
 def _merge_out_of_tree_policy_registrations() -> None:
@@ -887,6 +945,10 @@ _RECOGNISED_OVERRIDE_KEYS: frozenset[str] = frozenset(
         "supports_tool_images",
         # Reasoning codec
         "gemini_drop_placeholder_signature",
+        "reasoning_history",
+        # Observation window
+        "observation_window",
+        "observation_window_polling",
         # Params policy
         "fixed_temperature",
         "supports_seed",
@@ -939,6 +1001,16 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
         ):
             raise ValueError("api_call_timeout_s must be a finite positive number")
         cfg["api_call_timeout_s"] = float(timeout)
+
+    history = overrides.get("reasoning_history")
+    if history is not None:
+        cfg["reasoning_history"] = history
+
+    if "observation_window" in overrides:
+        cfg["observation_window"] = overrides["observation_window"]
+
+    if "observation_window_polling" in overrides:
+        cfg["observation_window_polling"] = overrides["observation_window_polling"]
 
     # dict_map_prompt_hints → prompt_policy
     if overrides.get("dict_map_prompt_hints"):
@@ -1104,6 +1176,9 @@ def build_capabilities(
     output_length_retry_count = cfg.get("output_length_retry_count")
     parser_error_retry_count = cfg.get("parser_error_retry_count")
     tool_output_max_chars = cfg.get("tool_output_max_chars")
+    reasoning_history = cfg.get("reasoning_history")
+    observation_window = cfg.get("observation_window")
+    observation_window_polling = cfg.get("observation_window_polling")
     default_max_turns = cfg.get("default_max_turns")
     default_agent_prompt_contract = cfg.get("default_agent_prompt_contract")
     max_context_tokens = cfg.get("max_context_tokens")
@@ -1137,6 +1212,11 @@ def build_capabilities(
         ),
         parser_error_retry_count=(
             int(parser_error_retry_count) if parser_error_retry_count is not None else 0
+        ),
+        reasoning_history=_validated_reasoning_history(reasoning_history, where),
+        observation_window=_validated_observation_window(observation_window, where),
+        observation_window_polling=_validated_observation_window_polling(
+            observation_window_polling, where
         ),
         tool_output_max_chars=(
             int(tool_output_max_chars) if tool_output_max_chars is not None else None
@@ -1247,6 +1327,33 @@ def resolve_policy_names(capabilities: ModelCapabilities) -> dict[str, str]:
             _ASSISTANT_TEXT_POLICIES,
             "assistant_text_policy",
         ),
+    }
+
+
+def resolve_context_controls(capabilities: ModelCapabilities) -> dict[str, Any]:
+    """The context-control values *capabilities* actually runs under.
+
+    Companion to :func:`resolve_policy_names` for the settings that are scalars
+    rather than named policies, shaped for the same
+    ``task.yaml.model_config.<role>.resolved.*`` block::
+
+        {
+            "reasoning_history":          "all" | "none" | "last",
+            "observation_window":         int | None,
+            "observation_window_polling": int,
+        }
+
+    ``reasoning_history`` is the **effective** setting, not the requested one: a
+    route whose codec declares ``forced_history`` overrides the preset, and
+    ``auto`` resolves against the codec. A reader comparing this against the
+    requested ``model_config.<role>.capabilities.reasoning_history`` sees when
+    the two differ, which is the only record that a leg asking for less replay
+    ran with more.
+    """
+    return {
+        "reasoning_history": effective_reasoning_history(capabilities),
+        "observation_window": capabilities.observation_window,
+        "observation_window_polling": capabilities.observation_window_polling,
     }
 
 

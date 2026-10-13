@@ -4,13 +4,11 @@
 # carries. A transcript rule independently gates that `list_notes` was called.
 #
 # Backing note: the notes domain runs tools against an in-process _STATE dict in
-# the MCP-server subprocess, and agent mutations there do NOT flow back to the
-# JSON DB service (that is why the other testcases avoid state_checks.jsonpaths).
-# However the per-case `initial_state.json` IS also loaded into the DB service's
-# tables, so the judge's read-only get_db_state / query_db tools CAN read the
-# initial notes. For this read-only summarize task (no mutation) that is the same
-# data, so the judge may corroborate via query_db — but the rubric does not
-# depend on it; transcript + reference are sufficient and authoritative.
+# the MCP-server subprocess; the DB service mirrors it, and the runner syncs the
+# mirror from the subprocess before every grading read. The judge's read-only
+# get_db_state / query_db tools therefore read the notes as the agent left them,
+# so the judge may corroborate via query_db — but the rubric does not depend on
+# it; transcript + reference are sufficient and authoritative.
 combine:
   method: weighted
   weights:

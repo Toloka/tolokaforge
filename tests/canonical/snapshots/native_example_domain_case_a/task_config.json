@@ -34,6 +34,7 @@
   "interaction_mode": "conversational",
   "max_environment_errors": null,
   "max_simulation_steps": null,
+  "max_trial_tokens": null,
   "max_turns": null,
   "metadata": {
     "complexity": null,
@@ -46,6 +47,7 @@
   "system_prompt": "_shared/system_prompt.md",
   "task_id": "example_domain_case_a",
   "timeouts": null,
+  "tool_libraries": [],
   "tools": {
     "agent": {
       "enabled": [

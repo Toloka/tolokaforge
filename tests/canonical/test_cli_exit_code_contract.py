@@ -14,6 +14,7 @@ Uses the same in-process stubbed-orchestrator harness as
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
-from tests.utils.orchestrator_stubs import complete_run
+from tests.utils.orchestrator_stubs import complete_run, fidelity_clean_run_dir
 from tolokaforge.core.orchestrator import GradingCompleteness
 from tolokaforge.dx.cli.main import cli
 
@@ -134,7 +135,7 @@ class TestRunExitCodeContract:
         shipped exit-0 semantics unchanged for a clean run.
         """
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -158,7 +159,7 @@ class TestRunExitCodeContract:
         """Row 4: the run completed and any trial is ungradeable, no exit-2
         gate fires → ``1`` with the ungradeable line naming the shape."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -181,7 +182,7 @@ class TestRunExitCodeContract:
         """Row 2: ``--fail-on-zero-coverage`` set and the run measured
         nothing → ``2`` with the "Run measured no trials" line."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -207,7 +208,7 @@ class TestRunExitCodeContract:
         """Row 3: ``--fail-on-zero-judge-graded`` set and every produced grade
         has ``judge_status == ERRORED`` → ``2`` with the judge-errored line."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -236,7 +237,7 @@ class TestRunExitCodeContract:
         line. Exit 2 dominates exit 1 whenever a flag fires. See ADR-0041 §
         Decision precedence."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -254,6 +255,64 @@ class TestRunExitCodeContract:
         assert result.exit_code == 2, result.stderr
         assert "Run measured no trials" in result.stderr
         assert "could not be graded" not in result.stderr
+
+    def test_unmeasured_numbers_exit_three_ahead_of_every_completion_gate(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Row 2: the bundle reports a number nothing measured → ``3``.
+
+        Outranks the completion gates, including an opted-in exit-2: those
+        report what the run honestly failed to measure, this reports what it
+        measured dishonestly, and the wrong number is the one that reaches a
+        conclusion. Driven here by a per-task row counting a trial that left
+        no directory.
+        """
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        fidelity_clean_run_dir(expected_dir)
+        (expected_dir / "per_task_metrics.json").write_text(
+            json.dumps([{"task_id": "TASK-A", "total_trials": 2, "measured_trials": 2}]),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _stub_orchestrator(completeness=_ZERO_COVERAGE, run_return=expected_dir),
+        )
+
+        result = runner.invoke(
+            cli,
+            ["run", "--config", str(valid_config), "--fail-on-zero-coverage"],
+        )
+
+        assert result.exit_code == 3, result.stderr
+        assert "Run reports unmeasured numbers" in result.stderr
+        assert "R3" in result.stderr
+
+
+class TestCheckRunExitCodeContract:
+    """``tolokaforge check-run`` reports the same verdict over a finished bundle."""
+
+    def test_clean_bundle_exits_zero(self, runner: CliRunner, tmp_path: Path) -> None:
+        bundle = fidelity_clean_run_dir(tmp_path / "run_dir")
+
+        result = runner.invoke(cli, ["check-run", str(bundle)])
+
+        assert result.exit_code == 0, result.stderr
+
+    def test_violating_bundle_exits_three(self, runner: CliRunner, tmp_path: Path) -> None:
+        bundle = fidelity_clean_run_dir(tmp_path / "run_dir")
+        (bundle / "per_task_metrics.json").write_text(
+            json.dumps([{"task_id": "TASK-A", "total_trials": 2, "measured_trials": 2}]),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(cli, ["check-run", str(bundle)])
+
+        assert result.exit_code == 3, result.stderr
 
 
 class TestWorkerExitCodeContract:

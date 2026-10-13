@@ -16,9 +16,21 @@ import hashlib
 
 import pytest
 
-from tolokaforge.core.agent_prompt_contract import CONTRACTS, GENERATION
+from tolokaforge.core.agent_prompt_contract import (
+    CONTRACTS,
+    GENERATION,
+    OBSERVATION_WINDOW_CLAUSE,
+    observation_window_clause,
+)
 
 pytestmark = pytest.mark.canonical
+
+# The retention clause is contract text too — composed in only when the loop
+# drops observations — so it is pinned beside the contracts from the generation
+# that introduced it, under its own name. A window of zero renders its own
+# sentence, pinned separately.
+_CLAUSE = "observation_window_clause"
+_ZERO_CLAUSE = "observation_window_clause_zero"
 
 # Superseded rows stay: each records what produced every bundle stamped with it.
 _DIGESTS: dict[int, dict[str, str]] = {
@@ -28,13 +40,23 @@ _DIGESTS: dict[int, dict[str, str]] = {
     2: {
         "reasoning_agent": "3ace74270f351201175b69a37c88ff0e1bd955794e4e6714184d0247ff19df55",
     },
+    3: {
+        "reasoning_agent": "b2515d8f3a545bd1c13720697839d521364c89eb39f32440ef1f355ba8175a3d",
+        _CLAUSE: "e5d5a3ab07c8e1cf5eec0d1dadfc8e8f2a32c8a855591c37bd669c1c0bb231c9",
+        _ZERO_CLAUSE: "90db515f763da478ed55ca380393a8e99ce4b4f63e49548d006694c5a2e0b174",
+    },
 }
 
 
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _rendered() -> dict[str, str]:
-    return {
-        name: hashlib.sha256(text.encode("utf-8")).hexdigest() for name, text in CONTRACTS.items()
-    }
+    rendered = {name: _digest(text) for name, text in CONTRACTS.items()}
+    rendered[_CLAUSE] = _digest(OBSERVATION_WINDOW_CLAUSE)
+    rendered[_ZERO_CLAUSE] = _digest(observation_window_clause(0))
+    return rendered
 
 
 def test_each_contract_renders_what_its_generation_recorded() -> None:

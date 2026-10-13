@@ -448,6 +448,15 @@ class TestOrchestratorValidation:
         turn_warns = [i for i in result.issues if "max_turns" in i.path]
         assert len(turn_warns) == 1
 
+    def test_max_trial_tokens_rejects_non_positive(self):
+        from tolokaforge.core.models import OrchestratorConfig
+
+        OrchestratorConfig(max_trial_tokens=1)  # the floor is allowed
+        OrchestratorConfig(max_trial_tokens=None)  # opting out stays valid
+        for bad in (0, -1):
+            with pytest.raises(ValidationError):
+                OrchestratorConfig(max_trial_tokens=bad)
+
 
 class TestApiKeyProbe:
     """The provider-key warning asks the SecretManager, so a key from `.env` or an

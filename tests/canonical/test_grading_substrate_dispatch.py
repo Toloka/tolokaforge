@@ -650,7 +650,7 @@ def test_grade_trial_refuses_when_a_hash_pack_golden_replay_errors(
     )
 
     async def _stubbed_hash_grading(
-        _trial_id: str, _trial_context: Any, _state_checks: Any
+        _trial_id: str, _trial_context: Any, _state_checks: Any, _live_state: Any
     ) -> HashGradingResult:
         return broken_result
 

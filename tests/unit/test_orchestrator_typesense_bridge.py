@@ -66,7 +66,7 @@ class _KbAdapter:
         self.params = params
         self.builds = 0
 
-    def to_task_description(self, task_id: str) -> TaskDescription:
+    def describe_task(self, task_id: str) -> TaskDescription:
         self.builds += 1
         ts = self.params.get("typesense") or {}
         port = ts.get("port")

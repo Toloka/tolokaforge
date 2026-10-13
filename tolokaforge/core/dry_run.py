@@ -186,7 +186,7 @@ def _sanitized_tool_spec(
 
     Runs the same three-step pipeline the production path uses:
 
-    1. ``adapter.to_task_description(task_id).agent_tools`` — the
+    1. ``adapter.describe_task(task_id).agent_tools`` — the
        orchestrator-side authoring source for tool schemas.
     2. Convert each :class:`ToolSchema` to the OpenAI ``function`` shape
        and apply property-name sanitisation (matches
@@ -195,7 +195,7 @@ def _sanitized_tool_spec(
        model's preset — the same pass :meth:`LLMClient.generate` runs at
        wire time.
     """
-    task_description = adapter.to_task_description(task_id)
+    task_description = adapter.describe_task(task_id)
     raw_tool_schemas = list(task_description.agent_tools)
     openai_shape = [tool_schema_to_openai_dict(ts) for ts in raw_tool_schemas]
     capabilities = build_capabilities(
@@ -228,12 +228,14 @@ def materialize_dry_run_sample(
     # The preset default is threaded here for the same reason the conductor
     # threads it: a dry run that printed a different system prompt from the
     # one the trial sends would be showing the wrong thing.
+    capabilities = build_capabilities(
+        agent_config.name, agent_config.provider, overrides=agent_config.capabilities
+    )
     system_prompt = build_system_prompt(
         task=task,
         task_dir=task_dir,
-        default_prompt_contract=build_capabilities(
-            agent_config.name, agent_config.provider, overrides=agent_config.capabilities
-        ).default_agent_prompt_contract,
+        default_prompt_contract=capabilities.default_agent_prompt_contract,
+        observation_window=capabilities.observation_window,
     )
     user_prompt_text, user_prompt_is_literal = _resolve_user_prompt(task)
     tool_spec = _sanitized_tool_spec(

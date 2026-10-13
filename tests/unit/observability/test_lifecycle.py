@@ -60,7 +60,7 @@ def _conductor(observer, run_identity=None, trial_dir: Path | None = None) -> In
     # a real path: the error path asks whether a bundle exists under it
     setup.trial_dir = trial_dir or Path("/nonexistent/tolokaforge-trial")
     conductor._setup_trial = MagicMock(return_value=setup)
-    conductor._capture_final_state = MagicMock()
+    conductor._capture_final_state = MagicMock(return_value=None)
     conductor._grade = MagicMock()
     conductor._produce_grade_bundle = MagicMock()
     conductor._write_artifacts = MagicMock()

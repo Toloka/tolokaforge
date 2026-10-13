@@ -372,18 +372,42 @@ def _merge_service_networks(existing: Any, additions: list[str]) -> Any:
     """Add each name in ``additions`` to a service-level ``networks:`` value,
     preserving its declared shape (list or mapping) and any per-network config
     (aliases, static IPs). Absent ``existing`` yields a plain list. Idempotent:
-    a name already present is left untouched."""
+    a name already present is left untouched.
+
+    The aliases a service declares on its own networks are carried onto the
+    injected internal network. The policy moves the runner onto the injected
+    networks only, and Docker resolves an alias only on the network it is
+    declared on: without the copy a service reachable as ``api.vendor.test`` in
+    the task's compose is unreachable by that name from the runner, and a name
+    that also exists publicly resolves through the edge network to the real
+    host. Every alias is carried, one that several services declare included:
+    Docker answers such a name with all of them in turn, which keeps the
+    lookup inside the sandbox. Aliases never ride the edge network, the one
+    attachment with public egress."""
     if isinstance(existing, dict):
         merged = dict(existing)
+        aliases = _declared_aliases(existing)
         for name in additions:
             if name not in merged:
-                merged[name] = None
+                carried = aliases if name == NETPOLICY_INTERNAL_NETWORK else []
+                merged[name] = {"aliases": list(carried)} if carried else None
         return merged
     current = list(existing) if isinstance(existing, list) else []
     for name in additions:
         if name not in current:
             current.append(name)
     return current
+
+
+def _declared_aliases(networks: dict[str, Any]) -> list[str]:
+    """The aliases a service declares across its own networks, in declaration order."""
+    aliases: list[str] = []
+    for config in networks.values():
+        if isinstance(config, dict):
+            for alias in config.get("aliases") or []:
+                if alias not in aliases:
+                    aliases.append(alias)
+    return aliases
 
 
 def apply_network_policy_to_compose_file(

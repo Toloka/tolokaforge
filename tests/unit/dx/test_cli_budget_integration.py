@@ -21,7 +21,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
-from tests.utils.orchestrator_stubs import complete_run
+from tests.utils.orchestrator_stubs import complete_run, fidelity_clean_run_dir
 from tolokaforge.dx._display import console as _shared_console
 from tolokaforge.dx.cli.main import cli
 
@@ -85,7 +85,7 @@ def _make_marker_writing_orchestrator(*, run_dir: Path, which: str) -> type:
             return None
 
         def run(self, *, run_id: str, output_dir: Path) -> Path:
-            output_dir.mkdir(parents=True, exist_ok=True)
+            fidelity_clean_run_dir(output_dir)
             marker_payload = {
                 "which": which,
                 "threshold": 1.0,
@@ -167,7 +167,7 @@ class TestLimitHitBannerIntegration:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         expected_dir = (tmp_path / "results" / "run").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
 
         class _NoMarkerOrchestrator:
             def __init__(self, *args: Any, **kwargs: Any) -> None:

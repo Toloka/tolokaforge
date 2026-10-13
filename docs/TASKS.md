@@ -106,6 +106,10 @@ which is the source the `grading` row above describes.
   refuses a task that does not, at `tools`, and `RegisterTrial` refuses its trial.
 - `filesystem.copy`: files copied into `/env/fs/agent-visible`.
 - `mock_web.base_url`: base URL for mock web service (`http://mock-web:8080`).
+- `app_world`: `{url, hosts, actors}` — a service of the task's stack holds the
+  world `json_db` seeds, reached by the actors' `http_request` with a bearer token
+  the runner mints per trial. See
+  [MULTI_CONTAINER_GUIDE.md § App worlds served over HTTP](MULTI_CONTAINER_GUIDE.md#app-worlds-served-over-http).
 - `rag.corpus_dir`: directory of knowledge-base documents for a per-trial
   search index. The `.md`, `.txt` and `.json` files sitting directly in that
   directory (flat, non-recursive) travel with the task, and the runner builds the
@@ -335,10 +339,14 @@ turns:
 ```yaml
 max_simulation_steps: 200     # absent: no step budget
 max_environment_errors: 10    # absent: no error budget
+max_trial_tokens: 2000000     # absent: no token budget
 ```
 
-- Both are opt-in. A task that sets neither runs with no budget; `max_turns` applies
+- All three are opt-in. A task that sets none runs with no budget; `max_turns` applies
   either way. Each value must be at least 1.
+- `max_trial_tokens` caps cumulative model tokens (prompt + completion) for the trial
+  and stops it with `trial_token_budget` when reached; it overrides the run-level
+  `orchestrator.max_trial_tokens`, and `None` falls back to that run-level value.
 - Steps are counted half-duplex. Every agent or user message is one step, and the
   environment's reply to a message's tool calls is one more step, however many calls
   that batch holds.

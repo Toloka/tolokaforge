@@ -25,7 +25,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from tolokaforge.core.agent_prompt_contract import resolve_agent_prompt_contract
+from tolokaforge.core.agent_prompt_contract import (
+    observation_window_clause,
+    resolve_agent_prompt_contract,
+)
 
 if TYPE_CHECKING:
     from tolokaforge.core.models import TaskConfig
@@ -103,20 +106,33 @@ def _build_minimal_default(task: TaskConfig, *, persona: bool = True) -> str:
     return "\n".join(parts)
 
 
-def _compose_with_contract(contract: str, body: str | None) -> str:
+def _compose_with_contract(
+    contract: str, body: str | None, *, observation_window: int | None
+) -> str:
     """Put the reply contract first, the task's own prompt after it.
 
     Order is deliberate: the contract describes how to answer every turn and
     stays true for the whole episode, while the body describes this particular
     job. A model reading top-down meets the standing rule before the specifics.
+
+    When *observation_window* is set the contract is followed by
+    :func:`~tolokaforge.core.agent_prompt_contract.observation_window_clause`,
+    the one statement about output retention the loop makes true. With no
+    window every observation is replayed in full and nothing is added.
     """
+    if observation_window is not None:
+        contract = f"{contract}\n\n{observation_window_clause(observation_window)}"
     if body is None or not body.strip():
         return contract
     return f"{contract}\n\n{body}"
 
 
 def build_system_prompt(
-    *, task: TaskConfig, task_dir: Path, default_prompt_contract: str | None = None
+    *,
+    task: TaskConfig,
+    task_dir: Path,
+    default_prompt_contract: str | None = None,
+    observation_window: int | None = None,
 ) -> str:
     """Assemble the pre-policy agent system prompt for *task*.
 
@@ -131,6 +147,11 @@ def build_system_prompt(
     ``interaction_mode: agent_only``: the shipped text tells an agent that a
     tool-call-free message ends the task, which is true of the solo turn
     policy and false of a conversation with a user.
+
+    *observation_window* is the model's ``observation_window`` capability, the
+    same value the loop collapses older observations by. A contract composed
+    for a run that drops output says so, with the number; one composed for a
+    run that keeps everything says nothing about it.
 
     Deterministic. Only side effect is local-file reads. Never opens a
     network connection.
@@ -149,7 +170,7 @@ def build_system_prompt(
 
     if contract is not None:
         body = _build_task_body(task=task, task_dir=task_dir, persona=False)
-        return _compose_with_contract(contract, body)
+        return _compose_with_contract(contract, body, observation_window=observation_window)
 
     return _build_task_body(task=task, task_dir=task_dir)
 

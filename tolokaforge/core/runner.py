@@ -230,6 +230,19 @@ def _enabled_completion_tools(
     )
 
 
+def _commands_in(arguments: dict[str, Any]) -> int:
+    """Shell commands one recorded call carried.
+
+    A batching tool takes an array under ``commands``; every other tool takes
+    one command per call. A malformed ``commands`` argument counts as the one
+    call it was, because nothing ran.
+    """
+    commands = arguments.get("commands")
+    if isinstance(commands, list):
+        return len(commands)
+    return 1
+
+
 class TrialRunner:
     """Runs a single trial of a task"""
 
@@ -246,6 +259,7 @@ class TrialRunner:
         max_environment_errors: int | None = None,
         turn_timeout_s: int = 60,
         episode_timeout_s: int = 1200,
+        max_trial_tokens: int | None = None,
         stuck_detector: StuckDetector | None = None,
         user_tool_executor: ToolExecuting | None = None,
         request_limiter: GlobalRateLimiter | None = None,
@@ -275,6 +289,7 @@ class TrialRunner:
         self._simulation_budget: SimulationBudget | None = None
         self.turn_timeout_s = turn_timeout_s
         self.episode_timeout_s = episode_timeout_s
+        self.max_trial_tokens = max_trial_tokens
         self.stuck_detector = stuck_detector
         # The enabled agent tools whose call ends the episode. Empty unless an
         # operator put a completion tool in ``tools.agent.enabled`` *and* the
@@ -556,12 +571,15 @@ class TrialRunner:
                         config=LoopConfig(
                             max_turns=self.max_turns,
                             episode_timeout_s=self.episode_timeout_s,
+                            max_trial_tokens=self.max_trial_tokens,
                             empty_retry_count=capabilities.empty_retry_count,
                             reasoning_stall_retry_count=capabilities.reasoning_stall_retry_count,
                             reasoning_stall_turn_limit=capabilities.reasoning_stall_turn_limit,
                             output_length_retry_count=capabilities.output_length_retry_count,
                             parser_error_retry_count=capabilities.parser_error_retry_count,
                             tool_output_max_chars=capabilities.tool_output_max_chars,
+                            observation_window=capabilities.observation_window,
+                            observation_window_polling=capabilities.observation_window_polling,
                             max_context_tokens=capabilities.max_context_tokens,
                             context_watermark=capabilities.context_watermark,
                             summarize_policy=summarize_policy,
@@ -763,9 +781,15 @@ class TrialRunner:
                 # work. Left as a completed trial this scores against an
                 # untouched repository, and on these packs that is worth
                 # 0.42-0.58 of partial credit: a dead agent reported as a weak
-                # one. ERROR routes it to a synthesized grade instead.
+                # one.
+                #
+                # The reason is its own, not the ``API_ERROR`` catch-all: this
+                # branch fires on the proxy's own per-request records, which is
+                # typed evidence that the trial never reached the model, and
+                # only a typed reason may excuse a trial from the measured
+                # denominator.
                 status = TrialStatus.ERROR
-                termination_reason = TerminationReason.API_ERROR
+                termination_reason = TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS
                 self.logger.error(
                     "Harness trial made no successful provider request; not scoring it",
                     requests=refused.requests,
@@ -1011,6 +1035,7 @@ class TrialRunner:
             )
             self.metrics.tool_success_rate = success_count / len(agent_calls)
             self.metrics.tool_calls = len(agent_calls)
+            self.metrics.tool_commands = sum(_commands_in(call.arguments) for call in agent_calls)
 
         self.logger.info(
             "Trial execution finished",
@@ -2349,3 +2374,8 @@ class _TrialMetricsSink(MetricsSink):
     @property
     def last_prompt_tokens(self) -> int | None:
         return self._last_prompt_tokens
+
+    @property
+    def cumulative_tokens(self) -> int | None:
+        usage = self._metrics.usage
+        return usage.prompt_tokens + usage.completion_tokens

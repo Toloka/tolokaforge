@@ -327,6 +327,70 @@ def test_episode_timeout_terminates_before_first_generation():
     assert client.calls == 0
 
 
+class _TokenBudgetSink(MetricsSink):
+    """A sink that reports a running token total, arming ``max_trial_tokens``."""
+
+    def __init__(self) -> None:
+        self.generations = 0
+        self._tokens = 0
+
+    def record_generation(self, result: GenerationResult) -> None:
+        self.generations += 1
+        self._tokens += result.usage.prompt_tokens + result.usage.completion_tokens
+
+    def record_tool_call(self) -> None:
+        return None
+
+    @property
+    def cumulative_tokens(self) -> int | None:
+        return self._tokens
+
+
+def test_trial_token_budget_terminates_when_cumulative_tokens_reach_ceiling():
+    """Each turn spends 15 tokens; a 20-token ceiling stops the loop before turn 3.
+
+    The check is pre-turn, so the budget is crossed by the turn already recorded:
+    turn 0 (15) and turn 1 (30) run, then turn 2's pre-check sees 30 >= 20 and
+    stops with ``TRIAL_TOKEN_BUDGET`` before a third generation."""
+    results = [
+        GenerationResult(text="working", usage=Usage(prompt_tokens=10, completion_tokens=5))
+        for _ in range(5)
+    ]
+    client = _ScriptedClient(results)
+    loop = _loop(
+        client,
+        should_terminate=_never_terminate,
+        sink=_TokenBudgetSink(),
+        config=LoopConfig(max_turns=50, episode_timeout_s=10_000, max_trial_tokens=20),
+    )
+    outcome = loop.run("sys", [], time.time())
+
+    assert outcome.termination_reason == TerminationReason.TRIAL_TOKEN_BUDGET
+    # A deliberate budget stop keeps the optimistic COMPLETED status so the
+    # orchestrator does not classify it retryable and re-burn the same ceiling.
+    assert outcome.status == TrialStatus.COMPLETED
+    assert client.calls == 2
+
+
+def test_no_trial_token_budget_leaves_the_loop_uncapped_on_tokens():
+    """``max_trial_tokens`` unset (the default) never trips, whatever the spend."""
+    results = [
+        GenerationResult(text="working", usage=Usage(prompt_tokens=1000, completion_tokens=1000))
+        for _ in range(10)
+    ]
+    client = _ScriptedClient(results)
+    loop = _loop(
+        client,
+        should_terminate=_never_terminate,
+        sink=_TokenBudgetSink(),
+        config=LoopConfig(max_turns=3, episode_timeout_s=10_000),
+    )
+    outcome = loop.run("sys", [], time.time())
+
+    assert outcome.termination_reason == TerminationReason.MAX_TURNS
+    assert client.calls == 3
+
+
 def test_generation_error_is_classified_via_shared_classifier():
     class _Boom:
         def generate(self, system, messages, tools, tool_choice="auto", observation=None):

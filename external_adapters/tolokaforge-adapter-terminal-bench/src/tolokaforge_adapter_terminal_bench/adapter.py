@@ -87,7 +87,14 @@ AGENT_TOOL_BASH = "bash"
 AGENT_TOOL_BASH_SESSION = "bash_session"
 """One held ``docker exec`` bash session for the trial: state survives every call."""
 
-AGENT_TOOLS: tuple[str, ...] = (AGENT_TOOL_BASH, AGENT_TOOL_BASH_SESSION)
+AGENT_TOOL_BASH_BATCH = "bash_batch"
+"""An array of commands per call, each its own ``docker exec``: no state survives."""
+
+AGENT_TOOLS: tuple[str, ...] = (
+    AGENT_TOOL_BASH,
+    AGENT_TOOL_BASH_SESSION,
+    AGENT_TOOL_BASH_BATCH,
+)
 """Values ``adapter_params.agent_tool`` accepts, default first."""
 
 _INTERACTION_MODES: frozenset[str] = frozenset({"conversational", "agent_only"})
@@ -307,8 +314,8 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             raise ValueError(
                 f"terminal-bench adapter: agent_tool {self.agent_tool!r} requires "
                 f"agent_harness {ENGINE_LOOP!r} — under a coding-harness CLI the engine "
-                "runs no turn loop and the whole trial is one tool call, so a "
-                "session-lifetime shell has nothing to carry state across."
+                "runs no turn loop and the whole trial is one tool call, so neither a "
+                "session-lifetime shell nor a per-turn command array has anything to act on."
             )
         self.agent_completion_tool: bool = bool(params.get("agent_completion_tool", False))
         if self.agent_completion_tool and self.agent_harness != ENGINE_LOOP:
@@ -316,6 +323,14 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 f"terminal-bench adapter: agent_completion_tool requires agent_harness "
                 f"{ENGINE_LOOP!r} — a coding-harness CLI ends its own trial when the "
                 "process exits, so there is no turn loop for a completion signal to end."
+            )
+        self.verifier_timeout_multiplier: float = float(
+            params.get("verifier_timeout_multiplier", 1.0)
+        )
+        if self.verifier_timeout_multiplier <= 0:
+            raise ValueError(
+                f"terminal-bench adapter: verifier_timeout_multiplier must be positive, "
+                f"got {self.verifier_timeout_multiplier!r}."
             )
         self.interaction_mode: str = str(params.get("interaction_mode", "conversational"))
         if self.interaction_mode not in _INTERACTION_MODES:
@@ -582,6 +597,8 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """
         if self.agent_tool == AGENT_TOOL_BASH:
             block: dict[str, Any] = {"enabled": [AGENT_TOOL_BASH]}
+        elif self.agent_tool == AGENT_TOOL_BASH_BATCH:
+            block = {"enabled": [AGENT_TOOL_BASH_BATCH]}
         else:
             block = {
                 "enabled": [AGENT_TOOL_BASH_SESSION],
@@ -634,6 +651,15 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         tool class rather than a copy, so the schema the model sees cannot
         drift from the one the wrapper implements.
         """
+        if self.agent_tool == AGENT_TOOL_BASH_BATCH:
+            return ToolSchema(
+                **self.emit_harness_batch_tool_schema(
+                    service=self._environment(task_id).agent_service,
+                    compose_project_prefix=PROJECT_PREFIX,
+                    timeout_s=self._agent_tool_timeout_s(task_id),
+                    toolset="terminal_bench",
+                )
+            )
         if self.agent_tool == AGENT_TOOL_BASH:
             return ToolSchema(
                 **self.emit_harness_tool_schema(
@@ -731,19 +757,28 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             initial_state=RunnerInitialStateConfig(),
             user_simulator=RunnerUserSimulatorConfig(mode="scripted"),
             grading=RunnerGradingConfig(
-                # The task's own ``[verifier] timeout_sec``, in both directions.
+                # The task's own ``[verifier] timeout_sec``, in both directions,
+                # scaled by ``verifier_timeout_multiplier`` (1.0 unless the run
+                # says otherwise, the way Harbor's ``--timeout-multiplier`` does).
                 # 613 of the 974 delivered tasks ask for more than the grading
                 # kind's 300s default and 360 ask for less — commonly 180s. A
                 # task is the authority on how long its own suite needs, and
                 # substituting a longer budget would score it under a rule its
                 # author did not write. A suite killed by the clock is not
-                # silent: it reaches the grade as ``script_exec_error``, so
-                # ``grade.yaml`` says the verifier ran out of time rather than
-                # that the agent failed.
-                **self.emit_test_execution_grading(meta.verifier_timeout_sec)
+                # silent: it reaches the grading kind as
+                # ``script_exec_error``, which refuses the trial as
+                # ungradeable rather than scoring the agent for tests that
+                # never ran.
+                **self.emit_test_execution_grading(self._verifier_budget_sec(meta))
             ),
             metadata=self._metadata(meta),
         )
+
+    def _verifier_budget_sec(self, meta: TerminalBenchTask) -> float | None:
+        """The verifier's wall-clock budget: the task's ``timeout_sec`` times the multiplier."""
+        if meta.verifier_timeout_sec is None:
+            return None
+        return meta.verifier_timeout_sec * self.verifier_timeout_multiplier
 
     def _metadata(self, meta: TerminalBenchTask) -> dict[str, Any]:
         """Adapter extras on the runner-side task projection.
@@ -775,6 +810,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         }
         if meta.verifier_timeout_sec is not None:
             metadata["verifier_timeout_sec"] = meta.verifier_timeout_sec
+            metadata["verifier_timeout_budget_sec"] = self._verifier_budget_sec(meta)
         if self.harness_spec is not None:
             command = self.build_harness_command(
                 self.agent_harness,

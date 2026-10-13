@@ -814,6 +814,48 @@ touch. A grading failure that a second attempt would have got past is therefore
 recorded ungradeable on the first: the price of never fabricating a verdict and
 never counting one attempt twice.
 
+#### A trial whose final state could not be captured
+
+A trial whose tools run in an MCP subprocess keeps its state in that process; the
+DB service only mirrors it. Every read of its final state — `GetState`, each
+`GradeTrial`, and `SubstrateService`'s `ReadFinalDBState` / `ReadFinalDBStateStable`
+— first syncs the mirror from the subprocess. `GradeTrial` syncs once per call,
+before any component reads, so an earlier `GetState` never stands in for state the
+agent changed after it, and hash grading's golden replay (which runs in the same
+subprocess, and hands it the trial's state back once scored) is never read as the
+agent's.
+
+When that sync fails — the subprocess is gone or does not answer within 20 s,
+`_tolokaforge_get_state_` declares failure or answers without a state object, or the
+mirror refuses the update — the
+read fails with the cause instead of answering from the mirror: `GetState` returns
+`success = false`, `GradeTrial` returns `success = false`, `SubstrateService`
+answers `UNAVAILABLE`. For a task whose `initial_state` provisions a database, a
+failed DB read during grading fails the same way rather than grading against empty
+state: in `GradeTrial`, in the judge's `get_db_state` / `query_db` tools (the judge
+returns no verdict, even when it submitted one), and in `SubstrateService`, which
+answers `UNAVAILABLE` rather than `trial_not_found` when the db-service has lost a
+trial the runner holds. A judge DB read that does not come back within its 30 s
+bound is refused the same way. A read the db-service rejects as malformed — a
+jsonpath that does not parse, a table that is not there — is no lost state: the judge
+gets it as a tool error and can correct it. A task that provisions no database has no
+mirror: nothing is synced for its MCP subprocess, and its reads answer "no database"
+(`trial_not_found`).
+
+A grading call that reads state is refused, and the trial is ungradeable exactly as
+above, with the cause in `Trajectory.grading_error`. A verdict that reads no state
+still stands: transcript rules, no grade for an infrastructure abort or a lost
+trial, and the auto-fail for an error, a timeout, a stuck agent or a context-window
+overflow.
+
+The conductor's own read of the final state (for `env.yaml`) takes the runner's
+answer as the trial's final state — an empty one included — and never substitutes
+the adapter's pre-trial snapshot. When `GetState` fails, raises or answers with no
+state object, the cause is logged with the trial's identity and `env.yaml` carries
+it as `final_state_error` in place of the keys derived from the DB state (`agent`,
+`user`, `db`); the filesystem, mock-web and RAG entries stay. A trial graded on a
+verdict that read no state still shows its lost capture.
+
 #### A component the config declared that produced no verdict
 
 The same fail-loud shape covers any component the config declared and the trial
@@ -1921,6 +1963,14 @@ because golden actions are authored unprefixed, and answers `GradeTrial` with
 `success=false`. It resolves before it writes anything — before the MCP state sync, the
 `pre_golden` snapshot and the reset — so a pack defect costs the trial's database
 nothing and the trial still holds what the agent left behind.
+
+For a trial whose tools run in an MCP subprocess the replay runs in that subprocess:
+the runner sets its state to the initial tables before the replay, and back to the
+trial's state once the golden hash is taken, both through `_tolokaforge_set_state_`.
+A set that declares failure fails hash grading (`Hash grading failed: RuntimeError:
+_tolokaforge_set_state_ declared failure: …`, `success=false`), so the trial is
+ungradeable rather than hashed against, or left holding, the wrong world. A pack whose
+state setter is broken therefore sees an ungradeable trial, not a grade.
 
 **An action that resolved and ran but did not take effect is different: the verdict
 stands, and the grade names it.** Two shapes reach that state. The action *raised*, or it
@@ -4486,12 +4536,17 @@ custom_checks:
 (`core/grading/composite/custom_checks.py: grade_custom_checks`) and reads its evidence through
 the `GradingSubstrate` seam: `substrate.initial_state()` feeds
 `ctx.initial_state`, and `substrate.final_state()` (RAW) feeds `ctx.final_state`
-— the shape a check's arithmetic over final DB rows needs. Any failure reaching
-the substrate's final state degrades to `{}` under the composite's single
-broad-except so the check still runs against an honest empty state and the
-audit signal survives on the log line downstream tooling greps for
-(`final DB state fetch failed (<exc>); grading against empty state`); the
-runner's `_grade_custom_checks` dispatches the composite off-loop via
+— the shape a check's arithmetic over final DB rows needs. A substrate that
+cannot reach the final state of a task whose `initial_state` provisions a
+database raises `SubstrateUnreachableError`, which the dispatch re-raises: the
+trial is ungradeable, never checked against an empty world (see
+[A trial whose final state could not be captured](#a-trial-whose-final-state-could-not-be-captured)).
+Any other failure reaching the final state — the "no database" answer for a task
+that provisions none — degrades to `{}`
+under the composite's single broad-except so the check still runs against an
+honest empty state and the audit signal survives on the log line downstream
+tooling greps for (`final DB state fetch failed (<exc>); grading against empty
+state`); the runner's `_grade_custom_checks` dispatches the composite off-loop via
 `loop.run_in_executor` so the substrate's blocking reads and the executor's
 own blocking `.run()` land on a worker thread.
 
@@ -4545,6 +4600,9 @@ from matching prose against an exception message:
 | `rate_limit` | `openai.RateLimitError` (which `litellm.RateLimitError` subclasses, so one check covers every provider litellm routes) or `status_code == 429`, found on the exception or on its `__cause__` chain |
 | `api_timeout` | `LLMApiTimeoutError` |
 | `provision_error` | `ProvisionError` raised by the runtime backend's `provision` / `await_ready` |
+| `empty_completion` | A `GenerationResult` whose `text` is empty and whose `tool_calls` list is empty after retries, with no reasoning tokens billed |
+| `reasoning_without_action` | The same observation, where the provider billed reasoning tokens and still returned no text and no tool call |
+| `provider_refused_all_requests` | The request middleware's own per-request records: a positive count of completion requests, every one of them answered outside 2xx |
 
 Everything else is **counted**, including the cases that look like
 infrastructure:
@@ -4553,7 +4611,7 @@ infrastructure:
 |---|---|---|
 | `user_tool_loop_limit` | measured | A declared budget, like `max_turns`, over the user's tool steps in one `isolated` turn. The dialogue it cuts off is graded as it stands |
 | `timeout` | measured | A declared wall-clock budget over agent actions, the same as `max_turns`. A thrashing agent hits it too, and excluding it would make thrashing vanish from the denominator |
-| `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug) |
+| `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug). The one typed case that used to share this value — a harness trial whose every provider request was refused — has its own reason, `provider_refused_all_requests`, and is excluded |
 | `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal. A user simulator whose every generation of one turn was flagged by a detector lands here: the reply guard refuses the turn rather than delivering it, and the trajectory's `user_reply_guard_events` carries the evidence (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)). So does an `isolated` simulator that takes more than `max_tool_steps` tool steps before its opening message: the agent has not spoken, so nothing of its is there to grade |
 | `trial_lost` | harness error | The runner no longer holds the trial the engine is running, so a tool call reached no tool. The exclusion bar is typed evidence that the *provider or the substrate* killed the trial, and a tool executing agent-supplied input that crashes the runner process is an agent-reachable route to this fault, so it is counted. It is the one counted reason that is **not graded**: the runner that would compute the verdict is the one that lost the trial, so no fabricated `0.0` enters `avg_score` |
 | `stuck_detected` | measured | The agent issued the identical tool call and got the same result back over and over. It auto-fails with `score: 0.0`, and that verdict is correct. An agent that talks without acting is not this — that is a per-task question, asked by `transcript_rules` in the task's `grading.yaml` |

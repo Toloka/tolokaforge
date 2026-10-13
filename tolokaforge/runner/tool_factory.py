@@ -34,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -552,6 +553,13 @@ class MCPServerProcess(BaseModel):
     """Manages an MCP server subprocess."""
 
     script_path: str
+    python_path: tuple[str, ...] = ()
+    """Directories put ahead of the inherited ``PYTHONPATH`` of the subprocess.
+
+    The runner passes the trial's artefact root and its ``tools/`` directory
+    (see :func:`_subprocess_python_path`), so a server under ``_shared/``
+    imports the packages delivered there — a pinned tool library (ADR-0060)
+    among them — as the runner process itself does."""
     process: Any | None = None  # subprocess.Popen - can't type properly
     request_id: int = 0
     _start_lock: Any = PrivateAttr(default_factory=threading.Lock)
@@ -587,6 +595,7 @@ class MCPServerProcess(BaseModel):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=self._subprocess_environment(),
         )
         if self._closed:
             self.stop()
@@ -607,6 +616,20 @@ class MCPServerProcess(BaseModel):
         self.process.stdin.flush()
 
         logger.info(f"Started MCP server: {self.script_path}")
+
+    def _subprocess_environment(self) -> dict[str, str] | None:
+        """The runner's environment with :attr:`python_path` ahead of ``PYTHONPATH``.
+
+        ``None`` — inherit the environment unchanged — when there is nothing to add.
+        """
+        if not self.python_path:
+            return None
+        env = dict(os.environ)
+        inherited = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = os.pathsep.join(
+            [*self.python_path, inherited] if inherited else self.python_path
+        )
+        return env
 
     def stop(self) -> None:
         """Stop the MCP server subprocess."""
@@ -703,16 +726,30 @@ class MCPServerProcess(BaseModel):
 
         Returns:
             Current state dict (table_name -> list[record]).
+
+        Raises:
+            RuntimeError: the tool declared failure or answered without a
+                state object. An empty object is a real (empty) state; an
+                absent or malformed one is not, so it is never read as ``{}``.
         """
         result = self.send_request(
             "tools/call",
             {"name": "_tolokaforge_get_state_", "arguments": {}},
         )
-        content = result.get("content", [])
-        if content and isinstance(content, list):
-            text = content[0].get("text", "{}")
-            return json.loads(text)
-        return {}
+        text = _first_text(result)
+        if result.get("isError"):
+            raise RuntimeError(f"_tolokaforge_get_state_ declared failure: {text!r}")
+        if not isinstance(text, str):
+            raise RuntimeError("_tolokaforge_get_state_ returned no state text")
+        try:
+            state = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"_tolokaforge_get_state_ returned unreadable state: {exc}") from exc
+        if not isinstance(state, dict):
+            raise RuntimeError(
+                f"_tolokaforge_get_state_ returned {type(state).__name__}, not a state object"
+            )
+        return state
 
     def reset_state(self, initial_state: dict[str, Any]) -> None:
         """Replace the MCP subprocess's _STATE with ``initial_state``.
@@ -722,20 +759,47 @@ class MCPServerProcess(BaseModel):
 
         Args:
             initial_state: State dict to restore (table_name -> list[record]).
+
+        Raises:
+            RuntimeError: the tool declared failure, so the subprocess still
+                holds whatever state it had before.
         """
-        self.send_request(
+        result = self.send_request(
             "tools/call",
             {
                 "name": "_tolokaforge_set_state_",
                 "arguments": {"state_json": json.dumps(initial_state)},
             },
         )
+        if result.get("isError"):
+            raise RuntimeError(f"_tolokaforge_set_state_ declared failure: {_first_text(result)!r}")
+
+
+def _subprocess_python_path(artifacts_dir: str | None) -> tuple[str, ...]:
+    """What an MCP server subprocess gets ahead of ``PYTHONPATH`` for ``artifacts_dir``.
+
+    Mirrors what :func:`~tolokaforge.core.grading.tool_artifacts.extract_tool_artifacts`
+    put on the runner's own ``sys.path``, in the same order: ``tools/`` first
+    when the artefacts have one, then the root. An in-process tool and a
+    server subprocess then resolve the same module to the same file.
+    """
+    if artifacts_dir is None:
+        return ()
+    tools_dir = os.path.join(artifacts_dir, "tools")
+    if os.path.isdir(tools_dir):
+        return (tools_dir, artifacts_dir)
+    return (artifacts_dir,)
 
 
 class MCPServerPool:
-    """Lazy MCP processes owned by one trial's reconstructed tools."""
+    """Lazy MCP processes owned by one trial's reconstructed tools.
 
-    def __init__(self) -> None:
+    Every server the pool starts gets ``python_path`` ahead of its inherited
+    ``PYTHONPATH`` (see :attr:`MCPServerProcess.python_path`).
+    """
+
+    def __init__(self, python_path: tuple[str, ...] = ()) -> None:
+        self._python_path = python_path
         self._servers: dict[str, MCPServerProcess] = {}
         self._lock = threading.Lock()
         self._cleanup_lock = threading.Lock()
@@ -746,7 +810,9 @@ class MCPServerPool:
             if self._closed:
                 raise RuntimeError("Trial MCP servers have been closed")
             if script not in self._servers:
-                self._servers[script] = MCPServerProcess(script_path=script)
+                self._servers[script] = MCPServerProcess(
+                    script_path=script, python_path=self._python_path
+                )
             server = self._servers[script]
         server.start()
         return server
@@ -891,6 +957,13 @@ class MCPServerToolWrapper(ToolWrapper):
         self._server_pool.cleanup()
 
 
+def _first_text(result: dict[str, Any]) -> str | None:
+    """The text of an MCP tool answer's first content item, if it has one."""
+    content = result.get("content")
+    first = content[0] if content and isinstance(content, list) else None
+    return first.get("text") if isinstance(first, dict) else None
+
+
 def _declared_category(result: dict[str, Any]) -> str | None:
     """The failure category an MCP tool declared in ``_meta``, if it is one we know.
 
@@ -1001,6 +1074,15 @@ class BuiltinGenericToolWrapper(ToolWrapper):
                 tool_schema.name,
                 f"Failed to instantiate builtin tool '{tool_schema.name}': {exc}",
             ) from exc
+
+    @property
+    def builtin_tool(self) -> Any:
+        """The builtin instance this wrapper delegates to.
+
+        The runtime arms it with what no schema may carry, such as the bearer
+        token an app world mints for an actor's ``http_request`` (ADR-0062).
+        """
+        return self._tool
 
     @property
     def own_budget_s(self) -> float:
@@ -1207,7 +1289,9 @@ def _decode_partial_output(buf: bytes | str | None) -> str:
     return buf
 
 
-def _run_argv_preserving_partial_output(argv: list[str], timeout_s: float) -> str:
+def _run_argv_preserving_partial_output(
+    argv: list[str], timeout_s: float, *, partial_output_argv: list[str] | None = None
+) -> str:
     """Run *argv* and return its output, never raising on a deadline overrun.
 
     Body of :meth:`~tolokaforge.runner.env_exec.SupportsEnvExec.exec_in_env`,
@@ -1217,6 +1301,11 @@ def _run_argv_preserving_partial_output(argv: list[str], timeout_s: float) -> st
     surfaces whatever the child had already written. ``subprocess.run``'s
     capture_output path discards buffered stdout on ``TimeoutExpired``, which
     turns a slow-agent run into an opaque "nothing happened".
+
+    *partial_output_argv* is for an *argv* whose command writes to staged
+    files rather than to the pipes (see :func:`_docker_exec_plan`): nothing
+    reaches the pipes until the command finishes, so on a timeout it is run to
+    read the files back, and its output replaces the pipes' when it succeeds.
     """
     proc = subprocess.Popen(
         argv,
@@ -1246,6 +1335,10 @@ def _run_argv_preserving_partial_output(argv: list[str], timeout_s: float) -> st
             # Best-effort drain; the primary timeout is already surfaced in
             # the timed-out footer below.
             pass
+        if partial_output_argv is not None:
+            staged = _read_staged_output(partial_output_argv)
+            if staged is not None:
+                stdout, stderr = staged
         timed_out = True
     output = stdout
     if timed_out:
@@ -1275,18 +1368,82 @@ def _run_argv_with_exit_code(argv: list[str], timeout_s: float) -> tuple[int, st
     return proc.returncode, merged
 
 
-def _docker_exec_argv(container: str, command: str, user: str | None = None) -> list[str]:
-    """``docker exec`` argv running *command* under bash inside *container*.
+def _read_staged_output(argv: list[str]) -> tuple[str, str] | None:
+    """Run the read-back half of an :class:`_ExecPlan`; ``None`` when the
+    staged files are already gone or the read itself does not come back."""
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=_STAGED_STDIO_READ_TIMEOUT_S
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout, proc.stderr
+
+
+@dataclass(frozen=True)
+class _ExecPlan:
+    """One fresh exec into a trial environment.
+
+    ``argv`` runs the command. ``partial_output_argv``, when set, reads back
+    what the command has written so far after ``argv`` was killed on its
+    deadline; it is ``None`` when the command's output streams straight
+    through ``argv``'s pipes.
+    """
+
+    argv: list[str]
+    partial_output_argv: list[str] | None = None
+
+
+# ``bash -c <script> tolokaforge-exec <out> <err> <command>``: the command runs
+# under its own bash with stdout/stderr on the two files and stdin from
+# /dev/null, then the files are relayed on the exec's streams and removed. The
+# command's exit code is the exec's. The command is the last positional so it
+# needs no quoting, whatever it contains.
+_STAGED_STDIO_SCRIPT = (
+    'bash -c "$3" >"$1" 2>"$2" </dev/null; rc=$?; cat "$1"; cat "$2" >&2; rm -f "$1" "$2"; exit $rc'
+)
+# Read-back for a command still running (or killed) after its exec's deadline:
+# relays the files as they stand; exit 3 once the command has removed them.
+_STAGED_STDIO_READ_SCRIPT = '[ -e "$1" ] || exit 3; cat "$1"; cat "$2" >&2'
+_STAGED_STDIO_READ_TIMEOUT_S = 10.0
+
+
+def _docker_exec_plan(container: str, command: str, user: str | None = None) -> _ExecPlan:
+    """``docker exec`` running *command* under bash inside *container*, with the
+    command's stdio staged in files inside the container.
+
+    A process the command leaves behind — a service started with ``&`` —
+    inherits the command's stdio. If that were the exec's own pipes, the
+    engine stops reading them once the exec returns and the process's next
+    write fails with EPIPE, which kills a Go or Node service outright. With
+    :data:`_STAGED_STDIO_SCRIPT` only the wrapper shell ever holds the pipes;
+    the command and anything it leaves running hold files under ``/tmp``.
+    (``docker exec -t`` is not an alternative: closing the pty hangs up the
+    whole foreground process group.)
 
     ``--user`` before ``-i``: matches ``docker exec --help`` order and the argv
     :class:`~tolokaforge.tools.persistent_shell.DockerComposeBashSession` builds
     for the same container.
     """
-    argv = ["docker", "exec"]
+    token = uuid.uuid4().hex
+    out_path = f"/tmp/.tolokaforge-exec-{token}.out"
+    err_path = f"/tmp/.tolokaforge-exec-{token}.err"
+    prefix = ["docker", "exec"]
     if user is not None:
-        argv.extend(["--user", user])
-    argv.extend(["-i", container, "bash", "-c", command])
-    return argv
+        prefix.extend(["--user", user])
+    prefix.extend(["-i", container, "bash", "-c"])
+    return _ExecPlan(
+        argv=[*prefix, _STAGED_STDIO_SCRIPT, "tolokaforge-exec", out_path, err_path, command],
+        partial_output_argv=[
+            *prefix,
+            _STAGED_STDIO_READ_SCRIPT,
+            "tolokaforge-exec",
+            out_path,
+            err_path,
+        ],
+    )
 
 
 class DockerComposeExecToolWrapper(ToolWrapper):
@@ -1297,9 +1454,9 @@ class DockerComposeExecToolWrapper(ToolWrapper):
     project lifecycle. ``start()`` records the trial id (its only reason to
     live) and resolves the target container via
     :func:`~tolokaforge.runner.compose_naming.compose_container_name`, the same
-    resolver the host-side materialiser uses to name the project — so the argv
-    ``docker exec -i <container> bash -c <command>`` targets the container the
-    per-trial runtime brought up.
+    resolver the host-side materialiser uses to name the project — so the
+    ``docker exec -i <container> …`` argv targets the container the per-trial
+    runtime brought up.
     """
 
     # Runner-managed per-trial lifecycle: start() is how the wrapper learns
@@ -1333,16 +1490,84 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         return self.timeout_s or _COMPOSE_EXEC_DEFAULT_TIMEOUT_S
 
     async def execute(self, arguments: dict[str, Any]) -> str:
-        command = arguments.get("command", "")
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.exec_in_env, command, self.own_budget_s)
+        commands = arguments.get("commands")
+        if commands is None:
+            command = arguments.get("command", "")
+            return await loop.run_in_executor(None, self.exec_in_env, command, self.own_budget_s)
+        if not isinstance(commands, list) or not all(isinstance(c, str) for c in commands):
+            # Raised, not returned: a returned string is a successful call to the
+            # recorder, and a malformed argument is a failed one.
+            raise ToolExecutionError(
+                self.name,
+                "`commands` must be an array of strings, one shell command per "
+                f"element — got {type(commands).__name__}. Nothing was run. Re-send the "
+                'call with a JSON array, e.g. {"commands": ["ls -la", "cat f.txt"]}.',
+            )
+        return await loop.run_in_executor(
+            None, self._exec_batch_in_env, commands, self.own_budget_s
+        )
+
+    @property
+    def _per_command_budget_s(self) -> float:
+        """Seconds one command of a batch may take, matching the one-shot tool.
+
+        A batch exists to replace N sequential single-command calls, so each of
+        its commands gets what one of those calls would have got. The declared
+        ``timeout_s`` bands the whole array, and the schema's ``maxItems`` says
+        how many commands that band was sized for — their ratio is the per-
+        command ceiling. A schema that names no ``maxItems`` has not been sized
+        for a batch, so the whole budget goes to each command and the running
+        total still stops the array.
+        """
+        properties = (self.tool_schema.parameters or {}).get("properties") or {}
+        max_items = (properties.get("commands") or {}).get("maxItems")
+        if not isinstance(max_items, int) or max_items < 1:
+            return self.own_budget_s
+        return self.own_budget_s / max_items
 
     def exec_in_env(self, command: str, timeout_s: float) -> str:
         """Run ``command`` in the trial container and return its output.
 
         Satisfies :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`.
         """
-        return _run_argv_preserving_partial_output(self._exec_argv(command), timeout_s)
+        plan = self._exec_plan(command)
+        return _run_argv_preserving_partial_output(
+            plan.argv, timeout_s, partial_output_argv=plan.partial_output_argv
+        )
+
+    def _exec_batch_in_env(self, commands: list[str], timeout_s: float) -> str:
+        """Run *commands* in order against one deadline, labelling each output.
+
+        Every command is its own ``docker exec``, so none of them sees another's
+        shell state — the same contract a caller gets from one ``command`` at a
+        time. The deadline spans the whole list: each command is given whatever
+        is left, and once the budget is gone the remaining commands are reported
+        unrun rather than silently dropped.
+        """
+        if not commands:
+            return ""
+        per_command_s = self._per_command_budget_s
+        deadline = time.monotonic() + timeout_s
+        sections: list[str] = []
+        for index, command in enumerate(commands):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                unrun = len(commands) - index
+                sections.append(
+                    f"$ {command}\n[not run — the {timeout_s:g}s budget for this "
+                    f"call was spent; {unrun} command(s) remain]"
+                )
+                sections.extend(f"$ {later}\n[not run]" for later in commands[index + 1 :])
+                break
+            plan = self._exec_plan(command)
+            output = _run_argv_preserving_partial_output(
+                plan.argv,
+                min(per_command_s, remaining),
+                partial_output_argv=plan.partial_output_argv,
+            )
+            sections.append(f"$ {command}\n{output}")
+        return "\n\n".join(sections)
 
     def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
         """Run ``command`` and return ``(returncode, stdout+stderr_merged)``.
@@ -1353,15 +1578,15 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         the substrate's test-suite RPC that ships the exit code on the wire)
         without gating on it.
         """
-        return _run_argv_with_exit_code(self._exec_argv(command), timeout_s)
+        return _run_argv_with_exit_code(self._exec_plan(command).argv, timeout_s)
 
-    def _exec_argv(self, command: str) -> list[str]:
+    def _exec_plan(self, command: str) -> _ExecPlan:
         if self._container is None:
             raise ToolExecutionError(
                 self.name,
                 "docker_compose_exec tool executed before start() — container name unresolved",
             )
-        return _docker_exec_argv(self._container, command)
+        return _docker_exec_plan(self._container, command)
 
 
 # =============================================================================
@@ -1376,6 +1601,12 @@ class PersistentShellToolWrapper(ToolWrapper):
     working directory from :class:`ToolLifecycleContext`), ``execute()`` runs
     commands or restarts the shell, and ``stop()`` tears it down. State (cwd,
     environment, functions) persists across ``execute()`` calls.
+
+    A command that ends the shell itself (``exit``, ``set -e`` and a failure,
+    ``exec``) closes the session; the result says so, and the next command
+    opens a fresh shell before it runs. A compose-engine timeout replaces the
+    shell, and the result says the session was reset and that the command may
+    still be running.
     """
 
     has_lifecycle = True
@@ -1440,6 +1671,8 @@ class PersistentShellToolWrapper(ToolWrapper):
                 self.name, "bash_session requires either 'command' or 'restart'"
             )
         loop = asyncio.get_event_loop()
+        if not self._session.is_open:
+            await loop.run_in_executor(None, self._session.open, self._cwd)
         result = await loop.run_in_executor(None, self._session.run, command, self._timeout_s)
         return self._format_result(result)
 
@@ -1452,17 +1685,20 @@ class PersistentShellToolWrapper(ToolWrapper):
         capability, and a trial that ran on the session-lifetime shell would
         otherwise present no executor at all.
         """
-        return _run_argv_preserving_partial_output(self._exec_argv(command), timeout_s)
+        plan = self._exec_plan(command)
+        return _run_argv_preserving_partial_output(
+            plan.argv, timeout_s, partial_output_argv=plan.partial_output_argv
+        )
 
     def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
         """Run ``command`` and return ``(returncode, stdout+stderr_merged)``.
 
         Second half of :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`.
         """
-        return _run_argv_with_exit_code(self._exec_argv(command), timeout_s)
+        return _run_argv_with_exit_code(self._exec_plan(command).argv, timeout_s)
 
-    def _exec_argv(self, command: str) -> list[str]:
-        """Argv for a fresh one-shot exec into the environment the session targets.
+    def _exec_plan(self, command: str) -> _ExecPlan:
+        """A fresh one-shot exec into the environment the session targets.
 
         Deliberately not routed through :attr:`_session`. Grading runs after an
         agent has had the shell for a whole trial, and that shell carries the
@@ -1476,7 +1712,7 @@ class PersistentShellToolWrapper(ToolWrapper):
         tool replaces did.
         """
         if self._service is None:
-            return ["bash", "-c", command]
+            return _ExecPlan(argv=["bash", "-c", command])
         if self._trial_id is None or self._project_prefix is None:
             raise ToolExecutionError(
                 self.name,
@@ -1485,7 +1721,7 @@ class PersistentShellToolWrapper(ToolWrapper):
         container = self._resolve_container_name(
             self._trial_id, self._service, self._project_prefix
         )
-        return _docker_exec_argv(container, command, user=self._user)
+        return _docker_exec_plan(container, command, user=self._user)
 
     def _new_session(self) -> BashSession:
         """Construct (but do not open) the backend session from config."""
@@ -1510,10 +1746,22 @@ class PersistentShellToolWrapper(ToolWrapper):
         self._session = session
         return "Shell session restarted; working directory and environment reset."
 
+    _SESSION_RESET_NOTE = (
+        "The tool's session was reset, so the next call starts clean: working "
+        "directory, environment variables and shell functions are gone"
+    )
+
     def _format_result(self, result: CommandResult) -> str:
+        if result.shell_exited:
+            code = "" if result.exit_code is None else f" with exit code {result.exit_code}"
+            return f"{result.output}\n[the shell exited{code}. {self._SESSION_RESET_NOTE}]"
         if result.timed_out:
-            suffix = f"\n[timed out after {self._timeout_s:g}s; command terminated]"
-            return result.output + suffix
+            if result.session_reset:
+                return (
+                    f"{result.output}\n[timed out after {self._timeout_s:g}s. "
+                    f"{self._SESSION_RESET_NOTE}; the command may still be running]"
+                )
+            return f"{result.output}\n[timed out after {self._timeout_s:g}s; command terminated]"
         if result.exit_code not in (0, None):
             return f"{result.output}\n[exit code: {result.exit_code}]"
         return result.output
@@ -1668,6 +1916,7 @@ class ToolFactory:
         *,
         search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
         search_index: SearchIndex | None = None,
+        artifacts_dir: str | None = None,
     ):
         """
         Initialize the tool factory.
@@ -1691,6 +1940,11 @@ class ToolFactory:
                               ``search_index`` rather than looked up as a builtin.
             search_index: The trial's search index, built by the backend
                           ``search.plane`` names; ``None`` when the trial has none.
+            artifacts_dir: The trial's extracted ``tool_artifacts`` root; ``None``
+                           when the trial ships no artefacts. MCP server
+                           subprocesses get it, and its ``tools/`` directory when
+                           there is one, ahead of ``PYTHONPATH`` — the entries
+                           extraction put on this process's ``sys.path``.
         """
         self.db_client = db_client
         self.trial_id = trial_id
@@ -1700,7 +1954,7 @@ class ToolFactory:
         self._initial_state_data = initial_state_data or {}
         self.id_fields: dict[str, str | list[str]] = dict(id_fields or {})
         self._claimed_tables: set[str] = set()
-        self._mcp_server_pool = MCPServerPool()
+        self._mcp_server_pool = MCPServerPool(python_path=_subprocess_python_path(artifacts_dir))
 
         # Create DB proxies for tools
         # Pass db_table_names so the proxy can resolve table names for unregistered models

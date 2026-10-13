@@ -61,6 +61,7 @@ EXCLUDED_TYPED_REASONS = frozenset(
     {
         TerminationReason.API_TIMEOUT,
         TerminationReason.EMPTY_COMPLETION,
+        TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS,
         TerminationReason.PROVISION_ERROR,
         TerminationReason.RATE_LIMIT,
         TerminationReason.REASONING_WITHOUT_ACTION,
@@ -73,9 +74,16 @@ produced from an exception type, an HTTP status, or a typed observation of a
 ``GenerationResult`` whose ``text`` is empty and whose ``tool_calls`` list is
 empty after retries — split between the one that billed reasoning tokens and
 then produced no action (``REASONING_WITHOUT_ACTION``) and the one the
-provider returned nothing at all for (``EMPTY_COMPLETION``). Never from
-matching prose against an exception message. A reason produced by text
-matching cannot gate exclusion
+provider returned nothing at all for (``EMPTY_COMPLETION``). A harness trial
+earns ``PROVIDER_REFUSED_ALL_REQUESTS`` the same way: from the request
+middleware's own per-request status records, every one of them outside 2xx.
+Never from matching prose against an exception message.
+
+``API_ERROR`` is deliberately absent, and stays absent. It is also set by a
+catch-all that fires when an exception string merely *contains* "API", which
+is prose — the trial may well be one the agent failed. The typed cases that
+could otherwise share that value each have their own reason above. A reason
+produced by text matching cannot gate exclusion
 — a context-window overflow and a malformed tool schema both read as "an API
 error" — and excluding a trial the agent actually failed inflates every
 benchmark number with nothing in the output to show it. Counting a trial the
@@ -167,8 +175,10 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         )
     elif trajectory.termination_reason in (
         TerminationReason.TIMEOUT,
+        TerminationReason.TRIAL_TOKEN_BUDGET,
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_ERROR,
+        TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS,
         TerminationReason.EMPTY_COMPLETION,
         TerminationReason.REASONING_WITHOUT_ACTION,
         TerminationReason.CONTEXT_WINDOW_EXCEEDED,

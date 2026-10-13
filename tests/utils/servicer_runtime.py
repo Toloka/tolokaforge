@@ -50,6 +50,9 @@ class ServicerStub:
         self._service = service
         self._context = context
 
+    def RegisterTrial(self, request):  # noqa: N802 — matches the gRPC stub method name
+        return self._service.RegisterTrial(request, self._context)
+
     def GradeTrial(self, request):  # noqa: N802 — matches the gRPC stub method name
         return self._service.GradeTrial(request, self._context)
 

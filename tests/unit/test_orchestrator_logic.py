@@ -730,6 +730,55 @@ class TestGenerateReports:
         assert warnings[0].kwargs["infrastructure_aborts"] == {"rate_limit": 1}
         assert warnings[0].kwargs["pass_at_k_without_coverage"] == [5]
 
+    def test_an_abandoned_retry_is_not_counted_as_a_trial(self, tmp_path: Path) -> None:
+        """A trial directory is ``trials/<task>/<index>`` with no attempt
+        component, so a retried attempt overwrites the one it supersedes and
+        only the last one is on disk. Recording both made the per-task row
+        claim a trial nobody can open, and the abandoned attempt's
+        harness-synthesised 0.0 entered the mean."""
+        from unittest.mock import MagicMock
+
+        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.output.measurement_fidelity import (
+            FidelityRule,
+            check_run_bundle,
+        )
+
+        orch = Orchestrator(_make_run_config())
+        orch.logger = MagicMock()
+        orch.tasks = [_make_task_config("T1")]
+
+        abandoned = _make_trajectory(
+            "T1",
+            0,
+            status=TrialStatus.ERROR,
+            termination_reason=TerminationReason.ERROR,
+            score=0.0,
+            binary_pass=False,
+        )
+        abandoned.grade = Grade(
+            binary_pass=False,
+            score=0.0,
+            components=GradeComponents(),
+            reasons="Trial failed with status: error",
+            synthesized_by_termination_reason=TerminationReason.ERROR,
+        )
+        orch._record_attempt(abandoned)
+        orch._record_attempt(_make_trajectory("T1", 0, score=1.0))
+
+        assert len(orch.results) == 1, "the abandoned attempt is still being counted"
+
+        # Only the surviving attempt left a directory — the retry wrote over it.
+        (tmp_path / "trials" / "T1" / "0").mkdir(parents=True)
+        orch._generate_reports(tmp_path)
+
+        rows = json.loads((tmp_path / "per_task_metrics.json").read_text())
+        assert rows[0]["total_trials"] == 1
+        assert rows[0]["avg_score"] == 1.0, "the abandoned attempt's 0.0 entered the mean"
+        assert [
+            v for v in check_run_bundle(tmp_path) if v.rule is FidelityRule.DISK_RECONCILIATION
+        ] == []
+
     def test_a_clean_run_announces_no_degraded_coverage(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock
 
@@ -1447,7 +1496,7 @@ def _orchestrator_with_tasks(config: RunConfig, judge_flags: dict[str, bool]):
     orch = Orchestrator(config)
     orch.tasks = [_make_task_config(tid) for tid in judge_flags]
     adapter = MagicMock()
-    adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+    adapter.describe_task.side_effect = lambda tid: _task_description_with_judge(
         tid, has_judge=judge_flags[tid]
     )
     adapter.requires_judge_model.side_effect = judge_flags.__getitem__
@@ -1516,11 +1565,11 @@ class TestJudgeModelGate:
         orch = Orchestrator(config, deps=OrchestratorDeps(conductor_factory=conductor_factory))
         orch.tasks = [_make_task_config("TASK-needs-judge")]
         adapter = MagicMock()
-        adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+        adapter.describe_task.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=True
         )
         adapter.requires_judge_model.side_effect = lambda tid: (
-            adapter.to_task_description(tid).grading.llm_judge is not None
+            adapter.describe_task(tid).grading.llm_judge is not None
         )
         orch.adapter = adapter
 
@@ -1545,11 +1594,11 @@ class TestJudgeModelGate:
         orch = Orchestrator(config)
         orch.tasks = [_make_task_config("TASK-001")]
         adapter = MagicMock()
-        adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+        adapter.describe_task.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=False
         )
         adapter.requires_judge_model.side_effect = lambda tid: (
-            adapter.to_task_description(tid).grading.llm_judge is not None
+            adapter.describe_task(tid).grading.llm_judge is not None
         )
         orch.adapter = adapter
 
@@ -1649,14 +1698,14 @@ class TestPrepareRunIdempotency:
         orch = Orchestrator(_make_run_config())
         orch.tasks = [_make_task_config("TASK-001"), _make_task_config("TASK-002")]
         adapter = MagicMock()
-        adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+        adapter.describe_task.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=False
         )
         _write_grading_yaml(tmp_path)
         adapter.get_task_dir.return_value = tmp_path
         adapter.fingerprint.return_value = None
         adapter.requires_judge_model.side_effect = lambda tid: (
-            adapter.to_task_description(tid).grading.llm_judge is not None
+            adapter.describe_task(tid).grading.llm_judge is not None
         )
         orch.adapter = adapter
         return orch

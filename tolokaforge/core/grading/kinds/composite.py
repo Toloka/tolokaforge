@@ -188,7 +188,10 @@ class CompositeGraderKind:
         from tolokaforge.core.grading import composite
         from tolokaforge.core.grading.grade_components import CompositeGradeComponents
         from tolokaforge.core.grading.substrate import SubstrateUnreachableError
-        from tolokaforge.core.grading.tool_artifacts import extract_tool_artifacts
+        from tolokaforge.core.grading.tool_artifacts import (
+            extract_tool_artifacts,
+            purge_modules_under,
+        )
         from tolokaforge.core.grading.trace_timeline import build_timeline_from_wire
         from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
         from tolokaforge.core.models.grade import CustomCheckDetail, JudgeStatus
@@ -325,6 +328,10 @@ class CompositeGraderKind:
                 while entry in sys.path:
                     sys.path.remove(entry)
             if artifacts_dir is not None:
+                # A module checks.py imported from the artefacts — a pinned tool
+                # library among them — must not be served to the next grade,
+                # which may carry another version of it.
+                purge_modules_under(artifacts_dir)
                 shutil.rmtree(artifacts_dir, ignore_errors=True)
 
     def _run_composite(

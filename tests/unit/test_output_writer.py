@@ -107,6 +107,42 @@ def test_write_tool_log(tmp_path, sample_trajectory):
     }
 
 
+def test_write_tool_log_keeps_a_note_argument_where_a_reader_finds_it(tmp_path):
+    """``bash_batch`` carries the agent's per-turn note as a required argument.
+
+    Nothing executes it, so the record is the only place it lands; it is written
+    verbatim beside the commands, not dropped as an argument no tool consumed.
+    """
+    from datetime import datetime
+
+    note = "pytest passed 12/12; the lint step is what remains, expect it clean"
+    trajectory = Trajectory(
+        task_id="t",
+        trial_index=0,
+        start_ts=datetime(2025, 1, 1, 10, 0, 0),
+        end_ts=datetime(2025, 1, 1, 10, 5, 0),
+        status=TrialStatus.COMPLETED,
+        messages=[],
+        metrics=Metrics(latency_total_s=1.0, turns=1, tool_calls=1),
+        tool_log=[
+            recorded_call(
+                "bash_batch",
+                sequence=0,
+                arguments={"note": note, "commands": ["ruff check ."]},
+                output="$ ruff check .\nAll checks passed!",
+            )
+        ],
+    )
+    writer = OutputWriter(tmp_path)
+
+    writer.write_tool_log(trajectory)
+
+    with open(tmp_path / "tool_log.yaml") as f:
+        (record,) = yaml.safe_load(f)
+
+    assert record["arguments"] == {"note": note, "commands": ["ruff check ."]}
+
+
 def test_write_tool_log_writes_an_empty_record_for_a_trial_that_called_no_tool(
     tmp_path, sample_trajectory
 ):

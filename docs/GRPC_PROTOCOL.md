@@ -241,6 +241,10 @@ message ToolSchema {
   // min(tool_cap, capability_cap). Optional (proto3): unset arrives as
   // Python None on the host and reads as "no per-tool cap".
   optional int32 output_max_chars = 6;
+  // Whether a call can change the graded state, as the tool's author declares
+  // it (ADR-0061). Optional (proto3): unset arrives as Python None on the host
+  // and means unknown, which reads as mutating; an older runner never sets it.
+  optional bool mutates_state = 7;
 }
 
 // =============================================================================
@@ -755,6 +759,23 @@ the field the harness reads `None` and defers to the per-model cap alone. The
 field is proto3-`optional` so a runner that does not carry it sends nothing and
 the harness reads it as no per-tool cap declared, without a version bump.
 
+#### ToolSchema.mutates_state
+
+Each `ToolSchema` the runner returns in `RegisterTrialResponse.tool_schemas` may
+carry an optional `mutates_state: bool` — whether a call can change the graded
+state, as the tool's author declares it
+([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)). The field is
+tri-state. The runner sets it only when the task description declares it: an
+MCP tool's `readOnlyHint` annotation read back by the native adapter, a
+builtin's `ToolPolicy.category` (`read` → `false`, `write` → `true`), the search
+tool's `false`, or an adapter's own sources. A tool that declares nothing leaves
+the field unset. The harness reads it back via `HasField("mutates_state")` and
+hands `None` on when it is unset; `None` is unknown and reads as mutating
+wherever the engine needs an answer, the conservative default every undeclared
+tool gets. The field is proto3-`optional`, so an older runner
+sends nothing and a newer harness reads every tool as undeclared, without a
+protocol version bump; nothing consumes the flag yet.
+
 ### ExecuteToolRequest/Response
 
 The tool execution flow:
@@ -981,6 +1002,11 @@ than replaying the rest and reporting a hash against a golden world the action n
 touched. Nothing has been written at that point: the MCP state sync, the `pre_golden`
 snapshot and the reset all follow resolution, so the trial's database still holds
 exactly what the agent left behind and the host can retry or re-grade it.
+
+For a trial whose tools run in an MCP subprocess, `GetState` and `GradeTrial` sync
+the DB mirror from it before reading, and a sync that fails answers
+`success = false` with the cause rather than the stale mirror — see
+[GRADING.md § A trial whose final state could not be captured](GRADING.md#a-trial-whose-final-state-could-not-be-captured).
 
 The host does not fill the gap either: `RunnerRPCTrialGrader.grade` raises
 `GradingFailedError` on any `success = false`, so the trial is published with no

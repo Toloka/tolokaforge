@@ -97,6 +97,9 @@ class ToolSchema(BaseModel):
 
     # Per-tool cap on the role=tool message content the engine loop appends.
     output_max_chars: Optional[int] = None        # see below
+
+    # Whether a call can change the graded state, as the tool's author declares it.
+    mutates_state: Optional[bool] = None          # see below; left out of the dump while None
 ```
 
 `ToolSchema.timeout_s` is the backstop the runner bands a call with **only for a
@@ -121,6 +124,23 @@ override at `tools.<actor>.<tool_name>.output_max_chars`, as `min` of whichever
 are set. `None` (the default) defers to the per-model cap; a tool that declares
 no cap in a pack that overrides no cap, run under a preset that declares no cap,
 passes its message content through verbatim.
+
+`ToolSchema.mutates_state` ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md))
+is the tool author's declaration of whether a call can change the graded state.
+`None` means unknown and reads as `True` wherever the engine needs an answer. The
+field is left out of the serialised schema while it is `None`, so an image that
+predates it accepts every pack that does not declare it. An MCP server declares it
+through the `readOnlyHint` tool annotation
+(`DomainToolRegistry.tool(..., mutates_state=False)`), which the native adapter reads
+back from `tools/list` and caches in `fixtures/tools.json`; an adapter that knows the
+flag from its own sources sets it directly. The proto `ToolSchema` that
+`RegisterTrialResponse` returns carries the same flag as `optional bool
+mutates_state = 7`, set only when declared. The engine declares it for the tools
+it authors: a builtin's `ToolPolicy.category` is read as its declaration (`read`
+→ `False`, `write` → `True`; `compute` — a shell, a browser, an HTTP client —
+says nothing and stays undeclared), and the task's search tool, which the engine
+builds over the trial's index, is `False`. `ToolSchema.category` is not read for
+it and is retired in a later release.
 
 ```python
 # =============================================================================
@@ -166,6 +186,29 @@ class InitialStateConfig(BaseModel):
     
     # Unstable fields: single source of truth for hash exclusion
     unstable_fields: List[UnstableFieldSpec] = Field(default_factory=list)
+
+    # Agent-visible files: dest_path → text content
+    filesystem: Dict[str, str] = Field(default_factory=dict)
+
+    # A world served over HTTP by a service of the trial's stack (ADR-0062).
+    # Left out of the dump while absent, so an image predating the field
+    # accepts every pack that does not declare it.
+    app_world: Optional[AppWorldConfig] = None
+
+
+class AppWorldConfig(BaseModel):
+    """
+    The service holding the trial's world; `tables` above is that world.
+
+    The runner mints an admin token and one bearer token per actor at
+    RegisterTrial, claims the service with PUT /_admin/tokens ({token: caller}),
+    loads `tables` with PUT /_admin/tables, reads GET /_admin/tables back into the
+    DB service before GetState / GradeTrial, and restores `tables` before the
+    golden replay and on ResetTrial. No credential crosses the wire.
+    """
+    url: str                                      # "http://world:8080"; its host is a stack service
+    hosts: List[str]                              # vendor hosts; only these get an actor's bearer
+    actors: Dict[Literal["agent", "user"], Optional[str]]  # tool actor → world caller (None: default)
 
 
 # =============================================================================
@@ -415,6 +458,9 @@ class TaskDescription(BaseModel):
     generated_at: Optional[datetime] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)      # Adapter-specific extras
 
+    # --- Tool code ---
+    tool_artifacts: Dict[str, str] = Field(default_factory=dict)  # relative path -> base64 content
+
     model_config = {"extra": "forbid"}
 ```
 
@@ -442,6 +488,53 @@ class TaskDescription(BaseModel):
 hold their default (an empty mapping, `search_kb`), so a task that declares neither
 serialises without them, and an older image, which forbids a key it does not declare,
 accepts it.
+
+### `tool_artifacts`: tool code, and the shared libraries a task pins
+
+`tool_artifacts` is the only channel by which tool code reaches the runner and the
+grader. The runner extracts it into the trial's directory and puts that directory on
+`sys.path`; the grader extracts the same set for `custom_checks`. Each adapter
+bundles its own files — the native adapter the task directory, or the domain root
+with `_shared/`.
+
+A task may also pin shared tool libraries installed next to the engine (ADR-0060),
+on `task.yaml`, on a shared `domain.yaml` or in a project's `task_defaults`:
+
+```yaml
+tool_libraries:
+  - name: acme_tools        # the entry-point name under tolokaforge.tool_libraries
+    version: 1.2.0          # compared verbatim with the installed library's version
+    apps: [billing]         # optional: the library bundles only these applications
+```
+
+`BaseAdapter.describe_task` — the one path the orchestrator, `run_trial` and the dry
+run build a description on — calls the adapter's `to_task_description`, then resolves
+each pin and merges the library's bundle into `tool_artifacts`. It refuses:
+
+| Refusal | Message names |
+|---|---|
+| the library is not installed | the pinned name and every installed library |
+| another version is installed | the pinned and the installed version |
+| the same library is pinned twice | the name |
+| the entry point registers no `name` / `version` / `bundle()`, or another name | the entry point |
+| an empty bundle, or a path that is absolute, leaves the artefact root or is not normalised (`./a/x.py`, `a//x.py`, `.`) | the library and the path |
+| a path the adapter's own artefacts (or an earlier library) already hold, or an artefact that would shadow a bundled top-level module on an import path of the trial — under `_shared/`, `tools/` or beside an MCP server script | the module and the artefact paths at fault — drop the pack's own copy of the library |
+
+`metadata["tool_libraries"]` records each merged library as
+`{name, version, apps, files}` (`apps` is `null` when the pin selects every
+application); a task that pins nothing gets no such key. The runner starts MCP server
+subprocesses with the extracted artefact root, and its `tools/` directory when there is
+one, ahead of `PYTHONPATH` — the entries extraction puts on the runner's own `sys.path`
+— so a server under `_shared/` imports a library rooted at the artefact directory as the
+runner process does. When a trial's artefacts are torn down — the runner's trial cleanup
+and shutdown, the end of an offline grade — every module imported from them is dropped
+from `sys.modules`, so a later trial that pins another version of a library imports that
+version rather than the cached one. A library imports only packages the runner already depends on, because its
+bundle runs on the runner's interpreter. `tolokaforge validate` resolves each pin and
+builds its bundle the same way, so every refusal above but the collision with the
+adapter's own artefacts is a `✗` line before any run. The encoded bundle of a library
+is built once per process for a given selection, so the descriptions of tasks sharing
+a pin share it rather than each holding a copy.
 
 ---
 

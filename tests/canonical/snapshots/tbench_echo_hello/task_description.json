@@ -114,6 +114,7 @@
       "shell",
       "basics"
     ],
+    "verifier_timeout_budget_sec": 30.0,
     "verifier_timeout_sec": 30.0
   },
   "name": "echo-hello",

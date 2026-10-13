@@ -10,11 +10,19 @@ Three roles live here:
 - :class:`DockerComposeBashSession` is the compose *engine*: a held
   ``docker exec`` into an already-running service container.
 
-Both engines share the sentinel protocol, per-command timeout, and 16 KB
-middle-truncation via :class:`_PtyBashSession`; they differ only in how the
-bash pipe is opened and how a runaway command is terminated on timeout.
-Working directory, exported environment, and shell functions persist across
-:meth:`run` calls; :meth:`close` + re-:meth:`open` yields a clean shell.
+Both engines share the sentinel protocol, per-command stdio staging,
+per-command timeout, and 16 KB middle-truncation via :class:`_PtyBashSession`;
+they differ only in how the bash pipe is opened and how a runaway command is
+terminated on timeout. Working directory, exported environment, and shell
+functions persist across :meth:`run` calls; :meth:`close` + re-:meth:`open`
+yields a clean shell.
+
+Each command runs inside the session shell with stdin from ``/dev/null`` and
+stdout/stderr staged to per-call files, which the shell relays back over the
+pty and removes once the command returns. Only the shell itself ever holds the
+pty: a service the command leaves running (``uvicorn … &``) keeps writing to
+its files after the call returns and survives a later timeout or shell exit,
+and a program that reads stdin sees EOF instead of swallowing the sentinel.
 
 The local session opens ``bash`` under a PTY with job control (``set -m``)
 enabled: the runaway command runs in its own foreground process group, so
@@ -49,14 +57,54 @@ _TAIL_CHARS = 8192
 
 _SENTINEL_PREFIX = "__DONE_"
 
+# Directory the session shell stages each command's stdout/stderr under; a
+# host path for the local engine, an in-container path for the compose engine.
+_STAGE_DIR = "/tmp"
+_STAGE_PREFIX = ".tolokaforge-session-"
+
+# How long a surviving shell gets to relay the staged files and print the
+# sentinel once its runaway foreground command has been killed.
+_RELAY_GRACE_S = 2.0
+# How long a surviving shell gets to drain an in-flight stage relay and answer a
+# fresh sentinel before the session is reset. A command that ignored the kill's
+# SIGINT keeps relaying a large stage after SIGKILL; draining it here keeps that
+# output from bleeding into the next command.
+_RESYNC_GRACE_S = 10.0
+_COLLECT_TIMEOUT_S = 10.0
+
 
 @dataclass(frozen=True)
 class CommandResult:
-    """Outcome of one command in a persistent shell session."""
+    """Outcome of one command in a persistent shell session.
+
+    ``timed_out`` and ``shell_exited`` are exclusive: a timed-out command was
+    still running at the deadline; ``shell_exited`` means the shell process
+    itself ended during the command (``exit``, ``set -e``, ``exec``), its
+    ``exit_code`` is the shell's, and the session is closed. ``session_reset``
+    means the engine replaced the shell to recover from the timeout, so the
+    working directory, environment and functions of the previous shell are
+    gone and the command may still be running.
+    """
 
     output: str
     exit_code: int | None
     timed_out: bool
+    shell_exited: bool = False
+    session_reset: bool = False
+
+
+@dataclass(frozen=True)
+class _Stage:
+    """In-shell paths one command's stdout and stderr are staged to."""
+
+    out: str
+    err: str
+
+    @classmethod
+    def new(cls) -> _Stage:
+        token = uuid.uuid4().hex
+        base = f"{_STAGE_DIR}/{_STAGE_PREFIX}{token}"
+        return cls(out=f"{base}.out", err=f"{base}.err")
 
 
 @runtime_checkable
@@ -71,6 +119,11 @@ class BashSession(Protocol):
     @property
     def pid(self) -> int:
         """PID of the session-leader shell process (for kill-safety checks)."""
+        ...
+
+    @property
+    def is_open(self) -> bool:
+        """Whether a shell is held; ``False`` once it exited or was closed."""
         ...
 
     def open(self, cwd: str | None) -> None:
@@ -101,15 +154,17 @@ def _truncate_middle(text: str) -> str:
 class _PtyBashSession:
     """Shared engine for a bash pipe held under a host PTY.
 
-    Subclasses provide the process spawn (:meth:`_popen`) and the per-command
-    timeout kill strategy (:meth:`_terminate_runaway`); the sentinel protocol,
-    timeout loop, and output truncation are shared here.
+    Subclasses provide the process spawn (:meth:`_popen`), the per-command
+    timeout kill strategy (:meth:`_terminate_runaway`) and the read-back of a
+    command's staged files (:meth:`_collect_stage`); the sentinel protocol,
+    stdio staging, timeout loop, and output truncation are shared here.
     """
 
     def __init__(self) -> None:
         self._proc: subprocess.Popen[bytes] | None = None
         self._master_fd: int | None = None
         self._cwd: str | None = None
+        self._ready = False
 
     @property
     def pid(self) -> int:
@@ -117,45 +172,34 @@ class _PtyBashSession:
             raise RuntimeError("bash session is not open")
         return self._proc.pid
 
+    @property
+    def is_open(self) -> bool:
+        return self._master_fd is not None
+
     def open(self, cwd: str | None) -> None:
         if self._proc is not None:
             raise RuntimeError("bash session is already open")
         self._cwd = cwd
-        self._spawn(cwd)
-        self._write("set -m; PS1=''; PS2=''\n")
-        # Sentinel round-trip flushes shell-init output and confirms readiness.
-        if self.run(":", timeout_s=_OPEN_TIMEOUT_S).timed_out:
+        if not self._open_shell(cwd):
             raise RuntimeError("bash session failed to become ready")
-        self._seed_cwd(cwd)
 
     def run(self, command: str, timeout_s: float) -> CommandResult:
         if self._master_fd is None:
             raise RuntimeError("bash session is not open")
         sentinel = f"{_SENTINEL_PREFIX}{uuid.uuid4().hex}__"
         marker = sentinel.encode()
-        self._write(f"{command}\n")
-        self._write(f"printf '%s %d\\n' {sentinel} $?\n")
+        stage = _Stage.new()
+        self._write(self._staged_command(command, stage, sentinel))
 
-        buf = b""
-        deadline = time.monotonic() + timeout_s
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return self._on_timeout(buf)
-            if not self._wait_readable(min(remaining, 0.2)):
-                continue
-            chunk = self._read()
-            if not chunk:
-                return self._on_process_exit(buf)
-            buf += chunk
-            parsed = self._split_on_sentinel(buf, marker)
-            if parsed is not None:
-                output, exit_code = parsed
-                return CommandResult(
-                    output=_truncate_middle(output),
-                    exit_code=exit_code,
-                    timed_out=False,
-                )
+        buf, parsed, exited = self._read_until_sentinel(b"", marker, time.monotonic() + timeout_s)
+        if parsed is not None:
+            output, exit_code = parsed
+            return CommandResult(
+                output=_truncate_middle(output), exit_code=exit_code, timed_out=False
+            )
+        if exited:
+            return self._on_process_exit(buf, stage)
+        return self._on_timeout(buf, marker, stage)
 
     def close(self) -> None:
         if self._proc is not None:
@@ -171,8 +215,26 @@ class _PtyBashSession:
             except OSError:
                 pass
             self._master_fd = None
+        self._ready = False
 
     # -- spawn / cwd hooks ----------------------------------------------------
+
+    def _open_shell(self, cwd: str | None) -> bool:
+        """Spawn the shell, confirm it answers a sentinel, seed its cwd.
+
+        Returns whether the shell became ready; a pipe that closes before the
+        first sentinel round-trip leaves the session closed.
+        """
+        self._spawn(cwd)
+        # Bracketed paste is readline's and only exists in an interactive
+        # shell; off, the pty carries the relayed command output alone.
+        self._write("set -m; PS1=''; PS2=''; bind 'set enable-bracketed-paste off' 2>/dev/null\n")
+        ready = self.run(":", timeout_s=_OPEN_TIMEOUT_S)
+        if ready.timed_out or ready.shell_exited:
+            return False
+        self._ready = True
+        self._seed_cwd(cwd)
+        return True
 
     def _spawn(self, cwd: str | None) -> None:
         master, slave = pty.openpty()
@@ -194,11 +256,44 @@ class _PtyBashSession:
         container after the shell is ready.
         """
 
-    def _terminate_runaway(self) -> None:
-        """Terminate a timed-out command, leaving the session usable."""
+    def _terminate_runaway(self) -> bool:
+        """Terminate a timed-out command, leaving the session usable.
+
+        Returns whether the shell that ran the command is still the session's
+        shell: ``True`` when only the command was killed and the shell will
+        relay its staged files itself, ``False`` when the shell was replaced.
+        """
+        raise NotImplementedError
+
+    def _collect_stage(self, stage: _Stage, remove: bool) -> str:
+        """Read back a command's staged stdout and stderr, in that order.
+
+        Used when the shell could not relay them itself: it exited during the
+        command, or was replaced after a timeout. ``remove`` deletes the files;
+        a timed-out command the engine left running keeps them.
+        """
         raise NotImplementedError
 
     # -- internals ------------------------------------------------------------
+
+    @staticmethod
+    def _staged_command(command: str, stage: _Stage, sentinel: str) -> str:
+        """The text written to the shell for one command.
+
+        The command runs as a brace group in the session shell itself, so
+        ``cd``, ``export`` and function definitions persist, with stdin from
+        ``/dev/null`` and stdout/stderr on the stage files. The shell then
+        relays the files on the pty, removes them, and prints the sentinel
+        with the command's exit status. The leading ``:`` keeps a command that
+        is empty or only a comment a valid group.
+        """
+        out, err = shlex.quote(stage.out), shlex.quote(stage.err)
+        return (
+            f"{{ :; {command}\n"
+            f"}} >{out} 2>{err} </dev/null; __tolokaforge_rc=$?; "
+            f"cat {out}; cat {err} >&2; rm -f {out} {err}; "
+            f"printf '%s %d\\n' {sentinel} \"$__tolokaforge_rc\"\n"
+        )
 
     @staticmethod
     def _split_on_sentinel(buf: bytes, marker: bytes) -> tuple[str, int | None] | None:
@@ -212,28 +307,111 @@ class _PtyBashSession:
             return None  # exit-code line not fully received yet
         token = after[:newline].strip()
         exit_code = int(token) if token.isdigit() else None
-        output = buf[:idx].decode("utf-8", errors="replace").replace("\r\n", "\n")
+        output = _decode(buf[:idx])
         return output, exit_code
 
-    def _on_timeout(self, buf: bytes) -> CommandResult:
-        self._terminate_runaway()
-        buf += self._drain(0.3)
-        output = buf.decode("utf-8", errors="replace").replace("\r\n", "\n")
-        return CommandResult(output=_truncate_middle(output), exit_code=None, timed_out=True)
+    def _read_until_sentinel(
+        self, buf: bytes, marker: bytes, deadline: float
+    ) -> tuple[bytes, tuple[str, int | None] | None, bool]:
+        """Read the pty until the sentinel line, the deadline, or the pipe closing.
 
-    def _on_process_exit(self, buf: bytes) -> CommandResult:
-        # An empty read from a ready descriptor means the shell pipe closed —
-        # the process exited and the session is dead. This is NOT a timeout:
-        # there is no runaway command to terminate and no live shell to
-        # preserve, so we must not enter ``_terminate_runaway``. The compose
-        # engine's terminate path reopens the exec and re-runs the sentinel,
-        # which reads EOF again and recurses without bound (one forked
-        # ``docker exec`` per level, until RecursionError) whenever the target
-        # container is not running. Close and report as timed-out so callers
-        # (e.g. ``open``) surface a clean failure instead of blowing the stack.
+        Returns the accumulated bytes, the parsed ``(output, exit_code)`` when
+        the sentinel arrived, and whether the pipe closed (the shell exited).
+        """
+        while True:
+            parsed = self._split_on_sentinel(buf, marker)
+            if parsed is not None:
+                return buf, parsed, False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return buf, None, False
+            if not self._wait_readable(min(remaining, 0.2)):
+                continue
+            chunk = self._read()
+            if not chunk:
+                return buf, None, True
+            buf += chunk
+
+    def _on_timeout(self, buf: bytes, marker: bytes, stage: _Stage) -> CommandResult:
+        same_shell = self._terminate_runaway()
+        if same_shell:
+            # The shell relays the stage files and prints the sentinel once its
+            # foreground command is gone; the exit status it carries is the
+            # kill's, so the result stays a timeout.
+            buf, parsed, _ = self._read_until_sentinel(
+                buf, marker, time.monotonic() + _RELAY_GRACE_S
+            )
+            if parsed is not None:
+                return CommandResult(
+                    output=_truncate_middle(parsed[0]), exit_code=None, timed_out=True
+                )
+            # No sentinel in the grace window: the shell either aborted the
+            # command line on SIGINT and is idle, or ignored it and is still
+            # relaying a large stage after SIGKILL. Read the stage files
+            # directly, then resync the pty to a clean prompt so an in-flight
+            # relay cannot bleed into the next command; a shell that will not
+            # resync is reset.
+            output = _decode(buf) + self._collect_stage(stage, remove=True)
+            return CommandResult(
+                output=_truncate_middle(output),
+                exit_code=None,
+                timed_out=True,
+                session_reset=not self._resync(),
+            )
+        output = _decode(buf) + self._collect_stage(stage, remove=same_shell)
+        return CommandResult(
+            output=_truncate_middle(output),
+            exit_code=None,
+            timed_out=True,
+            session_reset=not same_shell,
+        )
+
+    def _resync(self) -> bool:
+        """Drain any in-flight stage relay and confirm a clean prompt.
+
+        Writes a fresh sentinel and reads the pty until it arrives, discarding
+        everything before it — including a stage relay the shell is still
+        writing after a SIGKILL. Returns whether the shell answered in time; a
+        shell that closed the pipe or stayed silent is closed here so the next
+        command reopens a clean session.
+        """
+        sentinel = f"{_SENTINEL_PREFIX}{uuid.uuid4().hex}__"
+        self._write(f"printf '%s\\n' {shlex.quote(sentinel)}\n")
+        _, parsed, closed = self._read_until_sentinel(
+            b"", sentinel.encode(), time.monotonic() + _RESYNC_GRACE_S
+        )
+        if parsed is not None and not closed:
+            return True
         self.close()
-        output = buf.decode("utf-8", errors="replace").replace("\r\n", "\n")
-        return CommandResult(output=_truncate_middle(output), exit_code=None, timed_out=True)
+        return False
+
+    def _on_process_exit(self, buf: bytes, stage: _Stage) -> CommandResult:
+        """The pipe closed mid-command: the shell exited, and the session with it.
+
+        Not a timeout: there is no runaway command to terminate and no live
+        shell to preserve, so this never enters :meth:`_terminate_runaway`
+        (whose compose variant would reopen and read EOF again, without
+        bound, while the target container is not running). The stage files
+        were never relayed, so they are read back directly when a shell had
+        been ready to write them.
+        """
+        exit_code: int | None = None
+        if self._proc is not None:
+            try:
+                exit_code = self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        was_ready = self._ready
+        self.close()
+        output = _decode(buf)
+        if was_ready:
+            output += self._collect_stage(stage, remove=True)
+        return CommandResult(
+            output=_truncate_middle(output),
+            exit_code=exit_code,
+            timed_out=False,
+            shell_exited=True,
+        )
 
     def _kill_process_group(self, sig: int) -> None:
         assert self._proc is not None
@@ -279,19 +457,9 @@ class _PtyBashSession:
         # millisecond wait to 0 would spin the caller's loop instead of waiting.
         return bool(poller.poll(math.ceil(timeout_s * 1000)))
 
-    def _drain(self, timeout_s: float) -> bytes:
-        if self._master_fd is None:
-            return b""
-        out = b""
-        end = time.monotonic() + timeout_s
-        while time.monotonic() < end:
-            if not self._wait_readable(0.1):
-                continue
-            chunk = self._read()
-            if not chunk:
-                break
-            out += chunk
-        return out
+
+def _decode(buf: bytes) -> str:
+    return buf.decode("utf-8", errors="replace").replace("\r\n", "\n")
 
 
 class LocalBashSession(_PtyBashSession):
@@ -308,7 +476,7 @@ class LocalBashSession(_PtyBashSession):
             close_fds=True,
         )
 
-    def _terminate_runaway(self) -> None:
+    def _terminate_runaway(self) -> bool:
         """Kill the foreground command's process group, never the shell itself.
 
         Job control (``set -m``) puts the external command in its own
@@ -319,16 +487,39 @@ class LocalBashSession(_PtyBashSession):
         try:
             foreground = os.tcgetpgrp(self._master_fd)
         except OSError:
-            return
+            return True
         shell_pgid = os.getpgid(self._proc.pid)
         if foreground <= 0 or foreground == shell_pgid:
-            return  # only the shell is in the foreground — nothing to terminate
+            return True  # only the shell is in the foreground — nothing to terminate
         for sig in (signal.SIGINT, signal.SIGKILL):
             try:
                 os.killpg(foreground, sig)
             except ProcessLookupError:
-                return
+                return True
             time.sleep(0.2)
+        return True
+
+    def _collect_stage(self, stage: _Stage, remove: bool) -> str:
+        """The stage files are host files: read them directly."""
+        parts = []
+        for path in (stage.out, stage.err):
+            try:
+                with open(path, "rb") as fh:
+                    parts.append(_decode(fh.read()))
+            except OSError:
+                continue
+            if remove:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        return "".join(parts)
+
+
+# Read-back of a command's stage files from outside its shell: relays them as
+# they stand, exit 3 once the command has removed them. ``$3`` set removes
+# them afterwards.
+_STAGE_READ_SCRIPT = '[ -e "$1" ] || exit 3; cat "$1"; cat "$2" >&2; [ -z "$3" ] || rm -f "$1" "$2"'
 
 
 class DockerComposeBashSession(_PtyBashSession):
@@ -343,11 +534,11 @@ class DockerComposeBashSession(_PtyBashSession):
     Kill-safety is weaker than the local engine: a signal to the host-side
     ``docker exec`` process group does not reach the command running inside the
     container. When a per-command timeout fires we kill the host ``docker exec``
-    client and restart the in-container session to regain a clean prompt; the
-    container may briefly hold the orphaned command. This is a documented
-    limitation — subsequent commands still run, but session state accumulated
-    before a timed-out command is lost (unlike the local engine, which
-    preserves it).
+    client and open a fresh in-container session to regain a clean prompt; the
+    timed-out command keeps running inside the container, on its stage files,
+    and the result says so (``session_reset``). Subsequent commands run in the
+    new shell, whose cwd, environment and functions start from scratch (unlike
+    the local engine, which preserves them).
     """
 
     def __init__(self, container_name: str, user: str | None = None) -> None:
@@ -374,16 +565,19 @@ class DockerComposeBashSession(_PtyBashSession):
     def user(self) -> str | None:
         return self._user
 
-    def _popen(self, cwd: str | None, slave_fd: int) -> subprocess.Popen[bytes]:
+    def _exec_prefix(self) -> list[str]:
         # ``--user`` before ``-i``: matches ``docker exec --help`` order and
         # the editor's ``_exec`` (str_replace_editor.py) argv shape so a
         # future grep over the codebase sees one neighbour pattern.
         argv = ["docker", "exec"]
         if self._user is not None:
             argv.extend(["--user", self._user])
-        argv.extend(["-i", self._container_name, "bash", "--norc", "--noprofile"])
+        argv.extend(["-i", self._container_name])
+        return argv
+
+    def _popen(self, cwd: str | None, slave_fd: int) -> subprocess.Popen[bytes]:
         return subprocess.Popen(
-            argv,
+            [*self._exec_prefix(), "bash", "--norc", "--noprofile"],
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,
@@ -398,30 +592,36 @@ class DockerComposeBashSession(_PtyBashSession):
         if cwd:
             self.run(f"cd {shlex.quote(cwd)} 2>/dev/null || true", timeout_s=_OPEN_TIMEOUT_S)
 
-    def _terminate_runaway(self) -> None:
-        """Kill the host ``docker exec`` client and restart the in-container session.
+    def _terminate_runaway(self) -> bool:
+        """Kill the host ``docker exec`` client and open a fresh in-container session.
 
-        The runaway command may briefly survive as an in-container orphan (see
-        the class docstring); killing the client and reopening restores a usable
-        prompt for the next command.
+        The runaway command survives as an in-container process on its stage
+        files (see the class docstring); killing the client and reopening
+        restores a usable prompt for the next command.
         """
-        self._kill_process_group(signal.SIGKILL)
-        if self._proc is not None:
-            try:
-                self._proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            self._proc = None
-        if self._master_fd is not None:
-            try:
-                os.close(self._master_fd)
-            except OSError:
-                pass
-            self._master_fd = None
-        self._spawn(self._cwd)
-        self._write("set -m; PS1=''; PS2=''\n")
-        self.run(":", timeout_s=_OPEN_TIMEOUT_S)
-        self._seed_cwd(self._cwd)
+        self.close()
+        self._open_shell(self._cwd)
+        return False
+
+    def _collect_stage(self, stage: _Stage, remove: bool) -> str:
+        """Read the stage files back through a one-shot exec into the container."""
+        argv = [
+            *self._exec_prefix(),
+            "bash",
+            "-c",
+            _STAGE_READ_SCRIPT,
+            "tolokaforge-session",
+            stage.out,
+            stage.err,
+            "rm" if remove else "",
+        ]
+        try:
+            done = subprocess.run(argv, capture_output=True, timeout=_COLLECT_TIMEOUT_S)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if done.returncode == 3:
+            return ""
+        return _decode(done.stdout) + _decode(done.stderr)
 
 
 class PersistentShellTool(Tool):
