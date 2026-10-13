@@ -21,6 +21,7 @@ from typing import Annotated, Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from tolokaforge.core.tools_interface import (
@@ -208,7 +209,7 @@ class TestMcpFn:
         self.mock_mcp = MagicMock()
         self.captured_fn: Any = None
 
-        def capture_decorator(description):
+        def capture_decorator(description, annotations=None):
             def inner(fn):
                 self.captured_fn = fn
                 return fn
@@ -304,7 +305,63 @@ class TestDecoratorSideEffects:
             return "x"
 
         assert self.mock_mcp.tool.call_count == count_before + 1
-        assert self.mock_mcp.tool.call_args == call(description="One tool.")
+        assert self.mock_mcp.tool.call_args == call(description="One tool.", annotations=None)
+
+    def test_a_declared_mutates_state_becomes_the_read_only_hint(self):
+        @self.registry.tool("Read.", mutates_state=False)
+        def read_tool(data: dict) -> str:
+            return "x"
+
+        assert self.mock_mcp.tool.call_args == call(
+            description="Read.", annotations=ToolAnnotations(readOnlyHint=True)
+        )
+
+        @self.registry.tool("Write.", mutates_state=True)
+        def write_tool(data: dict) -> str:
+            return "x"
+
+        assert self.mock_mcp.tool.call_args == call(
+            description="Write.", annotations=ToolAnnotations(readOnlyHint=False)
+        )
+
+    def test_the_internal_state_tools_declare_themselves(self):
+        """The engine's own get/set state tools carry the engine's declaration:
+        the snapshot read is read-only, the replace mutates. They reach
+        ``tools/list`` like every other tool, so an undeclared pair would read as
+        a cache predating ADR-0061 on every pack built on the registry.
+        """
+        internal = {
+            c.kwargs["description"]: c.kwargs["annotations"]
+            for c in self.mock_mcp.tool.call_args_list
+            if c.kwargs["description"].startswith("Internal: ")
+        }
+
+        assert internal == {
+            "Internal: get state snapshot": ToolAnnotations(readOnlyHint=True),
+            "Internal: replace state": ToolAnnotations(readOnlyHint=False),
+        }
+
+    def test_the_tools_entry_carries_the_same_declaration_in_process(self):
+        """One declaration, two readers: the wire gets the annotation, an
+        in-process consumer that imports ``TOOLS`` (golden replay) reads the
+        same value off the entry — ``None`` when the tool declares nothing.
+        """
+
+        @self.registry.tool("Read.", mutates_state=False)
+        def read_tool(data: dict) -> str:
+            return "x"
+
+        @self.registry.tool("Write.", mutates_state=True)
+        def write_tool(data: dict) -> str:
+            return "x"
+
+        @self.registry.tool("Undeclared.")
+        def legacy_tool(data: dict) -> str:
+            return "x"
+
+        assert self.registry.TOOLS["read_tool"].mutates_state is False
+        assert self.registry.TOOLS["write_tool"].mutates_state is True
+        assert self.registry.TOOLS["legacy_tool"].mutates_state is None
 
     def test_data_stripped_from_mcp_signature(self):
         captured: list[Any] = []

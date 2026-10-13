@@ -29,6 +29,7 @@ from tolokaforge.adapters._task_loader import (
     seeded_tables_from_task,
     tool_configs,
     tool_output_max_chars_overrides,
+    warn_tool_cache_predating_mutates_state,
 )
 from tolokaforge.adapters.base import (
     AdapterEnvironment,
@@ -252,6 +253,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
                 source=source,
                 tool_config=configs.get(tool_name, {}),
                 output_max_chars=emitted_cap,
+                mutates_state=rich.get("mutates_state"),
             )
         )
     return schemas
@@ -655,11 +657,14 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         ``initial_state.json_db`` gives the shape of the state the replay loads and
         ``tools.agent.mcp_server`` gives whether the pack ships the module those
         actions call — the two facts :func:`require_replayable_golden_actions` reads
-        at grade time, read here at authoring.
+        at grade time, read here at authoring. ``initial_state.app_world`` holds the
+        world in a service of the stack instead, which the runner replays against
+        through the agent's own ``http_request`` (ADR-0062).
         """
         return ReplayWorld(
             initial_state=classify_initial_state(task.initial_state.json_db),
             mcp_server=bool(task.tools.agent.get("mcp_server")) if task.tools.agent else False,
+            app_world=task.initial_state.app_world is not None,
         )
 
     @classmethod
@@ -899,6 +904,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
 
         agent_tools = _actor_tool_schemas(task, task_dir, ToolActor.AGENT)
         user_tools = _actor_tool_schemas(task, task_dir, ToolActor.USER)
+        warn_tool_cache_predating_mutates_state(task, task_dir)
         mcp_server_ref: str | None = actor_tool_block(task, ToolActor.AGENT).get("mcp_server")
 
         initial_tables = seeded_tables_from_task(task, task_dir)
@@ -1081,6 +1087,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             schemas=[],
             unstable_fields=read_unstable_field_specs(task_dir),
             filesystem=initial_filesystem,
+            app_world=task.initial_state.app_world,
         )
         if state_checks is not None:
             err = check_wire_comparison_view(
@@ -1154,6 +1161,10 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             self._project_default_environment,
             task.environment_manifest,
         )
+        if task.initial_state.app_world is not None:
+            refusal = task.initial_state.app_world.isolation_refusal(environment_manifest)
+            if refusal is not None:
+                raise ValueError(f"{task_id}: {refusal}")
 
         # Create TaskDescription
         task_description = TaskDescription(

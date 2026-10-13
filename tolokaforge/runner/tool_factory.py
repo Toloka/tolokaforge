@@ -553,6 +553,13 @@ class MCPServerProcess(BaseModel):
     """Manages an MCP server subprocess."""
 
     script_path: str
+    python_path: tuple[str, ...] = ()
+    """Directories put ahead of the inherited ``PYTHONPATH`` of the subprocess.
+
+    The runner passes the trial's artefact root and its ``tools/`` directory
+    (see :func:`_subprocess_python_path`), so a server under ``_shared/``
+    imports the packages delivered there — a pinned tool library (ADR-0060)
+    among them — as the runner process itself does."""
     process: Any | None = None  # subprocess.Popen - can't type properly
     request_id: int = 0
     _start_lock: Any = PrivateAttr(default_factory=threading.Lock)
@@ -588,6 +595,7 @@ class MCPServerProcess(BaseModel):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=self._subprocess_environment(),
         )
         if self._closed:
             self.stop()
@@ -608,6 +616,20 @@ class MCPServerProcess(BaseModel):
         self.process.stdin.flush()
 
         logger.info(f"Started MCP server: {self.script_path}")
+
+    def _subprocess_environment(self) -> dict[str, str] | None:
+        """The runner's environment with :attr:`python_path` ahead of ``PYTHONPATH``.
+
+        ``None`` — inherit the environment unchanged — when there is nothing to add.
+        """
+        if not self.python_path:
+            return None
+        env = dict(os.environ)
+        inherited = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = os.pathsep.join(
+            [*self.python_path, inherited] if inherited else self.python_path
+        )
+        return env
 
     def stop(self) -> None:
         """Stop the MCP server subprocess."""
@@ -753,10 +775,31 @@ class MCPServerProcess(BaseModel):
             raise RuntimeError(f"_tolokaforge_set_state_ declared failure: {_first_text(result)!r}")
 
 
-class MCPServerPool:
-    """Lazy MCP processes owned by one trial's reconstructed tools."""
+def _subprocess_python_path(artifacts_dir: str | None) -> tuple[str, ...]:
+    """What an MCP server subprocess gets ahead of ``PYTHONPATH`` for ``artifacts_dir``.
 
-    def __init__(self) -> None:
+    Mirrors what :func:`~tolokaforge.core.grading.tool_artifacts.extract_tool_artifacts`
+    put on the runner's own ``sys.path``, in the same order: ``tools/`` first
+    when the artefacts have one, then the root. An in-process tool and a
+    server subprocess then resolve the same module to the same file.
+    """
+    if artifacts_dir is None:
+        return ()
+    tools_dir = os.path.join(artifacts_dir, "tools")
+    if os.path.isdir(tools_dir):
+        return (tools_dir, artifacts_dir)
+    return (artifacts_dir,)
+
+
+class MCPServerPool:
+    """Lazy MCP processes owned by one trial's reconstructed tools.
+
+    Every server the pool starts gets ``python_path`` ahead of its inherited
+    ``PYTHONPATH`` (see :attr:`MCPServerProcess.python_path`).
+    """
+
+    def __init__(self, python_path: tuple[str, ...] = ()) -> None:
+        self._python_path = python_path
         self._servers: dict[str, MCPServerProcess] = {}
         self._lock = threading.Lock()
         self._cleanup_lock = threading.Lock()
@@ -767,7 +810,9 @@ class MCPServerPool:
             if self._closed:
                 raise RuntimeError("Trial MCP servers have been closed")
             if script not in self._servers:
-                self._servers[script] = MCPServerProcess(script_path=script)
+                self._servers[script] = MCPServerProcess(
+                    script_path=script, python_path=self._python_path
+                )
             server = self._servers[script]
         server.start()
         return server
@@ -1029,6 +1074,15 @@ class BuiltinGenericToolWrapper(ToolWrapper):
                 tool_schema.name,
                 f"Failed to instantiate builtin tool '{tool_schema.name}': {exc}",
             ) from exc
+
+    @property
+    def builtin_tool(self) -> Any:
+        """The builtin instance this wrapper delegates to.
+
+        The runtime arms it with what no schema may carry, such as the bearer
+        token an app world mints for an actor's ``http_request`` (ADR-0062).
+        """
+        return self._tool
 
     @property
     def own_budget_s(self) -> float:
@@ -1862,6 +1916,7 @@ class ToolFactory:
         *,
         search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
         search_index: SearchIndex | None = None,
+        artifacts_dir: str | None = None,
     ):
         """
         Initialize the tool factory.
@@ -1885,6 +1940,11 @@ class ToolFactory:
                               ``search_index`` rather than looked up as a builtin.
             search_index: The trial's search index, built by the backend
                           ``search.plane`` names; ``None`` when the trial has none.
+            artifacts_dir: The trial's extracted ``tool_artifacts`` root; ``None``
+                           when the trial ships no artefacts. MCP server
+                           subprocesses get it, and its ``tools/`` directory when
+                           there is one, ahead of ``PYTHONPATH`` — the entries
+                           extraction put on this process's ``sys.path``.
         """
         self.db_client = db_client
         self.trial_id = trial_id
@@ -1894,7 +1954,7 @@ class ToolFactory:
         self._initial_state_data = initial_state_data or {}
         self.id_fields: dict[str, str | list[str]] = dict(id_fields or {})
         self._claimed_tables: set[str] = set()
-        self._mcp_server_pool = MCPServerPool()
+        self._mcp_server_pool = MCPServerPool(python_path=_subprocess_python_path(artifacts_dir))
 
         # Create DB proxies for tools
         # Pass db_table_names so the proxy can resolve table names for unregistered models

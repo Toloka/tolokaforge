@@ -31,6 +31,8 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 
 Note: number 0043 is intentionally skipped — reserved for a draft that never landed on `main` (`HybridRuntimeBackend` as a distinct class). Superseded before merge by ADR-0044. See closed Milestone 40 (#1363) for the draft's history.
 
+Note: numbers 0057–0059 are taken by the detached-execution ADRs, which land with that work on `feat/detached-execution`; the index lists them when they reach `main`.
+
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions in ADRs | Accepted |
@@ -89,6 +91,6 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0054](0054-search-backend-protocol-and-registry.md) | The `SearchBackend` Protocol and entry-point registry — retrieval as a per-task-selectable plugin keyed by `search.plane`, with rag-service as the registered built-in and an in-process `bm25` | Accepted |
 | [0055](0055-grading-regex-engine.md) | A closed, selectable engine for grading regexes — `linear` (RE2, linear-time) by default, `backtracking` (Python `re`) by explicit opt-in, chosen per section or per site, with a list form for conjunctions | Accepted |
 | [0056](0056-all-in-one-image.md) | All-in-one `tolokaforge-standalone` image — the five-service runner stack collapsed into one supervised container (lean base + PyPI-extras-style add-ons), complementary to the per-component images | Accepted |
-| [0060](0060-shared-tool-libraries-through-tool-artifacts.md) | Shared tool libraries reach the trial through `tool_artifacts` — a task pins `tool_libraries: [{name, version, apps}]`, the engine resolves the installed library (entry-point group `tolokaforge.tool_libraries`) and merges its bundle for every adapter | Proposed |
-| [0061](0061-mutates-state-on-the-tool-wire.md) | `mutates_state` on the tool wire schema, declared by the tool's author — MCP servers declare it as the `readOnlyHint` annotation, which the native adapter reads back | Proposed |
-| [0062](0062-app-world-served-over-http.md) | An application world served over HTTP holds one trial's state — `initial_state.app_world` names a trial-scoped service the runner loads, reads back and restores; the runner mints per-trial credentials that `http_request` attaches only for the world's hosts; the engine grades | Proposed |
+| [0060](0060-shared-tool-libraries-through-tool-artifacts.md) | Shared tool libraries reach the trial through `tool_artifacts` — a task pins `tool_libraries: [{name, version, apps}]`, the engine resolves the installed library (entry-point group `tolokaforge.tool_libraries`) and merges its bundle for every adapter | Accepted |
+| [0061](0061-mutates-state-on-the-tool-wire.md) | `mutates_state` on the tool wire schema, declared by the tool's author — MCP servers declare it as the `readOnlyHint` annotation, which the native adapter reads back | Accepted |
+| [0062](0062-app-world-served-over-http.md) | An application world served over HTTP holds one trial's state — `initial_state.app_world` names a trial-scoped service the runner loads, reads back and restores; the runner mints per-trial credentials that `http_request` attaches only for the world's hosts; the engine grades | Accepted |

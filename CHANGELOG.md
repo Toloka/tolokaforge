@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.30.2 (2026-10-13)
+
+### Feat
+
+- **runner**: app worlds served over HTTP with runtime-minted credentials (ADR-0062) (#1842)
+- **tools**: mutates_state on the tool wire, declared by the tool's author (ADR-0061) (#1841)
+- **tools**: shared tool libraries reach the trial through tool_artifacts (ADR-0060) (#1840)
+
+### Fix
+
+- **tools**: http_request reports a 4xx/5xx body as the call's error (#1836) (#1839)
+- **netpolicy**: carry a service's aliases onto the injected networks (#1835) (#1838)
+- **grading**: a lost MCP state is ungradeable, not graded from the stale mirror [TECHDEL-682] (#1832)
+
 ## v0.30.1 (2026-10-12)
 
 ### Fix

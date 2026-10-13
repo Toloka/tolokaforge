@@ -451,6 +451,11 @@ class GradingEngine:
                     self.task_initial_state.json_db if self.task_initial_state else None
                 ),
                 mcp_server=self.task_mcp_server,
+                app_world_url=(
+                    self.task_initial_state.app_world.url
+                    if self.task_initial_state and self.task_initial_state.app_world
+                    else None
+                ),
             )
             result = self.state_checker.check_hash_against_golden_replay(
                 db_state=db_state,

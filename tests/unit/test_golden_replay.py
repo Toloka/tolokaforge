@@ -620,7 +620,7 @@ class _AnsweringDBClient:
 class _AnsweringTool:
     """A registered tool answering one payload, reached through ``execute`` as a wrapper is.
 
-    No ``MCPServerToolWrapper``, so ``_find_mcp_server_wrapper`` answers ``None`` and the
+    No state holder, so ``_state_holder`` answers ``None`` and the
     subprocess state syncs stay out of these cases.
     """
 

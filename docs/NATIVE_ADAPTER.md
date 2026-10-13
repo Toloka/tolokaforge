@@ -221,6 +221,17 @@ them from that server, in one of two modes:
 | `True` | `fixtures/tools.json` first; when it is absent or unreadable, a live `tools/list` query against `mcp_server.py`, cached back into `fixtures/tools.json` | `to_task_description` — the run path |
 | `False` | `fixtures/tools.json` only; an MCP task without one resolves to no schemas at all | validation and pre-run gates |
 
+A readable cache is never refreshed, so a committed `fixtures/tools.json` wins
+over the server. A tool annotation declared after the cache was written — a
+`readOnlyHint`, read into `ToolSchema.mutates_state` — stays off the wire until
+the cache is regenerated: delete the file and describe the task on the run path
+(a run, or `tolokaforge run --dry-run` on a config naming the task). The writer
+persists `mutates_state` for every entry, `null` for a tool that declares nothing,
+so an entry *without* the key predates the field: `to_task_description` warns once
+per description (not once per actor block), naming the file and the tools, and
+leaves the cache as it is; a present `null` is a deliberate non-declaration and
+is silent. Regenerating the cache silences the warning.
+
 The read-only mode exists because a gate must not mutate the tree it is
 validating: spawning a server and depositing a generated fixture would change
 the task under inspection.  Its answer for an unresolved tool is *unknown*, not
@@ -240,6 +251,12 @@ what the agent is handed. The same declaration sets the task's `search` block:
 `plane` is `rag.backend`, `enabled` is whether that backend needs rag-service, and
 `backend_config` / `tool_name` ride along when they are not at their defaults
 (see [TASK_DESCRIPTION_SCHEMA.md](TASK_DESCRIPTION_SCHEMA.md)).
+
+`ToolSchema.mutates_state` ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md))
+is declared by whoever authored the tool. A builtin's schema derives it from the
+tool's `ToolPolicy.category` (`read` → `False`, `write` → `True`, `compute` →
+undeclared); the search tool is `False`; an MCP tool carries whatever its server's
+`readOnlyHint` annotation says, and nothing when the server declares nothing.
 
 `fixtures/tools.json` format (list of tool descriptors):
 
@@ -266,10 +283,14 @@ what the agent is handed. The same declaration sets the task's `search` block:
         }
       },
       "required": ["customer_id", "items"]
-    }
+    },
+    "mutates_state": true
   }
 ]
 ```
+
+`mutates_state` is `true`, `false`, or `null` for a tool that declares nothing
+([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)).
 
 > **Note:** If `fixtures/tools.json` is absent and the live MCP query fails or
 > reports no tools, the run fails with a `RuntimeError` naming the server.  An
@@ -346,7 +367,16 @@ called to serialize the task for transfer to the Runner container.
 keyed by relative path (e.g. `"mcp_server.py"`, `"tools/orders.py"`).  The
 Runner extracts these into a temporary directory and launches `mcp_server.py`
 as a subprocess, reconstructing the original layout without any host
-filesystem access.
+filesystem access. The subprocess starts with the extracted root — and its `tools/`
+directory, when the bundle has one — ahead of `PYTHONPATH`, the entries extraction put on
+the Runner's own `sys.path`, so a server under `_shared/` imports packages that sit at
+the root as an in-process tool does.
+
+The bundle is the adapter's part only. A task's pinned `tool_libraries` are
+merged afterwards by `BaseAdapter.describe_task`, and a file of the task
+directory that a pinned library also bundles — or a copy of a bundled package
+under `_shared/` or `tools/`, where it would shadow the pinned one — is refused; see
+[`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifacts`](TASK_DESCRIPTION_SCHEMA.md#tool_artifacts-tool-code-and-the-shared-libraries-a-task-pins).
 
 **Bundling scope:**
 - Python (`.py`) files — bundled **recursively** (`**/*.py`), so all subdirectory modules (e.g. `tools/*.py`) are included.

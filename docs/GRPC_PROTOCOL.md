@@ -241,6 +241,10 @@ message ToolSchema {
   // min(tool_cap, capability_cap). Optional (proto3): unset arrives as
   // Python None on the host and reads as "no per-tool cap".
   optional int32 output_max_chars = 6;
+  // Whether a call can change the graded state, as the tool's author declares
+  // it (ADR-0061). Optional (proto3): unset arrives as Python None on the host
+  // and means unknown, which reads as mutating; an older runner never sets it.
+  optional bool mutates_state = 7;
 }
 
 // =============================================================================
@@ -744,6 +748,23 @@ as `min(tool_cap, capability_cap)`: the tighter set cap wins per call. Absent
 the field the harness reads `None` and defers to the per-model cap alone. The
 field is proto3-`optional` so a runner that does not carry it sends nothing and
 the harness reads it as no per-tool cap declared, without a version bump.
+
+#### ToolSchema.mutates_state
+
+Each `ToolSchema` the runner returns in `RegisterTrialResponse.tool_schemas` may
+carry an optional `mutates_state: bool` — whether a call can change the graded
+state, as the tool's author declares it
+([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)). The field is
+tri-state. The runner sets it only when the task description declares it: an
+MCP tool's `readOnlyHint` annotation read back by the native adapter, a
+builtin's `ToolPolicy.category` (`read` → `false`, `write` → `true`), the search
+tool's `false`, or an adapter's own sources. A tool that declares nothing leaves
+the field unset. The harness reads it back via `HasField("mutates_state")` and
+hands `None` on when it is unset; `None` is unknown and reads as mutating
+wherever the engine needs an answer, the conservative default every undeclared
+tool gets. The field is proto3-`optional`, so an older runner
+sends nothing and a newer harness reads every tool as undeclared, without a
+protocol version bump; nothing consumes the flag yet.
 
 ### ExecuteToolRequest/Response
 

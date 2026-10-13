@@ -35,7 +35,7 @@ class _FakeAdapter:
     def __init__(self, task_desc: Any) -> None:
         self._task_desc = task_desc
 
-    def to_task_description(self, task_id: str) -> Any:
+    def describe_task(self, task_id: str) -> Any:
         return self._task_desc
 
 

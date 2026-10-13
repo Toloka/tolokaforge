@@ -92,7 +92,7 @@ def test_backend_selector_routes_pack_to_per_trial() -> None:
         environment_manifest=manifest,
     )
     orch.adapter = MagicMock()
-    orch.adapter.to_task_description.side_effect = lambda tid: task_desc
+    orch.adapter.describe_task.side_effect = lambda tid: task_desc
 
     backend = orch._construct_runtime_backend(
         runner_address="sentinel:50051",

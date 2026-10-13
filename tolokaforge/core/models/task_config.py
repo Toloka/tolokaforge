@@ -31,9 +31,11 @@ from tolokaforge.core.grading.state_composition import (
     resolve_hash_weight,
 )
 from tolokaforge.core.hash import ColumnCompareRule
+from tolokaforge.core.hosts import unreachable_hosts
 from tolokaforge.core.models.run_config import RunDefaults
 from tolokaforge.runner.models import (
     DEFAULT_SEARCH_TOOL_NAME,
+    AppWorldConfig,
     EnvironmentPatch,
     JudgeCustomization,
     LLMJudgeConfig,
@@ -195,6 +197,43 @@ class InitialStateConfig(BaseModel):
     rag: RagConfig | None = None
     system_prompt: str | None = None  # Path to system prompt file (e.g., wiki.md)
     initialization_actions: list[InitializationAction] | None = None
+    app_world: AppWorldConfig | None = None
+    """An application world a service of the task's stack serves over HTTP (ADR-0062).
+    ``json_db`` is that world as tables, which the runner loads into the service."""
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"app_world"})
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _leave_out_absent_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return leave_out_absent_fields(self, handler)
+
+    @model_validator(mode="after")
+    def _an_app_world_needs_its_tables(self) -> Self:
+        if self.app_world is not None and self.json_db is None:
+            raise ValueError(
+                "initial_state.app_world names a world service, and initial_state.json_db "
+                "is unset: json_db is the world as tables, which the runner loads into the "
+                "service at registration and restores before the golden replay"
+            )
+        return self
+
+
+class ToolLibraryPin(BaseModel):
+    """One shared tool library a task pins (ADR-0060).
+
+    The engine resolves ``name`` among the libraries installed next to it
+    (entry-point group ``tolokaforge.tool_libraries``), refuses an installed
+    version other than ``version``, and merges the library's bundle for
+    ``apps`` (every application the library ships when unset) into the
+    trial's ``tool_artifacts``, whatever the adapter.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    apps: list[str] | None = Field(default=None, min_length=1)
 
 
 class ToolsConfig(BaseModel):
@@ -594,6 +633,13 @@ class TaskConfig(BaseModel):
     entry-point registry (see ADR-0027)."""
     initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    tool_libraries: list[ToolLibraryPin] = Field(default_factory=list)
+    """Shared tool libraries whose bundles travel with the trial (ADR-0060).
+
+    Declared on the task, on a shared ``domain.yaml`` or in a project's
+    ``task_defaults``, like ``tools``. ``BaseAdapter.describe_task`` merges
+    each pinned bundle into ``tool_artifacts`` after the adapter has built the
+    description, so no adapter bundles a library itself."""
     actors: dict[str, ActorSpec] | None = None
     """Named actor map. ``actors.user`` configures the user simulator
     (:meth:`resolve_user_simulator`); the loader lifts a legacy top-level
@@ -765,6 +811,36 @@ class TaskConfig(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _refuse_an_unservable_app_world(self) -> Self:
+        """Refuse an app world beside an MCP server, or beyond an actor's ``http_request``.
+
+        One state holder per trial: the runner reads one holder back before grading
+        and restores one before the golden replay, so with two the grade would ignore
+        what the agent did to the other. And an actor's token is presented only to
+        hosts its ``http_request`` may request, so a world host outside
+        ``allowed_hosts`` is a world that actor can never reach.
+        """
+        app_world = self.initial_state.app_world
+        if app_world is None:
+            return self
+        servers = [
+            f"tools.{actor}.mcp_server"
+            for actor, block in (("agent", self.tools.agent), ("user", self.tools.user))
+            if block.get("mcp_server")
+        ]
+        if servers:
+            raise ValueError(
+                f"initial_state.app_world and {', '.join(servers)} would both hold the "
+                "trial's state, and the runner grades one holder. Reach the world through "
+                "http_request or through the MCP server, not both"
+            )
+        for actor in app_world.actors:
+            refusal = _app_world_hosts_refusal(actor, getattr(self.tools, actor), app_world.hosts)
+            if refusal is not None:
+                raise ValueError(refusal)
+        return self
+
     def resolve_user_simulator(self) -> UserSimulatorConfig:
         """Return the effective user-simulator config from ``actors.user``.
 
@@ -799,6 +875,24 @@ class TaskConfig(BaseModel):
             first_agent_message=spec.first_agent_message,
             **declared,
         )
+
+
+def _app_world_hosts_refusal(actor: str, block: dict[str, Any], hosts: list[str]) -> str | None:
+    """Why ``tools.<actor>``'s ``http_request`` cannot reach every app world host, or ``None``."""
+    if "http_request" not in block.get("enabled", []):
+        return (
+            f"initial_state.app_world.actors names {actor!r}, and tools.{actor}.enabled "
+            "lists no http_request to reach the world with"
+        )
+    allowed = (block.get("http_request") or {}).get("allowed_hosts") or []
+    unreachable = unreachable_hosts(hosts, allowed)
+    if not unreachable:
+        return None
+    return (
+        f"initial_state.app_world.hosts {unreachable!r} are not in "
+        f"tools.{actor}.http_request.allowed_hosts {allowed!r}, so {actor}'s requests "
+        "never reach them; add them there"
+    )
 
 
 def _refuse_a_declaration_the_mode_ignores(spec: ActorSpec, mode: str) -> None:
@@ -1099,6 +1193,10 @@ class TaskDefaults(BaseModel):
     metadata: TaskMetadata | None = None
     adapter_settings: dict[str, Any] = Field(default_factory=dict)
     tools: ToolsConfig | None = None
+    tool_libraries: list[ToolLibraryPin] | None = None
+    """Project-side default for :attr:`TaskConfig.tool_libraries`, layered like
+    ``tools``: it replaces a shared domain config's list, and a task that
+    declares its own list replaces it."""
     grading_defaults: GradingDefaults | None = None
     timeouts: TimeoutDefaults | None = None
     stuck_heuristics: StuckHeuristicsDefaults | None = None

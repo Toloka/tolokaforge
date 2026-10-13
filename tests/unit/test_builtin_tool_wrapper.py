@@ -8,7 +8,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.adapters._task_loader import _builtin_tool_schemas
+from tolokaforge.adapters._task_loader import (
+    BUILTIN_MUTATES_STATE_BY_CATEGORY,
+    _builtin_tool_schemas,
+    builtin_mutates_state,
+)
+from tolokaforge.tools.registry import ToolCategory
 
 # ---------------------------------------------------------------------------
 # _builtin_tool_schemas helper
@@ -66,6 +71,31 @@ class TestBuiltinToolSchemas:
         for _name, info in schemas.items():
             assert isinstance(info["description"], str)
             assert len(info["description"]) > 0
+
+    @pytest.mark.unit
+    def test_mutates_state_is_the_policy_category_read_as_a_declaration(self):
+        """ADR-0061: the engine authors its builtins, so ``ToolPolicy.category`` is
+        the declaration — ``read`` never mutates, ``write`` does, and ``compute``
+        (a shell, an HTTP client) says nothing and stays off the wire, exactly
+        like an MCP tool with no ``readOnlyHint``.
+        """
+        schemas = _builtin_tool_schemas(
+            ["read_file", "write_file", "db_query", "db_update", "bash"]
+        )
+
+        assert schemas["read_file"]["mutates_state"] is False
+        assert schemas["db_query"]["mutates_state"] is False
+        assert schemas["write_file"]["mutates_state"] is True
+        assert schemas["db_update"]["mutates_state"] is True
+        assert "mutates_state" not in schemas["bash"]
+
+    @pytest.mark.unit
+    def test_every_category_has_a_deliberate_mutates_state_row(self):
+        """A category added to the enum must be mapped on purpose, not guessed."""
+        assert set(BUILTIN_MUTATES_STATE_BY_CATEGORY) == set(ToolCategory)
+        assert builtin_mutates_state(ToolCategory.READ) is False
+        assert builtin_mutates_state(ToolCategory.WRITE) is True
+        assert builtin_mutates_state(ToolCategory.COMPUTE) is None
 
 
 # ---------------------------------------------------------------------------
