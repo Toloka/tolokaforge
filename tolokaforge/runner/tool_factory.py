@@ -703,16 +703,30 @@ class MCPServerProcess(BaseModel):
 
         Returns:
             Current state dict (table_name -> list[record]).
+
+        Raises:
+            RuntimeError: the tool declared failure or answered without a
+                state object. An empty object is a real (empty) state; an
+                absent or malformed one is not, so it is never read as ``{}``.
         """
         result = self.send_request(
             "tools/call",
             {"name": "_tolokaforge_get_state_", "arguments": {}},
         )
-        content = result.get("content", [])
-        if content and isinstance(content, list):
-            text = content[0].get("text", "{}")
-            return json.loads(text)
-        return {}
+        text = _first_text(result)
+        if result.get("isError"):
+            raise RuntimeError(f"_tolokaforge_get_state_ declared failure: {text!r}")
+        if not isinstance(text, str):
+            raise RuntimeError("_tolokaforge_get_state_ returned no state text")
+        try:
+            state = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"_tolokaforge_get_state_ returned unreadable state: {exc}") from exc
+        if not isinstance(state, dict):
+            raise RuntimeError(
+                f"_tolokaforge_get_state_ returned {type(state).__name__}, not a state object"
+            )
+        return state
 
     def reset_state(self, initial_state: dict[str, Any]) -> None:
         """Replace the MCP subprocess's _STATE with ``initial_state``.
@@ -722,14 +736,20 @@ class MCPServerProcess(BaseModel):
 
         Args:
             initial_state: State dict to restore (table_name -> list[record]).
+
+        Raises:
+            RuntimeError: the tool declared failure, so the subprocess still
+                holds whatever state it had before.
         """
-        self.send_request(
+        result = self.send_request(
             "tools/call",
             {
                 "name": "_tolokaforge_set_state_",
                 "arguments": {"state_json": json.dumps(initial_state)},
             },
         )
+        if result.get("isError"):
+            raise RuntimeError(f"_tolokaforge_set_state_ declared failure: {_first_text(result)!r}")
 
 
 class MCPServerPool:
@@ -889,6 +909,13 @@ class MCPServerToolWrapper(ToolWrapper):
     def cleanup(self) -> None:
         """Close this trial's pool; repeated cleanup by sibling tools is safe."""
         self._server_pool.cleanup()
+
+
+def _first_text(result: dict[str, Any]) -> str | None:
+    """The text of an MCP tool answer's first content item, if it has one."""
+    content = result.get("content")
+    first = content[0] if content and isinstance(content, list) else None
+    return first.get("text") if isinstance(first, dict) else None
 
 
 def _declared_category(result: dict[str, Any]) -> str | None:
