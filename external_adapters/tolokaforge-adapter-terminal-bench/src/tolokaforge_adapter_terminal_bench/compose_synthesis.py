@@ -166,6 +166,11 @@ class MaterialisedEnvironment:
     Dockerfile is ``FROM`` the base image. ``None`` when there is a single
     image to build (or pull)."""
 
+    verifier_image: str | None = None
+    """Ref of the separate verifier image the orchestrator builds, or ``None`` for
+    the single-container shape. Paired with :attr:`verifier_service` so the
+    adapter can declare the verifier build."""
+
     verifier_service: str | None = None
     """Trial-scope service that builds and idles the task's separate verifier
     image, or ``None`` for the single-container shape whose tests run in the
@@ -368,6 +373,9 @@ def materialise_task_environment(
         base_image=_agent_image(meta.task_id, image_registry, image_tag),
         agent_image=task_doc["services"][agent_service]["image"],
         verifier_service=_VERIFIER_SERVICE if meta.is_v4 else None,
+        verifier_image=(
+            _verifier_image(meta.task_id, image_registry, image_tag) if meta.is_v4 else None
+        ),
     )
 
 
@@ -781,6 +789,18 @@ def _agent_image(task_id: str, image_registry: str | None, image_tag: str) -> st
     return f"tbench-{task_id}:{image_tag}"
 
 
+def _verifier_image(task_id: str, image_registry: str | None, image_tag: str) -> str:
+    """Ref of the task's separate verifier image, distinct from the agent's.
+
+    The verifier is a different image from the agent — built from ``tests/`` —
+    so it carries its own ref, and the orchestrator builds and reuses it on its
+    own key rather than colliding with the agent image.
+    """
+    if image_registry:
+        return f"{image_registry}/{task_id}-verifier:{image_tag}"
+    return f"tbench-{task_id}-verifier:{image_tag}"
+
+
 def _layered_agent_image(
     base_image: str, agent_harness: str, harness_version: str, content_digest: str
 ) -> str:
@@ -905,7 +925,9 @@ def _build_synthesised_compose(
         # The verifier image is always built from the task's own ``tests/`` — there
         # is no registry artifact for it — so it carries a ``build`` even when the
         # agent image is pulled.
-        services[_VERIFIER_SERVICE] = _verifier_service_body()
+        services[_VERIFIER_SERVICE] = _verifier_service_body(
+            _verifier_image(meta.task_id, image_registry, image_tag)
+        )
 
     _stamp_trial_container_names(services)
 
@@ -941,7 +963,7 @@ def _stamp_trial_container_names(task_services: dict[str, Any]) -> None:
         body["container_name"] = _trial_scoped_container_name(name)
 
 
-def _verifier_service_body() -> dict[str, Any]:
+def _verifier_service_body(verifier_image: str) -> dict[str, Any]:
     """Trial-scope service that builds and idles the task's separate verifier image.
 
     The separate-verifier shape ships ``tests/Dockerfile``, a self-contained
@@ -953,6 +975,7 @@ def _verifier_service_body() -> dict[str, Any]:
     """
     return {
         "build": {"context": "./tests", "dockerfile": "Dockerfile"},
+        "image": verifier_image,
         "command": ["sh", "-c", "sleep infinity"],
         "volumes": [f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}"],
     }
