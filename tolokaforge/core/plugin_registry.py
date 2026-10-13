@@ -431,7 +431,7 @@ class RuntimeBackendBuildContext:
     as ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` into every runner container the
     backend materialises, so both ends of the channel share one limit."""
     node_registry: NodeRegistry | None = None
-    """Runner nodes a backend may lease per trial. Set by the orchestrator for
+    """Trial nodes a backend may lease per trial. Set by the orchestrator for
     ``orchestrator.runtime: remote`` from ``orchestrator.remote``; ``None`` for
     every other runtime."""
 

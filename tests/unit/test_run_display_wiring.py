@@ -738,7 +738,7 @@ def test_build_trial_unit_threads_events_into_provisioning_executor(
         output_dir=Path("/nonexistent-run-dir"),
         request_limiter=None,
     )
-    assert unit.provisioning_executor.events is events
+    assert unit.executor.events is events
 
 
 # ---------------------------------------------------------------------------

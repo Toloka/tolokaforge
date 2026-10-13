@@ -58,6 +58,9 @@ from tolokaforge.core.trial import TrialNodeInputs, TrialResult, TrialSpec
 from tolokaforge.core.trial_executor import (
     ProvisionErrorPolicy,
     ProvisioningTrialExecutor,
+    RemoteTrialExecutor,
+    TrialExecutor,
+    TrialOwningBackend,
 )
 from tolokaforge.core.trial_grader import TrialGrader
 from tolokaforge.observability.observer import NullTrialObserver, TrialObserver
@@ -84,10 +87,18 @@ __all__ = [
     "build_single_task_adapter",
     "build_trial_execution_unit",
     "compute_task_pack_hash",
+    "install_container_secrets",
     "run_trial_from_inputs",
 ]
 
 _PRELOADED_TASKS_GLOB = "**/task.yaml"
+
+_NODE_RUNTIME = "auto"
+"""Runtime a trial-owning backend's node resolves for itself: per-trial substrate
+when the task's manifest requires it, the shared stack otherwise."""
+
+_NODE_CONDUCTOR = "in_process"
+"""Conductor a trial-owning backend's node runs."""
 
 
 @dataclass(frozen=True)
@@ -128,22 +139,23 @@ def _close_grader(grader: TrialGrader) -> None:
 
 
 class TrialExecutionUnit:
-    """A built grader, conductor and provisioning executor, ready to run trials."""
+    """A built grader, conductor and trial executor, ready to run trials."""
 
     def __init__(
         self,
         *,
         grader: TrialGrader,
         conductor: Conductor,
-        provisioning_executor: ProvisioningTrialExecutor,
+        executor: TrialExecutor,
     ) -> None:
         self.grader = grader
         self.conductor = conductor
-        self.provisioning_executor = provisioning_executor
+        self.executor = executor
 
     def execute(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
-        """Provision the trial's substrate, run the conductor, tear down."""
-        return self.provisioning_executor.execute(spec, task_config)
+        """Run one trial through the executor: provision, conduct and tear down here,
+        or hand the whole trial to a trial-owning backend."""
+        return self.executor.execute(spec, task_config)
 
     def close(self) -> None:
         """Release the grader's transport (gRPC channel, queue broker and workers).
@@ -160,7 +172,10 @@ def build_trial_execution_unit(ctx: TrialExecutionContext) -> TrialExecutionUnit
     Resolves the trial grader (``grader_config.name`` over the adapter's
     default), builds the conductor through ``conductor_factory`` or the
     ``in_process`` registry entry, and wraps it in a
-    :class:`ProvisioningTrialExecutor`. The caller owns the returned unit and
+    :class:`ProvisioningTrialExecutor`. A runtime backend that owns the whole
+    trial (a :class:`TrialOwningBackend`) gets a :class:`RemoteTrialExecutor`
+    instead: the grader and conductor are still built, but the trial runs on the
+    backend's node with that node's own. The caller owns the returned unit and
     must :meth:`~TrialExecutionUnit.close` it.
 
     Rate-limit probe mode's two halves meet here: the caller arms the agent
@@ -217,23 +232,34 @@ def build_trial_execution_unit(ctx: TrialExecutionContext) -> TrialExecutionUnit
             ctx.config.orchestrator.rate_limit_probe,
             source=ctx.probe_source,
         )
-        provisioning_executor = ProvisioningTrialExecutor(
-            runtime_backend=ctx.runtime_backend,
-            conductor=conductor,
-            logger=ctx.logger,
-            output_dir=ctx.output_dir,
-            artifact_writer=ctx.artifact_writer,
-            events=ctx.events,
-            provision_error=ctx.provision_error,
-        )
+        executor: TrialExecutor
+        if isinstance(ctx.runtime_backend, TrialOwningBackend):
+            probe = ctx.config.orchestrator.rate_limit_probe
+            executor = RemoteTrialExecutor(
+                backend=ctx.runtime_backend,
+                runtime=_NODE_RUNTIME,
+                conductor=_NODE_CONDUCTOR,
+                grader_config=grader_config,
+                grpc_max_message_mb=ctx.grpc_max_message_mb,
+                rate_limit_probe=probe if probe.enabled else None,
+                logger=ctx.logger,
+                output_dir=ctx.output_dir,
+                artifact_writer=ctx.artifact_writer,
+            )
+        else:
+            executor = ProvisioningTrialExecutor(
+                runtime_backend=ctx.runtime_backend,
+                conductor=conductor,
+                logger=ctx.logger,
+                output_dir=ctx.output_dir,
+                artifact_writer=ctx.artifact_writer,
+                events=ctx.events,
+                provision_error=ctx.provision_error,
+            )
     except BaseException:
         _close_grader(grader)
         raise
-    return TrialExecutionUnit(
-        grader=grader,
-        conductor=conductor,
-        provisioning_executor=provisioning_executor,
-    )
+    return TrialExecutionUnit(grader=grader, conductor=conductor, executor=executor)
 
 
 def compute_task_pack_hash(pack_dir: Path) -> str:
@@ -288,7 +314,7 @@ def run_trial_from_inputs(inputs: TrialNodeInputs) -> TrialResult:
     task = inputs.task
     spec = inputs.trial_spec
     _verify_task_pack(inputs)
-    _install_container_secrets()
+    install_container_secrets()
 
     logger = get_logger(spec.run_id)
     adapter = build_single_task_adapter(task, inputs.task_pack_dir)
@@ -369,7 +395,7 @@ def _verify_task_pack(inputs: TrialNodeInputs) -> None:
         )
 
 
-def _install_container_secrets() -> None:
+def install_container_secrets() -> None:
     """Install the process secret manager from the container secret payload.
 
     The payload is the same ``TOLOKAFORGE_SECRETS_JSON`` mapping the runner

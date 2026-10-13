@@ -224,6 +224,7 @@ class _GroupedCommandsGroup(click.Group):
         "reconcile": "Runs",
         "rejudge": "Runs",
         "retrace": "Runs",
+        "trial-node": "Runs",
         "validate": "Tasks",
         "docker": "Docker",
         "config": "Config",
@@ -389,6 +390,11 @@ cli.add_command(assets)
 from tolokaforge.dx.cli.run_trial_command import run_trial  # noqa: E402
 
 cli.add_command(run_trial)
+
+# Register the `trial-node` command that serves whole trials over gRPC.
+from tolokaforge.dx.cli.trial_node_command import trial_node  # noqa: E402
+
+cli.add_command(trial_node)
 
 # Register the offline-regrade `grade` / `grade-run` verbs.
 from tolokaforge.dx.cli.grade import grade, grade_run  # noqa: E402

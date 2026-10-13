@@ -1,8 +1,8 @@
-"""Node registry — hands each trial the address of a runner endpoint to dispatch to.
+"""Node registry — hands each trial the address of a trial node to dispatch to.
 
 A runtime backend that executes trials on remote nodes leases one node per trial
 through :class:`NodeRegistry`. The lease is the only thing that binds a trial to
-a runner address; releasing it frees the node for the next trial.
+a node address; releasing it frees the node for the next trial.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Protocol, runtime_checkable
 
 @dataclass(frozen=True)
 class RunnerLease:
-    """A trial's claim on one node's runner endpoint."""
+    """A trial's claim on one trial node."""
 
     node_id: str
     runner_address: str
@@ -24,7 +24,7 @@ class RunnerLease:
 
 @runtime_checkable
 class NodeRegistry(Protocol):
-    """The set of runner nodes a run may dispatch trials to.
+    """The set of trial nodes a run may dispatch trials to.
 
     Implementations must be thread-safe: trials lease and release concurrently.
     """

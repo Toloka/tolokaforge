@@ -33,7 +33,7 @@ def test_remote_runtime_without_remote_block_fails_loud() -> None:
 
 
 def test_remote_runtime_with_empty_nodes_fails_loud() -> None:
-    with pytest.raises(ValidationError, match="at least one runner node"):
+    with pytest.raises(ValidationError, match="at least one trial node"):
         _orchestrator(runtime="remote", remote={"nodes": []})
 
 
