@@ -315,8 +315,15 @@ def _db_service_body(db_service_image: str) -> dict[str, Any]:
     return {
         "image": db_service_image,
         "ports": ["8000"],
+        # The db-service image is a slim base with no curl; it probes /health with
+        # a stdlib urllib call (its own baked HEALTHCHECK). Mirror that here — a
+        # curl probe never passes, so the stack never becomes healthy.
         "healthcheck": {
-            "test": ["CMD-SHELL", "curl -fs http://localhost:8000/health || exit 1"],
+            "test": [
+                "CMD-SHELL",
+                'python -c "import urllib.request; '
+                "urllib.request.urlopen('http://localhost:8000/health')\" || exit 1",
+            ],
             "interval": "2s",
             "timeout": "3s",
             "retries": 30,
