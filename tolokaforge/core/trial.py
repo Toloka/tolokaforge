@@ -7,10 +7,11 @@ here for callers that work against the trial-spec surface.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, model_validator
 
 from tolokaforge.core.models import (
     GraderConfig,
@@ -206,6 +207,34 @@ class TrialNodeInputs(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    @model_validator(mode="before")
+    @classmethod
+    def _rebase_compose_paths(cls, data: Any, info: ValidationInfo) -> Any:
+        """Point every ``compose_file`` at the node's own copy of the task pack.
+
+        A task-declared stack's compose path is absolute on the control plane,
+        and the manifest validators require the file to exist while the inputs
+        are deserialised. When the validation context carries ``task_pack_root``
+        (the node's mount of the task packs), each ``compose_file`` under
+        ``task_pack_dir`` is rewritten to the same relative location under
+        ``<task_pack_root>/<task_id>``. Without that context the data is
+        returned untouched. A ``compose_file`` outside ``task_pack_dir``, or a
+        compose file with no pack hash to verify it against, is refused.
+        """
+        context = info.context
+        if not context or context.get("task_pack_root") is None or not isinstance(data, dict):
+            return data
+        pack_dir = data.get("task_pack_dir")
+        task = data.get("task")
+        if not isinstance(task, dict) or "task_id" not in task:
+            return data
+        rebase = _ComposePathRebase(
+            control_pack_dir=Path(pack_dir).resolve() if pack_dir is not None else None,
+            node_pack_dir=Path(context["task_pack_root"]) / task["task_id"],
+            has_pack_hash=data.get("task_pack_hash") is not None,
+        )
+        return rebase.apply(data)
+
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:
         if (self.task_pack_dir is None) != (self.task_pack_hash is None):
@@ -219,6 +248,45 @@ class TrialNodeInputs(BaseModel):
                 f"{self.task.task_id!r}; the two describe different tasks"
             )
         return self
+
+
+@dataclass(frozen=True)
+class _ComposePathRebase:
+    """Rewrites every ``compose_file`` value of raw inputs onto the node's pack mount."""
+
+    control_pack_dir: Path | None
+    node_pack_dir: Path
+    has_pack_hash: bool
+
+    def apply(self, node: Any) -> Any:
+        if isinstance(node, dict):
+            return {
+                key: self._rebase(value) if key == "compose_file" else self.apply(value)
+                for key, value in node.items()
+            }
+        if isinstance(node, list):
+            return [self.apply(item) for item in node]
+        return node
+
+    def _rebase(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        if not self.has_pack_hash or self.control_pack_dir is None:
+            raise ValueError(
+                f"compose_file {value!r} is declared but the inputs carry no task_pack_dir / "
+                "task_pack_hash: the compose file cannot be located or verified on the node"
+            )
+        declared = Path(value)
+        if not declared.is_absolute():
+            declared = self.control_pack_dir / declared
+        try:
+            relative = declared.resolve().relative_to(self.control_pack_dir)
+        except ValueError:
+            raise ValueError(
+                f"compose_file {value!r} is outside the task pack {str(self.control_pack_dir)!r}; "
+                "only a compose file inside the task's own directory ships with the pack"
+            ) from None
+        return str(self.node_pack_dir / relative)
 
 
 __all__ = [
