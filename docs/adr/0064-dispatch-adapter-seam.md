@@ -1,6 +1,6 @@
 # 0064. The dispatch adapter seam
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-14
 - **Deciders:** @CiroGamboa
 - **Supersedes:** none
