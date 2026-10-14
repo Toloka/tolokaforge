@@ -20,11 +20,13 @@ class TaskShape(Enum):
     than on a release label. A new shape slots in as one more member plus a rule
     in :func:`detect_shape`; call sites branch on the member they care about.
 
-    * ``SINGLE_CONTAINER`` — the 2.1 shape: the suite runs inside the agent's own
-      container, reading its reward from a shared log path.
-    * ``SEPARATE_VERIFIER`` — the 4.0 shape: the suite runs in a dedicated
-      verifier container built from ``tests/Dockerfile``, into which the task's
-      declared ``artifacts`` are re-materialised from the agent container first.
+    * ``SINGLE_CONTAINER`` — Terminal-Bench 2.1 and earlier: the suite runs inside
+      the agent's own container, reading its reward from a shared log path.
+    * ``SEPARATE_VERIFIER`` — Terminal-Bench 3.0 and 4.0: the suite runs in a
+      dedicated verifier container built from ``tests/Dockerfile``, into which the
+      task's declared ``artifacts`` are re-materialised from the agent container
+      first. Separate-verifier mode was introduced at 3.0; 4.0 is the same format
+      with task resources recalibrated, so both load through this one shape.
     """
 
     SINGLE_CONTAINER = "single_container"
