@@ -24,10 +24,25 @@ class DispatchAdapter(Protocol):
         """Run one trial to a graded result on the adapter's own substrate.
 
         Raises:
-            ProvisionError: the substrate failed to come up.
-            NodeRefusedError: the substrate refused the trial for a reason a
+            DispatchProvisionError: the substrate failed to come up.
+            DispatchRefused: the substrate refused the trial for a reason a
                 retry cannot change.
-            NodeTransientError: the substrate could not serve the trial; a retry
+            DispatchTransient: the substrate could not serve the trial; a retry
                 may succeed.
+
+        Implementations raise these transport-neutral errors from
+        :mod:`tolokaforge.core.dispatch.errors`; the built-in ``grpc_node``
+        adapter completes that wiring in a later slice.
         """
+        ...
+
+    def connect(self) -> None:
+        """Establish the adapter's run-level connection, once before any trial.
+
+        The contact budget comes from ``DispatchAdapterBuildContext``.
+        """
+        ...
+
+    def close(self) -> None:
+        """Release run-level resources; called once after the last trial."""
         ...

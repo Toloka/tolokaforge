@@ -33,6 +33,19 @@ def test_remote_backend_satisfies_dispatch_adapter() -> None:
     assert issubclass(RemoteRuntimeBackend, DispatchAdapter)
 
 
+def test_adapter_protocol_requires_run_level_lifecycle() -> None:
+    assert {"run_trial_node", "connect", "close"} <= set(DispatchAdapter.__protocol_attrs__)
+    assert all(callable(getattr(RemoteRuntimeBackend, n)) for n in ("connect", "close"))
+
+
+def test_object_without_lifecycle_is_not_an_adapter() -> None:
+    class RunOnly:
+        def run_trial_node(self, inputs: object) -> object:
+            return inputs
+
+    assert not isinstance(RunOnly(), DispatchAdapter)
+
+
 def test_object_without_run_trial_node_is_not_an_adapter() -> None:
     assert not isinstance(object(), DispatchAdapter)
 
@@ -53,6 +66,7 @@ def test_build_context_defaults_carry_only_dispatch_fields() -> None:
     assert ctx.connect_timeout_s == 30.0
     assert ctx.connect_retry_interval_s == 1.0
     assert dict(ctx.config) == {}
+    assert not hasattr(ctx, "grpc_max_message_mb")
     with pytest.raises(AttributeError):
         ctx.connect_timeout_s = 1.0  # type: ignore[misc]
 

@@ -463,9 +463,6 @@ class DispatchAdapterBuildContext:
     """Budget for the adapter's first contact with its backend, seconds."""
     connect_retry_interval_s: float = 1.0
     """Interval between contact attempts within :attr:`connect_timeout_s`, seconds."""
-    grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
-    """The run's ``compute.grpc_max_message_mb``, bounding any gRPC channel the
-    adapter opens."""
     config: Mapping[str, object] = field(default_factory=dict)
     """The adapter-specific options block."""
 
