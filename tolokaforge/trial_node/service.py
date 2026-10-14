@@ -32,16 +32,11 @@ from typing import TYPE_CHECKING, Any
 
 import grpc
 
-from tolokaforge.core.plugin_registry import UnknownImplementationError
-from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.trial import TrialNodeInputs, TrialResult, pack_dir_under_root
-from tolokaforge.core.trial_node import (
-    TaskPackDriftError,
-    install_container_secrets,
-    run_trial_from_inputs,
-)
+from tolokaforge.core.trial_node import install_container_secrets, run_trial_from_inputs
 from tolokaforge.secrets import UnresolvedReferenceError, expand_secret_refs, get_default
 from tolokaforge.trial_node import trial_node_pb2, trial_node_pb2_grpc
+from tolokaforge.trial_node.classify import classify_trial_exception
 from tolokaforge.trial_node.protocol import NODE_PROTOCOL_VERSION, NodeErrorType
 
 if TYPE_CHECKING:
@@ -130,19 +125,13 @@ class TrialNodeServiceImpl(trial_node_pb2_grpc.TrialNodeServiceServicer):
         self._logger.info("Running trial", trial_id=trial_id)
         try:
             result = self._run_trial(self._place(inputs))
-        except ProvisionError as exc:
-            return self._failure(NodeErrorType.PROVISION_ERROR, exc.stage, exc.reason)
-        except TaskPackDriftError as exc:
-            return self._failure(NodeErrorType.TASK_PACK_DRIFT, "task_pack", str(exc))
-        except NotImplementedError as exc:
-            return self._failure(NodeErrorType.NOT_IMPLEMENTED, "adapter", str(exc))
-        except UnknownImplementationError as exc:
-            return self._failure(NodeErrorType.INVALID_CONFIG, "inputs", str(exc))
         except Exception as exc:
-            self._logger.error(
-                "Trial failed on the node", trial_id=trial_id, traceback=traceback.format_exc()
-            )
-            return self._failure(NodeErrorType.INTERNAL, "run", f"{type(exc).__name__}: {exc}")
+            error_type, stage, reason = classify_trial_exception(exc)
+            if error_type == NodeErrorType.INTERNAL:
+                self._logger.error(
+                    "Trial failed on the node", trial_id=trial_id, traceback=traceback.format_exc()
+                )
+            return self._failure(error_type, stage, reason)
         return trial_node_pb2.RunTrialResponse(
             success=True,
             trial_result_json=result.model_dump_json(),
