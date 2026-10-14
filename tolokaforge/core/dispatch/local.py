@@ -21,7 +21,7 @@ so a run reads the same whichever mode it picks.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -200,9 +200,9 @@ def local_dispatch_adapter_factory(ctx: DispatchAdapterBuildContext) -> LocalDis
     )
 
 
-def _parse_config(config: object) -> _LocalConfig:
+def _parse_config(config: Mapping[str, object]) -> _LocalConfig:
     try:
-        return _LocalConfig.model_validate(dict(config))  # type: ignore[arg-type]
+        return _LocalConfig.model_validate(dict(config))
     except ValidationError as exc:
         raise ValueError(
             "The 'local' dispatch adapter config is invalid; under "
