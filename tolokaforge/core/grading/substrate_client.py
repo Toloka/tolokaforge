@@ -265,6 +265,28 @@ class GrpcSubstrateClient:
         if not response.ok:
             raise SubstrateUnreachableError(response.error)
 
+    def exec_in_service(
+        self,
+        *,
+        service: str,
+        command: str,
+        timeout_s: float,
+    ) -> tuple[int, str]:
+        try:
+            response = self._stub.ExecInService(
+                pb2.ExecInServiceRequest(
+                    trial_id=self._trial_id,
+                    service=service,
+                    command=command,
+                    timeout_s=timeout_s,
+                )
+            )
+        except grpc.RpcError as err:
+            raise SubstrateUnreachableError(str(err)) from err
+        if response.error:
+            raise SubstrateUnreachableError(response.error)
+        return response.exit_code, response.output
+
     def health_check(self) -> str:
         try:
             response = self._stub.SubstrateHealthCheck(pb2.SubstrateHealthCheckRequest())

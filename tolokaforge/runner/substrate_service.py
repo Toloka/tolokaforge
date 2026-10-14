@@ -53,6 +53,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Shared by RunTestSuite and ExecInService: the fallback wall-clock cap when a
+# request passes 0.0, and the byte cap on returned output.
+_DEFAULT_SCRIPT_TIMEOUT_S = 300.0
+_STDOUT_WIRE_CAP_BYTES = 65_536
+
 
 class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
     """Read-only substrate surface backed by a live :class:`RunnerServiceImpl`.
@@ -308,9 +313,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         ``stdout`` is wire-capped at 65_536 bytes; the caller further
         truncates for the grade's reasons string.
         """
-        _DEFAULT_SCRIPT_TIMEOUT_S = 300.0
         _DEFAULT_REWARD_READ_TIMEOUT_S = 10.0
-        _STDOUT_WIRE_CAP_BYTES = 65_536
 
         trial_context = self._runner.trials.get(request.trial_id)
         if trial_context is None:
@@ -402,6 +405,33 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         except SubstrateUnreachableError as exc:
             return pb2.MaterialisePathResponse(ok=False, error=str(exc))
         return pb2.MaterialisePathResponse(ok=True)
+
+    def ExecInService(  # noqa: N802
+        self,
+        request: pb2.ExecInServiceRequest,
+        context: grpc.ServicerContext,  # noqa: ARG002
+    ) -> pb2.ExecInServiceResponse:
+        """Run a shell command in a named trial service container.
+
+        Delegates to the runner's exec helper. A non-zero command exit rides in
+        ``exit_code`` (not an error); an unreachable container or a raised exec
+        sets ``error``, which the client raises as
+        :class:`SubstrateUnreachableError`.
+        """
+        timeout_s = request.timeout_s if request.timeout_s > 0.0 else _DEFAULT_SCRIPT_TIMEOUT_S
+        try:
+            exit_code, output = self._runner._exec_in_service(
+                service=request.service,
+                command=request.command,
+                timeout_s=timeout_s,
+                trial_id=request.trial_id,
+            )
+        except SubstrateUnreachableError as exc:
+            return pb2.ExecInServiceResponse(error=str(exc))
+        return pb2.ExecInServiceResponse(
+            exit_code=exit_code,
+            output=output[:_STDOUT_WIRE_CAP_BYTES],
+        )
 
     # ------------------------------------------------------------------
     # Health

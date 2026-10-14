@@ -489,6 +489,12 @@ class SubstrateServiceStub:
             response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.MaterialisePathResponse.FromString,
             _registered_method=True,
         )
+        self.ExecInService = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/ExecInService",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.ExecInServiceRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ExecInServiceResponse.FromString,
+            _registered_method=True,
+        )
         self.SubstrateHealthCheck = channel.unary_unary(
             "/tolokaforge.runner.SubstrateService/SubstrateHealthCheck",
             request_serializer=tolokaforge_dot_runner_dot_runner__pb2.SubstrateHealthCheckRequest.SerializeToString,
@@ -627,6 +633,18 @@ class SubstrateServiceServicer:
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
+    def ExecInService(self, request, context):
+        """Run a shell command in a named trial service container and return its exit
+        code + merged stdout/stderr. A general exec seam distinct from RunTestSuite
+        (which also reads a reward). The separate-verifier shape uses it for a
+        task-defined pre-grade step (e.g. snapshotting a DB sidecar to a file). A
+        non-zero command exit rides in the response; only an unreachable container
+        sets the gRPC status.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
     def SubstrateHealthCheck(self, request, context):
         """Substrate liveness + capacity signal. Distinct from RunnerService.
         HealthCheck (that endpoint reports RunnerService plumbing; this one
@@ -688,6 +706,11 @@ def add_SubstrateServiceServicer_to_server(servicer, server):
             servicer.MaterialisePath,
             request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.MaterialisePathRequest.FromString,
             response_serializer=tolokaforge_dot_runner_dot_runner__pb2.MaterialisePathResponse.SerializeToString,
+        ),
+        "ExecInService": grpc.unary_unary_rpc_method_handler(
+            servicer.ExecInService,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ExecInServiceRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ExecInServiceResponse.SerializeToString,
         ),
         "SubstrateHealthCheck": grpc.unary_unary_rpc_method_handler(
             servicer.SubstrateHealthCheck,
@@ -1009,6 +1032,36 @@ class SubstrateService:
             "/tolokaforge.runner.SubstrateService/MaterialisePath",
             tolokaforge_dot_runner_dot_runner__pb2.MaterialisePathRequest.SerializeToString,
             tolokaforge_dot_runner_dot_runner__pb2.MaterialisePathResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def ExecInService(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/ExecInService",
+            tolokaforge_dot_runner_dot_runner__pb2.ExecInServiceRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.ExecInServiceResponse.FromString,
             options,
             channel_credentials,
             insecure,

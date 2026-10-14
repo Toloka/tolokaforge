@@ -1992,6 +1992,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             filesystem_state_factory=_get_filesystem_state,
             run_test_suite_impl=partial(self._run_test_suite_via_agent_tools, trial_id=trial_id),
             materialise_path_impl=partial(self._materialise_path, trial_id=trial_id),
+            exec_in_service_impl=partial(self._exec_in_service, trial_id=trial_id),
         )
 
     def _run_test_suite_via_agent_tools(
@@ -2107,6 +2108,43 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             tool_absent_reason="",
             script_exec_error="",
         )
+
+    def _exec_in_service(
+        self,
+        *,
+        service: str,
+        command: str,
+        timeout_s: float,
+        trial_id: str,
+    ) -> tuple[int, str]:
+        """Run *command* in *service*'s container, returning (exit_code, output).
+
+        Resolves the service's container from the trial's compose-exec tool and
+        runs the command through the same exec seam the test suite uses. Raises
+        :class:`SubstrateUnreachableError` when the trial or a compose-backed exec
+        tool cannot be resolved; a non-zero exit from the command itself is
+        returned, not raised (the caller decides what it means).
+        """
+        trial_context = self.trials.get(trial_id)
+        if trial_context is None:
+            raise SubstrateUnreachableError(f"Trial {trial_id!r} not registered")
+        bash_tool = first_env_exec_tool(trial_context.agent_tools.values())
+        if bash_tool is None:
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: no exec-capable env tool to run a command in "
+                f"service {service!r}."
+            )
+        exec_tool, service_reason = exec_tool_for_service(bash_tool, service)
+        if service_reason is not None:
+            raise SubstrateUnreachableError(f"Trial {trial_id!r}: {service_reason}")
+        assert exec_tool is not None
+        try:
+            return exec_tool.exec_in_env_with_exit_code(command, timeout_s)
+        except Exception as exc:
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: exec in service {service!r} failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
     def _materialise_path(
         self,
