@@ -947,7 +947,7 @@ message ExecInServiceRequest {
   string trial_id = 1;
   // Compose service whose container runs the command.
   string service = 2;
-  // Shell command line, run as ``bash -c`` inside the container.
+  // Shell command line, run as ``sh -c`` inside the container.
   string command = 3;
   // Wall-clock cap on the command. 0.0 → the servicer's default.
   double timeout_s = 4;

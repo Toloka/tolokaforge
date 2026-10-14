@@ -2140,10 +2140,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         assert exec_tool is not None
         container = getattr(exec_tool, "container_name", None)
         if container is None:
-            raise SubstrateUnreachableError(
-                f"Trial {trial_id!r}: container for service {service!r} is not resolved "
-                "(the per-trial stack is not up), so a command cannot run in it."
-            )
+            # No resolvable sibling container (a non-compose executor, or service=None
+            # on a single-container trial): run through the tool's own exec seam. That
+            # container ships bash, so it does not need the sh downgrade below.
+            try:
+                return exec_tool.exec_in_env_with_exit_code(command, timeout_s)
+            except Exception as exc:
+                raise SubstrateUnreachableError(
+                    f"Trial {trial_id!r}: exec in service {service!r} failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
         # Exec with ``sh``, not ``bash``: a collect hook runs in whatever service it
         # names, which for a DB sidecar may be a minimal image (e.g. redis:alpine)
         # with no bash. The commands are POSIX sh; the agent and test.sh paths keep
