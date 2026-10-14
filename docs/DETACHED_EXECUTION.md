@@ -238,3 +238,5 @@ Delivered as a stack of small PRs; the single-box path is locked byte-for-byte b
   per-trial RPC dispatch is superseded by ADR-0063; the registry and run-start gating stand).
 - **[ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md)** — the node owns the whole trial:
   the trial-node service, the `RunTrial` contract, and the dispatch seam.
+- **[ADR-0064](adr/0064-dispatch-adapter-seam.md)** — the dispatch adapter seam: the `orchestrator.dispatch`
+  config, the `tolokaforge.dispatch_adapters` entry-point group, and the in-tree `grpc_node` adapter.

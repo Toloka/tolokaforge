@@ -1,4 +1,4 @@
-"""``TrialNodeClient`` — the gRPC client the remote runtime backend dials a node with.
+"""``TrialNodeClient`` — the gRPC client the ``grpc_node`` dispatch adapter dials a node with.
 
 One client talks to one leased node. :meth:`connect` waits for the node within a
 budget and then runs the skew pre-flight against the node's own report: the
