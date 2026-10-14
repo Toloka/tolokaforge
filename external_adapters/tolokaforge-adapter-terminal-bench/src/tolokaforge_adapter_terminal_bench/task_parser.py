@@ -128,6 +128,9 @@ class TerminalBenchTask:
     has_tests_dockerfile: bool = False
     """Whether the task ships ``tests/Dockerfile``, i.e. a self-contained verifier
     image. One of the three markers that identify the separate-verifier shape."""
+    has_tests_compose: bool = False
+    """Whether the task ships ``tests/docker-compose.yaml`` — the tier-3 marker: the
+    verifier runs as a stack (its own DB sidecar(s) + a main), not a lone container."""
     shape: TaskShape = TaskShape.SINGLE_CONTAINER
     """Where this task runs its verifier; see :class:`TaskShape`. Derived from the
     three markers at discovery, so call sites dispatch on one field rather than
@@ -447,6 +450,7 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
             artifacts=artifacts,
             collect=_parse_collect(task_id, verifier),
             has_tests_dockerfile=has_tests_dockerfile,
+            has_tests_compose=(task_dir / "tests" / "docker-compose.yaml").is_file(),
             shape=shape,
             harness_skills_dir=_parse_harness_skills_dir(task_id, task_dir, yaml_data),
         )

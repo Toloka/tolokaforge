@@ -91,3 +91,74 @@ def test_v21_task_has_no_verifier_service(tmp_path: Path) -> None:
     agent_targets = _volume_targets(services[env.agent_service])
     assert "/tests" in agent_targets
     assert "/logs" in agent_targets
+
+
+_TIER3_TOML = (
+    'artifacts = [{ source = "/app" }, { source = "/tmp/pg.dump", service = "postgres" }]\n'
+    "[agent]\ntimeout_sec = 1800.0\n"
+    '[verifier]\ntimeout_sec = 300.0\nenvironment_mode = "separate"\n'
+    '[[verifier.collect]]\nservice = "postgres"\ncommand = "pg_dumpall > /tmp/pg.dump"\n'
+    "[environment]\ncpus = 2\nmemory_mb = 4096\n"
+)
+
+_AGENT_COMPOSE = (
+    "services:\n"
+    "  postgres:\n    image: postgres:16\n"
+    "  main:\n    environment:\n      DATABASE_URL: postgresql://u:p@postgres:5432/db\n"
+    "    depends_on:\n      postgres:\n        condition: service_healthy\n"
+)
+_TESTS_COMPOSE = (
+    "services:\n"
+    "  postgres:\n    image: postgres:16\n"
+    '    healthcheck:\n      test: ["CMD-SHELL", "pg_isready"]\n'
+    "  main:\n    environment:\n      DATABASE_URL: postgresql://u:p@postgres:5432/db\n"
+    "    depends_on:\n      postgres:\n        condition: service_healthy\n"
+)
+
+
+def _write_tier3_task(base: Path, task_id: str) -> None:
+    task_dir = base / task_id
+    (task_dir / "environment").mkdir(parents=True)
+    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    (task_dir / "environment" / "docker-compose.yaml").write_text(_AGENT_COMPOSE)
+    (task_dir / "instruction.md").write_text("Do the thing.\n")
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "Dockerfile").write_text('FROM python:3.12-slim\nCMD ["sleep","infinity"]\n')
+    (tests_dir / "test.sh").write_text("#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n")
+    (tests_dir / "docker-compose.yaml").write_text(_TESTS_COMPOSE)
+    (task_dir / "task.toml").write_text(_TIER3_TOML)
+
+
+def test_tier3_merges_verifier_stack_namespaced_and_aliased(tmp_path: Path) -> None:
+    _write_tier3_task(tmp_path, "dbtask")
+    env, doc = _materialise(tmp_path, "dbtask")
+    svcs = doc["services"]
+    # Agent stack keeps its own un-namespaced services; the verifier stack is
+    # merged under a verifier_ prefix — no key collision on postgres/main.
+    assert {"main", "postgres", "verifier_main", "verifier_postgres"} <= set(svcs)
+    assert env.verifier_service == "verifier_main"
+    # The verifier main builds tests/Dockerfile, lives on the verifier network,
+    # and depends on the namespaced sidecar.
+    assert svcs["verifier_main"]["build"]["context"] == "./tests"
+    assert svcs["verifier_main"]["networks"] == {"tb4_verifier": {}}
+    assert svcs["verifier_main"]["depends_on"] == {
+        "verifier_postgres": {"condition": "service_healthy"}
+    }
+    # The verifier sidecar carries an alias of its original name so the main's
+    # hard-coded `-h postgres` resolves to it, not the agent's postgres.
+    assert svcs["verifier_postgres"]["networks"] == {"tb4_verifier": {"aliases": ["postgres"]}}
+    assert svcs["verifier_postgres"]["image"] == "postgres:16"
+    # The agent's own postgres stays on the default network (no networks key).
+    assert "networks" not in svcs["postgres"]
+    assert (doc.get("networks") or {}).get("tb4_verifier") == {}
+
+
+def test_tier1_has_no_verifier_stack(tmp_path: Path) -> None:
+    _write_task(tmp_path, "plain", v4=True)
+    env, doc = _materialise(tmp_path, "plain")
+    # The single-container shape keeps the lone `verifier` service, no stack.
+    assert env.verifier_service == "verifier"
+    assert "verifier" in doc["services"]
+    assert not any(k.startswith("verifier_") for k in doc["services"])
+    assert "tb4_verifier" not in (doc.get("networks") or {})
