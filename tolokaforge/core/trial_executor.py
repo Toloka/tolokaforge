@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args, runtime_chec
 
 import yaml
 
+from tolokaforge.core.dispatch.adapter import DispatchAdapter
 from tolokaforge.core.models import (
     JudgeStatus,
     Metrics,
@@ -363,28 +364,9 @@ class ProvisioningTrialExecutor:
         )
 
 
-@runtime_checkable
-class TrialOwningBackend(Protocol):
-    """A runtime backend whose substrate runs the whole trial, not just the environment.
-
-    Where an ordinary :class:`RuntimeBackend` provisions an environment the
-    caller's conductor then drives, a trial-owning backend ships the trial's
-    inputs elsewhere and returns the graded result. Only such a backend is
-    dispatched through :class:`RemoteTrialExecutor`; every other backend keeps
-    the provisioning path.
-    """
-
-    def run_trial_node(self, inputs: TrialNodeInputs) -> TrialResult:
-        """Run one trial to a graded result on the backend's own substrate.
-
-        Raises:
-            ProvisionError: the substrate failed to come up.
-            NodeRefusedError: the substrate refused the trial for a reason a
-                retry cannot change.
-            NodeTransientError: the substrate could not serve the trial; a retry
-                may succeed.
-        """
-        ...
+#: Deprecated alias of :class:`~tolokaforge.core.dispatch.adapter.DispatchAdapter`,
+#: kept importable from here for one release.
+TrialOwningBackend = DispatchAdapter
 
 
 class RemoteTrialExecutor:

@@ -35,6 +35,7 @@ name = Orchestration surface holds the grader plug-in seam
 type = forbidden
 source_modules =
     tolokaforge.core.orchestrator
+    tolokaforge.core.run_queue
     tolokaforge.core.conductor
     tolokaforge.core.trial_executor
     tolokaforge.core.trial_node
@@ -311,3 +312,19 @@ source_modules =
 forbidden_modules =
     tolokaforge_langfuse
 allow_indirect_imports = true
+
+
+# Dispatch-adapter seam stays orchestrator-free.
+#
+# ``core.dispatch`` is the neutral Protocol + error vocabulary adapters
+# implement; it is imported by the orchestrator, never the reverse. A path
+# back into the orchestrator would couple every adapter to one process.
+[importlinter:contract:dispatch-orchestrator-free]
+name = core.dispatch does not reach the orchestrator
+type = forbidden
+source_modules =
+    tolokaforge.core.dispatch
+forbidden_modules =
+    tolokaforge.core.orchestrator
+    tolokaforge.core.run_queue
+allow_indirect_imports = false
