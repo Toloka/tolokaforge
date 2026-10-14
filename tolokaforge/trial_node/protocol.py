@@ -32,7 +32,7 @@ __all__ = [
     "check_node_version",
 ]
 
-NODE_PROTOCOL_VERSION = 1
+NODE_PROTOCOL_VERSION = 2
 
 
 class NodeErrorType:

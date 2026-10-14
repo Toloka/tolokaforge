@@ -663,6 +663,8 @@ The control plane ↔ trial-node contract is a separate proto (`tolokaforge/tria
 
 Node version 1 is the first: `RunTrial` runs a whole trial from serialized `TrialNodeInputs` and answers with a `TrialResult` or a structured `error_type` / `stage` / `reason`, and `HealthCheck` reports the node's protocol version and message-size bound.
 
+Node version 2 is the first whose `TrialNodeInputs` carries `run_settings` (timeouts, turn and token caps, stuck heuristics, agent loop, log capture). A node below it rejects the inputs at the wire model, since it declares no such field.
+
 ## Message Details
 
 ### RegisterTrialRequest

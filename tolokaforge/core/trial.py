@@ -14,10 +14,14 @@ from typing import Any, Self
 from pydantic import BaseModel, Field, ValidationInfo, model_validator
 
 from tolokaforge.core.models import (
+    ComputeConfig,
     GraderConfig,
     ModelConfig,
+    OrchestratorConfig,
     RateLimitProbeConfig,
+    StuckHeuristics,
     TaskConfig,
+    TimeoutConfig,
     Trajectory,
 )
 from tolokaforge.runner.models import (
@@ -155,6 +159,28 @@ class TrialResult(BaseModel):
         return cls(trial_id=trial_id, trajectory=trajectory, worker_id=worker_id)
 
 
+class NodeRunSettings(BaseModel):
+    """The run-level settings a node applies when it rebuilds its run configuration.
+
+    The subset of ``orchestrator`` and ``compute`` that the conductor and the
+    node's log capture read while running one trial. Each field defaults to the
+    value an unset run config carries, so a caller that sets none of them gets
+    the single-box defaults. ``agent_loop`` names an entry in the
+    ``tolokaforge.agent_loops`` group that the node's own environment must
+    provide.
+    """
+
+    timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)
+    max_turns: int = OrchestratorConfig.model_fields["max_turns"].default
+    max_trial_tokens: int | None = None
+    stuck_heuristics: StuckHeuristics = Field(default_factory=StuckHeuristics)
+    agent_loop: str = OrchestratorConfig.model_fields["agent_loop"].default
+    log_tail: int = Field(default=ComputeConfig.model_fields["log_tail"].default, ge=1)
+    capture_logs_on_success: bool = ComputeConfig.model_fields["capture_logs_on_success"].default
+
+    model_config = {"extra": "forbid"}
+
+
 class TrialNodeInputs(BaseModel):
     """Everything a standalone node needs to run one trial to a graded result.
 
@@ -204,6 +230,9 @@ class TrialNodeInputs(BaseModel):
     rate_limit_probe: RateLimitProbeConfig | None = None
     """Rate-limit probe mode for the agent and simulator clients; ``None`` runs the
     standard retry path."""
+
+    run_settings: NodeRunSettings = Field(default_factory=NodeRunSettings)
+    """Run-level limits, stuck detection, agent loop and log capture the node applies."""
 
     model_config = {"extra": "forbid"}
 

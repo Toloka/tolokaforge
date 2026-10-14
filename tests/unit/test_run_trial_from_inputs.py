@@ -22,11 +22,17 @@ from tests.canonical._factories import (
     make_task_description,
 )
 from tolokaforge.adapters.base import BaseAdapter
-from tolokaforge.core.models import GraderConfig, ModelConfig
+from tolokaforge.core.models import (
+    GraderConfig,
+    ModelConfig,
+    RateLimitProbeConfig,
+    StuckHeuristics,
+    TimeoutConfig,
+)
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.plugin_registry import TrialGraderContext
 from tolokaforge.core.runtime import InMemoryRuntimeBackend, ProvisionError
-from tolokaforge.core.trial import TrialNodeInputs, TrialSpec
+from tolokaforge.core.trial import NodeRunSettings, TrialNodeInputs, TrialSpec
 from tolokaforge.core.trial_node import (
     TaskPackDriftError,
     compute_task_pack_hash,
@@ -273,3 +279,102 @@ class TestBackendBuildContext:
         spec = _spec().model_copy(update={"agent_model_config": harness_agent})
         ctx = self._built_context(monkeypatch, _inputs(trial_spec=spec))
         assert ctx.mount_docker_socket is True
+
+
+_CARRIED = NodeRunSettings(
+    timeouts=TimeoutConfig(turn_s=45, episode_s=900),
+    max_turns=7,
+    max_trial_tokens=12345,
+    stuck_heuristics=StuckHeuristics(max_repeated_tool_calls=3),
+    agent_loop="custom-loop",
+    log_tail=11,
+    capture_logs_on_success=True,
+)
+
+
+class TestCarriedRunSettings:
+    def _config(self, settings: NodeRunSettings, probe: RateLimitProbeConfig | None = None) -> Any:
+        return trial_node_mod._build_run_config(_AGENT, _USER, None, Path("out"), probe, settings)
+
+    def test_the_run_config_applies_the_carried_settings(self) -> None:
+        orchestrator = self._config(_CARRIED).orchestrator
+        assert (orchestrator.timeouts.turn_s, orchestrator.timeouts.episode_s) == (45, 900)
+        assert orchestrator.max_turns == 7
+        assert orchestrator.max_trial_tokens == 12345
+        assert orchestrator.stuck_heuristics.max_repeated_tool_calls == 3
+        assert orchestrator.agent_loop == "custom-loop"
+
+    def test_default_settings_rebuild_the_default_orchestrator_config(self) -> None:
+        from tolokaforge.core.models import OrchestratorConfig
+
+        orchestrator = self._config(NodeRunSettings()).orchestrator
+        defaults = OrchestratorConfig()
+        for name in (
+            "timeouts",
+            "max_turns",
+            "max_trial_tokens",
+            "stuck_heuristics",
+            "agent_loop",
+        ):
+            assert getattr(orchestrator, name) == getattr(defaults, name), name
+
+    def test_the_probe_widens_a_carried_episode_budget_narrower_than_its_window(self) -> None:
+        probe = RateLimitProbeConfig(enabled=True)
+        settings = NodeRunSettings(timeouts=TimeoutConfig(episode_s=3700))
+        episode_s = self._config(settings, probe).orchestrator.timeouts.episode_s
+        assert episode_s == trial_node_mod._probe_episode_s(probe)
+        assert episode_s > 3700
+
+    def test_the_probe_keeps_a_carried_episode_budget_wider_than_its_window(self) -> None:
+        probe = RateLimitProbeConfig(enabled=True)
+        settings = NodeRunSettings(timeouts=TimeoutConfig(episode_s=1_000_000))
+        assert self._config(settings, probe).orchestrator.timeouts.episode_s == 1_000_000
+
+    def test_the_probe_leaves_the_turn_budget_alone(self) -> None:
+        probe = RateLimitProbeConfig(enabled=True)
+        settings = NodeRunSettings(timeouts=TimeoutConfig(turn_s=45, episode_s=1_000_000))
+        assert self._config(settings, probe).orchestrator.timeouts.turn_s == 45
+
+    def test_log_capture_uses_the_carried_policy(self, tmp_path: Path) -> None:
+        capture = trial_node_mod._build_log_capture(tmp_path, _CARRIED)
+        assert capture is not None
+        assert (capture.tail, capture.on_success) == (11, True)
+
+    def test_no_output_dir_captures_no_logs(self) -> None:
+        assert trial_node_mod._build_log_capture(None, _CARRIED) is None
+
+    def test_unknown_settings_are_refused_at_the_wire(self) -> None:
+        with pytest.raises(ValidationError):
+            NodeRunSettings.model_validate({"max_turns": 7, "typesense": {}})
+
+
+class TestAgentClient:
+    def test_no_fallbacks_builds_the_bare_client_carrying_the_probe(self) -> None:
+        from tolokaforge.core.llm import LLMClient
+
+        probe = RateLimitProbeConfig(enabled=True)
+        client = trial_node_mod._build_agent_client(_AGENT, probe)
+        assert type(client) is LLMClient
+
+    def test_fallbacks_build_the_chain_in_order(self) -> None:
+        from tolokaforge.core.llm.fallback_client import FallbackLLMClient
+
+        second = ModelConfig(provider="openai", name="gpt-4o-mini")
+        client = trial_node_mod._build_agent_client(
+            _AGENT.model_copy(update={"fallbacks": [second]}), None
+        )
+        assert isinstance(client, FallbackLLMClient)
+        assert client.chain == (_AGENT.model_copy(update={"fallbacks": [second]}), second)
+
+    def test_fallbacks_with_an_enabled_probe_are_refused(self) -> None:
+        agent = _AGENT.model_copy(
+            update={"fallbacks": [ModelConfig(provider="openai", name="gpt-4o-mini")]}
+        )
+        with pytest.raises(ValueError, match="incompatible with a fallback model chain"):
+            trial_node_mod._build_agent_client(agent, RateLimitProbeConfig(enabled=True))
+
+    def test_fallbacks_with_a_disabled_probe_are_accepted(self) -> None:
+        agent = _AGENT.model_copy(
+            update={"fallbacks": [ModelConfig(provider="openai", name="gpt-4o-mini")]}
+        )
+        trial_node_mod._build_agent_client(agent, RateLimitProbeConfig(enabled=False))
