@@ -64,6 +64,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.run_display_events import RateLimitProbeStats
 from tolokaforge.core.runner import TrialRunner
+from tolokaforge.core.trial import NodeRunSettings
 from tolokaforge.core.trial_node import _build_run_config
 from tolokaforge.runner.models import Criterion, Rubric
 
@@ -1081,7 +1082,7 @@ class TestNonProbingRolesStayOnTheDefaultPath:
     def test_run_trials_composed_config_leaves_the_mode_off_by_default(self) -> None:
         """``run_trial(rate_limit_probe=None)`` composes a config with the mode
         off, so nothing downstream of it can arm a probe."""
-        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), None)
+        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), None, NodeRunSettings())
 
         assert config.orchestrator.rate_limit_probe.enabled is False
 
@@ -1089,7 +1090,7 @@ class TestNonProbingRolesStayOnTheDefaultPath:
         """With the mode on, the composed episode budget has to clear the whole
         per-*turn* 429 ceiling — every per-call budget the turn can spend *and*
         every one of their overshoots — not just one call's budget."""
-        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), _PROBE)
+        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), _PROBE, NodeRunSettings())
 
         assert config.orchestrator.rate_limit_probe.enabled is True
         assert (
@@ -1104,6 +1105,6 @@ class TestNonProbingRolesStayOnTheDefaultPath:
         that raises at ``OrchestratorConfig`` construction."""
         probe = _PROBE.model_copy(update={"retry_interval_s": 6000.0})
 
-        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), probe)
+        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), probe, NodeRunSettings())
 
         assert probe.turn_wall_ceiling_s < config.orchestrator.timeouts.episode_s
