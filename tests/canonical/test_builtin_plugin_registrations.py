@@ -270,7 +270,7 @@ def test_comparison_view_rule_names_resolve_to_their_class(name: str, expected_c
 
 def test_available_listings_match_the_builtin_set() -> None:
     assert available_runtime_backends() == ["in_memory", "per_trial", "shared"]
-    assert available_dispatch_adapters() == ["grpc_node"]
+    assert available_dispatch_adapters() == ["grpc_node", "local"]
     assert available_trial_graders() == ["grader_rpc", "judge_only", "queue", "runner_rpc"]
     assert available_conductors() == ["in_memory", "in_process"]
     assert available_readiness_probes() == ["grpc", "http", "tcp"]
@@ -303,7 +303,7 @@ def test_raw_entry_point_probe_lists_runtime_backends() -> None:
 
 def test_raw_entry_point_probe_lists_dispatch_adapters() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=DISPATCH_ADAPTERS_GROUP))
-    assert names == ["grpc_node"]
+    assert names == ["grpc_node", "local"]
 
 
 def test_raw_entry_point_probe_lists_readiness_probes() -> None:
