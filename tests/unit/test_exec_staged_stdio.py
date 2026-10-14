@@ -14,6 +14,7 @@ bash with the files on the host — the contract holds without Docker.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -26,9 +27,34 @@ from tolokaforge.runner.tool_factory import (
     _STAGED_STDIO_SCRIPT,
     _docker_exec_plan,
     _run_argv_preserving_partial_output,
+    wrap_episode_command_with_watchdog,
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_file(path: Path, timeout_s: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+
+# A detached grandchild of the staged command — recorded in *pidfile*, held
+# alive by the command's own ``wait`` — is the in-container CLI the harness
+# episode cap has to be able to kill.
+def _detached_sleeper_command(pidfile: Path) -> str:
+    return f"sleep 300 & echo $! > {pidfile}; echo running; wait"
+
 
 _FD_KINDS = (
     "import os, stat\n"
@@ -122,6 +148,69 @@ def test_timeout_reads_the_staged_output_back(tmp_path: Path) -> None:
     assert output.startswith("progress\n")
     assert "[timed out after 0.5s; partial output preserved]" in output
     assert output.endswith("trouble\n")
+
+
+def test_killing_only_the_exec_client_leaves_the_detached_child_running(tmp_path: Path) -> None:
+    """The bug the episode cap used to have: killing the exec client alone does
+    not reach a process it detached.
+
+    ``docker exec``'s client dying does not propagate into the container, so a
+    wedged in-container CLI survived. Without Docker the same shape holds for a
+    grandchild of the staged command: SIGKILL the staged leader only — as the
+    old ``proc.kill()`` did — and the detached sleeper keeps running."""
+    pidfile = tmp_path / "pid"
+    argv = _staged_argv(tmp_path, _detached_sleeper_command(pidfile))
+    proc = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
+    )
+    try:
+        _wait_for_file(pidfile)
+        sleeper = int(pidfile.read_text())
+        os.kill(proc.pid, 9)  # the exec client only, not its group
+        time.sleep(0.4)
+        assert _pid_is_alive(sleeper), "detached child should outlive a client-only kill"
+    finally:
+        try:
+            os.kill(sleeper, 9)
+        except (ProcessLookupError, NameError):
+            pass
+        proc.wait(timeout=5)
+
+
+def test_watchdog_sigkills_the_episode_process_group_by_the_deadline(tmp_path: Path) -> None:
+    """The fix: :func:`wrap_episode_command_with_watchdog` kills the command's
+    whole process group from the inside, before the host deadline.
+
+    The watchdog fires at its own small budget (1s) while the host budget is
+    far wider (10s), so the group dies by the in-container deadline, the
+    detached sleeper with it, and the exec returns the SIGKILL exit code rather
+    than the host timeout. On the same inputs the unwrapped command's sleeper
+    survives — see the test above."""
+    pidfile = tmp_path / "pid"
+    wrapped = wrap_episode_command_with_watchdog(_detached_sleeper_command(pidfile), 1)
+    sleeper: int | None = None
+    try:
+        output = _run_argv_preserving_partial_output(
+            _staged_argv(tmp_path, wrapped),
+            timeout_s=10,
+            partial_output_argv=_read_back_argv(tmp_path),
+        )
+        _wait_for_file(pidfile)
+        sleeper = int(pidfile.read_text())
+        # 137 == 128 + SIGKILL: the watchdog killed the group; the host timeout
+        # (which would read "[timed out after 10s …]") never fired.
+        assert "[exit code: 137]" in output, output
+        assert "[timed out" not in output, output
+        deadline = time.monotonic() + 3
+        while _pid_is_alive(sleeper) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _pid_is_alive(sleeper), "watchdog must kill the detached child's group"
+    finally:
+        if sleeper is not None:
+            try:
+                os.kill(sleeper, 9)
+            except ProcessLookupError:
+                pass
 
 
 def test_docker_exec_plan_shape() -> None:
