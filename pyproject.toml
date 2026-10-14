@@ -200,6 +200,9 @@ per_trial = "tolokaforge.core.per_trial_runtime:per_trial_runtime_backend_factor
 in_memory = "tolokaforge.core.runtime:in_memory_runtime_backend_factory"
 remote = "tolokaforge.core.remote_runtime:remote_runtime_backend_factory"
 
+# Where a whole trial runs. Declared ahead of its first adapters.
+[project.entry-points."tolokaforge.dispatch_adapters"]
+
 [project.entry-points."tolokaforge.trial_graders"]
 runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
 # Second impl proves the plug-in seam accepts fundamentally different grader

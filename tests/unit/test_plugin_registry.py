@@ -23,15 +23,18 @@ import pytest
 from tolokaforge.core import plugin_registry
 from tolokaforge.core.plugin_registry import (
     CONDUCTORS_GROUP,
+    DISPATCH_ADAPTERS_GROUP,
     RUNTIME_BACKENDS_GROUP,
     TRIAL_GRADERS_GROUP,
     DuplicateRegistrationError,
     UnknownImplementationError,
     available_conductors,
+    available_dispatch_adapters,
     available_runtime_backends,
     available_trial_graders,
     discover_entry_points,
     load_conductor,
+    load_dispatch_adapter,
     load_runtime_backend,
     load_trial_grader,
 )
@@ -101,6 +104,7 @@ def _install_entry_points(
         (load_runtime_backend, RUNTIME_BACKENDS_GROUP),
         (load_trial_grader, TRIAL_GRADERS_GROUP),
         (load_conductor, CONDUCTORS_GROUP),
+        (load_dispatch_adapter, DISPATCH_ADAPTERS_GROUP),
     ],
 )
 def test_unknown_name_lists_every_known_name(
@@ -135,6 +139,7 @@ def test_unknown_name_lists_every_known_name(
         (load_runtime_backend, available_runtime_backends, RUNTIME_BACKENDS_GROUP),
         (load_trial_grader, available_trial_graders, TRIAL_GRADERS_GROUP),
         (load_conductor, available_conductors, CONDUCTORS_GROUP),
+        (load_dispatch_adapter, available_dispatch_adapters, DISPATCH_ADAPTERS_GROUP),
     ],
 )
 def test_duplicate_name_fails_naming_both_distributions(
