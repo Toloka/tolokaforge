@@ -35,6 +35,7 @@ name = Orchestration surface holds the grader plug-in seam
 type = forbidden
 source_modules =
     tolokaforge.core.orchestrator
+    tolokaforge.core.run_queue
     tolokaforge.core.conductor
     tolokaforge.core.trial_executor
     tolokaforge.core.trial_node
@@ -325,4 +326,5 @@ source_modules =
     tolokaforge.core.dispatch
 forbidden_modules =
     tolokaforge.core.orchestrator
+    tolokaforge.core.run_queue
 allow_indirect_imports = false
