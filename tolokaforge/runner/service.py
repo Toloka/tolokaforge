@@ -203,6 +203,8 @@ from tolokaforge.runner.tool_factory import (
     ToolLifecycleContext,
     ToolReconstructionError,
     ToolWrapper,
+    _docker_exec_plan,
+    _run_argv_with_exit_code,
     cleanup_tools,
 )
 from tolokaforge.tools.registry import ToolExecutionStatus, raised_tool_failure_text
@@ -2120,10 +2122,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """Run *command* in *service*'s container, returning (exit_code, output).
 
         Resolves the service's container from the trial's compose-exec tool and
-        runs the command through the same exec seam the test suite uses. Raises
+        runs the command through the shared docker-exec seam (the EPIPE-safe
+        staged stdio the test suite uses). ``service=None`` runs in the agent's
+        own container under bash; a named sidecar runs under POSIX ``sh``. Raises
         :class:`SubstrateUnreachableError` when the trial or a compose-backed exec
-        tool cannot be resolved; a non-zero exit from the command itself is
-        returned, not raised (the caller decides what it means).
+        tool cannot be resolved, or the exec itself fails operationally; a
+        non-zero exit from the command is returned, not raised (the caller
+        decides what it means).
         """
         trial_context = self.trials.get(trial_id)
         if trial_context is None:
@@ -2138,35 +2143,30 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if service_reason is not None:
             raise SubstrateUnreachableError(f"Trial {trial_id!r}: {service_reason}")
         assert exec_tool is not None
+        # ``service=None`` runs in the agent's own container, which ships bash, so
+        # a bash-specific collect command (process substitution, ``[[ ]]``,
+        # arrays) keeps working. A named sidecar may be a minimal image (e.g.
+        # redis:alpine) with no bash, so its collect runs under POSIX ``sh``.
+        shell = "bash" if service is None else "sh"
         container = getattr(exec_tool, "container_name", None)
-        if container is None:
-            # No resolvable sibling container (a non-compose executor, or service=None
-            # on a single-container trial): run through the tool's own exec seam. That
-            # container ships bash, so it does not need the sh downgrade below.
-            try:
-                return exec_tool.exec_in_env_with_exit_code(command, timeout_s)
-            except Exception as exc:
-                raise SubstrateUnreachableError(
-                    f"Trial {trial_id!r}: exec in service {service!r} failed: "
-                    f"{type(exc).__name__}: {exc}"
-                ) from exc
-        # Exec with ``sh``, not ``bash``: a collect hook runs in whatever service it
-        # names, which for a DB sidecar may be a minimal image (e.g. redis:alpine)
-        # with no bash. The commands are POSIX sh; the agent and test.sh paths keep
-        # their bash wrapper (their containers ship bash).
         try:
-            proc = subprocess.run(
-                ["docker", "exec", "-i", container, "sh", "-c", command],
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-            )
+            if container is None:
+                # No resolvable sibling container (a non-compose executor): run
+                # through the tool's own exec seam, which already stages stdio
+                # and preserves partial output under bash.
+                return exec_tool.exec_in_env_with_exit_code(command, timeout_s)
+            # Reuse the shared docker-exec seam (EPIPE-safe staged stdio) rather
+            # than a raw subprocess, selecting the shell for this service.
+            plan = _docker_exec_plan(container, command, shell=shell)
+            return _run_argv_with_exit_code(plan.argv, timeout_s)
         except (subprocess.SubprocessError, OSError) as exc:
+            # Only operational exec/transport failures become "unreachable"; a
+            # programming bug (AttributeError, TypeError, ...) propagates so it
+            # is not masked as an infrastructure condition.
             raise SubstrateUnreachableError(
                 f"Trial {trial_id!r}: exec in service {service!r} failed: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
-        return proc.returncode, (proc.stdout + proc.stderr)
 
     def _materialise_path(
         self,

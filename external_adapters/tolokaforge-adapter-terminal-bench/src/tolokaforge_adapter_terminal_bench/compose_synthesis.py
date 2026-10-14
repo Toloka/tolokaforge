@@ -1036,7 +1036,11 @@ def _namespace_volume_refs(volumes: Any, named: set[str]) -> list[Any]:
                 out.append(entry)
         elif isinstance(entry, Mapping):
             new = dict(entry)
-            if new.get("type") == "volume" and new.get("source") in named:
+            # A long mount whose ``source`` names a top-level volume is a volume
+            # ref even when ``type`` is omitted (compose infers it). Prefix those
+            # and explicit ``type: volume``; a bind mount's source is a host path,
+            # never a declared volume name, so it is left untouched.
+            if new.get("source") in named and new.get("type") in (None, "volume"):
                 new["source"] = f"{_VERIFIER_SERVICE_PREFIX}{new['source']}"
             out.append(new)
         else:

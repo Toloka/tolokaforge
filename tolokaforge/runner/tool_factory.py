@@ -1396,23 +1396,42 @@ class _ExecPlan:
     partial_output_argv: list[str] | None = None
 
 
-# ``bash -c <script> tolokaforge-exec <out> <err> <command>``: the command runs
-# under its own bash with stdout/stderr on the two files and stdin from
-# /dev/null, then the files are relayed on the exec's streams and removed. The
-# command's exit code is the exec's. The command is the last positional so it
-# needs no quoting, whatever it contains.
-_STAGED_STDIO_SCRIPT = (
-    'bash -c "$3" >"$1" 2>"$2" </dev/null; rc=$?; cat "$1"; cat "$2" >&2; rm -f "$1" "$2"; exit $rc'
-)
+def _staged_stdio_script(shell: str) -> str:
+    """Staged-stdio wrapper script running the command under *shell*.
+
+    ``<shell> -c <script> tolokaforge-exec <out> <err> <command>``: the command
+    runs under its own *shell* with stdout/stderr on the two files and stdin from
+    /dev/null, then the files are relayed on the exec's streams and removed. The
+    command's exit code is the exec's. The command is the last positional so it
+    needs no quoting, whatever it contains. Every part but the inner
+    ``<shell> -c "$3"`` is POSIX-sh, so the script runs the same whether *shell*
+    is ``bash`` (the agent and test.sh containers) or ``sh`` (a minimal DB
+    sidecar that ships no bash).
+    """
+    return (
+        f'{shell} -c "$3" >"$1" 2>"$2" </dev/null; rc=$?; '
+        'cat "$1"; cat "$2" >&2; rm -f "$1" "$2"; exit $rc'
+    )
+
+
+# Default (bash) staging script; the agent and test.sh containers ship bash.
+_STAGED_STDIO_SCRIPT = _staged_stdio_script("bash")
 # Read-back for a command still running (or killed) after its exec's deadline:
 # relays the files as they stand; exit 3 once the command has removed them.
 _STAGED_STDIO_READ_SCRIPT = '[ -e "$1" ] || exit 3; cat "$1"; cat "$2" >&2'
 _STAGED_STDIO_READ_TIMEOUT_S = 10.0
 
 
-def _docker_exec_plan(container: str, command: str, user: str | None = None) -> _ExecPlan:
-    """``docker exec`` running *command* under bash inside *container*, with the
+def _docker_exec_plan(
+    container: str, command: str, user: str | None = None, shell: str = "bash"
+) -> _ExecPlan:
+    """``docker exec`` running *command* under *shell* inside *container*, with the
     command's stdio staged in files inside the container.
+
+    *shell* defaults to ``bash`` (the agent and test.sh containers ship it); a
+    collect hook aimed at a minimal DB sidecar passes ``sh`` so the exec lands in
+    a container that may carry no bash. The staged-stdio wrapper is POSIX-sh in
+    every part but the command's own ``<shell> -c``, so it holds either way.
 
     A process the command leaves behind — a service started with ``&`` —
     inherits the command's stdio. If that were the exec's own pipes, the
@@ -1433,9 +1452,16 @@ def _docker_exec_plan(container: str, command: str, user: str | None = None) -> 
     prefix = ["docker", "exec"]
     if user is not None:
         prefix.extend(["--user", user])
-    prefix.extend(["-i", container, "bash", "-c"])
+    prefix.extend(["-i", container, shell, "-c"])
     return _ExecPlan(
-        argv=[*prefix, _STAGED_STDIO_SCRIPT, "tolokaforge-exec", out_path, err_path, command],
+        argv=[
+            *prefix,
+            _staged_stdio_script(shell),
+            "tolokaforge-exec",
+            out_path,
+            err_path,
+            command,
+        ],
         partial_output_argv=[
             *prefix,
             _STAGED_STDIO_READ_SCRIPT,

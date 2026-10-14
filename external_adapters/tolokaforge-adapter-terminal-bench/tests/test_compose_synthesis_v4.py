@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-
-from tolokaforge_adapter_terminal_bench.compose_synthesis import materialise_task_environment
+from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+    _namespace_volume_refs,
+    materialise_task_environment,
+)
 from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
 
 _TASK_TOML = """
@@ -229,3 +231,42 @@ def _volume_sources(service_body: dict) -> list[str]:
         if src and not src.startswith((".", "/")):
             out.append(src)
     return out
+
+
+def test_namespace_volume_refs_long_syntax_without_type() -> None:
+    """A long mount that names a top-level volume but omits ``type`` (compose
+    infers it) is still namespaced — otherwise its source collapses back onto
+    the agent stack's same-named volume, the collision this prefixing prevents."""
+    named = {"pgdata"}
+    out = _namespace_volume_refs(
+        [{"source": "pgdata", "target": "/var/lib/postgresql/data"}], named
+    )
+    assert out == [{"source": "verifier_pgdata", "target": "/var/lib/postgresql/data"}]
+
+
+def test_namespace_volume_refs_long_syntax_explicit_volume() -> None:
+    """``type: volume`` long mounts are namespaced too (unchanged behaviour)."""
+    out = _namespace_volume_refs(
+        [{"type": "volume", "source": "pgdata", "target": "/data"}], {"pgdata"}
+    )
+    assert out == [{"type": "volume", "source": "verifier_pgdata", "target": "/data"}]
+
+
+def test_namespace_volume_refs_leaves_bind_mounts_untouched() -> None:
+    """Bind mounts carry a host-path source (never a declared volume name), so
+    neither the short nor the long form is prefixed — explicit ``type: bind``
+    with a source that happens to match a named volume is left alone too."""
+    named = {"pgdata"}
+    entries = [
+        "./host/dir:/in/container",
+        {"type": "bind", "source": "./host/dir", "target": "/in/container"},
+        {"type": "bind", "source": "pgdata", "target": "/in/container"},
+    ]
+    assert _namespace_volume_refs(entries, named) == entries
+
+
+def test_namespace_volume_refs_short_syntax_named_volume() -> None:
+    """Short ``name:/target`` syntax is namespaced when the name is a top-level
+    volume, and left alone otherwise."""
+    out = _namespace_volume_refs(["pgdata:/data", "other:/x"], {"pgdata"})
+    assert out == ["verifier_pgdata:/data", "other:/x"]
