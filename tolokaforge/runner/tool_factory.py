@@ -1301,7 +1301,7 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     """
     try:
         os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
+    except OSError:
         proc.kill()
 
 
@@ -1325,10 +1325,20 @@ def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str
     keeps outliving its exec as before.
     """
     quoted = shlex.quote(command)
-    budget = f"{kill_after_s:g}"
+    # busybox ``sleep`` takes a whole number of seconds and rejects the ``%g``
+    # scientific form (e.g. ``1e+06``), which would fire the kill at once, so
+    # the budget is rendered as a plain integer, floored at one second.
+    budget = max(1, int(kill_after_s))
     return (
         f"__tf_cmd={quoted}; "
         "if command -v setsid >/dev/null 2>&1; then "
+        # ``setsid bash -c … &`` does not fork: the backgrounded bash is itself
+        # the new session/group leader, so ``$!`` is that leader's PID and
+        # ``kill -KILL -$__tf_cpid`` reaps the whole group. This holds only
+        # because the wrapper runs embedded as a nested, non-group-leader
+        # ``bash -c`` (via the staged-stdio script); run it as a top-level exec
+        # and ``setsid`` would fork, leaving ``$!`` pointing at the wrong PID
+        # and the group-kill silently missing the CLI.
         'setsid bash -c "$__tf_cmd" & __tf_cpid=$!; '
         "else "
         'set -m; bash -c "$__tf_cmd" & __tf_cpid=$!; '
