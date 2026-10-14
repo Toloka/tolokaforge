@@ -14,7 +14,9 @@ from tolokaforge_adapter_terminal_bench.task_parser import (
 )
 
 
-def _write_task(base: Path, task_id: str, task_toml: str, *, tests_dockerfile: bool = False) -> Path:
+def _write_task(
+    base: Path, task_id: str, task_toml: str, *, tests_dockerfile: bool = False
+) -> Path:
     task_dir = base / task_id
     (task_dir / "environment").mkdir(parents=True)
     (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
