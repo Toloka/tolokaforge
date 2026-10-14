@@ -1,10 +1,11 @@
 """``--runtime remote`` refuses the run shapes and settings a node does not carry.
 
-A node rebuilds its run configuration from the trial inputs and its own defaults,
-so every run-level setting that is not part of those inputs would be silently
-dropped. The orchestrator refuses each one up front, before any trial is leased,
-and names what it refused. Settings left at their defaults, and observability
-the node cannot serve, do not refuse.
+A node rebuilds its run configuration from the trial inputs, which carry the
+timeouts, turn and token caps, stuck heuristics, agent loop, log capture and the
+agent's fallback chain. Every other run-level setting would be silently dropped,
+so the orchestrator refuses each one up front, before any trial is leased, and
+names what it refused with the reason. Carried settings, and observability the
+node cannot serve, do not refuse.
 """
 
 from __future__ import annotations
@@ -80,17 +81,21 @@ def test_a_default_run_is_not_refused(tmp_path: Path) -> None:
     _orchestrator(tmp_path)._refuse_unsupported_remote_run()
 
 
-def test_settings_explicitly_set_to_their_defaults_are_not_refused(tmp_path: Path) -> None:
+def test_the_settings_the_node_carries_are_not_refused(tmp_path: Path) -> None:
     orch = _orchestrator(
         tmp_path,
         orchestrator={
-            "timeouts": {"turn_s": 60, "episode_s": 1800},
-            "max_turns": 50,
-            "max_trial_tokens": None,
-            "agent_loop": "engine-loop",
-            "auto_start_services": False,
+            "timeouts": {"turn_s": 30, "episode_s": 600},
+            "max_turns": 10,
+            "max_trial_tokens": 200000,
+            "stuck_heuristics": {"max_repeated_tool_calls": 3},
+            "agent_loop": "custom-loop",
         },
-        compute={"log_tail": 500, "capture_logs_on_success": False},
+        compute={"log_tail": 10, "capture_logs_on_success": True},
+        models={
+            "agent": _AGENT.model_copy(update={"fallbacks": [_USER]}),
+            "user": _USER,
+        },
     )
 
     orch._refuse_unsupported_remote_run()
@@ -99,27 +104,22 @@ def test_settings_explicitly_set_to_their_defaults_are_not_refused(tmp_path: Pat
 @pytest.mark.parametrize(
     ("kwargs", "named"),
     [
-        ({"orchestrator": {"timeouts": {"episode_s": 600}}}, "orchestrator.timeouts"),
-        ({"orchestrator": {"max_turns": 10}}, "orchestrator.max_turns"),
-        ({"orchestrator": {"max_trial_tokens": 200000}}, "orchestrator.max_trial_tokens"),
         (
-            {"orchestrator": {"stuck_heuristics": {"max_repeated_tool_calls": 3}}},
-            "orchestrator.stuck_heuristics",
+            {"compute": {"max_requests_per_second": 2.0}},
+            "a run-level request throttle is global across all trials",
         ),
-        ({"orchestrator": {"agent_loop": "custom-loop"}}, "orchestrator.agent_loop"),
-        ({"compute": {"log_tail": 10}}, "compute.log_tail"),
-        ({"compute": {"capture_logs_on_success": True}}, "compute.log_tail"),
-        ({"compute": {"max_requests_per_second": 2.0}}, "max_requests_per_second"),
-        ({"orchestrator": {"max_requests_per_second": 2.0}}, "max_requests_per_second"),
-        ({"orchestrator": {"typesense": {"enabled": True}}}, "orchestrator.typesense"),
         (
-            {"models": {"agent": _AGENT.model_copy(update={"fallbacks": [_USER]}), "user": _USER}},
-            "a fallback model chain",
+            {"orchestrator": {"max_requests_per_second": 2.0}},
+            "a node runs one trial and cannot enforce a shared limit",
+        ),
+        (
+            {"orchestrator": {"typesense": {"enabled": True}}},
+            "a remote node has no such bridge",
         ),
     ],
-    ids=lambda value: next(iter(value)) if isinstance(value, dict) else str(value),
+    ids=["compute-throttle", "orchestrator-throttle", "typesense"],
 )
-def test_a_setting_the_node_does_not_carry_is_refused_by_name(
+def test_a_setting_the_node_cannot_honour_is_refused_with_its_reason(
     tmp_path: Path, kwargs: dict[str, Any], named: str
 ) -> None:
     orch = _orchestrator(tmp_path, **kwargs)
@@ -133,17 +133,27 @@ def test_a_setting_the_node_does_not_carry_is_refused_by_name(
 def test_every_offending_setting_is_named_in_one_error(tmp_path: Path) -> None:
     orch = _orchestrator(
         tmp_path,
-        orchestrator={"max_turns": 10, "agent_loop": "custom-loop"},
-        compute={"log_tail": 10},
+        orchestrator={"typesense": {"enabled": True}},
+        compute={"max_requests_per_second": 2.0},
     )
 
     with pytest.raises(ValueError) as raised:
         orch._refuse_unsupported_remote_run()
 
     message = str(raised.value)
-    assert "orchestrator.max_turns" in message
-    assert "orchestrator.agent_loop" in message
-    assert "compute.log_tail" in message
+    assert "max_requests_per_second" in message
+    assert "orchestrator.typesense" in message
+
+
+def test_a_fallback_chain_with_the_rate_limit_probe_is_refused(tmp_path: Path) -> None:
+    orch = _orchestrator(
+        tmp_path,
+        orchestrator={"rate_limit_probe": {"enabled": True}, "timeouts": {"episode_s": 20000}},
+        models={"agent": _AGENT.model_copy(update={"fallbacks": [_USER]}), "user": _USER},
+    )
+
+    with pytest.raises(ValueError, match="switching models mid-probe"):
+        orch._refuse_unsupported_remote_run()
 
 
 def test_a_custom_conductor_factory_is_refused(tmp_path: Path) -> None:
@@ -156,13 +166,13 @@ def test_a_custom_conductor_factory_is_refused(tmp_path: Path) -> None:
         orch._refuse_unsupported_remote_run()
 
 
-def test_a_fallback_model_chain_from_the_cli_factory_is_refused(tmp_path: Path) -> None:
+def test_a_custom_agent_client_factory_is_refused(tmp_path: Path) -> None:
     orch = _orchestrator(
         tmp_path,
         deps=OrchestratorDeps(agent_client_factory=lambda _config: None),  # type: ignore[arg-type,return-value]
     )
 
-    with pytest.raises(ValueError, match="a fallback model chain"):
+    with pytest.raises(ValueError, match="inject fallbacks via models.agent.fallbacks"):
         orch._refuse_unsupported_remote_run()
 
 
@@ -224,6 +234,7 @@ def test_a_reset_service_is_refused_by_name(tmp_path: Path) -> None:
         orch._refuse_unsupported_remote_run()
 
     assert "task 'flat'" in str(raised.value)
+    assert "seeds are not yet shipped to the node" in str(raised.value)
 
 
 def test_a_compose_file_outside_the_task_directory_is_refused(tmp_path: Path) -> None:

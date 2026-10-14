@@ -74,7 +74,6 @@ from tolokaforge.core.models import (
     ComputeConfig,
     GradingFindingSeverity,
     ModelConfig,
-    OrchestratorConfig,
     ProjectConfig,
     RunConfig,
     ServiceSpec,
@@ -263,8 +262,8 @@ def _node_hosting_problems(
     reset = sorted(name for name, spec in manifest.services.items() if spec.isolation == "reset")
     if reset:
         problems.append(
-            f"task {task_id!r} declares isolation: reset for {', '.join(reset)} (reset seeds "
-            "are not shipped to the node)"
+            f"task {task_id!r} declares isolation: reset for {', '.join(reset)} (reset-isolation "
+            "seeds are not yet shipped to the node; run under shared or per_trial)"
         )
     if pack_dir is None:
         problems.append(
@@ -1456,12 +1455,14 @@ class Orchestrator:
     def _refuse_settings_the_node_does_not_carry(self) -> None:
         """Refuse run settings a node would silently drop.
 
-        A node rebuilds its run configuration from the trial inputs and its own
-        defaults, so a run-level setting that is not part of those inputs would
-        be ignored there while the run reported it as applied. Each setting
-        explicitly moved off its default is named in one error.
+        A node rebuilds its run configuration from the trial inputs, which carry
+        the timeouts, turn and token caps, stuck heuristics, agent loop, log
+        capture and the agent's fallback chain. What they do not carry would be
+        ignored there while the run reported it as applied. Each such setting in
+        use is named in one error, with the reason a node cannot honour it.
+        A fallback chain is refused alongside an enabled rate-limit probe: a chain
+        that switches models mid-probe corrupts the measurement.
         """
-        defaults = OrchestratorConfig()
         orchestrator = self.config.orchestrator
         unsupported: list[str] = []
         if self._conductor_factory is not None:
@@ -1475,31 +1476,27 @@ class Orchestrator:
                 "a non-native adapter or coding-harness mode (the remote runtime runs only "
                 "the native adapter without harness mode)"
             )
-        if orchestrator.timeouts != defaults.timeouts:
-            unsupported.append("orchestrator.timeouts")
-        if orchestrator.max_turns != defaults.max_turns:
-            unsupported.append("orchestrator.max_turns")
-        if orchestrator.max_trial_tokens != defaults.max_trial_tokens:
-            unsupported.append("orchestrator.max_trial_tokens")
-        if orchestrator.stuck_heuristics != defaults.stuck_heuristics:
-            unsupported.append("orchestrator.stuck_heuristics")
-        if orchestrator.agent_loop != defaults.agent_loop:
-            unsupported.append("orchestrator.agent_loop")
-        compute_defaults = ComputeConfig()
-        compute = self.config.compute
-        if compute is not None and (
-            compute.log_tail != compute_defaults.log_tail
-            or compute.capture_logs_on_success != compute_defaults.capture_logs_on_success
-        ):
-            unsupported.append("compute.log_tail / compute.capture_logs_on_success")
         if self.config.effective_max_requests_per_second is not None:
-            unsupported.append("max_requests_per_second")
-        if self._agent_client_factory is not None or any(
-            model.fallbacks for model in self.config.models.values()
-        ):
-            unsupported.append("a fallback model chain")
+            unsupported.append(
+                "max_requests_per_second (a run-level request throttle is global across all "
+                "trials; a node runs one trial and cannot enforce a shared limit)"
+            )
+        if self._agent_client_factory is not None:
+            unsupported.append(
+                "a custom agent_client_factory (inject fallbacks via models.agent.fallbacks, "
+                "which the node carries, not through a custom agent_client_factory)"
+            )
+        agent = self.config.models.get("agent")
+        if agent is not None and agent.fallbacks and orchestrator.rate_limit_probe.enabled:
+            unsupported.append(
+                "a fallback model chain together with orchestrator.rate_limit_probe (switching "
+                "models mid-probe corrupts the measurement; probe a single model)"
+            )
         if orchestrator.effective_typesense() is not None:
-            unsupported.append("the orchestrator.typesense search plane")
+            unsupported.append(
+                "the orchestrator.typesense search plane (it is a control-plane-local container "
+                "bridged onto the runner's Docker network; a remote node has no such bridge)"
+            )
         if unsupported:
             raise ValueError(
                 "orchestrator.runtime='remote' runs each trial on a node that does not carry "
