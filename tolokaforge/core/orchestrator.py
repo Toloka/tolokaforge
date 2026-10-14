@@ -3772,14 +3772,6 @@ class Orchestrator:
                     total_cost_usd=round(total_cost_usd, 6),
                 )
 
-            # Cleanup runtime backend / dispatch adapter if used;
-            # SharedStackRuntimeBackend logs its own "Shared-stack runtime
-            # closed" line, no dup needed.
-            if runtime_backend is not None:
-                runtime_backend.close()
-            if dispatch_adapter is not None:
-                dispatch_adapter.close()
-
             # Stop TypeSense BEFORE destroying the EngineStack.
             # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
             # so it must be removed from that network before the stack can tear it down.
@@ -3823,6 +3815,15 @@ class Orchestrator:
             self._events.run_finished(output_dir=resolved_output_dir)
             return resolved_output_dir
         finally:
+            # Release the run's execution substrate on every exit path, not only a
+            # clean finish: a mid-run failure must still close the runtime backend
+            # and the dispatch adapter. SharedStackRuntimeBackend logs its own
+            # "Shared-stack runtime closed" line, no dup needed; the local dispatch
+            # adapter's and spawning registry's close() are idempotent.
+            if runtime_backend is not None:
+                runtime_backend.close()
+            if dispatch_adapter is not None:
+                dispatch_adapter.close()
             # Flush the live traces on every exit path (an exception or Ctrl-C included): the
             # export thread is a daemon and would otherwise die with the last batch unsent.
             self._finish_tracing(output_dir)
