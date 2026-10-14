@@ -24,16 +24,20 @@ ten methods, three concerns:
 Every implementation ships all ten. The orchestrator holds one backend
 instance for the whole run; the conductor calls it per-trial.
 
-Running a *whole* trial somewhere else is a separate axis — the **dispatch
-adapter** ([ADR-0064](adr/0064-dispatch-adapter-seam.md)), not a runtime backend.
+A runtime backend answers one question: **how is a trial's sandbox built?** A
+second question — **where is the whole trial sent to run?** — is a separate axis,
+the **dispatch adapter** ([ADR-0064](adr/0064-dispatch-adapter-seam.md)). The two
+choices are independent.
+
 A `DispatchAdapter` (`connect` / `close` / `run_trial_node(inputs) -> TrialResult`)
-is selected by the `orchestrator.dispatch` config block; when it is set,
+is selected by the `orchestrator.dispatch` config block. When it is set,
 `build_trial_execution_unit` routes trials through `RemoteTrialExecutor` and the
-orchestrator builds no substrate backend (the node owns the substrate). When
-`orchestrator.dispatch` is absent, the run takes the substrate path below with
+orchestrator builds no substrate backend — the node owns the substrate. When the
+block is absent, the run takes the substrate path below with
 `ProvisioningTrialExecutor`, so `shared`, `per_trial` and `in_memory` are
 untouched. The in-tree `grpc_node` adapter is described under
-[Dispatch adapters](#dispatch-adapters).
+[Dispatch adapters](#dispatch-adapters); the full dispatch story is in
+[DETACHED_EXECUTION.md](DETACHED_EXECUTION.md).
 
 ```mermaid
 graph TB
@@ -120,14 +124,17 @@ contract tests.
 
 Where a *whole trial* runs is a separate axis from how its sandbox is built
 ([ADR-0064](adr/0064-dispatch-adapter-seam.md)). A `DispatchAdapter` takes one
-trial's `TrialNodeInputs` and returns its graded `TrialResult`; adapters register
-under the `tolokaforge.dispatch_adapters` entry-point group and raise the
-transport-neutral errors `DispatchRefused` / `DispatchTransient` /
-`DispatchProvisionError` (`tolokaforge/core/dispatch/errors.py`). The
-`orchestrator.dispatch` block names the adapter and its options; when it is set
-the orchestrator builds the adapter, runs the trial loop through
-`RemoteTrialExecutor`, and starts no local substrate backend (the node owns the
-substrate). When it is absent the run takes the single-box substrate path above,
+trial's `TrialNodeInputs` and returns its graded `TrialResult`. Adapters register
+under the `tolokaforge.dispatch_adapters` entry-point group and report failures
+with three transport-neutral errors (`tolokaforge/core/dispatch/errors.py`):
+`DispatchRefused` (a deterministic refusal the orchestrator does not retry),
+`DispatchProvisionError` (the sandbox could not come up — also not retried), and
+`DispatchTransient` (an infrastructure fault the orchestrator retries).
+
+The `orchestrator.dispatch` block names the adapter and its options. When it is
+set, the orchestrator builds the adapter, runs the trial loop through
+`RemoteTrialExecutor`, and starts no local substrate backend — the node owns the
+substrate. When it is absent, the run takes the single-box substrate path above,
 unchanged.
 
 ```yaml
@@ -143,18 +150,20 @@ orchestrator:
 **`grpc_node`** — hands each whole trial to a trial node leased from an in-process
 node registry ([ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md),
 [`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)). `config.nodes` seeds an
-`InMemoryNodeRegistry` with `host:port` addresses of nodes started with
-`tolokaforge trial-node`; `config.lease_timeout_s` (default 300) bounds the wait
-for a free node and `config.grpc_max_message_mb` (defaulted from
-`compute.grpc_max_message_mb`) bounds each node channel. `run_trial_node` leases
-one node, connects within the run's connect budget — which also checks protocol
-and message-size skew — ships the serialized `TrialNodeInputs` over the `RunTrial`
-RPC, and releases the lease whatever the outcome, translating every node failure
-into the neutral dispatch vocabulary. The node runs the conductor, the agent loop,
-the grader and the trial's substrate itself; the control plane builds no grader or
-conductor and writes a reduced bundle (`trajectory.yaml`, `tool_log.yaml`,
-`metrics.yaml`, `grade.yaml`) from the returned trajectory. Each node serves one
-trial at a time, so the node count bounds trial concurrency.
+`InMemoryNodeRegistry` with the `host:port` addresses of nodes started with
+`tolokaforge trial-node`. `config.lease_timeout_s` (default 300) bounds how long a
+trial waits for a free node, and `config.grpc_max_message_mb` (defaulted from
+`compute.grpc_max_message_mb`) bounds each node channel.
+
+For each trial, `run_trial_node` leases one node, connects within the run's
+connect budget (which also checks protocol and message-size skew), ships the
+serialized `TrialNodeInputs` over the `RunTrial` RPC, and releases the lease
+whatever the outcome — translating every node failure into the neutral dispatch
+vocabulary. The node runs the conductor, the agent loop, the grader and the
+trial's substrate itself. The control plane builds no grader or conductor; it
+writes a reduced bundle (`trajectory.yaml`, `tool_log.yaml`, `metrics.yaml`,
+`grade.yaml`) from the returned trajectory. Each node serves one trial at a time,
+so the node count bounds trial concurrency.
 
 Run shapes `grpc_node` refuses at run start rather than degrading:
 
