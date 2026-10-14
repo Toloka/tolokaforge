@@ -153,13 +153,13 @@ def test_explicit_auto_start_false_with_remote_runs(tmp_path: Path) -> None:
     assert len(node.received) == 2
 
 
-def test_a_task_declaring_an_environment_manifest_fails_loud_before_any_trial(
+def test_a_task_declaring_an_out_of_pack_compose_file_fails_loud_before_any_trial(
     tmp_path: Path,
 ) -> None:
     _write_pack(tmp_path / "pack", manifest=True)
     orch, node, _ = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
 
-    with pytest.raises(ValueError, match="does not receive task-declared stacks"):
+    with pytest.raises(ValueError, match="outside its own directory"):
         orch.run(run_id="r", output_dir=tmp_path / "run")
 
     assert node.received == []

@@ -25,6 +25,7 @@ from tolokaforge.core.models import (
     RunConfig,
 )
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+from tolokaforge.runner.models import ServiceSpec
 
 pytestmark = [pytest.mark.canonical, pytest.mark.usefixtures("env_backed_secrets")]
 
@@ -47,8 +48,9 @@ def _orchestrator(
     observability: dict[str, Any] | None = None,
     grader: GraderConfig | None = None,
     deps: OrchestratorDeps | None = None,
+    environment_manifest: dict[str, Any] | None = None,
 ) -> Orchestrator:
-    write_native_pack(tmp_path / "pack")
+    write_native_pack(tmp_path / "pack", environment_manifest=environment_manifest)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         config = RunConfig(
@@ -177,6 +179,70 @@ def test_coding_harness_mode_is_refused(tmp_path: Path) -> None:
     orch.config.models["agent"] = _AGENT.model_copy(update={"harness": "claude-code"})
 
     with pytest.raises(ValueError, match="non-native adapter or coding-harness mode"):
+        orch._refuse_unsupported_remote_run()
+
+
+_IN_PACK_STACK = {"stack": {"compose_file": "./environment.compose.yaml"}}
+
+
+def _with_manifest(orch: Orchestrator, **changes: Any) -> Orchestrator:
+    """Replace fields of the task's resolved manifest, as a hand-built manifest would carry."""
+    task_id = orch.tasks[0].task_id
+    description = orch._task_description(task_id)
+    assert description.environment_manifest is not None
+    manifest = description.environment_manifest.model_copy(update=changes)
+    orch._task_desc_cache[task_id] = description.model_copy(
+        update={"environment_manifest": manifest}
+    )
+    return orch
+
+
+def test_a_single_stack_in_pack_manifest_is_not_refused(tmp_path: Path) -> None:
+    orch = _orchestrator(tmp_path, environment_manifest=_IN_PACK_STACK)
+
+    orch._refuse_unsupported_remote_run()
+
+
+def test_a_multi_stack_manifest_is_refused_by_task(tmp_path: Path) -> None:
+    orch = _orchestrator(tmp_path, environment_manifest=_IN_PACK_STACK)
+    stack = orch._task_description("flat").environment_manifest.stacks[0]
+    _with_manifest(orch, stacks=[stack, stack.model_copy(update={"stack_id": "second"})])
+
+    with pytest.raises(ValueError, match="task 'flat' declares 2 stacks") as raised:
+        orch._refuse_unsupported_remote_run()
+
+    assert "shared or per_trial" in str(raised.value)
+
+
+def test_a_reset_service_is_refused_by_name(tmp_path: Path) -> None:
+    orch = _orchestrator(tmp_path, environment_manifest=_IN_PACK_STACK)
+    manifest = orch._task_description("flat").environment_manifest
+    reset = ServiceSpec.model_construct(isolation="reset", reset=None)
+    _with_manifest(orch, services={**manifest.services, "default": reset})
+
+    with pytest.raises(ValueError, match="isolation: reset for default") as raised:
+        orch._refuse_unsupported_remote_run()
+
+    assert "task 'flat'" in str(raised.value)
+
+
+def test_a_compose_file_outside_the_task_directory_is_refused(tmp_path: Path) -> None:
+    shared = tmp_path / "shared-compose.yaml"
+    shared.write_text("services:\n  default:\n    image: tolokaforge/runner:0.5.0\n")
+    orch = _orchestrator(tmp_path, environment_manifest={"stack": {"compose_file": str(shared)}})
+
+    with pytest.raises(ValueError, match="outside its own directory") as raised:
+        orch._refuse_unsupported_remote_run()
+
+    assert str(shared) in str(raised.value)
+    assert "task 'flat'" in str(raised.value)
+
+
+def test_a_task_without_a_pack_directory_is_refused(tmp_path: Path) -> None:
+    orch = _orchestrator(tmp_path, environment_manifest=_IN_PACK_STACK)
+    orch.tasks[0]._source_dir = None
+
+    with pytest.raises(ValueError, match="no task pack directory"):
         orch._refuse_unsupported_remote_run()
 
 
