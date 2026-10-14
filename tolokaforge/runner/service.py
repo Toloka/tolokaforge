@@ -2138,13 +2138,29 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if service_reason is not None:
             raise SubstrateUnreachableError(f"Trial {trial_id!r}: {service_reason}")
         assert exec_tool is not None
+        container = getattr(exec_tool, "container_name", None)
+        if container is None:
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: container for service {service!r} is not resolved "
+                "(the per-trial stack is not up), so a command cannot run in it."
+            )
+        # Exec with ``sh``, not ``bash``: a collect hook runs in whatever service it
+        # names, which for a DB sidecar may be a minimal image (e.g. redis:alpine)
+        # with no bash. The commands are POSIX sh; the agent and test.sh paths keep
+        # their bash wrapper (their containers ship bash).
         try:
-            return exec_tool.exec_in_env_with_exit_code(command, timeout_s)
-        except Exception as exc:
+            proc = subprocess.run(
+                ["docker", "exec", "-i", container, "sh", "-c", command],
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
             raise SubstrateUnreachableError(
                 f"Trial {trial_id!r}: exec in service {service!r} failed: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
+        return proc.returncode, (proc.stdout + proc.stderr)
 
     def _materialise_path(
         self,
