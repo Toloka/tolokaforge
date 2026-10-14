@@ -1016,9 +1016,64 @@ def _namespace_depends_on(depends_on: Any) -> Any:
     return depends_on
 
 
+def _namespace_volume_refs(volumes: Any, named: set[str]) -> list[Any]:
+    """Rewrite a service's ``volumes`` so refs to *named* top-level volumes are prefixed.
+
+    Named-volume mounts whose source is in *named* get the ``verifier_`` prefix, to
+    match the namespaced top-level volume defs. Bind mounts (a path source) and
+    anonymous mounts are left alone, so only the task's own named volumes — e.g. a
+    postgres ``pgdata`` or the redis shared volume — are isolated from the agent
+    stack's same-named volumes.
+    """
+    out: list[Any] = []
+    for entry in volumes or []:
+        if isinstance(entry, str):
+            parts = entry.split(":")
+            if len(parts) >= 2 and parts[0] in named:
+                parts[0] = f"{_VERIFIER_SERVICE_PREFIX}{parts[0]}"
+                out.append(":".join(parts))
+            else:
+                out.append(entry)
+        elif isinstance(entry, Mapping):
+            new = dict(entry)
+            if new.get("type") == "volume" and new.get("source") in named:
+                new["source"] = f"{_VERIFIER_SERVICE_PREFIX}{new['source']}"
+            out.append(new)
+        else:
+            out.append(entry)
+    return out
+
+
+def _reroot_verifier_build(build: Any) -> Any:
+    """Reroot a verifier sidecar's ``build`` (string or table) onto the staged ``tests/``.
+
+    The sidecar's build context is relative to the task's ``tests/`` dir, which the
+    synthesised compose stages at ``./tests``. Handles the string form and the
+    ``{context: …}`` table, and the common relative shapes (``.``, ``./x``, bare
+    ``x``). Absolute contexts and anything already under ``./tests`` are left as-is.
+    """
+
+    def _reroot(ctx: str) -> str:
+        if ctx.startswith("/") or ctx == "./tests" or ctx.startswith("./tests/"):
+            return ctx
+        if ctx in (".", "./"):
+            return "./tests"
+        if ctx.startswith("./"):
+            return f"./tests/{ctx[2:]}"
+        if ctx.startswith("../"):
+            return ctx  # upward refs are rare + ambiguous under staging; leave them
+        return f"./tests/{ctx}"
+
+    if isinstance(build, str):
+        return _reroot(build)
+    if isinstance(build, Mapping) and isinstance(build.get("context"), str):
+        return {**build, "context": _reroot(build["context"])}
+    return build
+
+
 def _merge_verifier_stack(
     task_doc: dict[str, Any], meta: TerminalBenchTask, verifier_image: str
-) -> str:
+) -> None:
     """Merge the task's ``tests/docker-compose.yaml`` in as the verifier stack.
 
     The tier-3 verifier is a stack — a ``main`` (our verifier image) plus DB
@@ -1029,8 +1084,8 @@ def _merge_verifier_stack(
     while the agent stack's same-named sidecar stays on the default network — no
     key collision, correct isolation, and the task's test script is untouched.
 
-    Returns the namespaced key of the verifier main (the service the grader execs
-    the suite in).
+    The verifier main is keyed by :func:`_verifier_service_name` (the one place
+    that name is derived, also used for the materialised environment).
     """
     compose_path = meta.task_dir / "tests" / "docker-compose.yaml"
     loaded = yaml.safe_load(compose_path.read_text()) or {}
@@ -1042,8 +1097,14 @@ def _merge_verifier_stack(
             f"{AGENT_SERVICE_DEFAULT!r} service to run the verifier suite in."
         )
 
+    # Named top-level volumes the task declares: these collide with the agent
+    # stack's same-named volumes in one project, so both the defs and every
+    # service reference to them are namespaced.
+    top_volumes = loaded.get("volumes")
+    named_volumes = set(top_volumes) if isinstance(top_volumes, Mapping) else set()
+
     services: dict[str, Any] = task_doc["services"]
-    verifier_main_key = f"{_VERIFIER_SERVICE_PREFIX}{main_name}"
+    verifier_main_key = _verifier_service_name(meta)
     for name, body in tests_services.items():
         if not isinstance(body, Mapping):
             continue
@@ -1053,9 +1114,12 @@ def _merge_verifier_stack(
 
         if name == main_name:
             # The verifier main: our built verifier image, idle, with the logs mount
-            # plus whatever shared volumes the task's main declared (e.g. redis).
+            # plus whatever shared volumes the task's main declared (e.g. redis),
+            # namespaced so they stay isolated from the agent stack.
             merged = _verifier_service_body(verifier_image)
-            merged["volumes"] = list(merged["volumes"]) + list(new_body.get("volumes", []))
+            merged["volumes"] = list(merged["volumes"]) + _namespace_volume_refs(
+                new_body.get("volumes"), named_volumes
+            )
             for key in ("environment", "depends_on", "working_dir"):
                 if key in new_body:
                     merged[key] = new_body[key]
@@ -1064,23 +1128,21 @@ def _merge_verifier_stack(
             continue
 
         # A sidecar (stock image, pulled). Keep it verbatim, but reroot any build
-        # context onto the staged tests/ tree and give it an alias of its original
-        # name on the verifier network so the main reaches it by that name.
-        build = new_body.get("build")
-        if isinstance(build, str) and build.startswith("./"):
-            new_body["build"] = f"./tests/{build[2:]}"
-        elif isinstance(build, Mapping) and isinstance(build.get("context"), str):
-            ctx = build["context"]
-            if ctx.startswith("./"):
-                new_body["build"] = {**build, "context": f"./tests/{ctx[2:]}"}
+        # context onto the staged tests/ tree, namespace its named-volume refs, and
+        # give it an alias of its original name on the verifier network so the main
+        # reaches it by that name.
+        if "build" in new_body:
+            new_body["build"] = _reroot_verifier_build(new_body["build"])
+        if "volumes" in new_body:
+            new_body["volumes"] = _namespace_volume_refs(new_body["volumes"], named_volumes)
         new_body["networks"] = {_VERIFIER_NETWORK: {"aliases": [name]}}
         services[f"{_VERIFIER_SERVICE_PREFIX}{name}"] = new_body
 
     task_doc.setdefault("networks", {})[_VERIFIER_NETWORK] = {}
-    top_volumes = loaded.get("volumes")
-    if isinstance(top_volumes, Mapping):
-        task_doc.setdefault("volumes", {}).update(deepcopy(dict(top_volumes)))
-    return verifier_main_key
+    if named_volumes:
+        task_doc.setdefault("volumes", {}).update(
+            {f"{_VERIFIER_SERVICE_PREFIX}{k}": deepcopy(v) for k, v in top_volumes.items()}
+        )
 
 
 def _engine_compose_doc(runner_image: str, db_service_image: str) -> dict[str, Any]:
