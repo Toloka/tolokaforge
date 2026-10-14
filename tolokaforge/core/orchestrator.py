@@ -250,6 +250,43 @@ _PROVIDER_PROBE_TIMEOUT_S = 10.0
 separate problem from a dead one, and this runs before every harness run."""
 
 
+def _node_hosting_problems(
+    task_id: str, pack_dir: Path | None, manifest: EnvironmentManifest
+) -> list[str]:
+    """What keeps *manifest* from being hosted on a node, one phrase per problem."""
+    problems: list[str] = []
+    if len(manifest.stacks) > 1:
+        problems.append(
+            f"task {task_id!r} declares {len(manifest.stacks)} stacks (multi-stack manifests "
+            "run under the shared or per_trial runtime)"
+        )
+    reset = sorted(name for name, spec in manifest.services.items() if spec.isolation == "reset")
+    if reset:
+        problems.append(
+            f"task {task_id!r} declares isolation: reset for {', '.join(reset)} (reset seeds "
+            "are not shipped to the node)"
+        )
+    if pack_dir is None:
+        problems.append(
+            f"task {task_id!r} has no task pack directory its compose file could ship in"
+        )
+        return problems
+    root = pack_dir.resolve()
+    outside = sorted(
+        {
+            str(path)
+            for path in (manifest.compose_file, *(stack.compose_file for stack in manifest.stacks))
+            if not path.resolve().is_relative_to(root)
+        }
+    )
+    if outside:
+        problems.append(
+            f"task {task_id!r} declares compose file {', '.join(outside)} outside its own "
+            "directory (project-level or shared compose does not ship with the task pack)"
+        )
+    return problems
+
+
 def _configured_harness(config: Any) -> str | None:
     """The harness slug a run selects, from either place it may be spelled.
 
@@ -1363,10 +1400,11 @@ class Orchestrator:
 
         The remote backend hands each whole trial to a leased node and starts no
         local stack, so it refuses an explicit ``auto_start_services: true``,
-        tasks that declare an ``environment_manifest`` (the node does not yet
-        receive task-declared stacks), trial graders that dial a static runner
-        address (``grader_rpc`` / ``queue``), and every run setting the node does
-        not carry (see :meth:`_refuse_settings_the_node_does_not_carry`).
+        task-declared stacks the node cannot host (see
+        :meth:`_refuse_manifests_the_node_cannot_host`), trial graders that dial
+        a static runner address (``grader_rpc`` / ``queue``), and every run
+        setting the node does not carry (see
+        :meth:`_refuse_settings_the_node_does_not_carry`).
         """
         orchestrator = self.config.orchestrator
         if (
@@ -1378,12 +1416,7 @@ class Orchestrator:
                 "orchestrator.remote and starts no local stack; it contradicts "
                 "orchestrator.auto_start_services=true. Set auto_start_services: false."
             )
-        if self._any_task_declares_environment_manifest():
-            raise ValueError(
-                "orchestrator.runtime='remote' runs each trial on a node that does not "
-                "receive task-declared stacks, but at least one task declares an "
-                "environment_manifest. Run those tasks under the shared or per_trial runtime."
-            )
+        self._refuse_manifests_the_node_cannot_host()
         grader_name = self.config.grader.name if self.config.grader else None
         if not grader_name and self.adapter is not None:
             grader_name = self.adapter.trial_grader_name
@@ -1395,6 +1428,30 @@ class Orchestrator:
             )
         self._refuse_settings_the_node_does_not_carry()
         self._warn_observability_the_node_does_not_carry()
+
+    def _refuse_manifests_the_node_cannot_host(self) -> None:
+        """Refuse task-declared stacks a node cannot materialise for one trial.
+
+        A node hosts one single-stack manifest whose compose file ships inside
+        the task's own pack. Each offending task is named in one error: a
+        multi-stack manifest, a service with ``isolation: reset`` (reset seeds
+        are not shipped to the node), and a compose file outside the task's
+        directory or a task with no pack directory (neither ships with, nor is
+        hashed into, the pack).
+        """
+        if self.adapter is None:
+            return
+        problems: list[str] = []
+        for task in self.tasks:
+            manifest = self._task_description(task.task_id).environment_manifest
+            if manifest is None:
+                continue
+            problems.extend(_node_hosting_problems(task.task_id, task.source_dir, manifest))
+        if problems:
+            raise ValueError(
+                "orchestrator.runtime='remote' runs each trial on a node that hosts one "
+                f"single-stack, non-reset, in-pack environment_manifest, but {'; '.join(problems)}."
+            )
 
     def _refuse_settings_the_node_does_not_carry(self) -> None:
         """Refuse run settings a node would silently drop.

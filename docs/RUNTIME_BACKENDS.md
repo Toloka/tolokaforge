@@ -141,7 +141,7 @@ orchestrator:
 
 Run shapes refused at run start rather than degraded:
 
-- A task declaring an `environment_manifest`: the node does not receive task-declared stacks. Run those tasks under `shared` or `per_trial`.
+- A task `environment_manifest` the node cannot host, named by task: more than one stack, a service with `isolation: reset` (seeds are not shipped to the node), or a compose file outside the task's own directory (project-level or shared compose does not ship with the pack). Run those under `shared` or `per_trial`. A single-stack, non-reset manifest whose compose file is in the task directory is accepted: the node rebases the compose path onto its task-pack mount and materialises the stack once for its trial (see [TRIAL_NODE_SERVICE.md](TRIAL_NODE_SERVICE.md)).
 - A non-native adapter or coding-harness mode (`models.agent.harness`): the remote runtime runs only the native adapter without harness mode.
 - `grader_rpc` and `queue` graders (they need a static runner address); `runner_rpc` only.
 - `grader.snapshot.enabled`: no grade bundle is produced.

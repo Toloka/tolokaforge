@@ -87,6 +87,12 @@ A non-retried failure is recorded as a `PROVISION_ERROR` trial whose
   node replies — and, when `--task-pack-root` is set, reads the task's files from
   `<task-pack-root>/<task_id>`. The content-hash check applies to whatever is
   mounted. Without a pack root the node reads the path the engine sent.
+- **Compose-path rebase.** With a pack root set, the node rewrites every
+  `compose_file` in the inputs (the task's manifest, its stacks and its patches)
+  from the engine's absolute path to the same relative location under
+  `<task-pack-root>/<task_id>` before the manifest validates. A compose file
+  outside the task's pack, or one sent with no pack hash, is refused as
+  `InvalidConfig`. Without a pack root the paths are used as sent.
 - **Keepalive.** Both ends use `keepalive_options()` from
   [`tolokaforge/runner/grpc_limits.py`](../tolokaforge/runner/grpc_limits.py)
   (ping after 20 s idle, 10 s to answer, pings permitted with no call data), so a
@@ -134,16 +140,40 @@ docker run -d -p 50061:50061 \
 
 The image is built locally (`tolokaforge docker build --service trial_node`); publishing it to a registry is a separate follow-up.
 
-The node builds no images. `tolokaforge-runner:local` and
+The node builds and pulls no images. `tolokaforge-runner:local` and
 `tolokaforge-db-service:local` must already exist on the Docker daemon the node
-drives (`make docker-build-core` at node bootstrap, or pull and tag them), and a
-runner must be reachable at `EXECUTOR_ADDRESS` (default `executor:50051`) for tasks
-that declare no per-trial stack.
+drives (`make docker-build-core` at node bootstrap, or pull and tag them), together
+with every public image a task-declared stack names (for example `nginx:1.27-alpine`
+for the `multi_service` example). A runner must be reachable at `EXECUTOR_ADDRESS`
+(default `executor:50051`) for tasks that declare no stack of their own; a task that
+declares a single-stack `environment_manifest` has the node materialise that stack
+once for its trial from the mounted pack, and needs no pre-running runner.
+
+A containerised node reaches the stack it starts through the host's Docker socket,
+so the stack's published ports land on the Docker host, not inside the node
+container. Run such a node with host networking (`--network host`); on a bridge
+network it cannot dial the runner port the stack publishes.
+
+## Parity notes
+
+A task-declared stack is materialised fresh for each trial on the node, and a node
+runs one trial per process. A task whose run-scope `shared` service holds state
+that must persist across trials (for example `repeats` above 1 against a stateful
+service) grades differently than on a single box, where one stack lives for the
+whole run. This is a known limitation: a stack shared across trials is not covered.
+Stateless services and single-trial runs are unaffected.
+
+Compose-path rebasing assumes the control plane and the node resolve the pack path
+consistently (Linux to Linux). A macOS control plane (`/tmp` resolving to
+`/private/tmp`) dispatching to a Linux node can be refused spuriously; use a
+non-symlinked pack root on mixed-OS development setups.
 
 ## Not supported
 
 Refused at run start by the control plane (see
-[`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md#concrete-backends)): task-declared
-stacks, non-native adapters and coding-harness mode, and the run-level settings
+[`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md#concrete-backends)): multi-stack
+`environment_manifest`s, services declaring `isolation: reset` (seeds are not
+shipped), compose files outside the task's own directory (project-level or shared
+compose), non-native adapters and coding-harness mode, and the run-level settings
 the inputs do not carry. Streaming progress, mid-trial cancellation and live
 traces from the node are not provided.

@@ -118,9 +118,9 @@ the backend cannot serve is **refused at run start**, not degraded mid-run.
 modes are all *local* — they stand the sandbox up on the same machine: **`shared`** (the default — one
 compose stack for the whole run), **`per_trial`** (a fresh stack per trial, for tasks whose services must
 reset between trials), and **`in_memory`** (a test double). `remote` is the new mode: it stands up no local
-stack and instead leases a node and dispatches the trial there. Multi-container compose stacks
-(`environment_manifest`) are a property of `shared` / `per_trial`; `remote` does not materialise them on
-the node yet (§7).
+stack and instead leases a node and dispatches the trial there. A single-stack
+`environment_manifest` in the task's own directory also runs on the node, which materialises it once for
+its trial; multi-stack, `reset`-service and project-level compose stay with `shared` / `per_trial` (§7).
 
 ### 4.4 The node owns the whole trial — ADR-0063
 
@@ -176,9 +176,16 @@ Delivered as a stack of small PRs; the single-box path is locked byte-for-byte b
   co-located runner — `grader_rpc`, `queue`, and offline/snapshot-bundle grading are all *refused* under
   `remote`. "Detached grader" and "detached whole-trial execution" are two separate mechanisms that do not
   compose yet.
-- **Multi-container is not on the node yet.** Tasks that declare an `environment_manifest` (a compose
-  stack) are refused under `remote`; they run under `shared` / `per_trial`. The node brings up only the
-  built-in single-runner (or runner + db) stack against its co-located runner.
+- **Multi-container on the node is single-stack only.** A task whose `environment_manifest` declares one
+  stack, no `reset` service and a compose file inside its own directory runs on the node; multi-stack,
+  `reset` (seeds are not shipped) and project-level compose are refused under `remote` and run under
+  `shared` / `per_trial`. A task with no manifest uses the built-in single-runner (or runner + db) stack
+  against the node's co-located runner.
+- **A task-declared stack is per-trial-fresh on the node.** A node runs one trial per process and
+  materialises the stack for that trial, whereas single-box `shared` keeps one stack across the whole
+  run. A task that relies on run-scope shared state persisting across trials grades differently than
+  single-box; a cross-trial shared stack is not covered yet. Stateless services and single-trial runs
+  are unaffected.
 - **Nodes must be pre-provisioned.** A node needs Docker and the engine's base images present; it builds
   none itself.
 - **One unary call per trial, for now.** No streaming progress and no mid-trial cancellation yet; a

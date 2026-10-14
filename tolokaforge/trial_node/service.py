@@ -34,7 +34,7 @@ import grpc
 
 from tolokaforge.core.plugin_registry import UnknownImplementationError
 from tolokaforge.core.runtime import ProvisionError
-from tolokaforge.core.trial import TrialNodeInputs, TrialResult
+from tolokaforge.core.trial import TrialNodeInputs, TrialResult, pack_dir_under_root
 from tolokaforge.core.trial_node import (
     TaskPackDriftError,
     install_container_secrets,
@@ -82,7 +82,9 @@ class TrialNodeServiceImpl(trial_node_pb2_grpc.TrialNodeServiceServicer):
                 f"this node requires {NODE_PROTOCOL_VERSION}; upgrade the engine.",
             )
         try:
-            inputs = TrialNodeInputs.model_validate_json(request.trial_node_inputs_json)
+            inputs = TrialNodeInputs.model_validate_json(
+                request.trial_node_inputs_json, context=self._validation_context()
+            )
         except ValueError as exc:
             return self._failure(
                 NodeErrorType.INVALID_CONFIG,
@@ -148,13 +150,21 @@ class TrialNodeServiceImpl(trial_node_pb2_grpc.TrialNodeServiceServicer):
             node_max_message_mb=self._max_message_mb,
         )
 
+    def _validation_context(self) -> dict[str, str] | None:
+        """The context under which inputs are validated: where this node mounts task packs."""
+        if self._task_pack_root is None:
+            return None
+        return {"task_pack_root": str(self._task_pack_root)}
+
     def _place(self, inputs: TrialNodeInputs) -> TrialNodeInputs:
         """Point the inputs' filesystem placement at this node's own mounts."""
         placement: dict[str, Any] = {
             "output_dir": self._output_root / inputs.trial_spec.run_id,
         }
         if self._task_pack_root is not None and inputs.task_pack_dir is not None:
-            placement["task_pack_dir"] = self._task_pack_root / inputs.task.task_id
+            placement["task_pack_dir"] = pack_dir_under_root(
+                self._task_pack_root, inputs.task.task_id
+            )
         return inputs.model_copy(update=placement)
 
     def _failure(self, error_type: str, stage: str, reason: str) -> trial_node_pb2.RunTrialResponse:

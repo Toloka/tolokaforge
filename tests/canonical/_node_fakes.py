@@ -40,6 +40,7 @@ class InProcessNode:
         *,
         run_trial: RunTrialFn = run_in_memory,
         max_message_mb: int = 50,
+        task_pack_root: Path | None = None,
     ) -> None:
         self.received: list[TrialNodeInputs] = []
 
@@ -51,6 +52,7 @@ class InProcessNode:
             logger=get_logger("in-process-node", strict=False),
             max_message_mb=max_message_mb,
             output_root=output_root,
+            task_pack_root=task_pack_root,
             run_trial=recording,
         )
 
@@ -111,14 +113,31 @@ class InProcessNodeClientFactory:
         return client
 
 
-def write_native_pack(root: Path, *, task_id: str = "flat") -> TaskConfig:
-    """Write a one-task native pack under *root* and load its :class:`TaskConfig`."""
+_SAFE_COMPOSE = "services:\n  default:\n    image: tolokaforge/runner:0.5.0\n"
+
+
+def write_native_pack(
+    root: Path,
+    *,
+    task_id: str = "flat",
+    environment_manifest: dict[str, Any] | None = None,
+) -> TaskConfig:
+    """Write a one-task native pack under *root* and load its :class:`TaskConfig`.
+
+    *environment_manifest* is written into ``task.yaml`` as given; a compose file
+    it names relatively resolves next to the task, where a one-service compose
+    file is written.
+    """
     task_dir = root / "tasks" / task_id
     task_dir.mkdir(parents=True)
     (task_dir / "initial_state.json").write_text('{"notes": []}')
+    if environment_manifest:
+        (task_dir / "environment.compose.yaml").write_text(_SAFE_COMPOSE)
+    manifest = {"environment_manifest": environment_manifest} if environment_manifest else {}
     write_yaml_file(
         task_dir / "task.yaml",
         {
+            **manifest,
             "task_id": task_id,
             "name": task_id,
             "category": "tool_use",
