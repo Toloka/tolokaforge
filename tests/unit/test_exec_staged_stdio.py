@@ -15,6 +15,7 @@ bash with the files on the host — the contract holds without Docker.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -211,6 +212,37 @@ def test_watchdog_sigkills_the_episode_process_group_by_the_deadline(tmp_path: P
                 os.kill(sleeper, 9)
             except ProcessLookupError:
                 pass
+
+
+def _sleep_pids(seconds: int) -> set[int]:
+    """PIDs of any running ``sleep <seconds>``. The watchdog's timer is a
+    plain ``sleep`` of the budget, so a leaked one is visible here by that
+    exact, distinctive argument."""
+    proc = subprocess.run(["pgrep", "-f", f"sleep {seconds}"], capture_output=True, text=True)
+    return {int(p) for p in proc.stdout.split()}
+
+
+@pytest.mark.skipif(shutil.which("pgrep") is None, reason="pgrep needed to spot a leaked timer")
+def test_watchdog_timer_leaves_no_orphan_when_the_command_finishes_early(tmp_path: Path) -> None:
+    """A command that finishes before the budget must not leave the watchdog's
+    ``sleep`` timer running out the rest of it.
+
+    The timer is reaped by its process group, so its ``sleep`` child goes with
+    it rather than surviving as an orphan. A long, distinctive budget makes the
+    timer identifiable while staying far wider than the instant command."""
+    budget = 1800  # 30 min: outlives the command by far, and distinctive enough to spot
+    before = _sleep_pids(budget)
+    wrapped = wrap_episode_command_with_watchdog("echo done", budget)
+    output = _run_argv_preserving_partial_output(_staged_argv(tmp_path, wrapped), timeout_s=10)
+    assert "done" in output, output
+    deadline = time.monotonic() + 3
+    leaked: set[int] = set()
+    while time.monotonic() < deadline:
+        leaked = _sleep_pids(budget) - before
+        if not leaked:
+            break
+        time.sleep(0.05)
+    assert not leaked, f"watchdog timer 'sleep {budget}' leaked as an orphan: {sorted(leaked)}"
 
 
 def test_docker_exec_plan_shape() -> None:

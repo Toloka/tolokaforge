@@ -1338,14 +1338,28 @@ def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str
         # because the wrapper runs embedded as a nested, non-group-leader
         # ``bash -c`` (via the staged-stdio script); run it as a top-level exec
         # and ``setsid`` would fork, leaving ``$!`` pointing at the wrong PID
-        # and the group-kill silently missing the CLI.
+        # and the group-kill silently missing the CLI. The timer is a setsid
+        # group of its own for the same reason: ``kill -KILL -$__tf_wd`` then
+        # reaps its ``sleep`` child along with it.
         'setsid bash -c "$__tf_cmd" & __tf_cpid=$!; '
+        f'setsid bash -c "sleep {budget}; kill -KILL -$__tf_cpid 2>/dev/null" & __tf_wd=$!; '
         "else "
-        'set -m; bash -c "$__tf_cmd" & __tf_cpid=$!; '
+        # No ``setsid``: bash job control (``set -m``) puts each background job
+        # in its own process group, so the same negative-PID ``kill`` reaps the
+        # command group, and the timer group with its ``sleep`` child.
+        "set -m; "
+        'bash -c "$__tf_cmd" & __tf_cpid=$!; '
+        f"{{ sleep {budget}; kill -KILL -$__tf_cpid 2>/dev/null; }} & __tf_wd=$!; "
         "fi; "
-        f"( sleep {budget}; kill -KILL -$__tf_cpid ) 2>/dev/null & __tf_wd=$!; "
-        "wait $__tf_cpid; __tf_rc=$?; "
-        "kill $__tf_wd 2>/dev/null; "
+        # Killing the timer by its group takes its ``sleep`` child with it, so a
+        # command that finishes before the budget leaves no stray timer running
+        # the rest of it. The wait and the timer reap are stderr-muted so the
+        # ``set -m`` branch's job-control ``Killed`` notices never land in the
+        # captured episode output; the command's own stderr has already streamed
+        # straight through the inherited descriptor by then.
+        "{ wait $__tf_cpid; __tf_rc=$?; } 2>/dev/null; "
+        "kill -KILL -$__tf_wd 2>/dev/null; "
+        "wait $__tf_wd 2>/dev/null; "
         "exit $__tf_rc"
     )
 
