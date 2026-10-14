@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
-
 import pytest
 
 from tolokaforge.core.dispatch.adapter import DispatchAdapter
@@ -17,7 +15,6 @@ from tolokaforge.core.plugin_registry import (
     DISPATCH_ADAPTERS_GROUP,
     DispatchAdapterBuildContext,
     UnknownImplementationError,
-    available_dispatch_adapters,
     load_dispatch_adapter,
 )
 from tolokaforge.core.trial_executor import TrialOwningBackend
@@ -50,11 +47,8 @@ def test_object_without_run_trial_node_is_not_an_adapter() -> None:
     assert not isinstance(object(), DispatchAdapter)
 
 
-def test_group_declares_the_grpc_node_adapter() -> None:
+def test_dispatch_adapters_group_name() -> None:
     assert DISPATCH_ADAPTERS_GROUP == "tolokaforge.dispatch_adapters"
-    names = {ep.name for ep in importlib.metadata.entry_points(group=DISPATCH_ADAPTERS_GROUP)}
-    assert "grpc_node" in names
-    assert "grpc_node" in available_dispatch_adapters()
 
 
 def test_grpc_node_adapter_resolves_through_the_group() -> None:

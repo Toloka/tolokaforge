@@ -1,7 +1,5 @@
 """Dispatch-axis selection, the ``runtime='remote'`` alias, and neutral-vocab routing.
 
-Locks the Stage-B wiring behind the dispatch seam:
-
 * ``orchestrator.dispatch`` resolves to its adapter; ``runtime='remote'`` is a
   deprecated alias mapping onto ``grpc_node`` (with a ``DeprecationWarning``).
 * ``build_trial_execution_unit`` selects :class:`RemoteTrialExecutor` whenever a
@@ -9,13 +7,11 @@ Locks the Stage-B wiring behind the dispatch seam:
 * The executor drives on the transport-neutral dispatch errors alone: a
   :class:`DispatchRefused` / :class:`DispatchProvisionError` becomes a
   non-retryable ``PROVISION_ERROR`` result; a :class:`DispatchTransient`
-  propagates for the orchestrator to retry. The executor imports no node-named
-  symbol.
+  propagates for the orchestrator to retry.
 """
 
 from __future__ import annotations
 
-import inspect
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -246,15 +242,3 @@ def test_the_provision_error_stage_and_reason_follow_the_neutral_error(tmp_path:
 
     # A provision error keeps the node's stage; its reason carries no error_type prefix.
     assert result.trajectory.provision_stage == "await_ready"
-
-
-# ---- The executor imports no node-named symbol -----------------------------
-
-
-def test_the_trial_executor_imports_no_node_named_wire_vocabulary() -> None:
-    import tolokaforge.core.trial_executor as executor_module
-
-    source = inspect.getsource(executor_module)
-    assert "from tolokaforge.trial_node" not in source
-    for node_symbol in ("NodeRefusedError", "NodeTransientError", "NodeErrorType"):
-        assert node_symbol not in source

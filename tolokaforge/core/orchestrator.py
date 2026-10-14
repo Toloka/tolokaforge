@@ -1564,8 +1564,8 @@ class Orchestrator:
             _configured_harness(self.config) is not None
         ):
             unsupported.append(
-                "a non-native adapter or coding-harness mode (the remote runtime runs only "
-                "the native adapter without harness mode)"
+                "a non-native adapter or coding-harness mode (the grpc_node dispatch adapter "
+                "runs only the native adapter without harness mode)"
             )
         if self.config.effective_max_requests_per_second is not None:
             unsupported.append(
@@ -3422,13 +3422,10 @@ class Orchestrator:
         # the substrate. No local substrate backend is constructed or auto-started.
         dispatch_config = self._dispatch_config()
         runtime_backend: RuntimeBackend | None = None
-        dispatch_adapter: DispatchAdapter | None = None
-        if dispatch_config is not None or self._injected_dispatch_adapter is not None:
-            dispatch_adapter = (
-                self._injected_dispatch_adapter
-                if self._injected_dispatch_adapter is not None
-                else self._build_dispatch_adapter(dispatch_config)  # type: ignore[arg-type]
-            )
+        dispatch_adapter: DispatchAdapter | None = self._injected_dispatch_adapter
+        if dispatch_adapter is None and dispatch_config is not None:
+            dispatch_adapter = self._build_dispatch_adapter(dispatch_config)
+        if dispatch_adapter is not None:
             self._events.phase_changed(phase="connecting_runtime")
             dispatch_adapter.connect()
             self.logger.info("Dispatch adapter connected")

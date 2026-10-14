@@ -23,7 +23,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from tolokaforge.core.dispatch.errors import (
     DispatchProvisionError,
@@ -202,7 +202,7 @@ def grpc_node_dispatch_adapter_factory(
 def _parse_config(config: Mapping[str, object]) -> _GrpcNodeConfig:
     try:
         return _GrpcNodeConfig.model_validate(dict(config))
-    except Exception as exc:  # noqa: BLE001 — re-raise as a loud, adapter-named error
+    except ValidationError as exc:
         raise ValueError(
             "The 'grpc_node' dispatch adapter config is invalid; it needs a 'nodes' list of "
             f"'host:port' trial nodes under orchestrator.dispatch.config. {exc}"

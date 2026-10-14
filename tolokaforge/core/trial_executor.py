@@ -17,9 +17,9 @@ swappable seam that owns that bracket:
   the ``TrialSpec.env_endpoints`` field the conductor sees.
 
 * :class:`RemoteTrialExecutor` — the whole-trial implementation. It ships the
-  trial's :class:`TrialNodeInputs` to a backend that owns the trial
-  (:class:`TrialOwningBackend`), receives the graded :class:`TrialResult`, and
-  writes the reduced on-disk bundle from it.
+  trial's :class:`TrialNodeInputs` to a :class:`DispatchAdapter` that owns the
+  trial, receives the graded :class:`TrialResult`, and writes the reduced on-disk
+  bundle from it.
 
 The Protocol is deliberately narrow so the orchestrator holds one executor
 shape whether the trial runs here or on a node.
@@ -69,7 +69,7 @@ __all__ = [
     "ProvisioningTrialExecutor",
     "RemoteTrialExecutor",
     "TrialExecutor",
-    "TrialOwningBackend",
+    "TrialOwningBackend",  # deprecated one-release alias of DispatchAdapter
 ]
 
 
@@ -370,7 +370,7 @@ TrialOwningBackend = DispatchAdapter
 
 
 class RemoteTrialExecutor:
-    """:class:`TrialExecutor` that has a :class:`TrialOwningBackend` run the whole trial.
+    """:class:`TrialExecutor` that has a :class:`DispatchAdapter` run the whole trial.
 
     Assembles the trial's :class:`TrialNodeInputs` from the spec, the task and
     the run's settings, hands them to the backend, and writes the reduced
@@ -390,7 +390,7 @@ class RemoteTrialExecutor:
     def __init__(
         self,
         *,
-        backend: TrialOwningBackend,
+        backend: DispatchAdapter,
         runtime: str,
         conductor: str,
         grader_config: GraderConfig | None,

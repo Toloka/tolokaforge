@@ -697,15 +697,14 @@ class OrchestratorConfig(BaseModel):
 
     remote: RemoteConfig | None = None
     """Runner nodes for the deprecated ``runtime: remote`` alias; required by it,
-    ignored otherwise. Kept readable for one release so the alias can map onto
-    ``dispatch.adapter='grpc_node'``; declare ``dispatch`` directly instead."""
+    ignored otherwise. Declare ``dispatch`` directly instead."""
 
     dispatch: DispatchConfig | None = None
-    """Selects where a whole trial runs (ADR-0064). When set, the orchestrator
-    builds the named dispatch adapter and ships each whole trial to it; when
-    ``None`` the run takes the single-box substrate path unchanged.
-    ``runtime='remote'`` is a deprecated alias for ``dispatch.adapter='grpc_node'``
-    with ``config.nodes`` taken from ``remote.nodes``."""
+    """Selects where a whole trial runs. When set, the orchestrator builds the
+    named dispatch adapter and ships each whole trial to it; when ``None`` the run
+    takes the single-box substrate path unchanged. ``runtime='remote'`` is a
+    deprecated alias for ``dispatch.adapter='grpc_node'`` with ``config.nodes``
+    taken from ``remote.nodes``."""
 
     @model_validator(mode="after")
     def _require_nodes_for_remote_runtime(self) -> Self:
