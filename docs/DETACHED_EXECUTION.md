@@ -107,20 +107,24 @@ Native and delegated trials converge on the same path, so the hands need no per-
 
 ![One dispatch seam: native and delegated trials converge on the same path](assets/detached-seam.svg)
 
-### 4.3 Remote backend + node registry — ADR-0059
+### 4.3 The dispatch axis + node registry — ADR-0059, ADR-0064
 
-A `remote` runtime backend leases a node per trial from a **node registry** (a Protocol; the first
-implementation is config-seeded and in-process), instead of starting a local sandbox. The node count
-bounds concurrency: asking for a node when none is free waits rather than double-booking. A run shape
-the backend cannot serve is **refused at run start**, not degraded mid-run.
+Where a whole trial runs is its own axis, separate from how the sandbox is built. A **dispatch adapter**
+([ADR-0064](adr/0064-dispatch-adapter-seam.md)) takes one trial's inputs and returns its graded result;
+the `orchestrator.dispatch` config block names the adapter and its options. The in-tree `grpc_node` adapter
+leases a node per trial from a **node registry** (a Protocol; the first implementation is config-seeded and
+in-process) instead of starting a local sandbox. The node count bounds concurrency: asking for a node when
+none is free waits rather than double-booking. A run shape the adapter cannot serve is **refused at run
+start**, not degraded mid-run.
 
-**Where `remote` sits among the runtime modes.** The runtime is chosen by `orchestrator.runtime`. Today's
-modes are all *local* — they stand the sandbox up on the same machine: **`shared`** (the default — one
-compose stack for the whole run), **`per_trial`** (a fresh stack per trial, for tasks whose services must
-reset between trials), and **`in_memory`** (a test double). `remote` is the new mode: it stands up no local
-stack and instead leases a node and dispatches the trial there. A single-stack
-`environment_manifest` in the task's own directory also runs on the node, which materialises it once for
-its trial; multi-stack, `reset`-service and project-level compose stay with `shared` / `per_trial` (§7).
+**Where dispatch sits among the runtime modes.** When `orchestrator.dispatch` is absent the run takes a
+*local* substrate backend on the same machine: **`shared`** (the default — one compose stack for the whole
+run), **`per_trial`** (a fresh stack per trial, for tasks whose services must reset between trials), and
+**`in_memory`** (a test double). Setting `orchestrator.dispatch.adapter: grpc_node` instead stands up no
+local stack and leases a node per trial. A single-stack `environment_manifest` in the task's own directory
+also runs on the node, which materialises it once for its trial; multi-stack, `reset`-service and
+project-level compose stay with `shared` / `per_trial` (§7). `orchestrator.runtime: remote` is a one-release
+deprecated alias for `dispatch.adapter: grpc_node` (its `config.nodes` taken from `orchestrator.remote`).
 
 ### 4.4 The node owns the whole trial — ADR-0063
 

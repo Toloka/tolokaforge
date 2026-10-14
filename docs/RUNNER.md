@@ -744,7 +744,7 @@ snapshot_status:
 
 Each refusal names the failing condition and terminates the run before any trial produces.
 
-**Backend support.** Shipped backends: `SharedStackRuntimeBackend` + `PerTrialRuntimeBackend` implement `build_grade_bundle`; `InMemoryRuntimeBackend` and `RemoteRuntimeBackend` ([RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md)) opt out. External `tolokaforge.runtime_backends` plugins either implement the hook or opt out with a `NotImplementedError` stub — the Protocol is `@runtime_checkable` and the startup gate probes the backend at run-start.
+**Backend support.** Shipped backends: `SharedStackRuntimeBackend` + `PerTrialRuntimeBackend` implement `build_grade_bundle`; `InMemoryRuntimeBackend` ([RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md)) opts out. External `tolokaforge.runtime_backends` plugins either implement the hook or opt out with a `NotImplementedError` stub — the Protocol is `@runtime_checkable` and the startup gate probes the backend at run-start. A `grpc_node` dispatch run produces no control-plane grade bundle: the node grades the trial itself.
 
 **Storage.** `BundleStore` is a plug-in seam under the `tolokaforge.bundle_stores` entry-point group — see [`docs/GRADER_SERVICE.md`](GRADER_SERVICE.md) § Bundle store seam for the Protocol shape + URI format.
 

@@ -24,14 +24,16 @@ ten methods, three concerns:
 Every implementation ships all ten. The orchestrator holds one backend
 instance for the whole run; the conductor calls it per-trial.
 
-A backend whose substrate runs the *whole* trial additionally implements the
-`TrialOwningBackend` Protocol (`run_trial_node(inputs) -> TrialResult`).
-`build_trial_execution_unit` routes such a backend through `RemoteTrialExecutor`
-and every other backend through `ProvisioningTrialExecutor`; the check is
-`isinstance(backend, TrialOwningBackend)` and nothing else, so `shared`,
-`per_trial` and `in_memory` are untouched. Such a backend's per-trial RPC methods
-exist only to satisfy `RuntimeBackend` and refuse — `RemoteRuntimeBackend` below
-is the only one.
+Running a *whole* trial somewhere else is a separate axis — the **dispatch
+adapter** ([ADR-0064](adr/0064-dispatch-adapter-seam.md)), not a runtime backend.
+A `DispatchAdapter` (`connect` / `close` / `run_trial_node(inputs) -> TrialResult`)
+is selected by the `orchestrator.dispatch` config block; when it is set,
+`build_trial_execution_unit` routes trials through `RemoteTrialExecutor` and the
+orchestrator builds no substrate backend (the node owns the substrate). When
+`orchestrator.dispatch` is absent, the run takes the substrate path below with
+`ProvisioningTrialExecutor`, so `shared`, `per_trial` and `in_memory` are
+untouched. The in-tree `grpc_node` adapter is described under
+[Dispatch adapters](#dispatch-adapters).
 
 ```mermaid
 graph TB
@@ -110,41 +112,56 @@ each get independent containers, networks, and volumes. Every
 `RuntimeBackend` method is a straight delegation onto the internal
 backend — the class body is a dataclass, not a re-implementation.
 
-**`RemoteRuntimeBackend`** (`remote`) — hands each *whole trial* to a trial
-node leased from a node registry ([ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md),
-[`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)). It is the only backend that
-implements the `TrialOwningBackend` Protocol (`run_trial_node(inputs) -> TrialResult`),
-which is what routes a unit's trials through `RemoteTrialExecutor` instead of
-`ProvisioningTrialExecutor`. `orchestrator.remote.nodes` seeds an in-process
-`InMemoryNodeRegistry` with `host:port` addresses of nodes started with
-`tolokaforge trial-node`. `run_trial_node` leases one node for the trial (blocking
-until a node frees, up to `orchestrator.remote.lease_timeout_s`, default 300),
-connects within the run's runner connect budget — which also checks protocol and
-message-size skew — ships the serialized `TrialNodeInputs` over the `RunTrial` RPC,
-and releases the lease whatever the outcome. The node runs the conductor, the agent
-loop, the grader and the trial's substrate itself; the control plane builds a grader
-and conductor for the unit but never invokes them, and writes a reduced bundle
-(`trajectory.yaml`, `tool_log.yaml`, `metrics.yaml`, `grade.yaml`) from the returned
-trajectory. Each node serves one trial at a time, so the node count bounds trial
-concurrency. The backend exposes no `runner_address`, and its per-trial RPC methods
-(`register_trial`, `execute_tool`, `grade_trial`, `get_state`, `reset_trial`) exist
-only to satisfy the `RuntimeBackend` Protocol and raise `NotImplementedError`.
+**`InMemoryRuntimeBackend`** — test-only. Records every method call on a
+`RuntimeBackendCallLog`; no Docker daemon required. Used by canonical
+contract tests.
+
+## Dispatch adapters
+
+Where a *whole trial* runs is a separate axis from how its sandbox is built
+([ADR-0064](adr/0064-dispatch-adapter-seam.md)). A `DispatchAdapter` takes one
+trial's `TrialNodeInputs` and returns its graded `TrialResult`; adapters register
+under the `tolokaforge.dispatch_adapters` entry-point group and raise the
+transport-neutral errors `DispatchRefused` / `DispatchTransient` /
+`DispatchProvisionError` (`tolokaforge/core/dispatch/errors.py`). The
+`orchestrator.dispatch` block names the adapter and its options; when it is set
+the orchestrator builds the adapter, runs the trial loop through
+`RemoteTrialExecutor`, and starts no local substrate backend (the node owns the
+substrate). When it is absent the run takes the single-box substrate path above,
+unchanged.
 
 ```yaml
 orchestrator:
-  runtime: remote
   auto_start_services: false
-  remote:
-    nodes: ["10.0.0.5:50061", "10.0.0.6:50061"]
-    lease_timeout_s: 300
+  dispatch:
+    adapter: grpc_node
+    config:
+      nodes: ["10.0.0.5:50061", "10.0.0.6:50061"]
+      lease_timeout_s: 300
 ```
 
-Run shapes refused at run start rather than degraded:
+**`grpc_node`** — hands each whole trial to a trial node leased from an in-process
+node registry ([ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md),
+[`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)). `config.nodes` seeds an
+`InMemoryNodeRegistry` with `host:port` addresses of nodes started with
+`tolokaforge trial-node`; `config.lease_timeout_s` (default 300) bounds the wait
+for a free node and `config.grpc_max_message_mb` (defaulted from
+`compute.grpc_max_message_mb`) bounds each node channel. `run_trial_node` leases
+one node, connects within the run's connect budget — which also checks protocol
+and message-size skew — ships the serialized `TrialNodeInputs` over the `RunTrial`
+RPC, and releases the lease whatever the outcome, translating every node failure
+into the neutral dispatch vocabulary. The node runs the conductor, the agent loop,
+the grader and the trial's substrate itself; the control plane builds no grader or
+conductor and writes a reduced bundle (`trajectory.yaml`, `tool_log.yaml`,
+`metrics.yaml`, `grade.yaml`) from the returned trajectory. Each node serves one
+trial at a time, so the node count bounds trial concurrency.
+
+Run shapes `grpc_node` refuses at run start rather than degrading:
 
 - A task `environment_manifest` the node cannot host, named by task: more than one stack, a service with `isolation: reset` (reset-isolation seeds are not yet shipped to the node), or a compose file outside the task's own directory (project-level or shared compose does not ship with the pack). Run those under `shared` or `per_trial`. A single-stack, non-reset manifest whose compose file is in the task directory is accepted: the node rebases the compose path onto its task-pack mount and materialises the stack once for its trial (see [TRIAL_NODE_SERVICE.md](TRIAL_NODE_SERVICE.md)).
-- A non-native adapter or coding-harness mode (`models.agent.harness`): the remote runtime runs only the native adapter without harness mode.
+- A non-native adapter or coding-harness mode (`models.agent.harness`): the adapter runs only the native adapter without harness mode.
 - `grader_rpc` and `queue` graders (they need a static runner address); `runner_rpc` only.
-- `grader.snapshot.enabled`: no grade bundle is produced.
+- `grader.snapshot.enabled`: the node grades in-process and produces no control-plane grade bundle.
 - `auto_start_services: true`: no local stack is started; set it to `false`.
 - Run settings the node does not carry, named in one error: `max_requests_per_second` (a run-level throttle is global across trials; a node runs one trial and cannot enforce a shared limit), the `orchestrator.typesense` search plane (a control-plane-local container bridged onto the runner's Docker network; a remote node has no such bridge), a custom `conductor_factory`, a custom `agent_client_factory` (set `models.agent.fallbacks` instead; the node carries it), and a fallback chain together with an enabled `orchestrator.rate_limit_probe`.
 - Carried to the node, so accepted at any value: `orchestrator.timeouts`, `max_turns`, `max_trial_tokens`, `stuck_heuristics`, `agent_loop` (the loop must be registered on the node), `compute.log_tail` / `compute.capture_logs_on_success`, and the agent's `fallbacks` chain.
@@ -152,11 +169,7 @@ Run shapes refused at run start rather than degraded:
 
 A configured `observability.tracing` exporter does not refuse: it logs a warning, because the node emits no live traces and the exporter sees only the reduced bundle.
 
-Selection rides the deprecated `orchestrator.runtime` knob (or `--runtime remote`), so it emits that knob's `DeprecationWarning`.
-
-**`InMemoryRuntimeBackend`** — test-only. Records every method call on a
-`RuntimeBackendCallLog`; no Docker daemon required. Used by canonical
-contract tests.
+`orchestrator.runtime: remote` (and `--runtime remote`) is a one-release deprecated alias for `dispatch.adapter: grpc_node` with `config.nodes` taken from `orchestrator.remote.nodes`; it emits a `DeprecationWarning`. Migrate to the `dispatch` block.
 
 ## Network posture
 
@@ -1076,7 +1089,7 @@ The runner and db-service images are also published to Docker Hub (see [STANDALO
 
 - `tolokaforge/core/per_trial_runtime.py` — the preset (delegates every method onto the composer-driven `SharedStackRuntimeBackend`).
 - `tolokaforge/core/runtime.py` — the `RuntimeBackend` Protocol + `InMemoryRuntimeBackend`.
-- `tolokaforge/core/remote_runtime.py` + `tolokaforge/core/node_registry.py` — the remote backend and its node registry ([ADR-0059](adr/0059-remote-runtime-backend.md), [ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md)); `tolokaforge/trial_node/` — the node service ([`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)).
+- `tolokaforge/core/dispatch/` — the dispatch-adapter seam ([ADR-0064](adr/0064-dispatch-adapter-seam.md)): `adapter.py` (Protocol), `errors.py` (neutral vocabulary), `grpc_node.py` (the `grpc_node` adapter). `tolokaforge/core/node_registry.py` — its node registry ([ADR-0059](adr/0059-remote-runtime-backend.md), [ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md)); `tolokaforge/trial_node/` — the node service ([`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)).
 - `tolokaforge/core/shared_stack_runtime.py` — `SharedStackRuntimeBackend` + `RunnerClient` Protocol + `GrpcRunnerClient`.
 - `tolokaforge/core/default_substrate_composer.py` — the sequencer that walks the composition plan and stitches materialiser + dispatchers together.
 - `tolokaforge/core/docker_compose_materialiser.py` — the docker-compose materialiser (compose lifecycle, log routing, per-service capture).
