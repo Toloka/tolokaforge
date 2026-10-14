@@ -6,6 +6,7 @@ import random
 import shutil
 import socket
 import tempfile
+import warnings
 from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -42,6 +43,7 @@ from tolokaforge.core.compose_materialisation import (
     run_needs_docker_cli,
 )
 from tolokaforge.core.conductor import ConductorFactory
+from tolokaforge.core.dispatch.adapter import DispatchAdapter
 from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
     write_engine_run_state,
@@ -85,11 +87,12 @@ from tolokaforge.core.models import (
     require_user_simulator_config,
 )
 from tolokaforge.core.models.run_config import (
+    GRPC_NODE_DISPATCH_ADAPTER,
     REMOTE_RUNTIME_NAME,
     USER_TEMPERATURE_IGNORED,
+    DispatchConfig,
     sets_user_temperature,
 )
-from tolokaforge.core.node_registry import InMemoryNodeRegistry, NodeRegistry
 from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION, _engine_version
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import (
@@ -100,10 +103,12 @@ from tolokaforge.core.output.artifacts import (
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.plugin_registry import (
     RAG_SERVICE_STACK_SERVICE,
+    DispatchAdapterBuildContext,
     RegistryError,
     RuntimeBackendBuildContext,
     UnknownImplementationError,
     load_agent_loop,
+    load_dispatch_adapter,
     load_runtime_backend,
     load_user_simulator,
 )
@@ -677,6 +682,7 @@ class OrchestratorDeps:
     artifact_writer: TrialArtifactWriter = field(default_factory=FileArtifactWriter)
     run_aggregate_writer: RunAggregateWriter = field(default_factory=FileAggregateWriter)
     runtime_backend: RuntimeBackend | None = None
+    dispatch_adapter: DispatchAdapter | None = None
     conductor_factory: ConductorFactory | None = None
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
     budget: CompositeBudget | None = None
@@ -819,6 +825,11 @@ class Orchestrator:
         self._artifact_writer: TrialArtifactWriter = resolved_deps.artifact_writer
         self._run_aggregate_writer: RunAggregateWriter = resolved_deps.run_aggregate_writer
         self._injected_runtime_backend: RuntimeBackend | None = resolved_deps.runtime_backend
+        self._injected_dispatch_adapter: DispatchAdapter | None = resolved_deps.dispatch_adapter
+        # Resolved once (incl. the deprecated ``runtime='remote'`` alias, whose
+        # warning then fires once per orchestrator); see :meth:`_dispatch_config`.
+        self._dispatch_config_resolved = False
+        self._dispatch_config_cache: DispatchConfig | None = None
         self._conductor_factory: ConductorFactory | None = resolved_deps.conductor_factory
         # Live tracing (ADR-0047): built per run from ``observability.tracing`` in :meth:`run`.
         self._trial_observer: TrialObserver = NullTrialObserver()
@@ -1122,17 +1133,20 @@ class Orchestrator:
         self,
         *,
         agent_client: LLMClient,
-        runtime_backend: RuntimeBackend,
+        runtime_backend: RuntimeBackend | None,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None,
+        dispatch_adapter: DispatchAdapter | None = None,
     ) -> TrialExecutionUnit:
         """Build this run's per-trial execution unit and register it for teardown.
 
         Called once per ``run()`` / ``run_worker()`` invocation, after the
         adapter is loaded, the artifact writer is initialised, and the
-        per-run wiring (LLM client, runtime backend, output directory, rate
-        limiter) is resolved. Raises ``RuntimeError`` if ``self.adapter`` is
-        unset. The unit is closed by :meth:`_close_trial_units`.
+        per-run wiring (LLM client, runtime backend or dispatch adapter, output
+        directory, rate limiter) is resolved. When ``dispatch_adapter`` is set
+        the whole trial is shipped to it and ``runtime_backend`` is ``None``.
+        Raises ``RuntimeError`` if ``self.adapter`` is unset. The unit is closed
+        by :meth:`_close_trial_units`.
         """
         if self.adapter is None:
             raise RuntimeError(
@@ -1155,6 +1169,7 @@ class Orchestrator:
                 strict=self.strict,
                 agent_client=agent_client,
                 runtime_backend=runtime_backend,
+                dispatch_adapter=dispatch_adapter,
                 output_dir=output_dir,
                 request_limiter=request_limiter,
                 events=self._events,
@@ -1248,7 +1263,7 @@ class Orchestrator:
 
     def _cleanup_runner_state_for_retry(
         self,
-        runtime_backend: RuntimeBackend,
+        runtime_backend: RuntimeBackend | None,
         task_id: str,
         trial_idx: int,
     ) -> None:
@@ -1262,7 +1277,13 @@ class Orchestrator:
         Idempotent: a stale or already-absent trial is logged and ignored so a
         failing cleanup never blocks the retry attempt itself (the
         re-registration will surface a clearer error if state is unrecoverable).
+
+        No-op on a dispatch run: the node owns its substrate and its lease is
+        freed per trial inside :meth:`DispatchAdapter.run_trial_node`, so there
+        is no control-plane runner state to forget.
         """
+        if runtime_backend is None:
+            return
         trial_id = f"{task_id}:{trial_idx}"
         try:
             result = runtime_backend.cleanup_trial(trial_id)
@@ -1391,18 +1412,80 @@ class Orchestrator:
                 return True
         return False
 
-    def _runtime_is_remote(self) -> bool:
-        return self.config.orchestrator.runtime == REMOTE_RUNTIME_NAME
+    def _dispatch_config(self) -> DispatchConfig | None:
+        """The run's dispatch config, or ``None`` for the single-box substrate path.
+
+        Resolved once: the explicit ``orchestrator.dispatch`` block, or the
+        deprecated ``orchestrator.runtime='remote'`` alias mapped onto the
+        ``grpc_node`` adapter (its ``config.nodes`` taken from
+        ``orchestrator.remote``). The alias's :class:`DeprecationWarning` fires
+        once per orchestrator, here.
+        """
+        if not self._dispatch_config_resolved:
+            self._dispatch_config_cache = self._resolve_dispatch_config()
+            self._dispatch_config_resolved = True
+        return self._dispatch_config_cache
+
+    def _resolve_dispatch_config(self) -> DispatchConfig | None:
+        orchestrator = self.config.orchestrator
+        if orchestrator.dispatch is not None:
+            return orchestrator.dispatch
+        if orchestrator.runtime != REMOTE_RUNTIME_NAME:
+            return None
+        warnings.warn(
+            "orchestrator.runtime='remote' is a deprecated alias for "
+            "orchestrator.dispatch={adapter: 'grpc_node', config: {nodes: ...}}; "
+            "migrate to the dispatch block. Retired in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        remote = orchestrator.remote
+        assert remote is not None  # OrchestratorConfig requires remote.nodes for runtime='remote'
+        return DispatchConfig(
+            adapter=GRPC_NODE_DISPATCH_ADAPTER,
+            config={"nodes": remote.nodes, "lease_timeout_s": remote.lease_timeout_s},
+        )
+
+    def _is_dispatch_run(self) -> bool:
+        """Whether this run ships whole trials to a dispatch adapter."""
+        return self._dispatch_config() is not None
+
+    def _dispatches_via_grpc_node(self) -> bool:
+        """Whether the resolved dispatch adapter is the in-tree ``grpc_node``."""
+        config = self._dispatch_config()
+        return config is not None and config.adapter == GRPC_NODE_DISPATCH_ADAPTER
+
+    def _build_dispatch_adapter(self, dispatch: DispatchConfig) -> DispatchAdapter:
+        """Build the run's dispatch adapter from its config via the entry-point group.
+
+        The run's ``compute.grpc_max_message_mb`` is injected into the adapter's
+        config block (an explicit value in the block wins), and the connect
+        budget is threaded from ``runtime_connect``.
+        """
+        connect_timeout_s, connect_retry_interval_s = self._resolve_runtime_connect_budget()
+        config = dict(dispatch.config)
+        config.setdefault("grpc_max_message_mb", self._grpc_max_message_mb())
+        adapter = load_dispatch_adapter(dispatch.adapter)(
+            DispatchAdapterBuildContext(
+                events=self._events,
+                connect_timeout_s=connect_timeout_s,
+                connect_retry_interval_s=connect_retry_interval_s,
+                config=config,
+            )
+        )
+        self.logger.info("dispatch.adapter.selected", adapter=dispatch.adapter)
+        return adapter
 
     def _refuse_unsupported_remote_run(self) -> None:
-        """Fail loud on run shapes the ``remote`` runtime cannot serve.
+        """Fail loud on run shapes the ``grpc_node`` dispatch adapter cannot serve.
 
-        The remote backend hands each whole trial to a leased node and starts no
+        The adapter hands each whole trial to a leased node and starts no
         local stack, so it refuses an explicit ``auto_start_services: true``,
         task-declared stacks the node cannot host (see
         :meth:`_refuse_manifests_the_node_cannot_host`), trial graders that dial
-        a static runner address (``grader_rpc`` / ``queue``), and every run
-        setting the node does not carry (see
+        a static runner address (``grader_rpc`` / ``queue``), snapshot grade-bundle
+        production (the node grades in-process and produces no control-plane
+        bundle), and every run setting the node does not carry (see
         :meth:`_refuse_settings_the_node_does_not_carry`).
         """
         orchestrator = self.config.orchestrator
@@ -1411,9 +1494,9 @@ class Orchestrator:
             and "auto_start_services" in orchestrator.model_fields_set
         ):
             raise ValueError(
-                "orchestrator.runtime='remote' leases nodes from "
-                "orchestrator.remote and starts no local stack; it contradicts "
-                "orchestrator.auto_start_services=true. Set auto_start_services: false."
+                "orchestrator.dispatch.adapter='grpc_node' leases nodes and starts no local "
+                "stack; it contradicts orchestrator.auto_start_services=true. Set "
+                "auto_start_services: false."
             )
         self._refuse_manifests_the_node_cannot_host()
         grader_name = self.config.grader.name if self.config.grader else None
@@ -1421,9 +1504,17 @@ class Orchestrator:
             grader_name = self.adapter.trial_grader_name
         if grader_name in ("grader_rpc", "queue"):
             raise ValueError(
-                f"orchestrator.runtime='remote' cannot use grader {grader_name!r}: it dials a "
-                "static runner address the remote backend does not expose. Use "
+                f"orchestrator.dispatch.adapter='grpc_node' cannot use grader {grader_name!r}: "
+                "it dials a static runner address the node does not expose. Use "
                 "the 'runner_rpc' grader."
+            )
+        grader = self.config.grader
+        if grader is not None and grader.snapshot is not None and grader.snapshot.enabled:
+            raise ValueError(
+                "orchestrator.dispatch.adapter='grpc_node' cannot honour "
+                "grader.snapshot.enabled=true: the node grades the trial in-process and "
+                "produces no control-plane grade bundle. Run under the shared or per_trial "
+                "substrate, or disable snapshot mode."
             )
         self._refuse_settings_the_node_does_not_carry()
         self._warn_observability_the_node_does_not_carry()
@@ -1448,7 +1539,7 @@ class Orchestrator:
             problems.extend(_node_hosting_problems(task.task_id, task.source_dir, manifest))
         if problems:
             raise ValueError(
-                "orchestrator.runtime='remote' runs each trial on a node that hosts one "
+                "orchestrator.dispatch.adapter='grpc_node' runs each trial on a node that hosts one "
                 f"single-stack, non-reset, in-pack environment_manifest, but {'; '.join(problems)}."
             )
 
@@ -1499,9 +1590,9 @@ class Orchestrator:
             )
         if unsupported:
             raise ValueError(
-                "orchestrator.runtime='remote' runs each trial on a node that does not carry "
-                f"{', '.join(unsupported)}. Remove them, or run under the shared or "
-                "per_trial runtime."
+                "orchestrator.dispatch.adapter='grpc_node' runs each trial on a node that does "
+                f"not carry {', '.join(unsupported)}. Remove them, or run under the shared or "
+                "per_trial substrate."
             )
 
     def _warn_observability_the_node_does_not_carry(self) -> None:
@@ -1514,15 +1605,10 @@ class Orchestrator:
         tracing = observability.tracing if observability is not None else None
         if tracing is not None and tracing.exporter != "none":
             self.logger.warning(
-                "observability.tracing is configured, but orchestrator.runtime='remote' runs "
+                "observability.tracing is configured, but the grpc_node dispatch adapter runs "
                 "trials on nodes that emit no live traces; exporters see the reduced bundle only",
                 exporter=tracing.exporter,
             )
-
-    def _build_node_registry(self) -> NodeRegistry:
-        remote = self.config.orchestrator.remote
-        assert remote is not None  # OrchestratorConfig requires remote.nodes for runtime='remote'
-        return InMemoryNodeRegistry(remote.nodes, lease_timeout_s=remote.lease_timeout_s)
 
     def _coerce_plan_shape_for_override(self, override: str | None) -> None:
         """Rewrite every task's resolved plan ``stack_scope`` to match the
@@ -1733,7 +1819,6 @@ class Orchestrator:
                 connect_timeout_s=connect_timeout_s,
                 connect_retry_interval_s=connect_retry_interval_s,
                 grpc_max_message_mb=self._grpc_max_message_mb(),
-                node_registry=self._build_node_registry() if self._runtime_is_remote() else None,
             )
         )
         self.logger.info(
@@ -3113,7 +3198,7 @@ class Orchestrator:
         # already-coerced scopes. Fires BEFORE ``_extract_run_env_manifest`` so
         # the extract sees the coerced plan.
         self._coerce_plan_shape_for_override(self.config.orchestrator.runtime)
-        if self._runtime_is_remote():
+        if self._dispatches_via_grpc_node():
             self._refuse_unsupported_remote_run()
 
         # Task-declared shared-stack manifest: if the run's tasks declare an
@@ -3121,10 +3206,10 @@ class Orchestrator:
         # declarations fail loud before we touch docker.
         run_env_manifest = self._extract_run_env_manifest()
 
-        # Auto-start services via EngineStack if configured. The remote runtime
-        # leases runner nodes per trial and starts no local stack.
+        # Auto-start services via EngineStack if configured. A dispatch run ships
+        # each whole trial to a node that owns its substrate and starts no local stack.
         service_stack = None
-        if self.config.orchestrator.auto_start_services and not self._runtime_is_remote():
+        if self.config.orchestrator.auto_start_services and not self._is_dispatch_run():
             try:
                 from tolokaforge.docker.stacks import core_stack, full_stack
 
@@ -3333,20 +3418,34 @@ class Orchestrator:
         if runner_address is None:
             runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
-        runtime_backend: RuntimeBackend
-        if self._injected_runtime_backend is not None:
-            runtime_backend = self._injected_runtime_backend
-        else:
-            runtime_backend = self._construct_runtime_backend(
-                runner_address,
-                env_manifest=run_env_manifest,
-                run_id=run_id,
+        # Dispatch run: ship each whole trial to a dispatch adapter, which owns
+        # the substrate. No local substrate backend is constructed or auto-started.
+        dispatch_config = self._dispatch_config()
+        runtime_backend: RuntimeBackend | None = None
+        dispatch_adapter: DispatchAdapter | None = None
+        if dispatch_config is not None or self._injected_dispatch_adapter is not None:
+            dispatch_adapter = (
+                self._injected_dispatch_adapter
+                if self._injected_dispatch_adapter is not None
+                else self._build_dispatch_adapter(dispatch_config)  # type: ignore[arg-type]
             )
-        self._events.phase_changed(phase="connecting_runtime")
-        runtime_backend.connect()
-        self.logger.info("Runtime backend connected")
-        self._verify_isolation_compatibility(runtime_backend)
-        self._validate_snapshot_mode_compatibility(runtime_backend)
+            self._events.phase_changed(phase="connecting_runtime")
+            dispatch_adapter.connect()
+            self.logger.info("Dispatch adapter connected")
+        else:
+            if self._injected_runtime_backend is not None:
+                runtime_backend = self._injected_runtime_backend
+            else:
+                runtime_backend = self._construct_runtime_backend(
+                    runner_address,
+                    env_manifest=run_env_manifest,
+                    run_id=run_id,
+                )
+            self._events.phase_changed(phase="connecting_runtime")
+            runtime_backend.connect()
+            self.logger.info("Runtime backend connected")
+            self._verify_isolation_compatibility(runtime_backend)
+            self._validate_snapshot_mode_compatibility(runtime_backend)
 
         from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
@@ -3360,8 +3459,10 @@ class Orchestrator:
             self.logger.info(
                 "Trial-scoped service endpoints resolved by backend from task-declared stack"
             )
-        elif self._runtime_is_remote():
-            self.logger.info("Trial-scoped service endpoints resolved by the runtime backend")
+        elif self._is_dispatch_run():
+            self.logger.info(
+                "Trial-scoped service endpoints resolved by the dispatch adapter's node"
+            )
         else:
             self.logger.info(
                 "Resolved trial-scoped service endpoints",
@@ -3373,6 +3474,7 @@ class Orchestrator:
         trial_unit = self._build_trial_unit(
             agent_client=agent_client,
             runtime_backend=runtime_backend,
+            dispatch_adapter=dispatch_adapter,
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
@@ -3383,7 +3485,9 @@ class Orchestrator:
         # body — a mid-run exception still surfaces to the caller after the
         # units are closed.
         try:
-            executor_healthy = runtime_backend.health_check()
+            executor_healthy = (
+                runtime_backend.health_check() if runtime_backend is not None else True
+            )
             self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
 
             # Build pending task/trial pairs and initialize durable queue.
@@ -3671,10 +3775,13 @@ class Orchestrator:
                     total_cost_usd=round(total_cost_usd, 6),
                 )
 
-            # Cleanup runtime backend if used; SharedStackRuntimeBackend
-            # logs its own "Shared-stack runtime closed" line, no dup needed.
-            if runtime_backend:
+            # Cleanup runtime backend / dispatch adapter if used;
+            # SharedStackRuntimeBackend logs its own "Shared-stack runtime
+            # closed" line, no dup needed.
+            if runtime_backend is not None:
                 runtime_backend.close()
+            if dispatch_adapter is not None:
+                dispatch_adapter.close()
 
             # Stop TypeSense BEFORE destroying the EngineStack.
             # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
@@ -3768,12 +3875,12 @@ class Orchestrator:
         This mode is intended for distributed execution where multiple worker
         processes lease from the same queue backend.
         """
-        if self._runtime_is_remote():
+        if self._is_dispatch_run():
             raise ValueError(
-                "orchestrator.runtime='remote' is not supported in worker mode: each worker "
-                "process builds its own node registry from orchestrator.remote.nodes, so "
-                "workers would lease the same node and over-subscribe it. Run the "
-                "orchestrator as a single process."
+                "orchestrator.dispatch (and the deprecated orchestrator.runtime='remote' alias) "
+                "is not supported in worker mode: each worker process builds its own dispatch "
+                "adapter and node registry, so workers would lease the same node and "
+                "over-subscribe it. Run the orchestrator as a single process."
             )
 
         output_dir = Path(output_dir)

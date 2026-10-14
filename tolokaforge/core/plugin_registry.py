@@ -161,7 +161,6 @@ if TYPE_CHECKING:
     from tolokaforge.core.grading.comparison_view import ComparisonViewRule
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import SeedRef
-    from tolokaforge.core.node_registry import NodeRegistry
     from tolokaforge.core.runtime import RuntimeBackend
     from tolokaforge.core.service_readiness import ServiceReadinessProbe
     from tolokaforge.core.tool_libraries import ToolLibrary
@@ -443,10 +442,6 @@ class RuntimeBackendBuildContext:
     Bounds every gRPC channel the backend opens to a runner and is injected
     as ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` into every runner container the
     backend materialises, so both ends of the channel share one limit."""
-    node_registry: NodeRegistry | None = None
-    """Trial nodes a backend may lease per trial. Set by the orchestrator for
-    ``orchestrator.runtime: remote`` from ``orchestrator.remote``; ``None`` for
-    every other runtime."""
 
 
 @dataclass(frozen=True)

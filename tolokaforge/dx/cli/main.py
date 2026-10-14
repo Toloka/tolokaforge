@@ -152,7 +152,7 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str | None, sourc
     backend_class = {
         "shared": "SharedStackRuntimeBackend",
         "per_trial": "PerTrialRuntimeBackend",
-        "remote": "RemoteRuntimeBackend",
+        "remote": "GrpcNodeDispatchAdapter (deprecated alias for dispatch.adapter=grpc_node)",
     }.get(runtime_choice, runtime_choice)
     isolation_line = {
         "shared": (
@@ -163,7 +163,7 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str | None, sourc
             "(concurrent trials fully isolated)"
         ),
         "remote": (
-            "one runner node leased per trial from orchestrator.remote.nodes "
+            "one trial node leased per trial from orchestrator.remote.nodes "
             "(no local stack; node count bounds concurrency)"
         ),
     }.get(runtime_choice, "unknown")
