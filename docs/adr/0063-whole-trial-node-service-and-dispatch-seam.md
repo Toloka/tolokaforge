@@ -107,9 +107,22 @@ node keeps its own fuller bundle under its output root.
 node does not carry: a non-native adapter or coding-harness mode, a
 task-declared manifest the node cannot host (multi-stack, a `reset` service, or a
 compose file outside the task's own directory), a custom conductor factory, and
-every run-level setting the node rebuilds from defaults (timeouts, turn cap, stuck heuristics, agent loop, log
-capture, request throttle, fallback chain, the TypeSense plane). A configured
-trace exporter warns rather than refuses.
+a run-level setting the node cannot honour (the request throttle, the TypeSense
+plane, a custom agent-client factory). A configured trace exporter warns rather
+than refuses.
+
+**Carried run settings.** `TrialNodeInputs.run_settings` (`NodeRunSettings`) carries
+the timeouts, turn and token caps, stuck heuristics, agent loop and log-capture
+policy the conductor and the node's log capture read, so a run that sets them
+dispatches instead of being refused; each field defaults to the unset-config value.
+The node applies them when it rebuilds its run configuration; the carried
+`timeouts` are applied verbatim, as on the single-box path, so with the rate-limit
+probe enabled a too-narrow `episode_s` fails the same budget validation instead
+of being stretched. The agent's fallback chain already travels inside its
+model config, and the node builds a fallback client from it (refusing it alongside
+an enabled probe, as the single-box path does). Adding the field raised
+`NODE_PROTOCOL_VERSION` to 2. Reset-isolation seeds are not yet shipped to the
+node: a `reset` service is still refused.
 
 **Task-declared stacks.** A single-stack, non-reset `environment_manifest` whose
 compose file lives in the task's own directory runs on the node. The control plane
@@ -137,8 +150,11 @@ unchanged: nothing under `tolokaforge/trial_node/` joins it.
   cancellation. A cancelled run cannot stop a trial already on a node.
 - A remote trial emits no live traces; exporters see the reduced bundle.
 - Delegated adapters, harness mode, multi-stack manifests, `reset` services
-  (seeds are not shipped to the node), compose files outside the task pack and the
-  run-level settings above are refused because the inputs do not carry them.
+  (seeds are not yet shipped to the node), compose files outside the task pack, the
+  request throttle and the TypeSense plane are refused because the inputs do not
+  carry them.
+- A node resolves `orchestrator.agent_loop` against its own `tolokaforge.agent_loops`
+  entry points, so a non-default loop must be installed on the node image.
 
 ## References
 

@@ -41,6 +41,20 @@ carries `success`, `trial_result_json` (a serialized `TrialResult`, when
 `success`), `error_type` / `stage` / `reason` (otherwise), and the node's
 `node_protocol_version` and `node_max_message_mb`.
 
+`TrialNodeInputs.run_settings` (`NodeRunSettings`) carries the run-level settings
+the node applies when it rebuilds its run configuration: `timeouts`, `max_turns`,
+`max_trial_tokens`, `stuck_heuristics`, `agent_loop`, `log_tail` and
+`capture_logs_on_success`. Each defaults to the unset-config value. The node
+applies the carried `timeouts` verbatim, as the single-box path does; with the
+rate-limit probe enabled a carried `episode_s` too narrow for the probe is refused
+by the same budget validation, not stretched. The agent's
+`fallbacks` chain travels inside its model config; the node builds a fallback
+client from it, and its secret pre-flight covers `${secret:NAME}` references inside
+the chain. A fallback chain together with an enabled probe is refused.
+
+`agent_loop` names an entry in the `tolokaforge.agent_loops` group; a non-default
+loop must be installed in the node's image, or the trial fails on the node.
+
 A failed trial is a successful RPC with `success = false`; only a transport
 fault is a gRPC error.
 
@@ -172,8 +186,10 @@ non-symlinked pack root on mixed-OS development setups.
 
 Refused at run start by the control plane (see
 [`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md#concrete-backends)): multi-stack
-`environment_manifest`s, services declaring `isolation: reset` (seeds are not
-shipped), compose files outside the task's own directory (project-level or shared
-compose), non-native adapters and coding-harness mode, and the run-level settings
-the inputs do not carry. Streaming progress, mid-trial cancellation and live
-traces from the node are not provided.
+`environment_manifest`s, services declaring `isolation: reset` (reset-isolation
+seeds are not yet shipped to the node), compose files outside the task's own
+directory (project-level or shared compose), non-native adapters and coding-harness
+mode, `max_requests_per_second`, the `orchestrator.typesense` search plane, a custom
+`conductor_factory` or `agent_client_factory`, and a fallback chain with the
+rate-limit probe. Streaming progress, mid-trial cancellation and live traces from
+the node are not provided.

@@ -141,12 +141,13 @@ orchestrator:
 
 Run shapes refused at run start rather than degraded:
 
-- A task `environment_manifest` the node cannot host, named by task: more than one stack, a service with `isolation: reset` (seeds are not shipped to the node), or a compose file outside the task's own directory (project-level or shared compose does not ship with the pack). Run those under `shared` or `per_trial`. A single-stack, non-reset manifest whose compose file is in the task directory is accepted: the node rebases the compose path onto its task-pack mount and materialises the stack once for its trial (see [TRIAL_NODE_SERVICE.md](TRIAL_NODE_SERVICE.md)).
+- A task `environment_manifest` the node cannot host, named by task: more than one stack, a service with `isolation: reset` (reset-isolation seeds are not yet shipped to the node), or a compose file outside the task's own directory (project-level or shared compose does not ship with the pack). Run those under `shared` or `per_trial`. A single-stack, non-reset manifest whose compose file is in the task directory is accepted: the node rebases the compose path onto its task-pack mount and materialises the stack once for its trial (see [TRIAL_NODE_SERVICE.md](TRIAL_NODE_SERVICE.md)).
 - A non-native adapter or coding-harness mode (`models.agent.harness`): the remote runtime runs only the native adapter without harness mode.
 - `grader_rpc` and `queue` graders (they need a static runner address); `runner_rpc` only.
 - `grader.snapshot.enabled`: no grade bundle is produced.
 - `auto_start_services: true`: no local stack is started; set it to `false`.
-- Run settings the node does not carry, named in one error: `orchestrator.timeouts`, `orchestrator.max_turns`, `orchestrator.stuck_heuristics`, `orchestrator.agent_loop`, `compute.log_tail` / `compute.capture_logs_on_success`, `max_requests_per_second`, a fallback model chain, a custom `conductor_factory`, and the `orchestrator.typesense` search plane. Leaving them at their defaults is accepted.
+- Run settings the node does not carry, named in one error: `max_requests_per_second` (a run-level throttle is global across trials; a node runs one trial and cannot enforce a shared limit), the `orchestrator.typesense` search plane (a control-plane-local container bridged onto the runner's Docker network; a remote node has no such bridge), a custom `conductor_factory`, a custom `agent_client_factory` (set `models.agent.fallbacks` instead; the node carries it), and a fallback chain together with an enabled `orchestrator.rate_limit_probe`.
+- Carried to the node, so accepted at any value: `orchestrator.timeouts`, `max_turns`, `max_trial_tokens`, `stuck_heuristics`, `agent_loop` (the loop must be registered on the node), `compute.log_tail` / `compute.capture_logs_on_success`, and the agent's `fallbacks` chain.
 - Worker mode (`run_worker`): each process would build its own node registry.
 
 A configured `observability.tracing` exporter does not refuse: it logs a warning, because the node emits no live traces and the exporter sees only the reduced bundle.

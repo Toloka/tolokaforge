@@ -103,14 +103,14 @@ def _remote_backend(factory: InProcessNodeClientFactory) -> RemoteRuntimeBackend
     )
 
 
-def _spec_for(task: TaskConfig, trial_index: int = 0) -> TrialSpec:
+def _spec_for(task: TaskConfig, trial_index: int = 0, agent: ModelConfig = _AGENT) -> TrialSpec:
     from tests.canonical._factories import make_env_endpoints
 
     return TrialSpec(
         trial_id=f"{task.task_id}:{trial_index}",
         run_id="remote-run",
         task=build_single_task_adapter(task).to_task_description(task.task_id),
-        agent_model_config=_AGENT,
+        agent_model_config=agent,
         user_model_config=_USER,
         max_turns=task.max_turns,
         env_endpoints=make_env_endpoints(),
@@ -120,8 +120,17 @@ def _spec_for(task: TaskConfig, trial_index: int = 0) -> TrialSpec:
 class _Unit:
     """An orchestrator-shaped execution unit over a remote backend and one in-process node."""
 
-    def __init__(self, tmp_path: Path, node: InProcessNode, **client_kwargs: Any) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        node: InProcessNode,
+        *,
+        orchestrator: dict[str, Any] | None = None,
+        agent: ModelConfig = _AGENT,
+        **client_kwargs: Any,
+    ) -> None:
         self.tmp_path = tmp_path
+        self.agent = agent
         self.task = write_native_pack(tmp_path / "pack")
         self.factory = InProcessNodeClientFactory(node, **client_kwargs)
         self.backend = _remote_backend(self.factory)
@@ -131,7 +140,7 @@ class _Unit:
             TrialExecutionContext(
                 adapter=build_single_task_adapter(self.task),
                 artifact_writer=FileArtifactWriter(),
-                config=_config(self.out),
+                config=_config(self.out, **(orchestrator or {})),
                 logger=get_logger("remote-dispatch", strict=False),
                 agent_client=None,  # type: ignore[arg-type] — never reached on the control plane
                 runtime_backend=self.backend,
@@ -144,7 +153,7 @@ class _Unit:
         )
 
     def execute(self, trial_index: int = 0) -> TrialResult:
-        return self.unit.execute(_spec_for(self.task, trial_index), self.task)
+        return self.unit.execute(_spec_for(self.task, trial_index, self.agent), self.task)
 
     def close(self) -> None:
         self.unit.close()
@@ -155,8 +164,8 @@ class _Unit:
 def make_unit(tmp_path: Path):
     units: list[_Unit] = []
 
-    def make(node: InProcessNode, **client_kwargs: Any) -> _Unit:
-        unit = _Unit(tmp_path, node, **client_kwargs)
+    def make(node: InProcessNode, **kwargs: Any) -> _Unit:
+        unit = _Unit(tmp_path, node, **kwargs)
         units.append(unit)
         return unit
 
@@ -541,3 +550,94 @@ def test_the_response_of_a_failed_node_names_the_error_type_and_stage(tmp_path: 
     assert not outcome.success
     assert (outcome.error_type, outcome.stage) == ("TaskPackDrift", "task_pack")
     assert "pack drifted" in outcome.reason
+
+
+# ---- Run settings and fallback chains reach the node ---------------------------
+
+
+_CARRIED = {
+    "timeouts": {"turn_s": 45, "episode_s": 900},
+    "max_turns": 7,
+    "max_trial_tokens": 12345,
+    "stuck_heuristics": {"max_repeated_tool_calls": 3},
+    "agent_loop": "custom-loop",
+}
+_FALLBACK = ModelConfig(provider="openai", name="gpt-4o-mini")
+
+
+class _Rebuilt:
+    """What the node's trial body built: the run config and the agent client."""
+
+    def __init__(self) -> None:
+        self.contexts: list[TrialExecutionContext] = []
+
+
+@pytest.fixture
+def rebuilt(monkeypatch: pytest.MonkeyPatch) -> _Rebuilt:
+    import tolokaforge.core.trial_node as trial_node_mod
+
+    seen = _Rebuilt()
+    real = trial_node_mod.build_trial_execution_unit
+
+    def recording(ctx: TrialExecutionContext):
+        seen.contexts.append(ctx)
+        return real(ctx)
+
+    monkeypatch.setattr(trial_node_mod, "build_trial_execution_unit", recording)
+    return seen
+
+
+def test_a_run_with_non_default_settings_dispatches_and_the_node_rebuilds_them(
+    tmp_path: Path, make_unit, rebuilt: _Rebuilt
+) -> None:
+    from tolokaforge.core.llm.fallback_client import FallbackLLMClient
+
+    node = _node(tmp_path)
+    agent = _AGENT.model_copy(update={"fallbacks": [_FALLBACK]})
+    harness = make_unit(node, orchestrator=_CARRIED, agent=agent)
+
+    result = harness.execute()
+
+    assert result.trajectory.status is TrialStatus.COMPLETED
+    (inputs,) = node.received
+    assert inputs.run_settings.max_turns == 7
+    assert inputs.run_settings.agent_loop == "custom-loop"
+    (ctx,) = rebuilt.contexts
+    orchestrator = ctx.config.orchestrator
+    assert (orchestrator.timeouts.turn_s, orchestrator.timeouts.episode_s) == (45, 900)
+    assert orchestrator.max_turns == 7
+    assert orchestrator.max_trial_tokens == 12345
+    assert orchestrator.stuck_heuristics.max_repeated_tool_calls == 3
+    assert orchestrator.agent_loop == "custom-loop"
+    assert isinstance(ctx.agent_client, FallbackLLMClient)
+    assert [model.name for model in ctx.agent_client.chain] == ["gpt-4", "gpt-4o-mini"]
+
+
+def test_a_run_without_fallbacks_builds_a_bare_client_on_the_node(
+    tmp_path: Path, make_unit, rebuilt: _Rebuilt
+) -> None:
+    from tolokaforge.core.llm import LLMClient
+
+    make_unit(_node(tmp_path)).execute()
+
+    (ctx,) = rebuilt.contexts
+    assert type(ctx.agent_client) is LLMClient
+
+
+def test_a_secret_reference_only_a_fallback_carries_is_caught_by_the_node_preflight(
+    tmp_path: Path, make_unit
+) -> None:
+    node = _node(tmp_path)
+    fallback = _FALLBACK.model_copy(
+        update={"extra_headers": {"x-key": "${secret:FALLBACK_ONLY_KEY}"}}
+    )
+    agent = _AGENT.model_copy(update={"fallbacks": [fallback]})
+    harness = make_unit(node, agent=agent)
+
+    result = harness.execute()
+
+    assert node.received == []
+    assert result.trajectory.termination_reason is TerminationReason.PROVISION_ERROR
+    reason = _failure_bundle(harness)["error_reason"]
+    assert reason.startswith("SecretPreflight: ")
+    assert "${secret:FALLBACK_ONLY_KEY}" in reason

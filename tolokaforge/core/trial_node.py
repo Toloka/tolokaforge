@@ -33,16 +33,15 @@ from tolokaforge.core.conductor import (
     require_rate_limit_probe_support,
 )
 from tolokaforge.core.llm import LLMClient
+from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
-    RATE_LIMIT_PROBE_MIN_EPISODE_S,
     ComputeConfig,
     EvaluationConfig,
     ModelConfig,
     OrchestratorConfig,
     RateLimitProbeConfig,
     RunConfig,
-    TimeoutConfig,
     require_user_simulator_config,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifactWriter
@@ -54,7 +53,7 @@ from tolokaforge.core.plugin_registry import (
     load_trial_grader,
 )
 from tolokaforge.core.run_display_events import _NULL_EVENTS, RunDisplayEvents
-from tolokaforge.core.trial import TrialNodeInputs, TrialResult, TrialSpec
+from tolokaforge.core.trial import NodeRunSettings, TrialNodeInputs, TrialResult, TrialSpec
 from tolokaforge.core.trial_executor import (
     ProvisionErrorPolicy,
     ProvisioningTrialExecutor,
@@ -234,14 +233,26 @@ def build_trial_execution_unit(ctx: TrialExecutionContext) -> TrialExecutionUnit
         )
         executor: TrialExecutor
         if isinstance(ctx.runtime_backend, TrialOwningBackend):
-            probe = ctx.config.orchestrator.rate_limit_probe
+            orchestrator = ctx.config.orchestrator
+            compute = ctx.config.compute or ComputeConfig()
             executor = RemoteTrialExecutor(
                 backend=ctx.runtime_backend,
                 runtime=_NODE_RUNTIME,
                 conductor=_NODE_CONDUCTOR,
                 grader_config=grader_config,
                 grpc_max_message_mb=ctx.grpc_max_message_mb,
-                rate_limit_probe=probe if probe.enabled else None,
+                rate_limit_probe=(
+                    orchestrator.rate_limit_probe if orchestrator.rate_limit_probe.enabled else None
+                ),
+                run_settings=NodeRunSettings(
+                    timeouts=orchestrator.timeouts,
+                    max_turns=orchestrator.max_turns,
+                    max_trial_tokens=orchestrator.max_trial_tokens,
+                    stuck_heuristics=orchestrator.stuck_heuristics,
+                    agent_loop=orchestrator.agent_loop,
+                    log_tail=compute.log_tail,
+                    capture_logs_on_success=compute.capture_logs_on_success,
+                ),
                 logger=ctx.logger,
                 output_dir=ctx.output_dir,
                 artifact_writer=ctx.artifact_writer,
@@ -326,7 +337,7 @@ def run_trial_from_inputs(inputs: TrialNodeInputs) -> TrialResult:
             env_manifest=manifest,
             run_id=spec.run_id,
             seeds={},
-            log_capture=_build_log_capture(inputs.output_dir),
+            log_capture=_build_log_capture(inputs.output_dir, inputs.run_settings),
             mount_docker_socket=run_needs_docker_cli(task.adapter_type, [task])
             or spec.agent_model_config.harness is not None,
             expose_substrate=inputs.grader_config is not None
@@ -339,7 +350,7 @@ def run_trial_from_inputs(inputs: TrialNodeInputs) -> TrialResult:
     # the (fail-loud but less actionable) missing-user-model error.
     conductor_factory = load_conductor(inputs.conductor)
 
-    agent_client = LLMClient(spec.agent_model_config, rate_limit_probe=inputs.rate_limit_probe)
+    agent_client = _build_agent_client(spec.agent_model_config, inputs.rate_limit_probe)
     user_config = require_user_simulator_config(spec.user_model_config)
     output_path = inputs.output_dir if inputs.output_dir is not None else Path(spec.run_id)
     artifact_writer = (
@@ -355,6 +366,7 @@ def run_trial_from_inputs(inputs: TrialNodeInputs) -> TrialResult:
                 spec.judge_model_config,
                 output_path,
                 inputs.rate_limit_probe,
+                inputs.run_settings,
             ),
             logger=logger,
             agent_client=agent_client,
@@ -432,15 +444,36 @@ def _resolve_runtime_name(runtime: str, spec: TrialSpec) -> str:
     return "shared"
 
 
-def _build_log_capture(output_dir: Path | None) -> LogCaptureConfig | None:
+def _build_agent_client(
+    agent: ModelConfig, rate_limit_probe: RateLimitProbeConfig | None
+) -> LLMClient:
+    """The agent-side client: a fallback chain when *agent* names fallbacks, else a bare client.
+
+    A fallback chain and an enabled rate-limit probe are mutually exclusive: a
+    chain that switches models mid-probe attributes one model's 429s to another
+    and corrupts the measurement the probe exists to produce.
+    """
+    if not agent.fallbacks:
+        return LLMClient(agent, rate_limit_probe=rate_limit_probe)
+    if rate_limit_probe is not None and rate_limit_probe.enabled:
+        raise ValueError(
+            "orchestrator.rate_limit_probe.enabled is incompatible with a fallback model "
+            "chain (models.agent.fallbacks): switching models mid-probe corrupts the "
+            "served-throughput measurement. Run the probe against a single model."
+        )
+    return FallbackLLMClient(primary=agent, fallbacks=agent.fallbacks)  # type: ignore[return-value]
+
+
+def _build_log_capture(
+    output_dir: Path | None, run_settings: NodeRunSettings
+) -> LogCaptureConfig | None:
     """Build the log-capture policy, or ``None`` when writing no disk artifacts."""
     if output_dir is None:
         return None
-    compute = ComputeConfig()
     return LogCaptureConfig(
         output_root=output_dir,
-        tail=compute.log_tail,
-        on_success=compute.capture_logs_on_success,
+        tail=run_settings.log_tail,
+        on_success=run_settings.capture_logs_on_success,
     )
 
 
@@ -450,11 +483,15 @@ def _build_run_config(
     judge: ModelConfig | None,
     output_path: Path,
     rate_limit_probe: RateLimitProbeConfig | None,
+    run_settings: NodeRunSettings,
 ) -> RunConfig:
-    """Compose the minimal :class:`RunConfig` the conductor reads.
+    """Compose the :class:`RunConfig` the conductor reads.
 
-    ``orchestrator.runtime`` is left unset — backend selection flows through the
-    inputs' ``runtime``, not the deprecated override field.
+    The carried *run_settings* supply the limits, stuck detection and agent loop;
+    everything else stays at its default. The carried timeouts are applied
+    verbatim, as the single-box path applies them. ``orchestrator.runtime`` is left unset — backend
+    selection flows through the inputs' ``runtime``, not the deprecated override
+    field.
     """
     models: dict[str, ModelConfig] = {"agent": agent, "user": user}
     if judge is not None:
@@ -463,32 +500,23 @@ def _build_run_config(
         "workers": 1,
         "repeats": 1,
         "auto_start_services": False,
+        "max_turns": run_settings.max_turns,
+        "max_trial_tokens": run_settings.max_trial_tokens,
+        "agent_loop": run_settings.agent_loop,
     }
     if rate_limit_probe is not None and rate_limit_probe.enabled:
         orchestrator_kwargs["rate_limit_probe"] = rate_limit_probe
-        orchestrator_kwargs["timeouts"] = TimeoutConfig(
-            episode_s=_probe_episode_s(rate_limit_probe)
-        )
+    orchestrator_kwargs["timeouts"] = run_settings.timeouts
+    # OrchestratorConfig validates the probe budget against the carried episode
+    # budget on construction, exactly as on the single-box path.
+    orchestrator = OrchestratorConfig(**orchestrator_kwargs)
+    # The legacy run-level field warns when passed to the constructor; it is
+    # carried data here, not a deprecated authoring choice.
+    orchestrator = orchestrator.model_copy(
+        update={"stuck_heuristics": run_settings.stuck_heuristics}
+    )
     return RunConfig(
         models=models,
-        # OrchestratorConfig validates the probe budget against this episode
-        # budget on construction, so an unfittable combination fails here.
-        orchestrator=OrchestratorConfig(**orchestrator_kwargs),
+        orchestrator=orchestrator,
         evaluation=EvaluationConfig(output_dir=str(output_path)),
-    )
-
-
-def _probe_episode_s(probe: RateLimitProbeConfig) -> int:
-    """Episode budget wide enough for *probe*'s per-turn 429 handling to fit inside.
-
-    Twice ``turn_wall_ceiling_s`` — the agent's per-call budget plus one per
-    user-reply attempt, which one turn spends back to back, plus the overshoot
-    each of those calls can add — floored at the mode's minimum. Doubling the
-    *ceiling* rather than the bare budget is what makes
-    :func:`validate_rate_limit_probe_budget` pass by construction for any legal
-    block, including one with a large ``retry_interval_s``.
-    """
-    return max(
-        int(probe.turn_wall_ceiling_s * 2) + 1,
-        RATE_LIMIT_PROBE_MIN_EPISODE_S + 1,
     )

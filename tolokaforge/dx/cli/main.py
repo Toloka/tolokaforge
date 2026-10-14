@@ -1007,14 +1007,17 @@ def run(
     # ``models.agent.fallbacks`` is realised as a per-invocation
     # ``agent_client_factory`` that wraps the primary agent model in a
     # :class:`FallbackLLMClient`. When the list is empty the seam stays
-    # ``None`` and the orchestrator constructs a bare :class:`LLMClient`.
+    # ``None`` and the orchestrator constructs a bare :class:`LLMClient`. Under
+    # ``runtime: remote`` the seam stays ``None`` as well: the node reads the
+    # chain from the model config it is sent and builds its own client.
     agent_client_factory: Callable[[ModelConfig], LLMClient] | None = None
     if fallback_chain:
+        if run_config.orchestrator.runtime != "remote":
 
-        def _fallback_factory(primary: ModelConfig) -> LLMClient:
-            return FallbackLLMClient(primary=primary, fallbacks=fallback_chain)  # type: ignore[return-value]
+            def _fallback_factory(primary: ModelConfig) -> LLMClient:
+                return FallbackLLMClient(primary=primary, fallbacks=fallback_chain)  # type: ignore[return-value]
 
-        agent_client_factory = _fallback_factory
+            agent_client_factory = _fallback_factory
         console.print(
             f"[cyan]Fallback chain: {', '.join(f'{m.provider}/{m.name}' for m in fallback_chain)}[/cyan]"
         )

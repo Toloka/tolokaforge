@@ -47,7 +47,7 @@ from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
 )
 from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
-from tolokaforge.core.trial import TrialNodeInputs, TrialResult, TrialSpec
+from tolokaforge.core.trial import NodeRunSettings, TrialNodeInputs, TrialResult, TrialSpec
 from tolokaforge.trial_node.protocol import NodeRefusedError
 
 if TYPE_CHECKING:
@@ -412,6 +412,7 @@ class RemoteTrialExecutor:
         grader_config: GraderConfig | None,
         grpc_max_message_mb: int,
         rate_limit_probe: RateLimitProbeConfig | None,
+        run_settings: NodeRunSettings,
         logger: StructuredLogger,
         output_dir: Path,
         artifact_writer: TrialArtifactWriter,
@@ -422,6 +423,7 @@ class RemoteTrialExecutor:
         self.grader_config = grader_config
         self.grpc_max_message_mb = grpc_max_message_mb
         self.rate_limit_probe = rate_limit_probe
+        self.run_settings = run_settings
         self.logger = logger
         self.output_dir = output_dir
         self.artifact_writer = artifact_writer
@@ -461,6 +463,7 @@ class RemoteTrialExecutor:
             task_pack_hash=self._pack_hash(pack_dir) if pack_dir is not None else None,
             output_dir=None,
             rate_limit_probe=self.rate_limit_probe,
+            run_settings=self.run_settings,
         )
 
     def _pack_hash(self, pack_dir: Path) -> str:
