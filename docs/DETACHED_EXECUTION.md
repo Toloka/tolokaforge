@@ -32,10 +32,13 @@ each other.
 
 **Dispatch adapters** answer "where does this trial run?"
 
+- `local` runs each whole trial on the machine the orchestrator runs on — in a
+  thread pool, or on local worker processes it spawns itself (described below).
+  It needs no external dispatch service.
 - `grpc_node` ships each whole trial to a trial node on another machine (described
-  below). It is the adapter that ships in-tree today.
-- The adapter contract is open. A local, in-process adapter and an external
-  distributed backend fit the same seam without changing the orchestrator.
+  below).
+- The adapter contract is open. An external distributed backend fits the same
+  seam without changing the orchestrator.
 
 **Substrate backends** answer "how is the sandbox built?" — these are the
 single-box runtime backends:
@@ -67,11 +70,39 @@ orchestrator:
 ```
 
 - `adapter` is a name registered in the `tolokaforge.dispatch_adapters`
-  entry-point group. `grpc_node` ships in-tree.
+  entry-point group. `local` and `grpc_node` ship in-tree.
 - `config` is the adapter's own options block; each adapter defines and validates
   its own shape.
 - Leave the whole block out and the run takes the single-box substrate path,
   unchanged.
+
+## How `local` runs a trial
+
+The `local` adapter runs every trial on the machine the orchestrator runs on. It
+needs no external dispatch service, so it is both the native dispatch path and
+the way to exercise the dispatch seam end to end on one machine. It has two
+modes, chosen by `config.mode`:
+
+```yaml
+orchestrator:
+  auto_start_services: false
+  dispatch:
+    adapter: local
+    config:
+      mode: subprocess
+      workers: 2
+```
+
+- `thread` (the default) runs each trial in-process on a thread pool of
+  `config.workers` threads. It spawns no process and opens no socket; it runs the
+  same whole-trial entry a node runs, on a JSON copy of the inputs.
+- `subprocess` spawns `config.workers` local trial-node worker processes, each on
+  its own loopback port, and dispatches to them over `RunTrial` exactly as
+  `grpc_node` does — only the placement differs. The adapter spawns the workers
+  when it connects and tears them down when it closes.
+
+`config.workers` is the trial concurrency in both modes. Both run the identical
+trial unit, so a run reads the same whichever mode it picks.
 
 `orchestrator.runtime: remote` (and `--runtime remote`) is a one-release
 deprecated alias for `dispatch.adapter: grpc_node`, taking its node list from

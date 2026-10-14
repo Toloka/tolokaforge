@@ -1,6 +1,6 @@
 # 0064. The dispatch adapter seam
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-14
 - **Deciders:** @CiroGamboa
 - **Supersedes:** none
@@ -83,22 +83,26 @@ deprecated alias for the `grpc_node` adapter.
   service.
 - `grpc_node` is today's remote path recast as one adapter: lease a node, ship
   the job over `RunTrial`, release the lease.
-- `temporal` is designed for and built outside core, with Toloft. A job maps to
-  an activity, a job category maps to a task queue, and durability, scaling and
-  cancellation come from Temporal. Tolokaforge core never imports Temporal.
+- `temporal` is designed for and built outside core as a separate project or
+  plugin wheel. A job maps to an activity, a job category maps to a task queue,
+  and durability, scaling and cancellation come from Temporal. Tolokaforge core
+  never imports Temporal.
 
 The distributed backend owns execution, scaling and durability; tolokaforge does
 not build a node fleet of its own.
 
-### Open decisions
+### Deferred decisions
 
-To be resolved before implementation:
+Settled for now; revisit as the model matures:
 
-- Deprecate `orchestrator.runtime: remote` as a one-release alias, or remove it.
-- Where the Temporal adapter lives: a solutions repository or a plugin wheel.
-- Move `grpc_max_message_mb` off the job so the job is fully transport-neutral.
-- Which trial-unit parity gaps ship so the job covers every scenario (the
-  refusals listed in ADR-0063).
+- `orchestrator.runtime: remote` is kept as a one-release deprecated alias for
+  `dispatch.adapter: grpc_node`.
+- `grpc_max_message_mb` stays in adapter config; moving it off the job for full
+  transport-neutrality is a follow-up.
+- Where a Temporal adapter lives — a separate project or a plugin wheel — is
+  finalised when it is built.
+- Trial-unit parity gaps (the refusals listed in ADR-0063) ship incrementally so
+  the job covers every scenario.
 
 ## Consequences
 

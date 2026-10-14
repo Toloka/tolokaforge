@@ -35,7 +35,7 @@ is selected by the `orchestrator.dispatch` config block. When it is set,
 orchestrator builds no substrate backend — the node owns the substrate. When the
 block is absent, the run takes the substrate path below with
 `ProvisioningTrialExecutor`, so `shared`, `per_trial` and `in_memory` are
-untouched. The in-tree `grpc_node` adapter is described under
+untouched. The in-tree `local` and `grpc_node` adapters are described under
 [Dispatch adapters](#dispatch-adapters); the full dispatch story is in
 [DETACHED_EXECUTION.md](DETACHED_EXECUTION.md).
 
@@ -141,11 +141,34 @@ unchanged.
 orchestrator:
   auto_start_services: false
   dispatch:
-    adapter: grpc_node
+    adapter: local
     config:
-      nodes: ["10.0.0.5:50061", "10.0.0.6:50061"]
-      lease_timeout_s: 300
+      mode: subprocess
+      workers: 2
 ```
+
+**`local`** — runs each whole trial on the machine the orchestrator runs on. It
+is the native dispatch path and the single-box test bed for distributed
+dispatch: it needs no external dispatch service. `config.mode` picks between two
+modes, and `config.workers` (default 1) is the trial concurrency in both.
+
+- `thread` (the default) runs each trial in-process on a thread pool of
+  `config.workers` threads, calling the same whole-trial entry a node runs. It
+  spawns no process and opens no socket.
+- `subprocess` spawns `config.workers` local `tolokaforge trial-node` worker
+  processes, each on its own loopback port, and dispatches to them exactly as
+  `grpc_node` dispatches to configured nodes. `config.lease_timeout_s`
+  (default 300) bounds how long a trial waits for a free worker, and
+  `config.grpc_max_message_mb` (defaulted from `compute.grpc_max_message_mb`) is
+  set on each worker and its client so both ends share one bound. The adapter
+  spawns the workers when it connects and tears them down when it closes; each
+  worker's trial artifacts are written under an adapter-owned temporary directory
+  that is discarded on close.
+
+Both modes run the same trial unit as a real node, so a run reads the same
+whichever it picks. `thread` mode shares the process's secret manager across its
+trials, as the single-box worker pool already does; `subprocess` mode gives each
+worker its own process, matching a node.
 
 **`grpc_node`** — hands each whole trial to a trial node leased from an in-process
 node registry ([ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md),
