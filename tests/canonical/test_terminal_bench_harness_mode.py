@@ -185,6 +185,9 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
         config = MagicMock()
         config.orchestrator.timeouts.episode_s = episode_s
+        # Real default: no run-level agent-budget override, so the task-derived
+        # tool timeout governs (a bare Mock would read as a truthy override).
+        config.orchestrator.timeouts.agent_episode_s = None
         config.orchestrator.max_turns = None
         # A real config value: the turn-loop branch validates the probe budget
         # against the episode budget, and a MagicMock reads as enabled.
