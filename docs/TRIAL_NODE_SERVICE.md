@@ -154,6 +154,20 @@ so the stack's published ports land on the Docker host, not inside the node
 container. Run such a node with host networking (`--network host`); on a bridge
 network it cannot dial the runner port the stack publishes.
 
+## Parity notes
+
+A task-declared stack is materialised fresh for each trial on the node, and a node
+runs one trial per process. A task whose run-scope `shared` service holds state
+that must persist across trials (for example `repeats` above 1 against a stateful
+service) grades differently than on a single box, where one stack lives for the
+whole run. This is a known limitation: a stack shared across trials is not covered.
+Stateless services and single-trial runs are unaffected.
+
+Compose-path rebasing assumes the control plane and the node resolve the pack path
+consistently (Linux to Linux). A macOS control plane (`/tmp` resolving to
+`/private/tmp`) dispatching to a Linux node can be refused spuriously; use a
+non-symlinked pack root on mixed-OS development setups.
+
 ## Not supported
 
 Refused at run start by the control plane (see

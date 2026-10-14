@@ -129,8 +129,10 @@ unchanged: nothing under `tolokaforge/trial_node/` joins it.
   a node dying mid-trial surfaces through gRPC keepalive as an unavailable node.
 - The node's base engine images (`tolokaforge-runner:local`,
   `tolokaforge-db-service:local`) and any public image a task-declared stack
-  names must exist on its Docker daemon; the node builds and pulls none of the
-  `:local` ones.
+  names must already exist on its Docker daemon: the node builds none of the
+  `:local` images and pulls none of the public images, so its daemon must carry
+  `tolokaforge-runner:local`, `tolokaforge-db-service:local` and any public service
+  image (for example `nginx:...`).
 - `RunTrial` is one unary call: no streaming progress and no mid-trial
   cancellation. A cancelled run cannot stop a trial already on a node.
 - A remote trial emits no live traces; exporters see the reduced bundle.

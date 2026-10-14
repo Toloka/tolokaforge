@@ -181,6 +181,11 @@ Delivered as a stack of small PRs; the single-box path is locked byte-for-byte b
   `reset` (seeds are not shipped) and project-level compose are refused under `remote` and run under
   `shared` / `per_trial`. A task with no manifest uses the built-in single-runner (or runner + db) stack
   against the node's co-located runner.
+- **A task-declared stack is per-trial-fresh on the node.** A node runs one trial per process and
+  materialises the stack for that trial, whereas single-box `shared` keeps one stack across the whole
+  run. A task that relies on run-scope shared state persisting across trials grades differently than
+  single-box; a cross-trial shared stack is not covered yet. Stateless services and single-trial runs
+  are unaffected.
 - **Nodes must be pre-provisioned.** A node needs Docker and the engine's base images present; it builds
   none itself.
 - **One unary call per trial, for now.** No streaming progress and no mid-trial cancellation yet; a

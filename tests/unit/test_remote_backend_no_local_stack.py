@@ -156,6 +156,7 @@ def test_explicit_auto_start_false_with_remote_runs(tmp_path: Path) -> None:
 def test_a_task_declaring_an_out_of_pack_compose_file_fails_loud_before_any_trial(
     tmp_path: Path,
 ) -> None:
+    """The refusal fires at run start: no trial reaches a node."""
     _write_pack(tmp_path / "pack", manifest=True)
     orch, node, _ = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
 
