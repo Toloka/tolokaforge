@@ -296,7 +296,7 @@ class GradingSubstrate(Protocol):
     def exec_in_service(
         self,
         *,
-        service: str,
+        service: str | None,
         command: str,
         timeout_s: float,
     ) -> tuple[int, str]:
@@ -553,7 +553,7 @@ class InProcessGradingSubstrate:
     def exec_in_service(
         self,
         *,
-        service: str,
+        service: str | None,
         command: str,
         timeout_s: float,
     ) -> tuple[int, str]:
@@ -796,7 +796,7 @@ class SnapshotGradingSubstrate:
     def exec_in_service(
         self,
         *,
-        service: str,
+        service: str | None,
         command: str,  # noqa: ARG002
         timeout_s: float,  # noqa: ARG002
     ) -> tuple[int, str]:

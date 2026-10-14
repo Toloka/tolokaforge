@@ -71,16 +71,16 @@ class TerminalBenchArtifact:
 
 @dataclass(frozen=True)
 class TerminalBenchCollectHook:
-    """A command run in a trial service to snapshot it before artifacts are read.
+    """A command run in a trial container to snapshot state before artifacts are read.
 
-    From a ``[[verifier.collect]]`` entry. ``service`` is the trial service the
-    command runs in (a DB sidecar, or ``main`` for an in-container DB);
-    ``command`` dumps the DB to a file that a matching artifact then carries into
-    the verifier.
+    From a ``[[verifier.collect]]`` entry. ``command`` writes some state to a file
+    (a DB dump, file permissions, …) that a matching artifact then carries into
+    the verifier. ``service`` is the trial service to run in — a DB sidecar; ``None``
+    (the common no-``service`` form) means the agent's own container.
     """
 
-    service: str
     command: str
+    service: str | None = None
     timeout_sec: float = 300.0
 
 
@@ -301,8 +301,9 @@ def _parse_artifacts(task_id: str, toml_data: Mapping[str, Any]) -> list[Termina
 def _parse_collect(task_id: str, verifier: Mapping[str, Any]) -> list[TerminalBenchCollectHook]:
     """Snapshot hooks from ``[[verifier.collect]]`` — empty when none are declared.
 
-    Each entry declares the ``service`` to run in and the ``command`` that dumps
-    its state to a file; ``timeout_sec`` is optional (default 300s).
+    Each entry declares the ``command`` that writes state to a file; ``service``
+    is optional (``None`` → the agent's container) and ``timeout_sec`` is optional
+    (default 300s).
     """
     declared = verifier.get("collect")
     if declared is None:
@@ -319,26 +320,26 @@ def _parse_collect(task_id: str, verifier: Mapping[str, Any]) -> list[TerminalBe
                 f"terminal-bench task {task_id!r}: each verifier.collect entry must be a "
                 f"table; got {entry!r}."
             )
-        service = entry.get("service")
         command = entry.get("command")
-        if not isinstance(service, str) or not service.strip():
-            raise ValueError(
-                f"terminal-bench task {task_id!r}: a verifier.collect entry needs a "
-                f"non-blank 'service'; got {entry!r}."
-            )
         if not isinstance(command, str) or not command.strip():
             raise ValueError(
-                f"terminal-bench task {task_id!r}: verifier.collect for service "
-                f"{service!r} needs a non-blank 'command'."
+                f"terminal-bench task {task_id!r}: a verifier.collect entry needs a "
+                f"non-blank 'command'; got {entry!r}."
+            )
+        service = entry.get("service")
+        if service is not None and (not isinstance(service, str) or not service.strip()):
+            raise ValueError(
+                f"terminal-bench task {task_id!r}: verifier.collect 'service' must be a "
+                f"non-blank string when set; got {service!r}."
             )
         timeout = entry.get("timeout_sec", 300.0)
         if isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0:
             raise ValueError(
-                f"terminal-bench task {task_id!r}: verifier.collect timeout_sec for "
-                f"{service!r} must be a positive number; got {timeout!r}."
+                f"terminal-bench task {task_id!r}: verifier.collect timeout_sec must be a "
+                f"positive number; got {timeout!r}."
             )
         hooks.append(
-            TerminalBenchCollectHook(service=service, command=command, timeout_sec=float(timeout))
+            TerminalBenchCollectHook(command=command, service=service, timeout_sec=float(timeout))
         )
     return hooks
 

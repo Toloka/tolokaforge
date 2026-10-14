@@ -9,6 +9,7 @@ import pytest
 from tolokaforge_adapter_terminal_bench.task_parser import (
     TaskShape,
     TerminalBenchArtifact,
+    TerminalBenchCollectHook,
     detect_shape,
     discover_tasks,
 )
@@ -151,5 +152,60 @@ def test_non_string_environment_mode_raises(tmp_path: Path) -> None:
         "[verifier]\ntimeout_sec = 300.0\nenvironment_mode = 7",
     )
     _write_task(tmp_path, "badmode", toml)
+    with pytest.raises(ValueError):
+        discover_tasks(tmp_path)
+
+
+_DB_TOML = """
+artifacts = [
+  { source = "/app", exclude = ["*.pyc"] },
+  { source = "/tmp/pg.dump", service = "postgres" },
+]
+
+[verifier]
+environment_mode = "separate"
+timeout_sec = 600.0
+
+[[verifier.collect]]
+service = "postgres"
+command = "pg_dumpall > /tmp/pg.dump"
+timeout_sec = 120.0
+
+[[verifier.collect]]
+command = "find /etc -name '*.conf' > /tmp/perms.txt"
+"""
+
+
+def test_collect_and_service_artifacts_parse(tmp_path: Path) -> None:
+    _write_task(tmp_path, "db", _DB_TOML, tests_dockerfile=True)
+    task = discover_tasks(tmp_path)["db"]
+    assert task.is_v4 is True
+    # artifact service= becomes src_service; a bare/omitted one stays None.
+    assert [(a.source, a.src_service) for a in task.artifacts] == [
+        ("/app", None),
+        ("/tmp/pg.dump", "postgres"),
+    ]
+    # collect hooks: one sidecar-scoped, one with no service (runs in the agent).
+    assert task.collect == [
+        TerminalBenchCollectHook(
+            command="pg_dumpall > /tmp/pg.dump", service="postgres", timeout_sec=120.0
+        ),
+        TerminalBenchCollectHook(
+            command="find /etc -name '*.conf' > /tmp/perms.txt", service=None, timeout_sec=300.0
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "collect_block",
+    [
+        '[[verifier.collect]]\nservice = "postgres"\n',  # no command
+        '[[verifier.collect]]\ncommand = "x"\nservice = ""\n',  # blank service
+        '[[verifier.collect]]\ncommand = "x"\ntimeout_sec = 0\n',  # non-positive timeout
+    ],
+)
+def test_malformed_collect_raises(tmp_path: Path, collect_block: str) -> None:
+    toml = 'artifacts = ["/app"]\n[verifier]\nenvironment_mode = "separate"\n' + collect_block
+    _write_task(tmp_path, "badc", toml, tests_dockerfile=True)
     with pytest.raises(ValueError):
         discover_tasks(tmp_path)

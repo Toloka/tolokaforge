@@ -45,10 +45,24 @@ pytestmark = pytest.mark.unit
 class _ScriptedSubstrate:
     """Records the ``run_test_suite`` kwargs; returns a scripted result."""
 
-    def __init__(self, result: RunTestSuiteResult) -> None:
+    def __init__(self, result: RunTestSuiteResult, exec_result: tuple[int, str] = (0, "")) -> None:
         self._result = result
+        self._exec_result = exec_result
         self.calls: list[dict[str, Any]] = []
         self.materialise_calls: list[dict[str, Any]] = []
+        self.exec_calls: list[dict[str, Any]] = []
+        self.events: list[str] = []
+
+    def exec_in_service(
+        self,
+        *,
+        service: str | None,
+        command: str,
+        timeout_s: float,
+    ) -> tuple[int, str]:
+        self.exec_calls.append({"service": service, "command": command, "timeout_s": timeout_s})
+        self.events.append(f"collect:{service}")
+        return self._exec_result
 
     def run_test_suite(
         self,
@@ -68,6 +82,7 @@ class _ScriptedSubstrate:
                 "service": service,
             }
         )
+        self.events.append("run")
         return self._result
 
     def materialise_path(
@@ -86,6 +101,7 @@ class _ScriptedSubstrate:
                 "exclude": list(exclude),
             }
         )
+        self.events.append(f"materialise:{path}")
 
 
 def _result(
@@ -343,3 +359,51 @@ def test_separate_verifier_orchestration_materialises_then_runs_in_service() -> 
     assert substrate.materialise_calls[1]["exclude"] == ["*.pyc"]
     assert substrate.calls[-1]["service"] == "verifier"
     assert grade is not None and grade.binary_pass is True
+
+
+def test_collect_runs_before_materialise_before_run() -> None:
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1\n"))
+    _evaluate(
+        substrate,
+        kind_config={
+            "service": "verifier",
+            "collect": [{"service": "postgres", "command": "pg_dumpall > /tmp/d"}],
+            "artifacts": [{"source": "/tmp/d", "src_service": "postgres"}],
+        },
+    )
+    assert substrate.events == ["collect:postgres", "materialise:/tmp/d", "run"]
+    assert substrate.exec_calls[0]["service"] == "postgres"
+    assert substrate.materialise_calls[0]["src_service"] == "postgres"
+    assert substrate.calls[-1]["service"] == "verifier"
+
+
+def test_collect_without_service_runs_in_agent() -> None:
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1\n"))
+    _evaluate(
+        substrate,
+        kind_config={
+            "service": "verifier",
+            "collect": [{"command": "find /etc -name '*.conf' > /tmp/p"}],
+            "artifacts": [{"source": "/tmp/p"}],
+        },
+    )
+    assert substrate.exec_calls[0]["service"] is None
+    assert substrate.materialise_calls[0]["src_service"] is None
+
+
+def test_nonzero_collect_is_refused() -> None:
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1\n"), exec_result=(1, "boom"))
+    with pytest.raises(GraderKindRefusedError):
+        _evaluate(
+            substrate,
+            kind_config={
+                "service": "verifier",
+                "collect": [{"service": "postgres", "command": "pg_dumpall > /tmp/d"}],
+            },
+        )
+    assert substrate.materialise_calls == []  # never reached materialise after a failed collect
+
+
+def test_collect_requires_a_verifier_service() -> None:
+    with pytest.raises(ValidationError):
+        TestExecutionKindConfig(collect=[{"command": "snapshot"}])

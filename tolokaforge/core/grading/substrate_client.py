@@ -268,7 +268,7 @@ class GrpcSubstrateClient:
     def exec_in_service(
         self,
         *,
-        service: str,
+        service: str | None,
         command: str,
         timeout_s: float,
     ) -> tuple[int, str]:
@@ -276,7 +276,7 @@ class GrpcSubstrateClient:
             response = self._stub.ExecInService(
                 pb2.ExecInServiceRequest(
                     trial_id=self._trial_id,
-                    service=service,
+                    service=service or "",
                     command=command,
                     timeout_s=timeout_s,
                 )

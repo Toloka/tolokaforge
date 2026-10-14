@@ -206,7 +206,7 @@ class LiveRunnerCallbackGradingSubstrate:
     def exec_in_service(
         self,
         *,
-        service: str,
+        service: str | None,
         command: str,
         timeout_s: float,
     ) -> tuple[int, str]:

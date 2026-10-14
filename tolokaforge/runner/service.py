@@ -2112,7 +2112,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     def _exec_in_service(
         self,
         *,
-        service: str,
+        service: str | None,
         command: str,
         timeout_s: float,
         trial_id: str,

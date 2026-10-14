@@ -82,8 +82,8 @@ class CollectSpec(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    service: str
     command: str
+    service: str | None = None
     timeout_s: float = Field(default=300.0, gt=0.0)
 
 

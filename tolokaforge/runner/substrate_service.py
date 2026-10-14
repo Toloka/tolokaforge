@@ -421,7 +421,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         timeout_s = request.timeout_s if request.timeout_s > 0.0 else _DEFAULT_SCRIPT_TIMEOUT_S
         try:
             exit_code, output = self._runner._exec_in_service(
-                service=request.service,
+                service=request.service or None,
                 command=request.command,
                 timeout_s=timeout_s,
                 trial_id=request.trial_id,
