@@ -104,11 +104,20 @@ raises.
 node keeps its own fuller bundle under its output root.
 
 **Run-start gating.** On top of ADR-0059's refusals, a remote run refuses what a
-node does not carry: a non-native adapter or coding-harness mode, task-declared
-stacks, a custom conductor factory, and every run-level setting the node
-rebuilds from defaults (timeouts, turn cap, stuck heuristics, agent loop, log
+node does not carry: a non-native adapter or coding-harness mode, a
+task-declared manifest the node cannot host (multi-stack, a `reset` service, or a
+compose file outside the task's own directory), a custom conductor factory, and
+every run-level setting the node rebuilds from defaults (timeouts, turn cap, stuck heuristics, agent loop, log
 capture, request throttle, fallback chain, the TypeSense plane). A configured
 trace exporter warns rather than refuses.
+
+**Task-declared stacks.** A single-stack, non-reset `environment_manifest` whose
+compose file lives in the task's own directory runs on the node. The control plane
+serialises the compose path as it knows it; the node, which mounts the pack at its
+own `--task-pack-root`, rebases every `compose_file` in the inputs onto that mount
+while deserialising them, and refuses a path outside the pack. Backend selection is
+unchanged: an all-`shared` single-stack manifest resolves to the shared-stack
+backend, which materialises the stack once for the node's single trial.
 
 **The image.** `trial_node.Dockerfile` installs the full base wheel and the
 Docker CLI. It is not the runner subset wheel, and the runner subset partition is
@@ -119,13 +128,15 @@ unchanged: nothing under `tolokaforge/trial_node/` joins it.
 - A remote trial costs one request and one response regardless of its turn count;
   a node dying mid-trial surfaces through gRPC keepalive as an unavailable node.
 - The node's base engine images (`tolokaforge-runner:local`,
-  `tolokaforge-db-service:local`) must exist on its Docker daemon; the node builds
-  none.
+  `tolokaforge-db-service:local`) and any public image a task-declared stack
+  names must exist on its Docker daemon; the node builds and pulls none of the
+  `:local` ones.
 - `RunTrial` is one unary call: no streaming progress and no mid-trial
   cancellation. A cancelled run cannot stop a trial already on a node.
 - A remote trial emits no live traces; exporters see the reduced bundle.
-- Delegated adapters, harness mode, task-declared stacks and the run-level
-  settings above are refused because the inputs do not carry them.
+- Delegated adapters, harness mode, multi-stack manifests, `reset` services
+  (seeds are not shipped to the node), compose files outside the task pack and the
+  run-level settings above are refused because the inputs do not carry them.
 
 ## References
 
