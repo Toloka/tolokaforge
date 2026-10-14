@@ -1090,21 +1090,22 @@ class TestNonProbingRolesStayOnTheDefaultPath:
         """With the mode on, the composed episode budget has to clear the whole
         per-*turn* 429 ceiling — every per-call budget the turn can spend *and*
         every one of their overshoots — not just one call's budget."""
-        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), _PROBE, NodeRunSettings())
+        settings = NodeRunSettings(
+            timeouts=TimeoutConfig(episode_s=int(_PROBE.turn_wall_ceiling_s * 2) + 1)
+        )
+        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), _PROBE, settings)
 
         assert config.orchestrator.rate_limit_probe.enabled is True
-        assert (
-            config.orchestrator.timeouts.episode_s
-            == int(_PROBE.turn_wall_ceiling_s * 2) + 1
-            == 16841
-        )
+        assert config.orchestrator.timeouts.episode_s == 16841
 
     def test_run_trials_composed_config_fits_the_invariant_for_any_legal_block(self) -> None:
-        """``_probe_episode_s`` doubles the *ceiling*, so a block with a large
-        ``retry_interval_s`` composes a config that validates rather than one
-        that raises at ``OrchestratorConfig`` construction."""
+        """A block with a large ``retry_interval_s`` composes a config that
+        validates once the carried episode budget clears its per-turn ceiling."""
         probe = _PROBE.model_copy(update={"retry_interval_s": 6000.0})
+        settings = NodeRunSettings(
+            timeouts=TimeoutConfig(episode_s=int(probe.turn_wall_ceiling_s * 2) + 1)
+        )
 
-        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), probe, NodeRunSettings())
+        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), probe, settings)
 
         assert probe.turn_wall_ceiling_s < config.orchestrator.timeouts.episode_s

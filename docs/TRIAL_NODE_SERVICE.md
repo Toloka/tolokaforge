@@ -44,9 +44,10 @@ carries `success`, `trial_result_json` (a serialized `TrialResult`, when
 `TrialNodeInputs.run_settings` (`NodeRunSettings`) carries the run-level settings
 the node applies when it rebuilds its run configuration: `timeouts`, `max_turns`,
 `max_trial_tokens`, `stuck_heuristics`, `agent_loop`, `log_tail` and
-`capture_logs_on_success`. Each defaults to the unset-config value. With the
-rate-limit probe enabled the node uses the larger of the carried
-`timeouts.episode_s` and the probe's minimum episode budget. The agent's
+`capture_logs_on_success`. Each defaults to the unset-config value. The node
+applies the carried `timeouts` verbatim, as the single-box path does; with the
+rate-limit probe enabled a carried `episode_s` too narrow for the probe is refused
+by the same budget validation, not stretched. The agent's
 `fallbacks` chain travels inside its model config; the node builds a fallback
 client from it, and its secret pre-flight covers `${secret:NAME}` references inside
 the chain. A fallback chain together with an enabled probe is refused.

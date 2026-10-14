@@ -36,7 +36,6 @@ from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
-    RATE_LIMIT_PROBE_MIN_EPISODE_S,
     ComputeConfig,
     EvaluationConfig,
     ModelConfig,
@@ -489,16 +488,14 @@ def _build_run_config(
     """Compose the :class:`RunConfig` the conductor reads.
 
     The carried *run_settings* supply the limits, stuck detection and agent loop;
-    everything else stays at its default. With the rate-limit probe enabled the
-    episode budget is widened to hold the probe's per-turn 429 handling if the
-    carried one is narrower. ``orchestrator.runtime`` is left unset — backend
+    everything else stays at its default. The carried timeouts are applied
+    verbatim, as the single-box path applies them. ``orchestrator.runtime`` is left unset — backend
     selection flows through the inputs' ``runtime``, not the deprecated override
     field.
     """
     models: dict[str, ModelConfig] = {"agent": agent, "user": user}
     if judge is not None:
         models["judge"] = judge
-    timeouts = run_settings.timeouts
     orchestrator_kwargs: dict[str, Any] = {
         "workers": 1,
         "repeats": 1,
@@ -509,12 +506,9 @@ def _build_run_config(
     }
     if rate_limit_probe is not None and rate_limit_probe.enabled:
         orchestrator_kwargs["rate_limit_probe"] = rate_limit_probe
-        timeouts = timeouts.model_copy(
-            update={"episode_s": max(timeouts.episode_s, _probe_episode_s(rate_limit_probe))}
-        )
-    orchestrator_kwargs["timeouts"] = timeouts
-    # OrchestratorConfig validates the probe budget against this episode budget
-    # on construction, so an unfittable combination fails here.
+    orchestrator_kwargs["timeouts"] = run_settings.timeouts
+    # OrchestratorConfig validates the probe budget against the carried episode
+    # budget on construction, exactly as on the single-box path.
     orchestrator = OrchestratorConfig(**orchestrator_kwargs)
     # The legacy run-level field warns when passed to the constructor; it is
     # carried data here, not a deprecated authoring choice.
@@ -525,20 +519,4 @@ def _build_run_config(
         models=models,
         orchestrator=orchestrator,
         evaluation=EvaluationConfig(output_dir=str(output_path)),
-    )
-
-
-def _probe_episode_s(probe: RateLimitProbeConfig) -> int:
-    """Episode budget wide enough for *probe*'s per-turn 429 handling to fit inside.
-
-    Twice ``turn_wall_ceiling_s`` — the agent's per-call budget plus one per
-    user-reply attempt, which one turn spends back to back, plus the overshoot
-    each of those calls can add — floored at the mode's minimum. Doubling the
-    *ceiling* rather than the bare budget is what makes
-    :func:`validate_rate_limit_probe_budget` pass by construction for any legal
-    block, including one with a large ``retry_interval_s``.
-    """
-    return max(
-        int(probe.turn_wall_ceiling_s * 2) + 1,
-        RATE_LIMIT_PROBE_MIN_EPISODE_S + 1,
     )

@@ -1433,8 +1433,8 @@ class Orchestrator:
 
         A node hosts one single-stack manifest whose compose file ships inside
         the task's own pack. Each offending task is named in one error: a
-        multi-stack manifest, a service with ``isolation: reset`` (reset seeds
-        are not shipped to the node), and a compose file outside the task's
+        multi-stack manifest, a service with ``isolation: reset`` (reset-isolation
+        seeds are not yet shipped to the node), and a compose file outside the task's
         directory or a task with no pack directory (neither ships with, nor is
         hashed into, the pack).
         """

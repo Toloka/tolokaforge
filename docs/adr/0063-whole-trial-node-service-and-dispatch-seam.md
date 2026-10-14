@@ -115,9 +115,10 @@ than refuses.
 the timeouts, turn and token caps, stuck heuristics, agent loop and log-capture
 policy the conductor and the node's log capture read, so a run that sets them
 dispatches instead of being refused; each field defaults to the unset-config value.
-The node applies them when it rebuilds its run configuration; with the rate-limit
-probe enabled it widens `timeouts.episode_s` to the probe's minimum when the
-carried one is narrower. The agent's fallback chain already travels inside its
+The node applies them when it rebuilds its run configuration; the carried
+`timeouts` are applied verbatim, as on the single-box path, so with the rate-limit
+probe enabled a too-narrow `episode_s` fails the same budget validation instead
+of being stretched. The agent's fallback chain already travels inside its
 model config, and the node builds a fallback client from it (refusing it alongside
 an enabled probe, as the single-box path does). Adding the field raised
 `NODE_PROTOCOL_VERSION` to 2. Reset-isolation seeds are not yet shipped to the

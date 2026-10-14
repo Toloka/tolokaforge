@@ -318,12 +318,19 @@ class TestCarriedRunSettings:
         ):
             assert getattr(orchestrator, name) == getattr(defaults, name), name
 
-    def test_the_probe_widens_a_carried_episode_budget_narrower_than_its_window(self) -> None:
+    def test_the_probe_applies_a_carried_episode_budget_verbatim(self) -> None:
+        probe = RateLimitProbeConfig(enabled=True)
+        settings = NodeRunSettings(timeouts=TimeoutConfig(turn_s=45, episode_s=20_000))
+        timeouts = self._config(settings, probe).orchestrator.timeouts
+        assert (timeouts.turn_s, timeouts.episode_s) == (45, 20_000)
+
+    def test_a_carried_episode_budget_too_narrow_for_the_probe_is_refused_not_stretched(
+        self,
+    ) -> None:
         probe = RateLimitProbeConfig(enabled=True)
         settings = NodeRunSettings(timeouts=TimeoutConfig(episode_s=3700))
-        episode_s = self._config(settings, probe).orchestrator.timeouts.episode_s
-        assert episode_s == trial_node_mod._probe_episode_s(probe)
-        assert episode_s > 3700
+        with pytest.raises(ValidationError, match="episode budget"):
+            self._config(settings, probe)
 
     def test_the_probe_keeps_a_carried_episode_budget_wider_than_its_window(self) -> None:
         probe = RateLimitProbeConfig(enabled=True)
