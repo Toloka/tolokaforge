@@ -128,6 +128,32 @@ def test_every_compose_file_site_in_the_wire_is_rebased(
     )
 
 
+def test_a_compose_file_key_outside_the_manifest_is_data_and_left_alone(
+    wire: dict[str, Any], node_root: Path
+) -> None:
+    decoy = {"compose_file": "/not/in/the/pack.yaml", "nested": [{"compose_file": "x"}]}
+    wire["trial_spec"]["runtime_context"] = copy.deepcopy(decoy)
+    manifest_sent = wire["trial_spec"]["task"]["environment_manifest"]
+    manifest_sent["stack_inputs"] = {"compose_file": "user-value"}
+    manifest_sent["stacks"][0]["inputs"] = {"compose_file": "user-value"}
+
+    after = _validate(wire, node_root).model_dump(mode="json")
+
+    assert after["trial_spec"]["runtime_context"] == decoy
+    manifest = after["trial_spec"]["task"]["environment_manifest"]
+    assert manifest["stack_inputs"] == {"compose_file": "user-value"}
+    assert manifest["stacks"][0]["inputs"] == {"compose_file": "user-value"}
+    assert manifest["compose_file"].startswith(str(node_root))
+
+
+def test_a_task_id_escaping_the_pack_root_is_refused(wire: dict[str, Any], node_root: Path) -> None:
+    wire["task"]["task_id"] = "../escape"
+    wire["trial_spec"]["task"]["task_id"] = "../escape"
+
+    with pytest.raises(ValueError, match="resolves outside the task pack root"):
+        _validate(wire, node_root)
+
+
 def test_the_callers_data_is_not_mutated(wire: dict[str, Any], node_root: Path) -> None:
     snapshot = copy.deepcopy(wire)
 

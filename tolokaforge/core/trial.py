@@ -210,15 +210,18 @@ class TrialNodeInputs(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _rebase_compose_paths(cls, data: Any, info: ValidationInfo) -> Any:
-        """Point every ``compose_file`` at the node's own copy of the task pack.
+        """Point every manifest ``compose_file`` at the node's own copy of the task pack.
 
         A task-declared stack's compose path is absolute on the control plane,
         and the manifest validators require the file to exist while the inputs
         are deserialised. When the validation context carries ``task_pack_root``
-        (the node's mount of the task packs), each ``compose_file`` under
-        ``task_pack_dir`` is rewritten to the same relative location under
+        (the node's mount of the task packs), each ``compose_file`` inside an
+        ``environment_manifest`` (of ``task`` and of ``trial_spec.task``) and
+        under ``task_pack_dir`` is rewritten to the same relative location under
         ``<task_pack_root>/<task_id>``. Without that context the data is
-        returned untouched. A ``compose_file`` outside ``task_pack_dir``, or a
+        returned untouched. A ``compose_file`` key anywhere else (user inputs,
+        stack inputs, runtime context) is data and is left alone. A
+        ``task_id`` escaping the pack root, a ``compose_file`` outside ``task_pack_dir``, or a
         compose file with no pack hash to verify it against, is refused.
         """
         context = info.context
@@ -230,7 +233,7 @@ class TrialNodeInputs(BaseModel):
             return data
         rebase = _ComposePathRebase(
             control_pack_dir=Path(pack_dir).resolve() if pack_dir is not None else None,
-            node_pack_dir=Path(context["task_pack_root"]) / task["task_id"],
+            node_pack_dir=pack_dir_under_root(Path(context["task_pack_root"]), task["task_id"]),
             has_pack_hash=data.get("task_pack_hash") is not None,
         )
         return rebase.apply(data)
@@ -250,23 +253,66 @@ class TrialNodeInputs(BaseModel):
         return self
 
 
+def pack_dir_under_root(root: Path, task_id: str) -> Path:
+    """The pack directory ``<root>/<task_id>``, refusing a ``task_id`` that escapes ``root``."""
+    pack_dir = root / task_id
+    if not pack_dir.resolve().is_relative_to(root.resolve()):
+        raise ValueError(
+            f"task_id {task_id!r} resolves outside the task pack root {str(root)!r}; "
+            "a task id names a directory directly under the pack root"
+        )
+    return pack_dir
+
+
 @dataclass(frozen=True)
 class _ComposePathRebase:
-    """Rewrites every ``compose_file`` value of raw inputs onto the node's pack mount."""
+    """Rewrites the manifest ``compose_file`` values of raw inputs onto the node's pack mount."""
 
     control_pack_dir: Path | None
     node_pack_dir: Path
     has_pack_hash: bool
 
-    def apply(self, node: Any) -> Any:
-        if isinstance(node, dict):
-            return {
-                key: self._rebase(value) if key == "compose_file" else self.apply(value)
-                for key, value in node.items()
-            }
-        if isinstance(node, list):
-            return [self.apply(item) for item in node]
-        return node
+    def apply(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Return ``data`` with only its environment-manifest subtrees rebased."""
+        rebased = dict(data)
+        task = data.get("task")
+        if isinstance(task, dict) and "environment_manifest" in task:
+            rebased["task"] = self._with_manifest(task)
+        spec = data.get("trial_spec")
+        spec_task = spec.get("task") if isinstance(spec, dict) else None
+        if isinstance(spec, dict) and isinstance(spec_task, dict):
+            if "environment_manifest" in spec_task:
+                rebased["trial_spec"] = {**spec, "task": self._with_manifest(spec_task)}
+        return rebased
+
+    def _with_manifest(self, task: dict[str, Any]) -> dict[str, Any]:
+        return {**task, "environment_manifest": self._manifest(task["environment_manifest"])}
+
+    def _manifest(self, manifest: Any) -> Any:
+        """Rebase the compose-file sites of a resolved manifest or an environment patch.
+
+        The sites are the scalar ``compose_file``, ``stack.compose_file`` and each
+        entry of ``stacks`` (a list when resolved, a mapping in a patch). Variable
+        maps such as ``stack_inputs`` and ``inputs`` are never visited.
+        """
+        if not isinstance(manifest, dict):
+            return manifest
+        rebased = dict(manifest)
+        if "compose_file" in rebased:
+            rebased["compose_file"] = self._rebase(rebased["compose_file"])
+        if isinstance(rebased.get("stack"), dict):
+            rebased["stack"] = self._stack(rebased["stack"])
+        stacks = rebased.get("stacks")
+        if isinstance(stacks, list):
+            rebased["stacks"] = [self._stack(stack) for stack in stacks]
+        elif isinstance(stacks, dict):
+            rebased["stacks"] = {name: self._stack(stack) for name, stack in stacks.items()}
+        return rebased
+
+    def _stack(self, stack: Any) -> Any:
+        if isinstance(stack, dict) and "compose_file" in stack:
+            return {**stack, "compose_file": self._rebase(stack["compose_file"])}
+        return stack
 
     def _rebase(self, value: Any) -> Any:
         if not isinstance(value, str):
@@ -301,4 +347,5 @@ __all__ = [
     "TrialNodeInputs",
     "TrialResult",
     "TrialSpec",
+    "pack_dir_under_root",
 ]
