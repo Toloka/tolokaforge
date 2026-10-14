@@ -1,11 +1,12 @@
 """A native trial reaches a graded result through the backend the orchestrator builds for ``--runtime remote``.
 
-The backend is the one the :class:`Orchestrator` builds from ``orchestrator.remote``;
-only the transport is replaced, by an in-process node. The trial runs through the
-same execution unit the orchestrator builds, so the whole-trial seam is what is
-under test: ``RemoteTrialExecutor`` -> ``RemoteRuntimeBackend.run_trial_node`` ->
-node client -> node -> graded result. A delegated (harness) trial is refused
-before any dispatch, since the remote runtime carries only native trials.
+The adapter is the one the :class:`Orchestrator` builds from the
+``runtime='remote'`` alias; only the transport is replaced, by an in-process
+node. The trial runs through the same execution unit the orchestrator builds, so
+the whole-trial seam is what is under test: ``RemoteTrialExecutor`` ->
+``GrpcNodeDispatchAdapter.run_trial_node`` -> node client -> node -> graded
+result. A delegated (harness) trial is refused before any dispatch, since the
+grpc_node adapter carries only native trials.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from tests.canonical._node_fakes import (
     InProcessNodeClientFactory,
     write_native_pack,
 )
+from tolokaforge.core.dispatch.grpc_node import GrpcNodeDispatchAdapter
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     EvaluationConfig,
@@ -34,7 +36,6 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
-from tolokaforge.core.remote_runtime import RemoteRuntimeBackend
 from tolokaforge.core.trial import TrialNodeInputs, TrialSpec
 from tolokaforge.core.trial_executor import RemoteTrialExecutor
 from tolokaforge.core.trial_node import (
@@ -86,11 +87,11 @@ def test_native_trial_dispatches_through_the_leased_node_to_a_graded_result(
 ) -> None:
     task = write_native_pack(tmp_path / "pack")
     orchestrator, config = _orchestrator(tmp_path)
-    backend = orchestrator._construct_runtime_backend("unused:1")
-    assert isinstance(backend, RemoteRuntimeBackend)
+    adapter = orchestrator._build_dispatch_adapter(orchestrator._dispatch_config())
+    assert isinstance(adapter, GrpcNodeDispatchAdapter)
     node = InProcessNode(tmp_path / "node-out")
     factory = InProcessNodeClientFactory(node)
-    backend.node_client_factory = factory
+    adapter.node_client_factory = factory
     unit = build_trial_execution_unit(
         TrialExecutionContext(
             adapter=build_single_task_adapter(task),
@@ -98,7 +99,8 @@ def test_native_trial_dispatches_through_the_leased_node_to_a_graded_result(
             config=config,
             logger=get_logger("remote-seam", strict=False),
             agent_client=None,  # type: ignore[arg-type] — the node builds its own agent client
-            runtime_backend=backend,
+            runtime_backend=None,
+            dispatch_adapter=adapter,
             output_dir=tmp_path / "out",
             request_limiter=None,
             grader_config=GraderConfig(name="runner_rpc"),
@@ -109,7 +111,7 @@ def test_native_trial_dispatches_through_the_leased_node_to_a_graded_result(
         result = unit.execute(_spec_for(task), task)
     finally:
         unit.close()
-        backend.close()
+        adapter.close()
 
     assert isinstance(unit.executor, RemoteTrialExecutor)
     (client,) = factory.clients

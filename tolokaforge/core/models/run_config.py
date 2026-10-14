@@ -39,8 +39,10 @@ __all__ = [
     "BundleStoreBackend",
     "ComputeConfig",
     "DOCKER_RUNTIME_ALIAS_TARGET",
+    "DispatchConfig",
     "EngineConfig",
     "EvaluationConfig",
+    "GRPC_NODE_DISPATCH_ADAPTER",
     "GraderConfig",
     "HarnessAdapterConfig",
     "JudgeGraderConfig",
@@ -507,6 +509,28 @@ class RemoteConfig(BaseModel):
         return nodes
 
 
+GRPC_NODE_DISPATCH_ADAPTER = "grpc_node"
+"""Registered dispatch-adapter name ``orchestrator.runtime='remote'`` aliases to."""
+
+
+class DispatchConfig(BaseModel):
+    """Selects where a whole trial runs: the dispatch adapter and its options.
+
+    ``adapter`` names an entry in the ``tolokaforge.dispatch_adapters`` group
+    (``grpc_node`` ships in-tree); ``config`` is that adapter's own options
+    block, whose shape the adapter defines and validates. When this block is
+    absent the run takes the single-box substrate path unchanged.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    adapter: str
+    """Registered dispatch-adapter name (``tolokaforge.dispatch_adapters``)."""
+
+    config: dict[str, Any] = Field(default_factory=dict)
+    """The adapter-specific options block; validated by the adapter's factory."""
+
+
 class OrchestratorConfig(BaseModel):
     """Orchestrator configuration"""
 
@@ -672,12 +696,25 @@ class OrchestratorConfig(BaseModel):
         return value
 
     remote: RemoteConfig | None = None
-    """Runner nodes for ``runtime: remote``; required by it, ignored otherwise."""
+    """Runner nodes for the deprecated ``runtime: remote`` alias; required by it,
+    ignored otherwise. Declare ``dispatch`` directly instead."""
+
+    dispatch: DispatchConfig | None = None
+    """Selects where a whole trial runs. When set, the orchestrator builds the
+    named dispatch adapter and ships each whole trial to it; when ``None`` the run
+    takes the single-box substrate path unchanged. ``runtime='remote'`` is a
+    deprecated alias for ``dispatch.adapter='grpc_node'`` with ``config.nodes``
+    taken from ``remote.nodes``."""
 
     @model_validator(mode="after")
     def _require_nodes_for_remote_runtime(self) -> Self:
         if self.runtime != REMOTE_RUNTIME_NAME:
             return self
+        if self.dispatch is not None:
+            raise ValueError(
+                "orchestrator.runtime='remote' is a deprecated alias for "
+                "orchestrator.dispatch={adapter: grpc_node, ...}; set one, not both."
+            )
         if self.remote is None or not self.remote.nodes:
             raise ValueError(
                 "orchestrator.runtime='remote' requires orchestrator.remote.nodes "

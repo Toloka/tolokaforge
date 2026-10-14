@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from tests.canonical._node_fakes import InProcessNode, InProcessNodeClientFactory
+from tolokaforge.core.dispatch.grpc_node import GrpcNodeDispatchAdapter
 from tolokaforge.core.models import (
     EvaluationConfig,
     GraderConfig,
@@ -26,7 +27,6 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.node_registry import InMemoryNodeRegistry
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
-from tolokaforge.core.remote_runtime import RemoteRuntimeBackend
 
 pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("env_backed_secrets")]
 
@@ -97,10 +97,10 @@ def _orchestrator(
             evaluation=EvaluationConfig(output_dir=str(out), projects=[str(root)]),
             grader=grader,
         )
-    backend = RemoteRuntimeBackend(
+    adapter = GrpcNodeDispatchAdapter(
         registry=InMemoryNodeRegistry(_NODES, lease_timeout_s=5), node_client_factory=factory
     )
-    return Orchestrator(config, deps=OrchestratorDeps(runtime_backend=backend)), node, factory
+    return Orchestrator(config, deps=OrchestratorDeps(dispatch_adapter=adapter)), node, factory
 
 
 def test_default_auto_start_builds_no_stack_and_each_trial_gets_a_leased_node(
@@ -117,17 +117,17 @@ def test_default_auto_start_builds_no_stack_and_each_trial_gets_a_leased_node(
     assert all(client.closed for client in factory.clients)
 
 
-def test_the_orchestrator_builds_the_remote_backend_from_the_configured_nodes(
+def test_the_orchestrator_builds_the_grpc_node_adapter_from_the_configured_nodes(
     tmp_path: Path,
 ) -> None:
     _write_pack(tmp_path / "pack")
     orch, _, _ = _orchestrator(tmp_path / "pack", tmp_path / "out", orchestrator={})
 
-    backend = orch._construct_runtime_backend("unused:1")
+    adapter = orch._build_dispatch_adapter(orch._dispatch_config())
 
-    assert isinstance(backend, RemoteRuntimeBackend)
-    assert backend.registry.lease("t:0").runner_address == _NODES[0]
-    assert backend.registry.lease("t:1").runner_address == _NODES[1]
+    assert isinstance(adapter, GrpcNodeDispatchAdapter)
+    assert adapter.registry.lease("t:0").runner_address == _NODES[0]
+    assert adapter.registry.lease("t:1").runner_address == _NODES[1]
 
 
 def test_explicit_auto_start_services_with_remote_fails_loud(tmp_path: Path) -> None:
@@ -179,6 +179,25 @@ def test_a_grader_needing_a_static_runner_address_fails_loud(
     )
 
     with pytest.raises(ValueError, match="static runner address"):
+        orch.run(run_id="r", output_dir=tmp_path / "run")
+
+    assert node.received == []
+
+
+def test_snapshot_grade_bundle_mode_fails_loud(tmp_path: Path) -> None:
+    _write_pack(tmp_path / "pack")
+    orch, node, _ = _orchestrator(
+        tmp_path / "pack",
+        tmp_path / "out",
+        orchestrator={},
+        grader=GraderConfig(
+            name="runner_rpc",
+            expose_substrate=True,
+            snapshot={"enabled": True, "store": {"type": "local_disk", "root_dir": str(tmp_path)}},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="grader.snapshot.enabled"):
         orch.run(run_id="r", output_dir=tmp_path / "run")
 
     assert node.received == []

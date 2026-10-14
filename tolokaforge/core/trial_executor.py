@@ -17,9 +17,9 @@ swappable seam that owns that bracket:
   the ``TrialSpec.env_endpoints`` field the conductor sees.
 
 * :class:`RemoteTrialExecutor` — the whole-trial implementation. It ships the
-  trial's :class:`TrialNodeInputs` to a backend that owns the trial
-  (:class:`TrialOwningBackend`), receives the graded :class:`TrialResult`, and
-  writes the reduced on-disk bundle from it.
+  trial's :class:`TrialNodeInputs` to a :class:`DispatchAdapter` that owns the
+  trial, receives the graded :class:`TrialResult`, and writes the reduced on-disk
+  bundle from it.
 
 The Protocol is deliberately narrow so the orchestrator holds one executor
 shape whether the trial runs here or on a node.
@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args, runtime_chec
 import yaml
 
 from tolokaforge.core.dispatch.adapter import DispatchAdapter
+from tolokaforge.core.dispatch.errors import DispatchProvisionError, DispatchRefused
 from tolokaforge.core.models import (
     JudgeStatus,
     Metrics,
@@ -49,7 +50,6 @@ from tolokaforge.core.run_display_events import (
 )
 from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
 from tolokaforge.core.trial import NodeRunSettings, TrialNodeInputs, TrialResult, TrialSpec
-from tolokaforge.trial_node.protocol import NodeRefusedError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -69,7 +69,7 @@ __all__ = [
     "ProvisioningTrialExecutor",
     "RemoteTrialExecutor",
     "TrialExecutor",
-    "TrialOwningBackend",
+    "TrialOwningBackend",  # deprecated one-release alias of DispatchAdapter
 ]
 
 
@@ -370,7 +370,7 @@ TrialOwningBackend = DispatchAdapter
 
 
 class RemoteTrialExecutor:
-    """:class:`TrialExecutor` that has a :class:`TrialOwningBackend` run the whole trial.
+    """:class:`TrialExecutor` that has a :class:`DispatchAdapter` run the whole trial.
 
     Assembles the trial's :class:`TrialNodeInputs` from the spec, the task and
     the run's settings, hands them to the backend, and writes the reduced
@@ -378,17 +378,19 @@ class RemoteTrialExecutor:
     ``grade.yaml`` under ``output_dir/trials/{task_id}/{trial_index}/`` — from the
     returned trajectory. The node keeps its own fuller bundle.
 
-    Failures follow the orchestrator's retry classification. A
-    :class:`ProvisionError` from the node and a :class:`NodeRefusedError` both
-    become a ``PROVISION_ERROR`` result with a failure bundle, which the
-    orchestrator does not retry; a :class:`NodeTransientError` propagates, and the
-    orchestrator retries any exception a trial raises.
+    Failures follow the orchestrator's retry classification, read off the
+    adapter's transport-neutral vocabulary
+    (:mod:`tolokaforge.core.dispatch.errors`). A :class:`DispatchProvisionError`
+    and a :class:`DispatchRefused` both become a ``PROVISION_ERROR`` result with
+    a failure bundle, which the orchestrator does not retry; a
+    :class:`DispatchTransient` propagates, and the orchestrator retries any
+    exception a trial raises.
     """
 
     def __init__(
         self,
         *,
-        backend: TrialOwningBackend,
+        backend: DispatchAdapter,
         runtime: str,
         conductor: str,
         grader_config: GraderConfig | None,
@@ -417,9 +419,12 @@ class RemoteTrialExecutor:
         self.logger.info("Dispatching trial to a node", task_id=task_id, trial_index=trial_idx)
         try:
             result = self.backend.run_trial_node(inputs)
-        except ProvisionError as error:
-            return self._on_failure(spec, error)
-        except NodeRefusedError as refusal:
+        except DispatchProvisionError as error:
+            return self._on_failure(
+                spec,
+                ProvisionError(trial_id=spec.trial_id, stage=error.stage, reason=error.reason),
+            )
+        except DispatchRefused as refusal:
             return self._on_failure(
                 spec,
                 ProvisionError(

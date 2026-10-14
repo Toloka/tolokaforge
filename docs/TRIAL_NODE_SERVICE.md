@@ -1,18 +1,20 @@
 # Trial Node Service
 
-A trial node runs one whole trial per request. The control plane's
-`--runtime remote` ships a trial's inputs to a leased node and gets the graded
-result back; the node runs the conductor, the agent's LLM loop, the grader and
-the trial's substrate itself. This document is the reference for the node's wire
-contract, its behaviour and its deployment. For the design record see
-[ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md); for the
-backend that dials nodes see [`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md).
+A trial node runs one whole trial per request. The control plane's `grpc_node`
+dispatch adapter (`orchestrator.dispatch.adapter: grpc_node`, or the deprecated
+`--runtime remote` alias) ships a trial's inputs to a leased node and gets the
+graded result back; the node runs the conductor, the agent's LLM loop, the grader
+and the trial's substrate itself. This document is the reference for the node's
+wire contract, its behaviour and its deployment. For the design record see
+[ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md) and
+[ADR-0064](adr/0064-dispatch-adapter-seam.md); for the adapter that dials nodes
+see [`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md).
 
 ```
 control plane                                  trial node
 ─────────────                                  ──────────
 RemoteTrialExecutor
-  └─ RemoteRuntimeBackend.run_trial_node
+  └─ GrpcNodeDispatchAdapter.run_trial_node
        lease node ──── HealthCheck ──────────► version + message-size pre-flight
                   ──── RunTrial(inputs) ─────► run_trial_from_inputs
                   ◄─── TrialResult ──────────    (conductor, agent loop, grader, substrate)

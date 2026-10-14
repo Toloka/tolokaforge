@@ -20,8 +20,8 @@ import click
 def trial_node(args: tuple[str, ...]) -> None:
     """Run a trial node: a gRPC service that runs one whole trial per call.
 
-    The engine's `--runtime remote` ships each trial to a node started with this
-    command. Pass --help after the command name for the node's options.
+    The engine's `grpc_node` dispatch adapter ships each trial to a node started
+    with this command. Pass --help after the command name for the node's options.
     """
     from tolokaforge.trial_node.__main__ import main
 

@@ -328,3 +328,21 @@ forbidden_modules =
     tolokaforge.core.orchestrator
     tolokaforge.core.run_queue
 allow_indirect_imports = false
+
+
+# Trial-executor dispatch vocabulary stays transport-neutral (ADR-0064).
+#
+# ``RemoteTrialExecutor`` reads only the neutral dispatch errors in
+# ``core.dispatch.errors``; the node-named wire vocabulary
+# (``trial_node.protocol`` — ``NodeRefusedError`` / ``NodeTransientError`` /
+# ``NodeErrorType``) stays inside the ``grpc_node`` adapter that translates it.
+# A direct reach back into the node protocol from the executor would re-couple
+# the control-plane seam to one transport's exception names.
+[importlinter:contract:executor-dispatch-neutral]
+name = The trial executor never imports the node-named trial-node wire vocabulary
+type = forbidden
+source_modules =
+    tolokaforge.core.trial_executor
+forbidden_modules =
+    tolokaforge.trial_node
+allow_indirect_imports = true

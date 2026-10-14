@@ -59,7 +59,6 @@ from tolokaforge.core.trial_executor import (
     ProvisioningTrialExecutor,
     RemoteTrialExecutor,
     TrialExecutor,
-    TrialOwningBackend,
 )
 from tolokaforge.core.trial_grader import TrialGrader
 from tolokaforge.observability.observer import NullTrialObserver, TrialObserver
@@ -71,6 +70,7 @@ from tolokaforge.secrets import (
 
 if TYPE_CHECKING:
     from tolokaforge.adapters import BaseAdapter
+    from tolokaforge.core.dispatch.adapter import DispatchAdapter
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import TaskConfig
     from tolokaforge.core.models.run_config import GraderConfig
@@ -108,6 +108,12 @@ class TrialExecutionContext:
     ``grader_config`` is the run's ``grader`` block, which picks the trial
     grader by name (the adapter's default applies otherwise). ``probe_source``
     names the caller in a rate-limit-probe refusal.
+
+    ``dispatch_adapter`` selects the dispatch path: when set, the trial is
+    shipped to it through a :class:`RemoteTrialExecutor` and the node owns the
+    substrate, conductor and grading, so ``runtime_backend`` is ``None`` and no
+    local conductor or grader is built. When it is ``None`` the trial runs on
+    ``runtime_backend`` through a :class:`ProvisioningTrialExecutor`.
     """
 
     adapter: BaseAdapter
@@ -115,13 +121,14 @@ class TrialExecutionContext:
     config: RunConfig
     logger: StructuredLogger
     agent_client: LLMClient
-    runtime_backend: RuntimeBackend
+    runtime_backend: RuntimeBackend | None
     output_dir: Path
     request_limiter: GlobalRateLimiter | None
     grader_config: GraderConfig | None
     grpc_max_message_mb: int
     verbose: bool = False
     strict: bool = False
+    dispatch_adapter: DispatchAdapter | None = None
     conductor_factory: ConductorFactory | None = None
     events: RunDisplayEvents = _NULL_EVENTS
     trial_observer: TrialObserver = field(default_factory=NullTrialObserver)
@@ -138,13 +145,17 @@ def _close_grader(grader: TrialGrader) -> None:
 
 
 class TrialExecutionUnit:
-    """A built grader, conductor and trial executor, ready to run trials."""
+    """A built grader, conductor and trial executor, ready to run trials.
+
+    ``grader`` and ``conductor`` are ``None`` on the dispatch path, where the
+    node owns both and the unit holds only the :class:`RemoteTrialExecutor`.
+    """
 
     def __init__(
         self,
         *,
-        grader: TrialGrader,
-        conductor: Conductor,
+        grader: TrialGrader | None,
+        conductor: Conductor | None,
         executor: TrialExecutor,
     ) -> None:
         self.grader = grader
@@ -153,29 +164,32 @@ class TrialExecutionUnit:
 
     def execute(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
         """Run one trial through the executor: provision, conduct and tear down here,
-        or hand the whole trial to a trial-owning backend."""
+        or hand the whole trial to a dispatch adapter."""
         return self.executor.execute(spec, task_config)
 
     def close(self) -> None:
         """Release the grader's transport (gRPC channel, queue broker and workers).
 
         A grader registered downstream without a ``close()`` has nothing to
-        release.
+        release, and the dispatch path holds no grader at all.
         """
-        _close_grader(self.grader)
+        if self.grader is not None:
+            _close_grader(self.grader)
 
 
 def build_trial_execution_unit(ctx: TrialExecutionContext) -> TrialExecutionUnit:
     """Compose the per-trial execution unit for one run.
 
-    Resolves the trial grader (``grader_config.name`` over the adapter's
-    default), builds the conductor through ``conductor_factory`` or the
-    ``in_process`` registry entry, and wraps it in a
-    :class:`ProvisioningTrialExecutor`. A runtime backend that owns the whole
-    trial (a :class:`TrialOwningBackend`) gets a :class:`RemoteTrialExecutor`
-    instead: the grader and conductor are still built, but the trial runs on the
-    backend's node with that node's own. The caller owns the returned unit and
-    must :meth:`~TrialExecutionUnit.close` it.
+    When ``ctx.dispatch_adapter`` is set the trial is shipped to it through a
+    :class:`RemoteTrialExecutor`: the node owns the substrate, conductor and
+    grading, so no local conductor or grader is built and the returned unit
+    holds only the executor.
+
+    Otherwise this resolves the trial grader (``grader_config.name`` over the
+    adapter's default), builds the conductor through ``conductor_factory`` or
+    the ``in_process`` registry entry, and wraps it in a
+    :class:`ProvisioningTrialExecutor` over ``ctx.runtime_backend``. The caller
+    owns the returned unit and must :meth:`~TrialExecutionUnit.close` it.
 
     Rate-limit probe mode's two halves meet here: the caller arms the agent
     client, while the simulator probe, the per-task budget re-check and the
@@ -185,6 +199,16 @@ def build_trial_execution_unit(ctx: TrialExecutionContext) -> TrialExecutionUnit
     :func:`~tolokaforge.core.conductor.require_rate_limit_probe_support`.
     A failed build closes the grader it already resolved.
     """
+    if ctx.dispatch_adapter is not None:
+        return TrialExecutionUnit(
+            grader=None,
+            conductor=None,
+            executor=_build_remote_trial_executor(ctx, ctx.dispatch_adapter),
+        )
+    if ctx.runtime_backend is None:
+        raise ValueError(
+            "build_trial_execution_unit needs a runtime_backend when no dispatch_adapter is set."
+        )
     # ``None`` when the backend has no runner surface (in-memory / test, or
     # ``PerTrialRuntimeBackend`` — each trial owns its own runner endpoint so
     # no single address applies); the built-in address-needing factories
@@ -231,46 +255,53 @@ def build_trial_execution_unit(ctx: TrialExecutionContext) -> TrialExecutionUnit
             ctx.config.orchestrator.rate_limit_probe,
             source=ctx.probe_source,
         )
-        executor: TrialExecutor
-        if isinstance(ctx.runtime_backend, TrialOwningBackend):
-            orchestrator = ctx.config.orchestrator
-            compute = ctx.config.compute or ComputeConfig()
-            executor = RemoteTrialExecutor(
-                backend=ctx.runtime_backend,
-                runtime=_NODE_RUNTIME,
-                conductor=_NODE_CONDUCTOR,
-                grader_config=grader_config,
-                grpc_max_message_mb=ctx.grpc_max_message_mb,
-                rate_limit_probe=(
-                    orchestrator.rate_limit_probe if orchestrator.rate_limit_probe.enabled else None
-                ),
-                run_settings=NodeRunSettings(
-                    timeouts=orchestrator.timeouts,
-                    max_turns=orchestrator.max_turns,
-                    max_trial_tokens=orchestrator.max_trial_tokens,
-                    stuck_heuristics=orchestrator.stuck_heuristics,
-                    agent_loop=orchestrator.agent_loop,
-                    log_tail=compute.log_tail,
-                    capture_logs_on_success=compute.capture_logs_on_success,
-                ),
-                logger=ctx.logger,
-                output_dir=ctx.output_dir,
-                artifact_writer=ctx.artifact_writer,
-            )
-        else:
-            executor = ProvisioningTrialExecutor(
-                runtime_backend=ctx.runtime_backend,
-                conductor=conductor,
-                logger=ctx.logger,
-                output_dir=ctx.output_dir,
-                artifact_writer=ctx.artifact_writer,
-                events=ctx.events,
-                provision_error=ctx.provision_error,
-            )
+        executor: TrialExecutor = ProvisioningTrialExecutor(
+            runtime_backend=ctx.runtime_backend,
+            conductor=conductor,
+            logger=ctx.logger,
+            output_dir=ctx.output_dir,
+            artifact_writer=ctx.artifact_writer,
+            events=ctx.events,
+            provision_error=ctx.provision_error,
+        )
     except BaseException:
         _close_grader(grader)
         raise
     return TrialExecutionUnit(grader=grader, conductor=conductor, executor=executor)
+
+
+def _build_remote_trial_executor(
+    ctx: TrialExecutionContext, dispatch_adapter: DispatchAdapter
+) -> RemoteTrialExecutor:
+    """Build the :class:`RemoteTrialExecutor` that ships each whole trial to *dispatch_adapter*.
+
+    The node owns the substrate, conductor and grading; the run-level settings
+    the node rebuilds its configuration from travel in :class:`NodeRunSettings`.
+    """
+    orchestrator = ctx.config.orchestrator
+    compute = ctx.config.compute or ComputeConfig()
+    return RemoteTrialExecutor(
+        backend=dispatch_adapter,
+        runtime=_NODE_RUNTIME,
+        conductor=_NODE_CONDUCTOR,
+        grader_config=ctx.grader_config,
+        grpc_max_message_mb=ctx.grpc_max_message_mb,
+        rate_limit_probe=(
+            orchestrator.rate_limit_probe if orchestrator.rate_limit_probe.enabled else None
+        ),
+        run_settings=NodeRunSettings(
+            timeouts=orchestrator.timeouts,
+            max_turns=orchestrator.max_turns,
+            max_trial_tokens=orchestrator.max_trial_tokens,
+            stuck_heuristics=orchestrator.stuck_heuristics,
+            agent_loop=orchestrator.agent_loop,
+            log_tail=compute.log_tail,
+            capture_logs_on_success=compute.capture_logs_on_success,
+        ),
+        logger=ctx.logger,
+        output_dir=ctx.output_dir,
+        artifact_writer=ctx.artifact_writer,
+    )
 
 
 def compute_task_pack_hash(pack_dir: Path) -> str:

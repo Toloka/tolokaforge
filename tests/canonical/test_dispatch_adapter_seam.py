@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
-
 import pytest
 
 from tolokaforge.core.dispatch.adapter import DispatchAdapter
@@ -12,14 +10,13 @@ from tolokaforge.core.dispatch.errors import (
     DispatchRefused,
     DispatchTransient,
 )
+from tolokaforge.core.dispatch.grpc_node import GrpcNodeDispatchAdapter
 from tolokaforge.core.plugin_registry import (
     DISPATCH_ADAPTERS_GROUP,
     DispatchAdapterBuildContext,
     UnknownImplementationError,
-    available_dispatch_adapters,
     load_dispatch_adapter,
 )
-from tolokaforge.core.remote_runtime import RemoteRuntimeBackend
 from tolokaforge.core.trial_executor import TrialOwningBackend
 
 pytestmark = pytest.mark.canonical
@@ -29,13 +26,13 @@ def test_trial_owning_backend_is_the_dispatch_adapter() -> None:
     assert TrialOwningBackend is DispatchAdapter
 
 
-def test_remote_backend_satisfies_dispatch_adapter() -> None:
-    assert issubclass(RemoteRuntimeBackend, DispatchAdapter)
+def test_grpc_node_adapter_satisfies_dispatch_adapter() -> None:
+    assert issubclass(GrpcNodeDispatchAdapter, DispatchAdapter)
 
 
 def test_adapter_protocol_requires_run_level_lifecycle() -> None:
     assert {"run_trial_node", "connect", "close"} <= set(DispatchAdapter.__protocol_attrs__)
-    assert all(callable(getattr(RemoteRuntimeBackend, n)) for n in ("connect", "close"))
+    assert all(callable(getattr(GrpcNodeDispatchAdapter, n)) for n in ("connect", "close"))
 
 
 def test_object_without_lifecycle_is_not_an_adapter() -> None:
@@ -50,10 +47,14 @@ def test_object_without_run_trial_node_is_not_an_adapter() -> None:
     assert not isinstance(object(), DispatchAdapter)
 
 
-def test_group_is_declared_and_has_no_entries_yet() -> None:
+def test_dispatch_adapters_group_name() -> None:
     assert DISPATCH_ADAPTERS_GROUP == "tolokaforge.dispatch_adapters"
-    assert not list(importlib.metadata.entry_points(group=DISPATCH_ADAPTERS_GROUP))
-    assert available_dispatch_adapters() == []
+
+
+def test_grpc_node_adapter_resolves_through_the_group() -> None:
+    factory = load_dispatch_adapter("grpc_node")
+    adapter = factory(DispatchAdapterBuildContext(config={"nodes": ["a:1"]}))
+    assert isinstance(adapter, DispatchAdapter)
 
 
 def test_unknown_adapter_fails_loud() -> None:

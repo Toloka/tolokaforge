@@ -1,8 +1,8 @@
 # Trial Node Container — a node that owns one whole trial.
 #
 # Ships the tolokaforge trial node (see docs/TRIAL_NODE_SERVICE.md) as an
-# independently-deployable image. The engine's ``--runtime remote`` ships a
-# trial's inputs to one of these over the ``RunTrial`` RPC; the node runs the
+# independently-deployable image. The engine's ``grpc_node`` dispatch adapter
+# ships a trial's inputs to one of these over the ``RunTrial`` RPC; the node runs the
 # conductor and the agent loop itself, brings up per-trial stacks over the
 # mounted docker socket, and dials a co-located runner at EXECUTOR_ADDRESS for
 # tasks without a per-trial stack. Unlike the runner image,

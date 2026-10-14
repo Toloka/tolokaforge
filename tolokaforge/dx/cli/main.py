@@ -152,7 +152,7 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str | None, sourc
     backend_class = {
         "shared": "SharedStackRuntimeBackend",
         "per_trial": "PerTrialRuntimeBackend",
-        "remote": "RemoteRuntimeBackend",
+        "remote": "GrpcNodeDispatchAdapter (deprecated alias for dispatch.adapter=grpc_node)",
     }.get(runtime_choice, runtime_choice)
     isolation_line = {
         "shared": (
@@ -163,7 +163,7 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str | None, sourc
             "(concurrent trials fully isolated)"
         ),
         "remote": (
-            "one runner node leased per trial from orchestrator.remote.nodes "
+            "one trial node leased per trial from orchestrator.remote.nodes "
             "(no local stack; node count bounds concurrency)"
         ),
     }.get(runtime_choice, "unknown")
@@ -696,10 +696,11 @@ def _run_dry_run(
         "Any name registered in the tolokaforge.runtime_backends entry-point group: "
         "built-in 'shared' (one docker-compose stack across every trial), 'per_trial' "
         "(an isolated stack per trial via Testcontainers, required by tasks whose "
-        "environment_manifest declares isolation: per_trial), 'remote' (a runner node "
-        "leased per trial from orchestrator.remote.nodes), 'in_memory', or a "
-        "plug-in's registered name. Validated at run start with an actionable error "
-        "listing the known names. See docs/RUNTIME_BACKENDS.md."
+        "environment_manifest declares isolation: per_trial), 'in_memory', or a "
+        "plug-in's registered name. 'remote' is a deprecated alias for the "
+        "'grpc_node' dispatch adapter (orchestrator.dispatch). Validated at run "
+        "start with an actionable error listing the known names. See "
+        "docs/RUNTIME_BACKENDS.md."
     ),
 )
 @click.option(
@@ -1007,12 +1008,16 @@ def run(
     # ``models.agent.fallbacks`` is realised as a per-invocation
     # ``agent_client_factory`` that wraps the primary agent model in a
     # :class:`FallbackLLMClient`. When the list is empty the seam stays
-    # ``None`` and the orchestrator constructs a bare :class:`LLMClient`. Under
-    # ``runtime: remote`` the seam stays ``None`` as well: the node reads the
-    # chain from the model config it is sent and builds its own client.
+    # ``None`` and the orchestrator constructs a bare :class:`LLMClient`. On a
+    # dispatch run the seam stays ``None`` as well: the node reads the chain
+    # from the model config it is sent and builds its own client.
+    orchestrator_config = run_config.orchestrator
+    is_dispatch_run = (
+        orchestrator_config.dispatch is not None or orchestrator_config.runtime == "remote"
+    )
     agent_client_factory: Callable[[ModelConfig], LLMClient] | None = None
     if fallback_chain:
-        if run_config.orchestrator.runtime != "remote":
+        if not is_dispatch_run:
 
             def _fallback_factory(primary: ModelConfig) -> LLMClient:
                 return FallbackLLMClient(primary=primary, fallbacks=fallback_chain)  # type: ignore[return-value]
