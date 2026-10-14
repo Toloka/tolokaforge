@@ -3,9 +3,9 @@
 An :class:`InProcessNode` — a real :class:`TrialNodeServiceImpl` running the real
 ``run_trial_from_inputs`` over the ``in_memory`` substrate — stands in for the
 gRPC transport. The control plane is built exactly as ``--runtime remote``
-builds it (a real ``Orchestrator``, a real ``RemoteRuntimeBackend``, the real
+builds it (a real ``Orchestrator``, a real ``GrpcNodeDispatchAdapter``, the real
 ``build_trial_execution_unit``), so these tests pin the routing
-``RemoteTrialExecutor`` -> ``backend.run_trial_node`` -> node -> graded
+``RemoteTrialExecutor`` -> ``dispatch_adapter.run_trial_node`` -> node -> graded
 ``TrialResult``, the reduced bundle on the control plane, and how each node
 failure maps onto the orchestrator's retry classes. No Docker, no LLM.
 """
@@ -27,6 +27,8 @@ from tests.canonical._node_fakes import (
     InProcessNodeClientFactory,
     write_native_pack,
 )
+from tolokaforge.core.dispatch.errors import DispatchTransient
+from tolokaforge.core.dispatch.grpc_node import GrpcNodeDispatchAdapter
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     EvaluationConfig,
@@ -42,7 +44,6 @@ from tolokaforge.core.node_registry import InMemoryNodeRegistry
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.plugin_registry import UnknownImplementationError
-from tolokaforge.core.remote_runtime import RemoteRuntimeBackend
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.trial import TrialNodeInputs, TrialResult, TrialSpec
 from tolokaforge.core.trial_executor import RemoteTrialExecutor
@@ -62,13 +63,6 @@ _NODES = ["node-a:50061", "node-b:50061"]
 _AGENT = ModelConfig(provider="openai", name="gpt-4")
 _USER = ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6")
 _MAX_MB = 9
-
-
-class _NeverRunConductor:
-    """A control-plane conductor that fails the test if the control plane runs a trial."""
-
-    def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
-        raise AssertionError("the control-plane conductor must not run a remote trial")
 
 
 def _config(out: Path, project: Path | None = None, **orchestrator: Any) -> RunConfig:
@@ -93,8 +87,8 @@ def _config(out: Path, project: Path | None = None, **orchestrator: Any) -> RunC
         )
 
 
-def _remote_backend(factory: InProcessNodeClientFactory) -> RemoteRuntimeBackend:
-    return RemoteRuntimeBackend(
+def _grpc_node_adapter(factory: InProcessNodeClientFactory) -> GrpcNodeDispatchAdapter:
+    return GrpcNodeDispatchAdapter(
         registry=InMemoryNodeRegistry(_NODES, lease_timeout_s=5),
         grpc_max_message_mb=_MAX_MB,
         connect_timeout_s=11.0,
@@ -133,9 +127,8 @@ class _Unit:
         self.agent = agent
         self.task = write_native_pack(tmp_path / "pack")
         self.factory = InProcessNodeClientFactory(node, **client_kwargs)
-        self.backend = _remote_backend(self.factory)
+        self.backend = _grpc_node_adapter(self.factory)
         self.out = tmp_path / "out"
-        self.control_conductor = _NeverRunConductor()
         self.unit = build_trial_execution_unit(
             TrialExecutionContext(
                 adapter=build_single_task_adapter(self.task),
@@ -143,12 +136,12 @@ class _Unit:
                 config=_config(self.out, **(orchestrator or {})),
                 logger=get_logger("remote-dispatch", strict=False),
                 agent_client=None,  # type: ignore[arg-type] — never reached on the control plane
-                runtime_backend=self.backend,
+                runtime_backend=None,
+                dispatch_adapter=self.backend,
                 output_dir=self.out,
                 request_limiter=None,
                 grader_config=GraderConfig(name="runner_rpc"),
                 grpc_max_message_mb=_MAX_MB,
-                conductor_factory=lambda _ctx: self.control_conductor,  # type: ignore[return-value]
             )
         )
 
@@ -197,7 +190,8 @@ def test_a_remote_backend_routes_the_trial_through_the_remote_executor_to_a_grad
     result = harness.execute()
 
     assert isinstance(harness.unit.executor, RemoteTrialExecutor)
-    assert isinstance(harness.unit.conductor, _NeverRunConductor)
+    # The dispatch path builds no control-plane conductor: the node owns it.
+    assert harness.unit.conductor is None
     assert result.trial_id == "flat:0"
     assert result.trajectory.status is TrialStatus.COMPLETED
     assert result.trajectory.grade is not None
@@ -295,7 +289,7 @@ def test_a_full_orchestrator_run_dispatches_every_trial_to_the_node(tmp_path: Pa
     node = _node(tmp_path)
     factory = InProcessNodeClientFactory(node)
     config = _config(tmp_path / "out", tmp_path / "pack", repeats=2, auto_start_services=False)
-    orch = Orchestrator(config, deps=OrchestratorDeps(runtime_backend=_remote_backend(factory)))
+    orch = Orchestrator(config, deps=OrchestratorDeps(dispatch_adapter=_grpc_node_adapter(factory)))
 
     run_dir = orch.run(run_id="remote-run", output_dir=tmp_path / "run")
 
@@ -304,6 +298,32 @@ def test_a_full_orchestrator_run_dispatches_every_trial_to_the_node(tmp_path: Pa
     assert all(t.grade is not None for t in orch.results)
     bundles = sorted(run_dir.glob("trials/flat/*/grade.yaml"))
     assert len(bundles) == 2
+
+
+def test_the_explicit_dispatch_block_drives_the_whole_trial_path(tmp_path: Path) -> None:
+    """``orchestrator.dispatch={adapter: grpc_node, config: {nodes}}`` selects the dispatch path."""
+    write_native_pack(tmp_path / "pack")
+    node = _node(tmp_path)
+    factory = InProcessNodeClientFactory(node)
+    config = RunConfig(
+        models={"agent": _AGENT, "user": _USER, "judge": _USER},
+        orchestrator=OrchestratorConfig(
+            workers=1,
+            repeats=1,
+            auto_start_services=False,
+            dispatch={"adapter": "grpc_node", "config": {"nodes": _NODES, "lease_timeout_s": 5}},
+        ),
+        evaluation=EvaluationConfig(
+            output_dir=str(tmp_path / "out"), projects=[str(tmp_path / "pack")]
+        ),
+        compute={"grpc_max_message_mb": _MAX_MB},
+    )
+    orch = Orchestrator(config, deps=OrchestratorDeps(dispatch_adapter=_grpc_node_adapter(factory)))
+
+    orch.run(run_id="dispatch-run", output_dir=tmp_path / "run")
+
+    assert [inputs.trial_spec.trial_id for inputs in node.received] == ["flat:0"]
+    assert [t.status for t in orch.results] == [TrialStatus.COMPLETED]
 
 
 # ---- Node failures map onto the orchestrator's retry classes ---------------------
@@ -421,7 +441,7 @@ def test_an_internal_node_failure_raises_so_the_orchestrator_retries(
 ) -> None:
     harness = make_unit(_node(tmp_path, run_trial=_raising(RuntimeError("node blew up"))))
 
-    with pytest.raises(NodeTransientError, match="node blew up"):
+    with pytest.raises(DispatchTransient, match="node blew up"):
         harness.execute()
 
     _assert_both_nodes_are_free(harness)
@@ -432,7 +452,7 @@ def test_a_stray_value_error_deep_in_a_trial_is_not_an_invalid_config(
 ) -> None:
     harness = make_unit(_node(tmp_path, run_trial=_raising(ValueError("deep in the trial"))))
 
-    with pytest.raises(NodeTransientError, match="deep in the trial"):
+    with pytest.raises(DispatchTransient, match="deep in the trial"):
         harness.execute()
 
     _assert_both_nodes_are_free(harness)
@@ -442,7 +462,7 @@ def test_an_unreachable_node_raises_so_the_orchestrator_retries(tmp_path: Path, 
     harness = make_unit(_node(tmp_path))
     harness.backend.node_client_factory = _unreachable_factory
 
-    with pytest.raises(NodeTransientError, match="unavailable"):
+    with pytest.raises(DispatchTransient, match="unavailable"):
         harness.execute()
 
     _assert_both_nodes_are_free(harness)
@@ -481,7 +501,9 @@ def test_the_orchestrator_retries_a_transient_node_failure_and_completes_the_tri
     config.compute.max_attempt_retries = 1
     orch = Orchestrator(
         config,
-        deps=OrchestratorDeps(runtime_backend=_remote_backend(InProcessNodeClientFactory(node))),
+        deps=OrchestratorDeps(
+            dispatch_adapter=_grpc_node_adapter(InProcessNodeClientFactory(node))
+        ),
     )
 
     orch.run()
@@ -497,7 +519,9 @@ def test_the_orchestrator_does_not_retry_a_deterministic_node_refusal(tmp_path: 
     config.compute.max_attempt_retries = 2
     orch = Orchestrator(
         config,
-        deps=OrchestratorDeps(runtime_backend=_remote_backend(InProcessNodeClientFactory(node))),
+        deps=OrchestratorDeps(
+            dispatch_adapter=_grpc_node_adapter(InProcessNodeClientFactory(node))
+        ),
     )
 
     orch.run()
@@ -512,7 +536,7 @@ def test_a_busy_node_is_a_transient_failure(tmp_path: Path, make_unit) -> None:
     harness = make_unit(node)
     node.service._trial_lock.acquire()  # a trial already in flight on the node
     try:
-        with pytest.raises(NodeTransientError, match="already running a trial"):
+        with pytest.raises(DispatchTransient, match="already running a trial"):
             harness.execute()
     finally:
         node.service._trial_lock.release()

@@ -1,11 +1,11 @@
 """Single-box runs keep their dispatch and their on-disk bundles byte for byte.
 
-The whole-trial seam is selected by ``isinstance(backend, TrialOwningBackend)``
-and nothing else, so only the remote backend may take it. These tests lock the
-two halves of that promise: no single-box backend satisfies the Protocol and every
-one still gets the provisioning executor, and the bundles the provisioning
-executor writes — a completed trial and a trial whose environment never came up —
-match the golden snapshots.
+The whole-trial seam is selected by ``TrialExecutionContext.dispatch_adapter``
+and nothing else, so a single-box run (no dispatch adapter) always gets the
+provisioning executor and no single-box backend satisfies the ``DispatchAdapter``
+Protocol. These tests lock the two halves of that promise, and the bundles the
+provisioning executor writes — a completed trial and a trial whose environment
+never came up — match the golden snapshots.
 """
 
 from __future__ import annotations

@@ -22,6 +22,7 @@ from tests.canonical._factories import make_env_endpoints
 from tests.canonical._fakes import RecordingRunnerClient
 from tests.canonical._node_fakes import InProcessNode, InProcessNodeClientFactory
 from tolokaforge.core.composition_runtime import ComposedEnvHandle, RunCtx, RunSubstrate, StackDecl
+from tolokaforge.core.dispatch.grpc_node import GrpcNodeDispatchAdapter
 from tolokaforge.core.models import (
     EvaluationConfig,
     ModelConfig,
@@ -36,7 +37,6 @@ from tolokaforge.core.plugin_registry import (
     RuntimeBackendBuildContext,
     _clear_discovery_cache,
 )
-from tolokaforge.core.remote_runtime import RemoteRuntimeBackend
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import EnvEndpoints, TrialNodeInputs, TrialResult, TrialSpec
 from tolokaforge.core.trial_node import _resolve_runtime_name, run_trial_from_inputs
@@ -144,7 +144,7 @@ def _remote_orchestrator(
     control_dataset: Path, out: Path, node: InProcessNode
 ) -> tuple[Orchestrator, InProcessNodeClientFactory]:
     factory = InProcessNodeClientFactory(node)
-    backend = RemoteRuntimeBackend(
+    adapter = GrpcNodeDispatchAdapter(
         registry=InMemoryNodeRegistry(_NODES, lease_timeout_s=5),
         grpc_max_message_mb=9,
         connect_timeout_s=11.0,
@@ -166,7 +166,7 @@ def _remote_orchestrator(
             evaluation=EvaluationConfig(output_dir=str(out), projects=[str(control_dataset)]),
             compute={"grpc_max_message_mb": 9},
         )
-    return Orchestrator(config, deps=OrchestratorDeps(runtime_backend=backend)), factory
+    return Orchestrator(config, deps=OrchestratorDeps(dispatch_adapter=adapter)), factory
 
 
 @pytest.fixture
