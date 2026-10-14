@@ -46,10 +46,10 @@ dispatching jobs.
 1. **Keep `remote` as a runtime-backend peer.** Rejected: the axes stay tangled
    and the node-fleet shape stays baked in, which does not fit a durable
    workflow engine that owns placement itself.
-2. **Hard-wire one workflow engine (Temporal) into core.** Rejected: core would
+2. **Hard-wire one specific workflow engine into core.** Rejected: core would
    depend on one backend, against the open-source extensibility goal.
-3. **A backend-agnostic `DispatchAdapter` axis, with Temporal as the first
-   external adapter.**
+3. **A backend-agnostic `DispatchAdapter` axis, with an external distributed
+   backend as the first out-of-core adapter.**
 
 ## Decision
 
@@ -83,10 +83,10 @@ deprecated alias for the `grpc_node` adapter.
   service.
 - `grpc_node` is today's remote path recast as one adapter: lease a node, ship
   the job over `RunTrial`, release the lease.
-- `temporal` is designed for and built outside core as a separate project or
-  plugin wheel. A job maps to an activity, a job category maps to a task queue,
-  and durability, scaling and cancellation come from Temporal. Tolokaforge core
-  never imports Temporal.
+- an **external distributed backend** adapter is designed for and built outside
+  core as a separate project or plugin wheel. A job maps to the backend's unit of
+  work, a job category maps to one of its work queues, and durability, scaling and
+  cancellation come from the backend. Tolokaforge core never imports it.
 
 The distributed backend owns execution, scaling and durability; tolokaforge does
 not build a node fleet of its own.
@@ -99,8 +99,8 @@ Settled for now; revisit as the model matures:
   `dispatch.adapter: grpc_node`.
 - `grpc_max_message_mb` stays in adapter config; moving it off the job for full
   transport-neutrality is a follow-up.
-- Where a Temporal adapter lives — a separate project or a plugin wheel — is
-  finalised when it is built.
+- Where an external backend adapter lives — a separate project or a plugin
+  wheel — is finalised when it is built.
 - Trial-unit parity gaps (the refusals listed in ADR-0063) ship incrementally so
   the job covers every scenario.
 
@@ -123,4 +123,4 @@ Settled for now; revisit as the model matures:
 
 - [ADR-0057](0057-node-runnable-trial-unit.md), [ADR-0058](0058-detached-execution.md), [ADR-0059](0059-remote-runtime-backend.md), [ADR-0063](0063-whole-trial-node-service-and-dispatch-seam.md)
 - [`docs/DETACHED_EXECUTION.md`](../DETACHED_EXECUTION.md)
-- "Tolokaforge on Temporal" analysis (design note, outside the repository)
+- Dispatch/runtime strategy analysis (internal design note, outside the repository)
