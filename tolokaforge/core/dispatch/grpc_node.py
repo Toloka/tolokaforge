@@ -19,6 +19,7 @@ into the transport-neutral vocabulary of
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
@@ -86,6 +87,7 @@ class GrpcNodeDispatchAdapter:
     retry_interval_s: float = 1.0
     node_client_factory: NodeClientFactory = _grpc_node_client
     _leases: dict[str, RunnerLease] = field(default_factory=dict, init=False)
+    _leases_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     # ---- Run-level lifecycle ----
 
@@ -98,9 +100,11 @@ class GrpcNodeDispatchAdapter:
 
     def close(self) -> None:
         """Release every lease still held; called once after the last trial."""
-        for trial_id in list(self._leases):
+        with self._leases_lock:
+            trial_ids = list(self._leases)
+            self._leases.clear()
+        for trial_id in trial_ids:
             self.registry.release(trial_id)
-        self._leases.clear()
 
     # ---- Whole-trial dispatch ----
 
@@ -119,7 +123,8 @@ class GrpcNodeDispatchAdapter:
         """
         trial_id = inputs.trial_spec.trial_id
         lease = self.registry.lease(trial_id)
-        self._leases[trial_id] = lease
+        with self._leases_lock:
+            self._leases[trial_id] = lease
         logger.debug(
             "Leased node %s (%s) for trial %s", lease.node_id, lease.runner_address, trial_id
         )
@@ -163,9 +168,19 @@ class GrpcNodeDispatchAdapter:
         job-state RPC, so this is all the control plane can observe.
         """
         detail = "grpc_node tracks only the live lease, not node-side job state."
-        if handle.trial_id in self._leases:
+        if self.has_active_lease(handle.trial_id):
             return JobStatus(state=JobState.RUNNING, detail=detail)
         return JobStatus(state=JobState.UNKNOWN, detail=detail)
+
+    def has_active_lease(self, trial_id: str) -> bool:
+        """Whether the adapter currently holds a node lease for ``trial_id``.
+
+        Reads the lease table under its lock, so a caller in another thread (the
+        ``local`` subprocess adapter's status probe) never races a concurrent
+        lease set or release.
+        """
+        with self._leases_lock:
+            return trial_id in self._leases
 
     def fetch_result(self, handle: JobHandle) -> TrialResult:
         """Honest stub: the node returns its result inline, not out of band.
@@ -185,8 +200,9 @@ class GrpcNodeDispatchAdapter:
 
     def _release(self, trial_id: str) -> None:
         """Free the trial's node; a no-op for an unknown trial."""
-        if self._leases.pop(trial_id, None) is None:
-            return
+        with self._leases_lock:
+            if self._leases.pop(trial_id, None) is None:
+                return
         self.registry.release(trial_id)
         logger.debug("Released node for trial %s", trial_id)
 

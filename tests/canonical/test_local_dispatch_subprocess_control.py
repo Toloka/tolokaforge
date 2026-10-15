@@ -174,6 +174,46 @@ def test_fetch_result_without_a_bundle_is_unsupported() -> None:
         adapter.close()
 
 
+def test_fetch_result_of_a_corrupt_bundle_is_unsupported() -> None:
+    spawner = _Spawner()
+    adapter = _subprocess_adapter(spawner)
+    try:
+        assert adapter.registry is not None
+        root = adapter.registry.output_root
+        assert root is not None
+        trial_dir = Path(root) / "run-xyz" / "trials" / "task" / "0"
+        trial_dir.mkdir(parents=True)
+        # A truncated / corrupt bundle: trajectory.yaml exists (so the dir is
+        # located) but holds unreadable YAML. The raw parse error must cross the
+        # seam as the neutral control-plane error, not escape as a YAMLError.
+        (trial_dir / TRAJECTORY_FILENAME).write_text("task_id: task\n  : : bad\n")
+        with pytest.raises(DispatchUnsupported, match="corrupt or incomplete bundle"):
+            adapter.fetch_result(JobHandle(trial_id="task:0"))
+    finally:
+        adapter.close()
+
+
+def test_fetch_result_of_an_ambiguous_bundle_location_is_unsupported() -> None:
+    spawner = _Spawner()
+    adapter = _subprocess_adapter(spawner)
+    try:
+        assert adapter.registry is not None
+        root = adapter.registry.output_root
+        assert root is not None
+        trajectory = _trajectory("task", 0)
+        writer = FileArtifactWriter()
+        # Two run subdirs under the root both carry this trial: the adapter must
+        # refuse rather than silently return a possibly-stale earlier run.
+        for run_name in ("run-aaa", "run-bbb"):
+            trial_dir = Path(root) / run_name / "trials" / "task" / "0"
+            writer.write_trajectory(trial_dir, trajectory)
+            writer.write_metrics(trial_dir, trajectory)
+        with pytest.raises(DispatchUnsupported, match="ambiguous bundle location"):
+            adapter.fetch_result(JobHandle(trial_id="task:0"))
+    finally:
+        adapter.close()
+
+
 def test_the_subprocess_bundle_round_trips_a_written_trajectory(tmp_path: Path) -> None:
     # The reader and the writer agree on the on-disk YAML shape.
     trajectory = _trajectory("task", 0)

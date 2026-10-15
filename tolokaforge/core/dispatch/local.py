@@ -28,6 +28,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from tolokaforge.core.dispatch.control import JobHandle, JobState, JobStatus
@@ -87,11 +88,17 @@ class _LocalConfig(BaseModel):
 
 @dataclass
 class _ThreadJob:
-    """One in-process trial's table entry: its future, state and retained result."""
+    """One in-process trial's table entry: its future and current state.
+
+    Only the small ``state`` is retained, never the trial's full ``TrialResult``.
+    The default synchronous flow consumes the live ``run_trial_node`` return, so
+    keeping each graded result (its trajectory, message history and tool log) for
+    the adapter's whole lifetime would pin an N-trial run's worth of memory for
+    nothing.
+    """
 
     future: Future[TrialResult]
     state: JobState
-    result: TrialResult | None = None
 
 
 @dataclass
@@ -171,11 +178,13 @@ class LocalDispatchAdapter:
         # Round-trip the inputs through JSON so a threaded trial sees exactly the
         # serialized value a node would, not a shared in-memory object.
         payload = inputs.model_dump_json()
-        # Submit and record RUNNING under one lock so a status read never races a
-        # worker that starts the instant the future is submitted.
+        # Submit and record PENDING under one lock so a status read never races a
+        # worker that starts the instant the future is submitted. The worker body
+        # flips PENDING to RUNNING when it picks the job up, so status tells a
+        # queued job apart from a running one.
         with self._jobs_lock:
-            future = self._pool.submit(self._run_one, payload)
-            self._jobs[trial_id] = _ThreadJob(future=future, state=JobState.RUNNING)
+            future = self._pool.submit(self._run_one, trial_id, payload)
+            self._jobs[trial_id] = _ThreadJob(future=future, state=JobState.PENDING)
         try:
             result = future.result()
         except BaseException:
@@ -190,10 +199,16 @@ class LocalDispatchAdapter:
             job = self._jobs.get(trial_id)
             if job is not None:
                 job.state = JobState.COMPLETED
-                job.result = result
         return result
 
-    def _run_one(self, payload: str) -> TrialResult:
+    def _run_one(self, trial_id: str, payload: str) -> TrialResult:
+        # A job only reaches here once a pool worker has picked it up: flip it to
+        # RUNNING. Guard on PENDING so a pre-start cancel (which set CANCELLED) is
+        # not clobbered.
+        with self._jobs_lock:
+            job = self._jobs.get(trial_id)
+            if job is not None and job.state is JobState.PENDING:
+                job.state = JobState.RUNNING
         rebuilt = TrialNodeInputs.model_validate_json(payload)
         try:
             return self.run_trial_fn(rebuilt)
@@ -230,7 +245,7 @@ class LocalDispatchAdapter:
         assert self.grpc_adapter is not None  # built by the factory for subprocess mode
         # Coarse: the adapter knows only that it holds a lease for the trial, not
         # the worker-side job state.
-        if handle.trial_id in self.grpc_adapter._leases:
+        if self.grpc_adapter.has_active_lease(handle.trial_id):
             return JobStatus(
                 state=JobState.RUNNING,
                 detail="coarse: the adapter holds a lease for this trial; node-side state is not queried",
@@ -240,30 +255,19 @@ class LocalDispatchAdapter:
     def fetch_result(self, handle: JobHandle) -> TrialResult:
         """Return the job's graded result, or raise ``DispatchUnsupported``.
 
-        ``thread`` mode returns the retained in-process result and then drops it,
-        so retrieval is one-shot: a second ``fetch_result`` for the same trial
-        raises the neutral "no result retained" error. The orchestrator has
-        already consumed the ``run_trial_node`` return value, so keeping every
-        result for the adapter's whole lifetime would only grow memory.
+        ``thread`` mode is in-process and ephemeral: it returns each result live
+        from ``run_trial_node`` and retains no durable copy, so there is nothing
+        to re-read after the fact and this always raises the neutral "not
+        retained" error. ``status`` still answers from the kept ``JobState``.
         ``subprocess`` mode reads the node-written bundle under the worker output
         root.
         """
         if self.mode == "thread":
-            with self._jobs_lock:
-                job = self._jobs.get(handle.trial_id)
-                if job is not None and job.result is not None:
-                    result = job.result
-                    # One-shot: free the retained result but keep JobState so
-                    # ``status`` still answers for this trial.
-                    job.result = None
-                    return result
-                if job is not None and job.state is JobState.FAILED:
-                    raise DispatchUnsupported(
-                        "Unsupported", "", f"trial {handle.trial_id} failed; no result retained"
-                    )
-                raise DispatchUnsupported(
-                    "Unsupported", "", f"no result retained for {handle.trial_id}"
-                )
+            raise DispatchUnsupported(
+                "Unsupported",
+                "",
+                f"in-process result returned live; not retained for {handle.trial_id}",
+            )
         return self._fetch_result_subprocess(handle.trial_id)
 
     def _cancel_thread(self, handle: JobHandle) -> None:
@@ -285,22 +289,33 @@ class LocalDispatchAdapter:
         if root is None:
             raise DispatchUnsupported("Unsupported", "", f"result not retained for {trial_id}")
         task_id, index = trial_id.rsplit(":", 1)
-        # The output root holds a single per-run subdir, so the lexicographic
-        # first match is that run's trial.
-        for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-            trial_dir = run_dir / "trials" / task_id / index
-            if not (trial_dir / TRAJECTORY_FILENAME).exists():
-                continue
-            # The node writes grade / metrics / tool_log to separate sidecars;
-            # the report reader merges them back into one graded trajectory.
-            try:
-                trajectory = read_report_trajectory(trial_dir)
-            except FileNotFoundError as exc:
-                raise DispatchUnsupported(
-                    "Unsupported", "", f"incomplete bundle for {trial_id}"
-                ) from exc
-            return TrialResult.from_trajectory(trial_id=trial_id, trajectory=trajectory)
-        raise DispatchUnsupported("Unsupported", "", f"result not retained for {trial_id}")
+        # Normally the output root holds a single per-run subdir. If more than one
+        # run subdir carries this trial the choice is not safe to make silently —
+        # the lexicographic first could be a stale earlier run — so refuse rather
+        # than return a possibly-wrong result.
+        matches = [
+            run_dir / "trials" / task_id / index
+            for run_dir in sorted(p for p in root.iterdir() if p.is_dir())
+            if (run_dir / "trials" / task_id / index / TRAJECTORY_FILENAME).exists()
+        ]
+        if not matches:
+            raise DispatchUnsupported("Unsupported", "", f"result not retained for {trial_id}")
+        if len(matches) > 1:
+            raise DispatchUnsupported(
+                "Unsupported", "", f"ambiguous bundle location for {trial_id}"
+            )
+        # The node writes grade / metrics / tool_log to separate sidecars; the
+        # report reader merges them back into one graded trajectory. A corrupt or
+        # truncated bundle (unreadable YAML, a schema mismatch, a missing required
+        # sidecar) must cross the seam as the neutral control-plane error, not as a
+        # raw YAML / validation / OS exception.
+        try:
+            trajectory = read_report_trajectory(matches[0])
+        except (OSError, yaml.YAMLError, ValidationError) as exc:
+            raise DispatchUnsupported(
+                "Unsupported", "", f"corrupt or incomplete bundle for {trial_id}"
+            ) from exc
+        return TrialResult.from_trajectory(trial_id=trial_id, trajectory=trajectory)
 
 
 def _dispatch_error(error_type: str, stage: str, reason: str) -> _DispatchFailure:
