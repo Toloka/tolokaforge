@@ -1551,7 +1551,10 @@ def test_tool_output_capped_at_loop_layer_when_capability_set():
     )
     tool_message = _only_tool_message(messages)
     assert len(tool_message.content) < 40_000
-    assert "\n...[24000 chars omitted]...\n" in tool_message.content
+    assert (
+        "\n...[24000 of 40000 chars omitted; narrow the request to see the rest]...\n"
+        in tool_message.content
+    )
     assert tool_message.content.startswith("X" * 8_000)
     assert tool_message.content.endswith("X" * 8_000)
     assert tool_message.content_blocks is None
@@ -1618,7 +1621,12 @@ def test_tool_output_cap_takes_tighter_of_tool_and_capability(
     tool_message = _only_tool_message(messages)
     half = expected_effective // 2
     chars_omitted = len(huge) - 2 * half
-    expected_content = "X" * half + f"\n...[{chars_omitted} chars omitted]...\n" + "X" * half
+    expected_content = (
+        "X" * half
+        + f"\n...[{chars_omitted} of {len(huge)} chars omitted; "
+        + "narrow the request to see the rest]...\n"
+        + "X" * half
+    )
     assert tool_message.content == expected_content
     assert len(recorder.records) == 1
     assert recorder.records[0]["output"] == huge

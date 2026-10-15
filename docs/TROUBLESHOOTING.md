@@ -95,6 +95,45 @@ that value, so raise it there too; a separately deployed runner or grader
 needs the same variable. Memory per trial grows with the message on both
 sides — see [RUNNER.md § gRPC message size](RUNNER.md#grpc-message-size).
 
+## A Trial's State Holder Did Not Answer in Time
+
+**Symptom.** A trial whose tools run in an MCP server (or read an app world) has
+no final state and no grade, with an error such as:
+
+```
+GetState failed: Trial 'task:0': the live state of its MCP server could not be synchronised to the DB mirror (TimeoutError: the MCP server did not answer within 20s; if its state takes longer to read, raise `compute.state_read_timeout_s` in the run config (a runner deployed outside the engine reads TOLOKAFORGE_STATE_READ_TIMEOUT_S))
+```
+
+`GradeTrial` and a grader's `SubstrateService` reads (`UNAVAILABLE`) report the
+same cause.
+
+**Cause.** The runner reads the holder's live state before every final-state
+read and waits at most `compute.state_read_timeout_s` (default 20 s) for it. A
+holder that is slow rather than hung — typically an MCP server that loads a
+large world when it is first contacted — runs past that bound even though it
+would answer with the right state.
+
+**Fix.** Raise the bound above the holder's worst-case answer time, e.g. for a
+world that takes about 100 s to load:
+
+```yaml
+compute:
+  state_read_timeout_s: 180
+```
+
+The engine passes the value to every runner container it starts, and every
+runner deadline waiting on the read grows with it (see
+[RUNNER.md § State read timeout](RUNNER.md#state-read-timeout)). A task compose
+file that sets `TOLOKAFORGE_STATE_READ_TIMEOUT_S` on its runner keeps that value,
+so raise it there too; a separately deployed runner needs the same variable.
+
+The bound does not cover tool calls. The MCP server starts on the trial's first
+contact with it, so a tool call that is (or waits for) that first contact has only
+its own budget (`timeout_s`) to wait out the load, and times out. Such a call is
+dropped, not sent once the server has started, so retries do not change the world
+behind the agent's back. Keep the server's start-up short, or make sure the world
+is loaded before the agent's first tool call.
+
 ## Every Tool Call Fails: MCP server closed connection
 
 **Symptom.** Every tool call of every task declaring an `mcp_server.py` comes back

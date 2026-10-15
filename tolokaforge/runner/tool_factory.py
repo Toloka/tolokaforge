@@ -37,6 +37,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -104,6 +105,10 @@ class MCPProtocolError(RuntimeError):
         self.code = code
         self.message = message
         super().__init__(f"MCP error {code}: {message}")
+
+
+class MCPRequestAbandoned(RuntimeError):
+    """The caller of an MCP request gave up on it before it was sent, so it never was."""
 
 
 class ToolReconstructionError(Exception):
@@ -566,8 +571,30 @@ class MCPServerProcess(BaseModel):
     _request_lock: Any = PrivateAttr(default_factory=threading.Lock)
     _stop_lock: Any = PrivateAttr(default_factory=threading.Lock)
     _closed: bool = PrivateAttr(default=False)
+    _executor: Any = PrivateAttr(
+        default_factory=lambda: ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-server")
+    )
 
     model_config = {"arbitrary_types_allowed": True}
+
+    @property
+    def executor(self) -> Executor:
+        """The one worker thread the runner's event loop hands this server's blocking I/O to.
+
+        Its start, tool calls and state reads and writes run here rather than in
+        the event loop's shared default executor: a worker abandoned by a
+        timeout stays blocked on this server's locks until the server answers,
+        and on a shared pool a few slow servers would hold every thread and
+        stall all other trials' work. One worker is no loss — the server
+        answers one request at a time anyway — and runs the work in the order
+        it was handed in.
+
+        Raises:
+            RuntimeError: the server has been stopped.
+        """
+        if self._closed:
+            raise RuntimeError("MCP server has been closed")
+        return self._executor
 
     def start(self) -> None:
         with self._start_lock:
@@ -653,11 +680,30 @@ class MCPServerProcess(BaseModel):
                     stream.close()
             self.process = None
             logger.info(f"Stopped MCP server: {self.script_path}")
+        # Not waited for: a stop must not block on the work it just unblocked.
+        # Work still queued runs and fails against the stopped server.
+        self._executor.shutdown(wait=False)
 
-    def send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    def send_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        abandoned: threading.Event | None = None,
+    ) -> dict[str, Any]:
+        """Send one JSON-RPC request and return its result.
+
+        ``abandoned`` is the caller's word that it stopped waiting: set before
+        the request gets its turn on the connection, the request is never sent
+        and :class:`MCPRequestAbandoned` is raised instead.
+        """
         # One stdio connection has one ordered response stream. Different tool
         # workers must not consume each other's response.
         with self._request_lock:
+            if abandoned is not None and abandoned.is_set():
+                raise MCPRequestAbandoned(
+                    f"{method} to {self.script_path} was abandoned by its caller before it was sent"
+                )
             return self._send_request(method, params)
 
     def _send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -805,7 +851,8 @@ class MCPServerPool:
         self._cleanup_lock = threading.Lock()
         self._closed = False
 
-    def get_server(self, script: str) -> MCPServerProcess:
+    def server(self, script: str) -> MCPServerProcess:
+        """The trial's server for ``script``, not necessarily started yet."""
         with self._lock:
             if self._closed:
                 raise RuntimeError("Trial MCP servers have been closed")
@@ -813,7 +860,11 @@ class MCPServerPool:
                 self._servers[script] = MCPServerProcess(
                     script_path=script, python_path=self._python_path
                 )
-            server = self._servers[script]
+            return self._servers[script]
+
+    def get_server(self, script: str) -> MCPServerProcess:
+        """The trial's server for ``script``, started on the calling thread if need be."""
+        server = self.server(script)
         server.start()
         return server
 
@@ -865,6 +916,11 @@ class MCPServerToolWrapper(ToolWrapper):
         """Get or create the MCP server process."""
         return self._server_pool.get_server(self.server_script)
 
+    @property
+    def executor(self) -> Executor:
+        """Where blocking calls into this tool's server run: :attr:`MCPServerProcess.executor`."""
+        return self._server_pool.server(self.server_script).executor
+
     async def execute(self, arguments: dict[str, Any]) -> str:
         """Return the tool call's output text; ``execute_call`` carries the flag too."""
         return (await self.execute_call(arguments)).output
@@ -882,20 +938,37 @@ class MCPServerToolWrapper(ToolWrapper):
         )
         state_changed = False
         try:
-            server = self._get_server()
-
             # MCP tool call format
             params = {
                 "name": self.name,
                 "arguments": arguments,
             }
 
-            # Run in thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
+            # Run on the server's own worker thread to avoid blocking — the
+            # server's start too: the first contact spawns it and waits out its
+            # ``initialize`` answer, which a server loading a large world gives
+            # late, and the event loop serves every trial's calls and state reads
+            # meanwhile. The start stays outside the argument refusal below: a
+            # handshake the server refuses is the environment's failure, not the
+            # caller's arguments.
+            loop = asyncio.get_running_loop()
+            executor = self.executor
+            server = await loop.run_in_executor(executor, self._get_server)
+            # A caller that stops waiting (the call's timeout) abandons the call:
+            # if it has not been sent yet — it waits its turn behind a slow
+            # request — it never is, so a call reported as timed out does not
+            # change the world afterwards.
+            abandoned = threading.Event()
             try:
                 result = await loop.run_in_executor(
-                    None, lambda: server.send_request("tools/call", params)
+                    executor,
+                    functools.partial(
+                        server.send_request, "tools/call", params, abandoned=abandoned
+                    ),
                 )
+            except asyncio.CancelledError:
+                abandoned.set()
+                raise
             except MCPProtocolError as refusal:
                 if refusal.code != JSONRPC_INVALID_PARAMS:
                     raise

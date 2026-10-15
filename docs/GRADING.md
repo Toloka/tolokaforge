@@ -822,10 +822,12 @@ DB service only mirrors it. Every read of its final state — `GetState`, each
 — first syncs the mirror from the subprocess. `GradeTrial` syncs once per call,
 before any component reads, so an earlier `GetState` never stands in for state the
 agent changed after it, and hash grading's golden replay (which runs in the same
-subprocess, and hands it the trial's state back once scored) is never read as the
-agent's.
+subprocess, and hands it and the mirror the trial's state back once scored, or when
+grading fails after the replay) is never read as the agent's.
 
-When that sync fails — the subprocess is gone or does not answer within 20 s,
+When that sync fails — the subprocess is gone or does not answer within
+`compute.state_read_timeout_s` (default 20 s; see
+[RUNNER.md § State read timeout](RUNNER.md#state-read-timeout)),
 `_tolokaforge_get_state_` declares failure or answers without a state object, or the
 mirror refuses the update — the
 read fails with the cause instead of answering from the mirror: `GetState` returns
@@ -835,8 +837,8 @@ failed DB read during grading fails the same way rather than grading against emp
 state: in `GradeTrial`, in the judge's `get_db_state` / `query_db` tools (the judge
 returns no verdict, even when it submitted one), and in `SubstrateService`, which
 answers `UNAVAILABLE` rather than `trial_not_found` when the db-service has lost a
-trial the runner holds. A judge DB read that does not come back within its 30 s
-bound is refused the same way. A read the db-service rejects as malformed — a
+trial the runner holds. A judge DB read that does not come back within its bound
+(the state read bound plus 10 s, 30 s by default) is refused the same way. A read the db-service rejects as malformed — a
 jsonpath that does not parse, a table that is not there — is no lost state: the judge
 gets it as a tool error and can correct it. A task that provisions no database has no
 mirror: nothing is synced for its MCP subprocess, and its reads answer "no database"

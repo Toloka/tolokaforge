@@ -353,8 +353,9 @@ Computed by the orchestrator at trial-start via
 | `reasoning_history` | `all` \| `none` \| `last` — the **effective** setting after the route has had its say, never `auto` | [`effective_reasoning_history`](../tolokaforge/core/llm/reasoning_history.py) |
 | `observation_window` | integer \| `null` — how many of the most recent observations stayed full-length on the wire; `null` sends every observation in full | capability value |
 | `observation_window_polling` | integer ≥ 1 — turns the window boundary held still before advancing; inert when `observation_window` is `null` | capability value |
+| `tool_output_max_chars` | integer \| `null` — the per-model cap on one tool result the agent's model reads, after the run config's override (`null` when no preset names one or the config cleared it); per-tool caps a task declares compose with it and are not recorded here | capability value |
 
-The three context-control fields record what the trial **ran under**, which is
+The four context-control fields record what the trial **ran under**, which is
 not always what its config asked for. `model_config.<role>.capabilities` carries
 the request; `resolved.*` carries the resolution. `reasoning_history` is where
 the two most often diverge: a codec that declares `forced_history` — the

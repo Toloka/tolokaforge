@@ -42,6 +42,7 @@ from tolokaforge.runner.models import (
     StackDecl,
     StackScope,
 )
+from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 
 __all__ = [
     "ComposeMaterialiser",
@@ -126,6 +127,9 @@ class MaterialiseContext:
     grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
     """Injected as ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` into the stack's runner
     service unless the compose file declares the variable itself."""
+    state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
+    """Injected as ``TOLOKAFORGE_STATE_READ_TIMEOUT_S`` into the stack's runner
+    service unless the compose file declares the variable itself."""
 
 
 @dataclass(frozen=True)
@@ -147,6 +151,7 @@ class RunCtx:
     events: RunDisplayEvents
     seeds: Mapping[str, SeedRef]
     grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
+    state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
 
 
 @dataclass
@@ -161,8 +166,9 @@ class RunSubstrate:
     trial-scope-owned runners live on :class:`ComposedEnvHandle` instead.
 
     :attr:`mount_docker_socket`, :attr:`expose_substrate`,
-    :attr:`log_capture`, :attr:`events`, :attr:`grpc_max_message_mb` are
-    threaded from :class:`RunCtx` onto the substrate at :meth:`SubstrateComposer.materialise_run` time so
+    :attr:`log_capture`, :attr:`events`, :attr:`grpc_max_message_mb`,
+    :attr:`state_read_timeout_s` are threaded from :class:`RunCtx` onto the
+    substrate at :meth:`SubstrateComposer.materialise_run` time so
     :meth:`SubstrateComposer.provision_trial` materialises task-scope
     and trial-scope stacks against the same policies the run-scope
     stacks were materialised with — the run-wide values a caller set on
@@ -181,6 +187,7 @@ class RunSubstrate:
     log_capture: LogCaptureConfig | None
     events: RunDisplayEvents
     grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
+    state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
 
 
 @dataclass(frozen=True)

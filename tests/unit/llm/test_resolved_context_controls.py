@@ -26,7 +26,14 @@ from tolokaforge.core.models.model_config import ModelConfig
 pytestmark = pytest.mark.unit
 
 
-_CONTROL_KEYS = frozenset({"reasoning_history", "observation_window", "observation_window_polling"})
+_CONTROL_KEYS = frozenset(
+    {
+        "reasoning_history",
+        "observation_window",
+        "observation_window_polling",
+        "tool_output_max_chars",
+    }
+)
 
 
 def _agent(**capabilities: object) -> ModelConfig:
@@ -98,8 +105,34 @@ def test_an_unset_window_records_null_and_the_default_polling() -> None:
     assert controls["observation_window_polling"] == 1
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [(None, 32768), ({"tool_output_max_chars": 200_000}, 200_000)],
+    ids=["preset", "override"],
+)
+def test_the_effective_tool_output_cap_is_recorded(
+    overrides: dict[str, object] | None, expected: int
+) -> None:
+    """A run config can set the cap and it changes what the agent reads, so
+    runs under different caps must record different blocks."""
+    caps = build_capabilities("moonshotai/kimi-k3", "openrouter", overrides=overrides)
+
+    assert resolve_context_controls(caps)["tool_output_max_chars"] == expected
+
+
+def test_a_null_override_records_the_cleared_tool_output_cap() -> None:
+    caps = build_capabilities(
+        "moonshotai/kimi-k3", "openrouter", overrides={"tool_output_max_chars": None}
+    )
+
+    controls = resolve_context_controls(caps)
+
+    assert "tool_output_max_chars" in controls
+    assert controls["tool_output_max_chars"] is None
+
+
 # ---------------------------------------------------------------------------
-# _build_resolved_block — the three values land beside the policy names
+# _build_resolved_block — the context controls land beside the policy names
 # ---------------------------------------------------------------------------
 
 
@@ -114,6 +147,7 @@ def test_the_resolved_block_carries_the_context_controls() -> None:
     assert block["reasoning_history"] == "all"
     assert block["observation_window"] == 8
     assert block["observation_window_polling"] == 3
+    assert block["tool_output_max_chars"] is None
 
 
 def test_every_role_block_carries_the_controls_even_unconfigured() -> None:
