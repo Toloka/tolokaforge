@@ -919,18 +919,24 @@ def _build_synthesised_compose(
     agent_body["volumes"] = _agent_volumes(
         agent_body.get("volumes"), include_tests_mount=not meta.is_v4
     )
-    agent_body["environment"] = _set_env_key(agent_body.get("environment"), "TEST_DIR", "/tests")
+    agent_env = agent_body.get("environment")
+    if not meta.is_v4:
+        # TEST_DIR names the ``/tests`` mount the agent reads fixtures from. The
+        # separate-verifier shape drops that mount (``include_tests_mount`` above),
+        # so injecting TEST_DIR there would point the agent at a path that does not
+        # exist in its container.
+        agent_env = _set_env_key(agent_env, "TEST_DIR", "/tests")
     for key in sorted(provider_env_keys):
-        agent_body["environment"] = _set_env_key(
-            agent_body["environment"], key, f"${{{provider_env_input(key)}}}"
-        )
+        agent_env = _set_env_key(agent_env, key, f"${{{provider_env_input(key)}}}")
     if harness_spec is not None:
         # Static per-harness env — hardening flags the CLI reads at start-up
         # (``IS_SANDBOX=1`` for claude-code's root-user bypass, etc.). Written
         # into the compose ``environment:`` block so ``docker exec`` inherits
         # them. See :attr:`HarnessSpec.container_env`.
         for key, value in sorted(harness_spec.container_env.items()):
-            agent_body["environment"] = _set_env_key(agent_body["environment"], key, value)
+            agent_env = _set_env_key(agent_env, key, value)
+    if agent_env is not None:
+        agent_body["environment"] = agent_env
 
     base_build_service: str | None = None
     if harness_spec is not None:

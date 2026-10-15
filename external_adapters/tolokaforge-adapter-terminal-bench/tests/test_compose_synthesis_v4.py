@@ -59,6 +59,18 @@ def _volume_targets(service_body: dict) -> list[str]:
     return targets
 
 
+def _env_map(service_body: dict) -> dict[str, str]:
+    env = service_body.get("environment") or {}
+    if isinstance(env, dict):
+        return {str(k): str(v) for k, v in env.items()}
+    result: dict[str, str] = {}
+    for entry in env:
+        if isinstance(entry, str) and "=" in entry:
+            key, value = entry.split("=", 1)
+            result[key] = value
+    return result
+
+
 def test_v4_task_gets_a_verifier_service(tmp_path: Path) -> None:
     _write_task(tmp_path, "sep", v4=True)
     env, doc = _materialise(tmp_path, "sep")
@@ -80,6 +92,8 @@ def test_v4_task_gets_a_verifier_service(tmp_path: Path) -> None:
     agent_targets = _volume_targets(agent)
     assert "/tests" not in agent_targets
     assert "/logs" in agent_targets
+    # TEST_DIR would point the agent at the dropped /tests mount, so it is not set.
+    assert "TEST_DIR" not in _env_map(agent)
 
 
 def test_v21_task_has_no_verifier_service(tmp_path: Path) -> None:
@@ -90,9 +104,12 @@ def test_v21_task_has_no_verifier_service(tmp_path: Path) -> None:
     services = doc["services"]
     assert "verifier" not in services
 
-    agent_targets = _volume_targets(services[env.agent_service])
+    agent = services[env.agent_service]
+    agent_targets = _volume_targets(agent)
     assert "/tests" in agent_targets
     assert "/logs" in agent_targets
+    # The 2.1 shape keeps the /tests mount, so TEST_DIR still names it.
+    assert _env_map(agent).get("TEST_DIR") == "/tests"
 
 
 _TIER3_TOML = (

@@ -2200,6 +2200,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"Trial {trial_id!r}: artifact re-materialisation needs a compose-backed "
                 "env tool to resolve sibling containers; none was registered."
             )
+        if bash_tool.container_name is None:
+            # The wrapper resolves sibling containers off its started state; before
+            # start() ``for_service`` raises, which would escape MaterialisePath as an
+            # unhandled gRPC error. Convert it to the ungradeable path other
+            # unresolved-container cases below take.
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: the compose env tool has not started, so its "
+                "sibling containers cannot be resolved for materialisation."
+            )
         src_tool = bash_tool if src_service is None else bash_tool.for_service(src_service)
         dst_tool = bash_tool.for_service(dst_service)
         src_container = src_tool.container_name
@@ -2216,23 +2225,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             return subprocess.Popen(argv, stdin=stdin, stdout=stdout)
 
         try:
-            # Empty the destination path and ensure its parent exists.
-            subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    dst_container,
-                    "sh",
-                    "-c",
-                    f"rm -rf {shlex.quote(path)} && mkdir -p {shlex.quote(parent)}",
-                ],
-                check=True,
-                timeout=_MATERIALISE_PATH_TIMEOUT_S,
-            )
-            # A declared artifact the agent never produced is not an error: the
-            # verifier simply runs without it and the tests fail. Probe the source
-            # first so an absent path leaves the destination empty (reward 0)
-            # rather than failing the copy as if the container were unreachable.
+            # Probe the source before touching the destination. A declared artifact
+            # the agent never produced is not an error: the verifier simply runs
+            # without it and the tests fail. Probing first means a failed probe (an
+            # unreachable source container) raises before the destination is wiped,
+            # so the verifier's baked tree is not destroyed on a copy that never ran.
             probe = subprocess.run(
                 [
                     "docker",
@@ -2246,7 +2243,28 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 text=True,
                 timeout=_MATERIALISE_PATH_TIMEOUT_S,
             )
-            if "__TF_ABSENT__" in probe.stdout:
+            source_absent = "__TF_ABSENT__" in probe.stdout
+            if not source_absent and "__TF_PRESENT__" not in probe.stdout:
+                raise SubstrateUnreachableError(
+                    f"Trial {trial_id!r}: could not probe {path!r} in {src_service or 'agent'!r} "
+                    f"(rc={probe.returncode}, stderr={probe.stderr.strip()!r})."
+                )
+            # Empty the destination path and ensure its parent exists. Done only
+            # after a successful probe so an absent source still leaves the
+            # destination empty (reward 0) while an unreachable one never destroys it.
+            subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    dst_container,
+                    "sh",
+                    "-c",
+                    f"rm -rf {shlex.quote(path)} && mkdir -p {shlex.quote(parent)}",
+                ],
+                check=True,
+                timeout=_MATERIALISE_PATH_TIMEOUT_S,
+            )
+            if source_absent:
                 logger.info(
                     "RunnerServiceImpl._materialise_path: trial %r source %r absent in "
                     "%r; verifier runs without it.",
@@ -2255,11 +2273,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     src_service or "agent",
                 )
                 return
-            if "__TF_PRESENT__" not in probe.stdout:
-                raise SubstrateUnreachableError(
-                    f"Trial {trial_id!r}: could not probe {path!r} in {src_service or 'agent'!r} "
-                    f"(rc={probe.returncode}, stderr={probe.stderr.strip()!r})."
-                )
             # Stream path from src to dst: `docker cp src:path -` emits a tar whose
             # top member is the basename; `docker cp - dst:parent` extracts it under
             # parent. docker cp tars through the daemon, so neither container needs tar.
@@ -2286,12 +2299,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     f"Trial {trial_id!r}: docker cp of {path!r} from {src_service or 'agent'!r} "
                     f"to {dst_service!r} failed (src rc={src_rc}, dst rc={dst_rc})."
                 )
-            # Prune excludes in the destination. ``find -name`` matches at every depth,
-            # so a nested ``__pycache__`` / ``*.pyc`` is removed too, not just a
-            # top-level one. A prune that does not fully apply is logged, not silently
-            # dropped — the verifier would otherwise score against files the task asked
-            # to exclude.
+            # Prune excludes in the destination. A bare name (no separator) matches
+            # at every depth via ``find -name``, so a nested ``__pycache__`` /
+            # ``*.pyc`` is removed too, not just a top-level one. A glob that carries
+            # a separator (e.g. ``build/*.o``) is a path-relative pattern, matched
+            # against each entry's path under *path* via ``find -path`` so it takes
+            # effect at all — ``-name`` would test only the basename and never match.
+            base = path.rstrip("/")
             for glob in exclude:
+                if "/" in glob:
+                    match = ["-path", f"{base}/{glob}"]
+                else:
+                    match = ["-name", glob]
                 pruned = subprocess.run(
                     [
                         "docker",
@@ -2299,23 +2318,23 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                         dst_container,
                         "sh",
                         "-c",
-                        f"find {shlex.quote(path)} -name {shlex.quote(glob)} "
-                        "-prune -exec rm -rf {} +",
+                        "find {} {} -prune -exec rm -rf {{}} +".format(
+                            shlex.quote(path),
+                            " ".join(shlex.quote(part) for part in match),
+                        ),
                     ],
                     capture_output=True,
                     text=True,
                     timeout=_MATERIALISE_PATH_TIMEOUT_S,
                 )
                 if pruned.returncode != 0:
-                    logger.warning(
-                        "RunnerServiceImpl._materialise_path: trial %r pruning exclude %r under "
-                        "%r in %r did not fully apply (rc=%s): %s",
-                        trial_id,
-                        glob,
-                        path,
-                        dst_service,
-                        pruned.returncode,
-                        pruned.stderr.strip(),
+                    # A failed prune leaves files the task declared excluded in the
+                    # verifier's tree, so it would grade against them. Book the trial
+                    # ungradeable rather than scoring a knowingly-wrong tree.
+                    raise SubstrateUnreachableError(
+                        f"Trial {trial_id!r}: pruning exclude {glob!r} under {path!r} in "
+                        f"{dst_service!r} failed (rc={pruned.returncode}): "
+                        f"{pruned.stderr.strip()}"
                     )
         except (subprocess.SubprocessError, OSError) as exc:
             raise SubstrateUnreachableError(

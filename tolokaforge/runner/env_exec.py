@@ -83,4 +83,13 @@ def exec_tool_for_service(
             "container cannot be resolved. A separate verifier requires a "
             "docker-compose runtime."
         )
+    if bash_tool.container_name is None:
+        # ``for_service`` resolves siblings off the started wrapper's state and
+        # raises before start(). Reporting it as an absent tool keeps the caller on
+        # its clean ungradeable path instead of letting the RuntimeError escape.
+        return None, (
+            f"test-execution grading asked to run in service {service!r} but the "
+            "trial's compose env tool has not started, so its sibling container "
+            "cannot be resolved."
+        )
     return bash_tool.for_service(service), None
