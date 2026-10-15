@@ -190,6 +190,10 @@ from tolokaforge.runner.search_plane import (
     resolve_search_plane,
     resolve_typesense_binding,
 )
+from tolokaforge.runner.state_read_limits import (
+    DEFAULT_STATE_READ_TIMEOUT_S,
+    StateReadDeadlines,
+)
 from tolokaforge.runner.tool_factory import (
     INVALID_ARGUMENTS_CATEGORY,
     MCPServerToolWrapper,
@@ -217,16 +221,6 @@ AGENT_WORK_DIR = "/work"
 # winner is scheduler noise — and an outer win reports a genuine timeout as ERROR.
 _TOOL_TIMEOUT_SLACK_S = 5.0
 
-# Bound on one grading read through the judge's DB tools (``get_db_state`` /
-# ``query_db``), the read a judge waits on mid-loop.
-_JUDGE_DB_READ_TIMEOUT_S = 30.0
-
-# Bound on reading an MCP subprocess's live state for a mirror sync. A child that
-# hangs instead of dying would otherwise stall every final-state read for as long
-# as the reader waits; it stays inside the judge's read bound so the reader sees
-# the sync's own cause rather than its own timeout.
-_MCP_STATE_READ_TIMEOUT_S = 20.0
-
 # The documented read-only mcp_core TypeSense KB connector the agent uses. The
 # judge is allowed to reuse this ONE reconstructed tool (read-only passthrough)
 # so it reads the same corpus the agent did. It is a closed (mcp_core) tool, not
@@ -235,6 +229,33 @@ _MCP_STATE_READ_TIMEOUT_S = 20.0
 # judge's "harness-owned allowlist" rule (no generic MCP-tool passthrough — we
 # cannot classify arbitrary MCP tools' read-only-ness).
 _SEARCH_POLICY_TOOL_NAME = "search_policy"
+
+
+def _holder_kind(holder: AppWorldClient | MCPServerToolWrapper) -> str:
+    """What a state holder is called in an error about it."""
+    return "app world" if isinstance(holder, AppWorldClient) else "MCP server"
+
+
+def _holder_call(
+    holder: AppWorldClient | MCPServerToolWrapper, call: Callable[[], Any]
+) -> asyncio.Future[Any]:
+    """Run the blocking ``call`` into ``holder`` on the holder's own worker thread.
+
+    Never on the event loop's shared default executor: a call that outlives its
+    caller's bound keeps its thread until the holder answers, and on the shared
+    pool a few slow holders would hold every thread and stall all trials' work.
+    The holder's calls run in the order they are handed in.
+    """
+    return asyncio.get_running_loop().run_in_executor(holder.executor, call)
+
+
+def _log_late_restore_failure(trial_id: str, reset: asyncio.Future[Any]) -> None:
+    """Report a holder reset that failed after its caller stopped waiting for it."""
+    if not reset.cancelled() and (error := reset.exception()) is not None:
+        logger.error(
+            f"GradeTrial: {trial_id} - the state holder failed its late restore "
+            f"({type(error).__name__}: {error}); it may still hold the golden world"
+        )
 
 
 def _tool_registered_for_trial(name: str, registered: Collection[str]) -> str | None:
@@ -841,6 +862,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         db_client: DBServiceClient,
         rag_client: RAGServiceClient | None = None,
         check_executor: CheckExecutor | None = None,
+        *,
+        state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S,
     ):
         """
         Initialize the Runner service.
@@ -852,9 +875,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 the ``check_runner`` entry point of
                 ``tolokaforge.custom_check_executors``; tests inject
                 :class:`InMemoryCheckExecutor`.
+            state_read_timeout_s: Bound on one read of a state holder's live
+                state — the engine's ``compute.state_read_timeout_s``. Every
+                deadline waiting on such a read derives from it
+                (:class:`StateReadDeadlines`).
         """
         self.db_client = db_client
         self.rag_client = rag_client
+        self.state_read_deadlines = StateReadDeadlines(holder_read_s=state_read_timeout_s)
         self.check_executor: CheckExecutor = (
             check_executor
             if check_executor is not None
@@ -1871,12 +1899,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Trial '{trial_id}' not found",
             )
 
-        # Run async grading on dedicated event loop thread. The 600s budget (up
-        # from 300s) accommodates the runner-side rubric judge, which runs its own
-        # multi-turn LLM loop; the judge has its own internal max_turns + wall-time
-        # budget and fails loud well within this outer ceiling.
+        # Run async grading on dedicated event loop thread. The budget (600s at the
+        # default state read bound) accommodates the runner-side rubric judge, which
+        # runs its own multi-turn LLM loop with its own max_turns + wall-time budget,
+        # and grows with the state read bound so a slow state holder fails with its
+        # own cause rather than this ceiling.
         try:
-            result = self._run_async(self._grade_trial_async(request), timeout=600.0)
+            result = self._run_async(
+                self._grade_trial_async(request),
+                timeout=self.state_read_deadlines.grade_trial_s,
+            )
             return result
         except GradingFailedError as e:
             logger.error(f"GradeTrial: Grader could not produce a verdict: {e}")
@@ -1923,6 +1955,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         DB client's own errors, which the evaluators already read as "no database".
         """
         db_client = self.db_client
+        deadlines = self.state_read_deadlines
         provisions_db = provisions_database(trial_context.task_description.initial_state)
 
         def _unreadable(cause: str) -> SubstrateUnreachableError:
@@ -1958,17 +1991,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
             def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
                 read = partial(db_client.get_state, trial_id, tables)
-                return _bridged_read(read, _JUDGE_DB_READ_TIMEOUT_S).data
+                return _bridged_read(read, deadlines.judge_db_read_s).data
 
             def query(self, jsonpath: str) -> dict[str, Any]:
                 read = partial(db_client.query, trial_id, jsonpath)
-                return {"results": _bridged_read(read, _JUDGE_DB_READ_TIMEOUT_S).results}
+                return {"results": _bridged_read(read, deadlines.judge_db_read_s).results}
 
         def _get_raw_state() -> dict[str, Any]:
-            return _bridged_read(partial(db_client.get_state, trial_id), 300.0).data
+            read = partial(db_client.get_state, trial_id)
+            return _bridged_read(read, deadlines.final_state_read_s).data
 
         def _get_stable_state() -> dict[str, Any]:
-            return _bridged_read(partial(db_client.get_stable_state, trial_id), 300.0).data
+            read = partial(db_client.get_stable_state, trial_id)
+            return _bridged_read(read, deadlines.final_state_read_s).data
 
         def _get_filesystem_state() -> dict[str, str]:
             return self._read_filesystem_for_state(trial_id)
@@ -2908,6 +2943,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         8. Compare hashes
         9. If mismatch, compute state diff
 
+        A grading that fails after step 2 still restores the trial's state (step 7)
+        before its failure propagates, so neither the database nor the state holder
+        is left holding the golden world.
+
         The basis is selected from ``state_checks`` once and returned on the result:
         only :attr:`HashComparisonBasis.GOLDEN_REPLAY` replays anything, so the other
         two compare the trial against the state step 3 restored — identically, since
@@ -3005,150 +3044,159 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         await self.db_client.create_snapshot(trial_id, "pre_golden")
         logger.debug("GradeTrial: Created snapshot 'pre_golden'")
 
-        # 3. Reset to initial state
-        await self.db_client.reset_trial(trial_id)
-        logger.debug("GradeTrial: Reset to initial state")
+        # Steps 3-6 put the golden world in the trial's database and its state
+        # holder; step 7 hands both the trial's state back. A step failing in
+        # between — a holder read past its bound among them — must not leave the
+        # golden world behind, or a later GetState, regrade or substrate read
+        # would take it for the agent's final state.
+        try:
+            # 3. Reset to initial state
+            await self.db_client.reset_trial(trial_id)
+            logger.debug("GradeTrial: Reset to initial state")
 
-        # Also reset the state holder so golden actions execute from a clean
-        # initial state (not from the agent's final state).
-        if state_holder is not None:
-            initial_tables = (
-                trial_context.task_description.initial_state.tables
-                if trial_context.task_description and trial_context.task_description.initial_state
-                else {}
-            )
-            logger.info(f"GradeTrial: {trial_id} - Resetting the held state to initial")
-            try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, lambda: state_holder.reset_state(initial_tables))
-            except Exception as e:
-                logger.error(f"GradeTrial: Failed to reset the held state: {e}")
-                raise
-
-        # 4. Execute golden path actions
-        #
-        # Golden actions are replayed with their original arguments — no ID
-        # substitution.  This matches mcp_core's apply_golden_set_to_database()
-        # which also replays without substitution.  The InMemoryDatabase (and
-        # the JSON DB Service that mirrors it) uses deterministic ID generation
-        # (len(existing) + 1), so hardcoded IDs in golden actions always match
-        # the IDs produced on replay from the same initial state.
-        replay_failures: list[FailedGoldenAction] = []
-
-        for i, (registered_name, action) in enumerate(
-            zip(resolved_tool_names, golden_actions, strict=True)
-        ):
-            tool_name = action.tool_name
-            arguments = dict(action.arguments)  # copy
-
-            tool = trial_context.agent_tools[registered_name]
-            if registered_name != tool_name:
-                logger.debug(
-                    f"GradeTrial: Matched golden tool '{tool_name}' -> '{registered_name}'"
+            # Also reset the state holder so golden actions execute from a clean
+            # initial state (not from the agent's final state).
+            if state_holder is not None:
+                initial_tables = (
+                    trial_context.task_description.initial_state.tables
+                    if trial_context.task_description
+                    and trial_context.task_description.initial_state
+                    else {}
                 )
+                logger.info(f"GradeTrial: {trial_id} - Resetting the held state to initial")
+                try:
+                    await _holder_call(
+                        state_holder, partial(state_holder.reset_state, initial_tables)
+                    )
+                except Exception as e:
+                    logger.error(f"GradeTrial: Failed to reset the held state: {e}")
+                    raise
 
-            try:
-                outcome = await _invoke_golden_tool(tool, arguments)
-            except Exception as e:
-                # Golden action failure — log with full traceback for debugging
-                logger.error(f"GradeTrial: Golden action {i} ({tool_name}) failed: {e}")
-                logger.error(traceback.format_exc())
-                replay_failures.append(FailedGoldenAction.from_exception(i, tool_name, e))
-                continue
+            # 4. Execute golden path actions
+            #
+            # Golden actions are replayed with their original arguments — no ID
+            # substitution.  This matches mcp_core's apply_golden_set_to_database()
+            # which also replays without substitution.  The InMemoryDatabase (and
+            # the JSON DB Service that mirrors it) uses deterministic ID generation
+            # (len(existing) + 1), so hardcoded IDs in golden actions always match
+            # the IDs produced on replay from the same initial state.
+            replay_failures: list[FailedGoldenAction] = []
 
-            if outcome.declared_failure:
+            for i, (registered_name, action) in enumerate(
+                zip(resolved_tool_names, golden_actions, strict=True)
+            ):
+                tool_name = action.tool_name
+                arguments = dict(action.arguments)  # copy
+
+                tool = trial_context.agent_tools[registered_name]
+                if registered_name != tool_name:
+                    logger.debug(
+                        f"GradeTrial: Matched golden tool '{tool_name}' -> '{registered_name}'"
+                    )
+
+                try:
+                    outcome = await _invoke_golden_tool(tool, arguments)
+                except Exception as e:
+                    # Golden action failure — log with full traceback for debugging
+                    logger.error(f"GradeTrial: Golden action {i} ({tool_name}) failed: {e}")
+                    logger.error(traceback.format_exc())
+                    replay_failures.append(FailedGoldenAction.from_exception(i, tool_name, e))
+                    continue
+
+                if outcome.declared_failure:
+                    logger.error(
+                        f"GradeTrial: Golden action {i} ({tool_name}) was declared a failure by its "
+                        f"substrate: {outcome.output}"
+                    )
+                    replay_failures.append(
+                        FailedGoldenAction.from_substrate_failure(i, tool_name, outcome.output)
+                    )
+                    continue
+
+                reported = declared_failure(outcome.output)
+                if reported is None:
+                    logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")
+                    continue
+
                 logger.error(
-                    f"GradeTrial: Golden action {i} ({tool_name}) was declared a failure by its "
-                    f"substrate: {outcome.output}"
+                    f"GradeTrial: Golden action {i} ({tool_name}) reported a failure: {reported}"
                 )
                 replay_failures.append(
-                    FailedGoldenAction.from_substrate_failure(i, tool_name, outcome.output)
+                    FailedGoldenAction.from_reported_failure(i, tool_name, reported)
                 )
-                continue
 
-            reported = declared_failure(outcome.output)
-            if reported is None:
-                logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")
-                continue
+            # Sync the holder's state to db-service so the hash reflects what the
+            # golden actions actually produced.
+            if state_holder is not None:
+                logger.info(
+                    f"GradeTrial: {trial_id} - Syncing the held state to db-service (golden)"
+                )
+                try:
+                    await self._sync_held_state_to_db(trial_id, state_holder)
+                except Exception as e:
+                    logger.error(
+                        f"GradeTrial: Failed to sync the held state after golden actions: {e}"
+                    )
+                    raise
 
-            logger.error(
-                f"GradeTrial: Golden action {i} ({tool_name}) reported a failure: {reported}"
-            )
-            replay_failures.append(FailedGoldenAction.from_reported_failure(i, tool_name, reported))
+            # 5. Snapshot golden state (for diff if mismatch)
+            await self.db_client.create_snapshot(trial_id, "golden_result")
+            logger.debug("GradeTrial: Created snapshot 'golden_result'")
 
-        # Sync the holder's state to db-service so the hash reflects what the
-        # golden actions actually produced.
-        if state_holder is not None:
-            logger.info(f"GradeTrial: {trial_id} - Syncing the held state to db-service (golden)")
-            try:
-                await self._sync_held_state_to_db(trial_id, state_holder)
-            except Exception as e:
-                logger.error(f"GradeTrial: Failed to sync the held state after golden actions: {e}")
-                raise
-
-        # 5. Snapshot golden state (for diff if mismatch)
-        await self.db_client.create_snapshot(trial_id, "golden_result")
-        logger.debug("GradeTrial: Created snapshot 'golden_result'")
-
-        # 6. Get golden stable hash. Client-side path runs both raw states
-        # through the compare_columns pipeline (equivalence folds, ordering,
-        # subset-extras) then hashes both. Diff reporting keeps the raw
-        # states so authors see actual disagreeing values, not internal
-        # fold tokens. Fast path fetches the server-side digest directly.
-        trial_state_processed: dict[str, Any] | None = None
-        golden_state_raw: dict[str, Any] | None = None
-        golden_full_state: dict[str, Any] | None = None
-        if comparison_view is not None:
-            # Read only: the view runs after the restore below, when both full states
-            # are in memory, so a view that cannot be computed never leaves the golden
-            # state in the trial's database.
-            golden_full_state = (await self.db_client.get_state(trial_id)).data
-            logger.debug("GradeTrial: Golden full state fetched (comparison view declared)")
-        elif client_side_hash:
-            golden_state_response = await self.db_client.get_stable_state(trial_id)
-            golden_state_raw = golden_state_response.data
-            assert trial_state_raw is not None  # set in step 1 slow-path branch
-            trial_state_processed, golden_state_processed = apply_compare_columns_pipeline(
-                trial_state_raw,
-                golden_state_raw,
-                compare_columns,
-                numeric_string_fields=(
-                    frozenset(numeric_string_fields) if numeric_string_fields else None
-                ),
-                auto_normalize_nullables=auto_normalize_nullables,
-            )
-            trial_hash = compute_stable_hash(
-                trial_state_processed,
-                numeric_string_fields=numeric_string_fields,
-                auto_mask_clock_columns=auto_mask_clock_columns,
-                auto_normalize_nullables=auto_normalize_nullables,
-            )
-            golden_hash = compute_stable_hash(
-                golden_state_processed,
-                numeric_string_fields=numeric_string_fields,
-                auto_mask_clock_columns=auto_mask_clock_columns,
-                auto_normalize_nullables=auto_normalize_nullables,
-            )
-            logger.debug(
-                f"GradeTrial: Client-side hashes computed (compare_columns applied) "
-                f"— trial={trial_hash[:16]}... golden={golden_hash[:16]}..."
-            )
-        else:
-            golden_hash = await self.db_client.get_stable_hash(
-                trial_id, numeric_string_fields=numeric_string_fields
-            )
-            logger.debug(f"GradeTrial: Golden hash = {golden_hash[:16]}...")
+            # 6. Get golden stable hash. Client-side path runs both raw states
+            # through the compare_columns pipeline (equivalence folds, ordering,
+            # subset-extras) then hashes both. Diff reporting keeps the raw
+            # states so authors see actual disagreeing values, not internal
+            # fold tokens. Fast path fetches the server-side digest directly.
+            trial_state_processed: dict[str, Any] | None = None
+            golden_state_raw: dict[str, Any] | None = None
+            golden_full_state: dict[str, Any] | None = None
+            if comparison_view is not None:
+                # Read only: the view runs after the restore below, when both full states
+                # are in memory, so a view that cannot be computed never leaves the golden
+                # state in the trial's database.
+                golden_full_state = (await self.db_client.get_state(trial_id)).data
+                logger.debug("GradeTrial: Golden full state fetched (comparison view declared)")
+            elif client_side_hash:
+                golden_state_response = await self.db_client.get_stable_state(trial_id)
+                golden_state_raw = golden_state_response.data
+                assert trial_state_raw is not None  # set in step 1 slow-path branch
+                trial_state_processed, golden_state_processed = apply_compare_columns_pipeline(
+                    trial_state_raw,
+                    golden_state_raw,
+                    compare_columns,
+                    numeric_string_fields=(
+                        frozenset(numeric_string_fields) if numeric_string_fields else None
+                    ),
+                    auto_normalize_nullables=auto_normalize_nullables,
+                )
+                trial_hash = compute_stable_hash(
+                    trial_state_processed,
+                    numeric_string_fields=numeric_string_fields,
+                    auto_mask_clock_columns=auto_mask_clock_columns,
+                    auto_normalize_nullables=auto_normalize_nullables,
+                )
+                golden_hash = compute_stable_hash(
+                    golden_state_processed,
+                    numeric_string_fields=numeric_string_fields,
+                    auto_mask_clock_columns=auto_mask_clock_columns,
+                    auto_normalize_nullables=auto_normalize_nullables,
+                )
+                logger.debug(
+                    f"GradeTrial: Client-side hashes computed (compare_columns applied) "
+                    f"— trial={trial_hash[:16]}... golden={golden_hash[:16]}..."
+                )
+            else:
+                golden_hash = await self.db_client.get_stable_hash(
+                    trial_id, numeric_string_fields=numeric_string_fields
+                )
+                logger.debug(f"GradeTrial: Golden hash = {golden_hash[:16]}...")
+        except BaseException:
+            await self._restore_pre_golden_after_failure(trial_id, state_holder)
+            raise
 
         # 7. Restore trial state
-        await self.db_client.restore_snapshot(trial_id, "pre_golden")
-        logger.debug("GradeTrial: Restored snapshot 'pre_golden'")
-        if state_holder is not None:
-            # The replay ran in the trial's own holder: hand it back the trial's
-            # state, or a later read would sync the golden world as the agent's.
-            trial_tables = (await self.db_client.get_state(trial_id)).data
-            await asyncio.get_running_loop().run_in_executor(
-                None, lambda: state_holder.reset_state(trial_tables)
-            )
+        await self._restore_pre_golden(trial_id, state_holder)
 
         golden_replay_record = GoldenReplayRecord(
             authored=len(golden_actions), failures=tuple(replay_failures)
@@ -3184,7 +3232,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 trial_state = trial_state_response.data
 
                 await self.db_client.restore_snapshot(trial_id, "golden_result")
-                golden_state_response = await self.db_client.get_stable_state(trial_id)
+                try:
+                    golden_state_response = await self.db_client.get_stable_state(trial_id)
+                except BaseException:
+                    # Only the database holds the golden world again here.
+                    await self._restore_pre_golden_after_failure(trial_id, None)
+                    raise
                 golden_state = golden_state_response.data
 
                 await self.db_client.restore_snapshot(trial_id, "pre_golden")
@@ -3198,6 +3251,69 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             state_diff=state_diff.model_dump() if state_diff is not None else None,
             golden_replay=golden_replay_record,
         )
+
+    async def _restore_pre_golden(
+        self,
+        trial_id: str,
+        state_holder: AppWorldClient | MCPServerToolWrapper | None,
+        *,
+        holder_timeout_s: float | None = None,
+    ) -> None:
+        """Hash grading's step 7: hand the trial's database and state holder back its state.
+
+        The golden replay ran in the trial's own holder: it gets the trial's
+        state back too, or a later read would sync the golden world as the
+        agent's. ``holder_timeout_s`` bounds the wait for the holder's reset;
+        the reset itself is not withdrawn when the bound fires, and the holder
+        runs it before any call handed to it later.
+
+        Raises:
+            TimeoutError: the holder did not take its reset within
+                ``holder_timeout_s``.
+        """
+        await self.db_client.restore_snapshot(trial_id, "pre_golden")
+        logger.debug("GradeTrial: Restored snapshot 'pre_golden'")
+        if state_holder is None:
+            return
+        trial_tables = (await self.db_client.get_state(trial_id)).data
+        reset = _holder_call(state_holder, partial(state_holder.reset_state, trial_tables))
+        if holder_timeout_s is None:
+            await reset
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(reset), timeout=holder_timeout_s)
+        except TimeoutError as exc:
+            reset.add_done_callback(partial(_log_late_restore_failure, trial_id))
+            raise self.state_read_deadlines.holder_timeout_error(
+                _holder_kind(state_holder)
+            ) from exc
+
+    async def _restore_pre_golden_after_failure(
+        self,
+        trial_id: str,
+        state_holder: AppWorldClient | MCPServerToolWrapper | None,
+    ) -> None:
+        """Step 7 for a hash grading that failed after its ``pre_golden`` snapshot.
+
+        Never raises: the grading's own failure is the cause the caller re-raises.
+        A restore that fails too is logged with its own cause. The holder's reset
+        is bounded by the state read bound, since the holder may be the slow one
+        that failed the grading.
+        """
+        try:
+            await self._restore_pre_golden(
+                trial_id,
+                state_holder,
+                holder_timeout_s=self.state_read_deadlines.holder_read_s,
+            )
+        except Exception as restore_error:
+            logger.error(
+                f"GradeTrial: {trial_id} - the trial's state could not be restored after "
+                f"its hash grading failed ({type(restore_error).__name__}: {restore_error}); "
+                f"its database or state holder may still hold the golden world"
+            )
+        else:
+            logger.info(f"GradeTrial: {trial_id} - restored the trial's state after a failure")
 
     @staticmethod
     def _compare_through_the_view(
@@ -3295,6 +3411,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 initial_state.app_world,
                 initial_state.tables,
                 {"agent": trial_context.agent_tools, "user": trial_context.user_tools},
+                state_read_timeout_s=self.state_read_deadlines.holder_read_s,
             )
         except AppWorldError as e:
             error = f"App world load failed: {e}"
@@ -3379,24 +3496,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """Bring the db-service mirror up to the state holder's live state.
 
         Raises :class:`SubstrateUnreachableError` carrying the cause when the
-        holder cannot answer (within ``_MCP_STATE_READ_TIMEOUT_S``, so a hung
-        holder fails like a dead one) or the mirror cannot take the update — a
-        mirror that missed the sync still holds an earlier state, and handing
-        that out would grade the trial on evidence its tool calls never left.
+        holder cannot answer (within the state read bound, so a hung holder
+        fails like a dead one) or the mirror cannot take the update — a mirror
+        that missed the sync still holds an earlier state, and handing that out
+        would grade the trial on evidence its tool calls never left.
         """
-        kind = "app world" if isinstance(holder, AppWorldClient) else "MCP server"
+        kind = _holder_kind(holder)
         try:
-            loop = asyncio.get_running_loop()
-            try:
-                held_state = await asyncio.wait_for(
-                    loop.run_in_executor(None, holder.get_state),
-                    timeout=_MCP_STATE_READ_TIMEOUT_S,
-                )
-            except TimeoutError as exc:
-                raise TimeoutError(
-                    f"the {kind} did not answer within {_MCP_STATE_READ_TIMEOUT_S:g}s"
-                ) from exc
-            await self._sync_mcp_state_to_db(trial_id, held_state)
+            await self._sync_held_state_to_db(trial_id, holder)
         except Exception as exc:
             raise SubstrateUnreachableError(
                 f"Trial {trial_id!r}: the live state of its {kind} could not be "
@@ -3408,9 +3515,29 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self, trial_id: str, holder: AppWorldClient | MCPServerToolWrapper
     ) -> None:
         """Read the holder's state back and write it into the trial's db-service."""
-        loop = asyncio.get_event_loop()
-        held_state = await loop.run_in_executor(None, holder.get_state)
+        held_state = await self._read_held_state(holder)
         await self._sync_mcp_state_to_db(trial_id, held_state)
+
+    async def _read_held_state(
+        self, holder: AppWorldClient | MCPServerToolWrapper
+    ) -> dict[str, list[dict]]:
+        """The holder's live state, read within the state read bound.
+
+        A holder that hangs instead of dying would otherwise stall every reader
+        for as long as it waits. The read itself keeps running on the holder's
+        worker thread after the bound fires.
+
+        Raises:
+            TimeoutError: the holder did not answer within the bound; the
+                message names ``compute.state_read_timeout_s``.
+        """
+        deadlines = self.state_read_deadlines
+        try:
+            return await asyncio.wait_for(
+                _holder_call(holder, holder.get_state), timeout=deadlines.holder_read_s
+            )
+        except TimeoutError as exc:
+            raise deadlines.holder_timeout_error(_holder_kind(holder)) from exc
 
     async def _sync_mcp_state_to_db(
         self,
@@ -3484,7 +3611,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # Run async operation on dedicated event loop thread
         try:
-            result = self._run_async(self._get_state_async(request))
+            result = self._run_async(
+                self._get_state_async(request),
+                timeout=self.state_read_deadlines.final_state_read_s,
+            )
             return result
         except DBTrialNotFoundError:
             return pb2.GetStateResponse(
@@ -3560,9 +3690,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id = request.trial_id
         logger.info(f"ResetTrial: {trial_id}")
 
-        # Run async operation on dedicated event loop thread
+        # Run async operation on dedicated event loop thread. The holder's reset
+        # may be its first contact — an MCP server starting and loading its world
+        # — so the budget grows with the state read bound like a whole-state read.
         try:
-            result = self._run_async(self._reset_trial_async(request))
+            result = self._run_async(
+                self._reset_trial_async(request),
+                timeout=self.state_read_deadlines.reset_trial_s,
+            )
             return result
         except DBTrialNotFoundError:
             return pb2.ResetTrialResponse(
@@ -3595,9 +3730,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         holder = self._state_holder(trial_context) if trial_context is not None else None
         if holder is not None:
             initial_tables = trial_context.task_description.initial_state.tables
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: holder.reset_state(initial_tables)
-            )
+            await _holder_call(holder, partial(holder.reset_state, initial_tables))
 
         # Clear tool call history in trial context
         if trial_id in self.trials:

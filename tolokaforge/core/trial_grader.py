@@ -78,6 +78,7 @@ from tolokaforge.core.trial import TrialSpec
 from tolokaforge.grader.wire_snapshot import build_grade_request_fields
 from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
 from tolokaforge.runner.models import ComparisonViewGradeRecord, RunnerGradingConfig
+from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S, StateReadDeadlines
 
 if TYPE_CHECKING:
     from tolokaforge.core.llm.client import LLMClient
@@ -990,11 +991,14 @@ class QueueTrialGrader:
     Tests inject any :class:`GradeBroker` to exercise the seam.
     """
 
-    #: Timeout the grader waits for the broker's future to resolve. Long
-    #: because a queue backend's worker pool may saturate; a hard failure
-    #: at the seam layer would mask a scaling problem the operator can
-    #: fix by adding consumers. Tunable via the constructor.
-    DEFAULT_TIMEOUT_S: float = 600.0
+    #: Timeout the grader waits for the broker's future to resolve at the
+    #: default ``compute.state_read_timeout_s``. Long because a queue
+    #: backend's worker pool may saturate; a hard failure at the seam layer
+    #: would mask a scaling problem the operator can fix by adding
+    #: consumers. Without an explicit ``timeout_s`` the wait is
+    #: :attr:`StateReadDeadlines.engine_grade_wait_s` for the run's bound, so
+    #: it outlasts the grading side's own deadlines as the bound grows.
+    DEFAULT_TIMEOUT_S: float = StateReadDeadlines().engine_grade_wait_s
 
     def __init__(
         self,
@@ -1003,13 +1007,18 @@ class QueueTrialGrader:
         *,
         runner_substrate_address: str | None = None,
         timeout_s: float | None = None,
+        state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S,
         workers: list[threading.Thread] | None = None,
         owns_broker: bool = False,
     ) -> None:
         self.broker = broker
         self.logger = logger
         self.runner_substrate_address = runner_substrate_address or ""
-        self.timeout_s = timeout_s if timeout_s is not None else self.DEFAULT_TIMEOUT_S
+        self.timeout_s = (
+            timeout_s
+            if timeout_s is not None
+            else StateReadDeadlines(holder_read_s=state_read_timeout_s).engine_grade_wait_s
+        )
         # ``workers`` and ``owns_broker`` name the two lifecycle handles
         # :meth:`close` releases. The factory (``queue_trial_grader_factory``)
         # constructs both the broker and the worker pool and hands them in
@@ -1240,6 +1249,7 @@ def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:
         broker=broker,
         logger=ctx.logger,
         runner_substrate_address=ctx.runner_address or "",
+        state_read_timeout_s=ctx.state_read_timeout_s,
         workers=workers,
         owns_broker=True,
     )
@@ -1275,7 +1285,7 @@ def _queue_worker_loop(
             continue
         if not isinstance(job, GradeJob):
             # Publish an error so the producer's future.result() fails
-            # loud instead of blocking DEFAULT_TIMEOUT_S. Losing a job to
+            # loud instead of blocking out its whole wait. Losing a job to
             # a wire-shape regression is a bug — this makes it surface.
             job_id = getattr(job, "job_id", None)
             logger.error(

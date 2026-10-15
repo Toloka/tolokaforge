@@ -17,17 +17,15 @@ from pathlib import Path
 from typing import Literal
 
 from tolokaforge.core.models.docker_config import DockerConfig
+from tolokaforge.core.runner_limits_env import runner_limits_env
 from tolokaforge.docker.builder import get_image_definition
 from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.policy import Capability, ResourcePolicy
 from tolokaforge.docker.ports import PortConfig
 from tolokaforge.docker.stack import EngineStack, ServiceDefinition
-from tolokaforge.runner.grpc_limits import (
-    DEFAULT_MAX_MESSAGE_MB,
-    MAX_MESSAGE_ENV_VAR,
-    validate_max_message_mb,
-)
+from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
+from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 from tolokaforge.secrets import container_secrets_env
 
 
@@ -58,6 +56,7 @@ def core_stack(
     typesense_address: TypeSenseAddress | None = None,
     expose_substrate: bool = False,
     grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
+    state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S,
 ) -> EngineStack:
     """Create a core service stack with DB service and Runner.
 
@@ -112,6 +111,10 @@ def core_stack(
             or accepts, injected as ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB``. The
             orchestrator passes ``compute.grpc_max_message_mb`` — the bound
             its own client channel uses — so both ends agree.
+        state_read_timeout_s: The runner's bound, in seconds, on one read of a
+            state holder's live state, injected as
+            ``TOLOKAFORGE_STATE_READ_TIMEOUT_S``. The orchestrator passes
+            ``compute.state_read_timeout_s``.
 
     Returns:
         EngineStack configured with db-service and runner.
@@ -156,7 +159,10 @@ def core_stack(
     runner_env = {
         "PYTHONUNBUFFERED": "1",
         "DB_SERVICE_URL": "http://tolokaforge-db-service:8000",
-        MAX_MESSAGE_ENV_VAR: str(validate_max_message_mb(grpc_max_message_mb)),
+        **runner_limits_env(
+            grpc_max_message_mb=grpc_max_message_mb,
+            state_read_timeout_s=state_read_timeout_s,
+        ),
     }
     # Inject RAG_SERVICE_URL only when a rag-service is actually provisioned
     # (full stack). Absent on the core stack so the runner builds no RAG

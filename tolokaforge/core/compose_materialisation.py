@@ -43,9 +43,9 @@ from tolokaforge.core.netpolicy_constants import (
     NETPOLICY_PROXY_SERVICE,
 )
 from tolokaforge.core.run_display_events import ContainerSnapshot
+from tolokaforge.core.runner_limits_env import runner_limits_env
 from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
 from tolokaforge.runner.compose_naming import compose_trial_slug
-from tolokaforge.runner.grpc_limits import MAX_MESSAGE_ENV_VAR, validate_max_message_mb
 from tolokaforge.runner.models import bind_mount_source
 from tolokaforge.secrets import (
     CONTAINER_SECRETS_ENV_VAR,
@@ -501,37 +501,43 @@ def inject_substrate_env_into_runner(compose_file: Path, runner_service: str) ->
     silently un-exposed.
     """
     _set_runner_env_unless_declared(
-        compose_file, runner_service, RUNNER_EXPOSE_SUBSTRATE_ENV_VAR, "true"
+        compose_file, runner_service, {RUNNER_EXPOSE_SUBSTRATE_ENV_VAR: "true"}
     )
 
 
-def inject_grpc_limit_env_into_runner(
-    compose_file: Path, runner_service: str, max_message_mb: int
+def inject_runner_limits_env_into_runner(
+    compose_file: Path,
+    runner_service: str,
+    *,
+    grpc_max_message_mb: int,
+    state_read_timeout_s: float,
 ) -> None:
-    """Set ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` on ``runner_service`` in place.
+    """Set the run's runner limits on ``runner_service`` in place.
 
-    The built-in shared stack's ``core_stack`` factory sets the variable on
-    the engine-owned runner from ``compute.grpc_max_message_mb``; a
-    task-declared runner gets the same value here, so the runner serves with
-    the bound the engine's client channel uses. A compose file that declares
-    the variable itself keeps its own value. Raises ``ValueError`` when
+    A task-declared runner gets the variables the built-in stack's runner gets
+    (:func:`~tolokaforge.core.runner_limits_env.runner_limits_env`), so it
+    serves with the gRPC bound the engine's client channel uses and reads state
+    holders with the run's bound. A variable the compose file declares itself
+    keeps its own value. Raises ``ValueError`` when
     ``runner_service`` is not declared, like
-    :func:`inject_substrate_env_into_runner`.
+    :func:`inject_substrate_env_into_runner`, or when a value is out of range.
     """
     _set_runner_env_unless_declared(
         compose_file,
         runner_service,
-        MAX_MESSAGE_ENV_VAR,
-        str(validate_max_message_mb(max_message_mb)),
+        runner_limits_env(
+            grpc_max_message_mb=grpc_max_message_mb,
+            state_read_timeout_s=state_read_timeout_s,
+        ),
     )
 
 
 def _set_runner_env_unless_declared(
-    compose_file: Path, runner_service: str, name: str, value: str
+    compose_file: Path, runner_service: str, env: Mapping[str, str]
 ) -> None:
-    """Add ``name=value`` to ``runner_service``'s environment in place unless
-    the service already declares ``name`` (mapping key, ``KEY=value`` or bare
-    ``KEY`` list entry)."""
+    """Add each ``name=value`` of ``env`` to ``runner_service``'s environment in
+    place unless the service already declares ``name`` (mapping key,
+    ``KEY=value`` or bare ``KEY`` list entry)."""
     with compose_file.open() as f:
         doc = yaml.safe_load(f)
     services: dict[str, Any] = doc["services"]
@@ -541,9 +547,14 @@ def _set_runner_env_unless_declared(
             f"{compose_file.name!r}; declared services are {sorted(services)!r}."
         )
     service = services[runner_service]
-    if _service_declares_env_var(service.get("environment"), name):
+    undeclared = {
+        name: value
+        for name, value in env.items()
+        if not _service_declares_env_var(service.get("environment"), name)
+    }
+    if not undeclared:
         return
-    service["environment"] = _merge_service_env(service.get("environment"), {name: value})
+    service["environment"] = _merge_service_env(service.get("environment"), undeclared)
     with compose_file.open("w") as f:
         yaml.safe_dump(doc, f, sort_keys=False)
 

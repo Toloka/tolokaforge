@@ -32,6 +32,7 @@ from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
 from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
 from tolokaforge.runner.models import TaskDescription
+from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ class PerTrialRuntimeBackend:
     kwargs (:attr:`seeds`, :attr:`log_capture`, :attr:`mount_docker_socket`,
     :attr:`expose_substrate`, :attr:`readiness_probe_loader`,
     :attr:`connect_timeout`, :attr:`connect_retry_interval`,
-    :attr:`grpc_max_message_mb`) flow onto the
+    :attr:`grpc_max_message_mb`, :attr:`state_read_timeout_s`) flow onto the
     delegate; the optional :attr:`composer` seam lets tests inject a
     materialiser stub without monkeypatching module symbols.
     """
@@ -77,6 +78,7 @@ class PerTrialRuntimeBackend:
     connect_timeout: float = 30.0
     connect_retry_interval: float = 1.0
     grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
+    state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
     composer: SubstrateComposer | None = None
     _delegate: SharedStackRuntimeBackend = field(init=False)
 
@@ -90,6 +92,7 @@ class PerTrialRuntimeBackend:
             connect_timeout=self.connect_timeout,
             connect_retry_interval=self.connect_retry_interval,
             grpc_max_message_mb=self.grpc_max_message_mb,
+            state_read_timeout_s=self.state_read_timeout_s,
             composer=self._build_composer(),
         )
         self._delegate._per_trial_mode = True
@@ -247,6 +250,7 @@ def per_trial_runtime_backend_factory(
         connect_timeout=ctx.connect_timeout_s,
         connect_retry_interval=ctx.connect_retry_interval_s,
         grpc_max_message_mb=ctx.grpc_max_message_mb,
+        state_read_timeout_s=ctx.state_read_timeout_s,
     )
 
 

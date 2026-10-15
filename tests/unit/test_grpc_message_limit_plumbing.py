@@ -18,7 +18,7 @@ import pytest
 import yaml
 
 from tests.canonical._docker_compose_stubs import InertDockerCompose
-from tolokaforge.core.compose_materialisation import inject_grpc_limit_env_into_runner
+from tolokaforge.core.compose_materialisation import inject_runner_limits_env_into_runner
 from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
 from tolokaforge.core.docker_compose_materialiser import (
     DockerComposeMaterialiser,
@@ -51,6 +51,10 @@ from tolokaforge.core.trial_grader import (
 from tolokaforge.docker.stacks.core import core_stack
 from tolokaforge.docker.stacks.full import full_stack
 from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB, MAX_MESSAGE_ENV_VAR
+from tolokaforge.runner.state_read_limits import (
+    DEFAULT_STATE_READ_TIMEOUT_S,
+    STATE_READ_TIMEOUT_ENV_VAR,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -112,20 +116,33 @@ def test_built_in_stack_refuses_an_out_of_range_bound() -> None:
 # ---------------------------------------------------------------------------
 
 
-class TestInjectGrpcLimitEnvIntoRunner:
+def _inject(compose_file: Path, runner_service: str, max_message_mb: int) -> None:
+    inject_runner_limits_env_into_runner(
+        compose_file,
+        runner_service,
+        grpc_max_message_mb=max_message_mb,
+        state_read_timeout_s=DEFAULT_STATE_READ_TIMEOUT_S,
+    )
+
+
+class TestInjectRunnerLimitsEnvIntoRunner:
     def test_mapping_environment_gains_the_variable(self, tmp_path: Path) -> None:
         compose_file = _write_compose(tmp_path, {"DB_SERVICE_URL": "http://db:8000"})
 
-        inject_grpc_limit_env_into_runner(compose_file, _RUNNER_SERVICE, _CONFIGURED_MB)
+        _inject(compose_file, _RUNNER_SERVICE, _CONFIGURED_MB)
 
         env = _service_env(compose_file, _RUNNER_SERVICE)
-        assert env == {"DB_SERVICE_URL": "http://db:8000", MAX_MESSAGE_ENV_VAR: "120"}
+        assert env == {
+            "DB_SERVICE_URL": "http://db:8000",
+            MAX_MESSAGE_ENV_VAR: "120",
+            STATE_READ_TIMEOUT_ENV_VAR: "20.0",
+        }
         assert _service_env(compose_file, "db") is None
 
     def test_list_environment_gains_the_variable(self, tmp_path: Path) -> None:
         compose_file = _write_compose(tmp_path, ["DB_SERVICE_URL=http://db:8000"])
 
-        inject_grpc_limit_env_into_runner(compose_file, _RUNNER_SERVICE, _CONFIGURED_MB)
+        _inject(compose_file, _RUNNER_SERVICE, _CONFIGURED_MB)
 
         env = _service_env(compose_file, _RUNNER_SERVICE)
         assert "DB_SERVICE_URL=http://db:8000" in env
@@ -138,17 +155,20 @@ class TestInjectGrpcLimitEnvIntoRunner:
     )
     def test_a_compose_declaring_its_own_value_keeps_it(self, tmp_path: Path, declared) -> None:
         compose_file = _write_compose(tmp_path, declared)
-        before = compose_file.read_text()
 
-        inject_grpc_limit_env_into_runner(compose_file, _RUNNER_SERVICE, _CONFIGURED_MB)
+        _inject(compose_file, _RUNNER_SERVICE, _CONFIGURED_MB)
 
-        assert compose_file.read_text() == before
+        env = _service_env(compose_file, _RUNNER_SERVICE)
+        if isinstance(declared, dict):
+            assert env[MAX_MESSAGE_ENV_VAR] == "300"
+        else:
+            assert [e for e in env if e.split("=", 1)[0] == MAX_MESSAGE_ENV_VAR] == declared
 
     def test_an_undeclared_runner_service_is_refused(self, tmp_path: Path) -> None:
         compose_file = _write_compose(tmp_path)
 
         with pytest.raises(ValueError, match="'worker'"):
-            inject_grpc_limit_env_into_runner(compose_file, "worker", _CONFIGURED_MB)
+            _inject(compose_file, "worker", _CONFIGURED_MB)
 
 
 # ---------------------------------------------------------------------------
