@@ -120,7 +120,8 @@ with the per-model
 backstop as `min(tool_cap, capability_cap)`: the tighter set cap wins per call.
 The native adapter composes two inputs into the value it emits:
 `ToolPolicy.output_max_chars` (the tool-declared bound) and the task-yaml
-override at `tools.<actor>.<tool_name>.output_max_chars`, as `min` of whichever
+override at `tools.<actor>.<tool_name>.output_max_chars` (or the actor-wide
+`tools.<actor>.output_max_chars` where the tool names none), as `min` of whichever
 are set. `None` (the default) defers to the per-model cap; a tool that declares
 no cap in a pack that overrides no cap, run under a preset that declares no cap,
 passes its message content through verbatim.
