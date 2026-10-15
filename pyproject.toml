@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge"
-version = "0.31.0"
+version = "0.31.2"
 description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -571,6 +571,7 @@ exclude = [
     "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",
+    "tolokaforge/core/llm/tool_name_alias.py",
     "tolokaforge/core/search/typesense_server.py",
 ]
 

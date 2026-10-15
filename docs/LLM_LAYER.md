@@ -2286,18 +2286,28 @@ The `content` a `role=tool` message carries into the next prompt is capped
 along three axes and the tighter set candidate wins. Ordered narrowest-first
 by scope:
 
-- `tools.<actor>.<tool_name>.output_max_chars: int | None` is the task-yaml
-  override — a pack author's per-tool cap on the tool as used in this pack,
-  tighter than the tool's own declared bound. Reserved sibling to the
-  block's per-tool init kwargs; positive int, else the loader rejects it at
-  authoring time.
+- `tools.agent.<tool_name>.output_max_chars: int | None` is the task-yaml
+  override — a pack author's per-tool cap on the tool as used in this pack.
+  Reserved sibling to the block's per-tool init kwargs. A
+  `tools.agent.output_max_chars` sibling of `enabled` is the actor-wide
+  default for every tool the block enables, MCP-server tools included; a
+  per-tool key replaces it for that tool, and a per-tool `null` leaves the
+  tool with no task-side cap. Both are positive ints or `null`, else the
+  loader rejects them at authoring time. Only the agent's block takes
+  them: the user simulator's tool results are not capped, so the loader
+  refuses `output_max_chars` anywhere under `tools.user`, and the engine
+  reads the caps off the agent's slice of the registered schemas. See
+  [TASKS.md § Capping tool output](TASKS.md#capping-tool-output).
 - `ToolPolicy.output_max_chars: int | None` is the per-tool declared bound
   a tool sets on its own output — a status poll that always returns ≤512
   chars declares that shape once at registration and every loop composes it
   correctly.
 - `ModelCapabilities.tool_output_max_chars: int | None` is the per-model
   backstop; a preset that names the key applies its cap uniformly to every
-  trial that runs on that model.
+  trial that runs on that model. A run config sets it, or clears a preset's
+  with `null`, through `models.<role>.capabilities.tool_output_max_chars`
+  ([CONFIG.md](CONFIG.md#model-capability-presets) "Available overrides");
+  it applies to the agent's loop.
 
 The composition runs at two sites, each using the same shape (`min` of the
 set candidates, `None` when none is set). The adapter site
@@ -2327,10 +2337,13 @@ sees on the next prompt is capped.
 The marker splices between the preserved head and tail:
 
 ```
-\n...[{N} chars omitted]...\n
+\n...[{N} of {M} chars omitted; narrow the request to see the rest]...\n
 ```
 
-`{N}` is the number of chars removed. Head and tail are each
+`{N}` is the number of chars removed and `{M}` the length of the full
+content. The hint is the one recovery that holds for every tool — ask for
+less — so a model that would otherwise re-issue the same call learns to add
+a filter, a page size or an id. Head and tail are each
 `effective_cap // 2` chars long, taken verbatim from the input — so a
 compilation output whose first failure is at the top and whose final
 error is at the bottom keeps both edges (the two most common tool-output
@@ -2685,7 +2698,8 @@ produce the JSON-serialisable preset fingerprint landed on
 * `resolve_context_controls(capabilities) -> dict[str, Any]` — the
   context-control values the route actually runs under:
   `reasoning_history`, `observation_window`,
-  `observation_window_polling`. `reasoning_history` is the **effective**
+  `observation_window_polling`, `tool_output_max_chars` (the per-model cap
+  after a run config's override or `null`). `reasoning_history` is the **effective**
   setting from
   [`effective_reasoning_history`](../tolokaforge/core/llm/reasoning_history.py),
   so a codec declaring `forced_history` is recorded as what it forced,

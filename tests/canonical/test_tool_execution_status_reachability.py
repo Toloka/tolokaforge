@@ -178,7 +178,7 @@ def test_every_status_member_has_a_producing_recording_path(
         mcp,
         "_get_server",
         lambda: SimpleNamespace(
-            send_request=lambda method, params: {
+            send_request=lambda method, params, **_options: {
                 "content": [{"type": "text", "text": "Error: case tool raised"}],
                 "isError": True,
             }

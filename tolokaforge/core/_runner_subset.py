@@ -159,6 +159,7 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",
+    "tolokaforge/core/llm/tool_name_alias.py",
     "tolokaforge/core/search/typesense_server.py",
 )
 """Files that live under a shared-spine subpackage but are orchestrator-only.

@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.31.2 (2026-10-15)
+
+### Fix
+
+- **ci**: promote images on patch releases (#1902)
+
+## v0.31.1 (2026-10-15)
+
+### Feat
+
+- **llm**: tool_name_max_length — shorten only the tool names a provider would refuse [TECHDEL-688] (#1896)
+- **runner**: configurable state read timeout (compute.state_read_timeout_s) (#1894)
+- **loop**: tool-output cap as a run-config override and an actor-wide task default (#1893)
+
 ## v0.31.0 (2026-10-13)
 
 ### BREAKING CHANGE

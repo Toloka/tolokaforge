@@ -46,6 +46,7 @@ from tolokaforge.core.llm.presets import (
     resolve_effective_preset,
     resolve_policy_names,
 )
+from tolokaforge.core.llm.tool_name_alias import tool_name_aliases
 from tolokaforge.core.models import (
     RESOLVED_RECORD_KEY,
     Grade,
@@ -346,8 +347,8 @@ class _TrialSetup:
     user_tool_schemas: list[dict[str, Any]]
     user_tool_executor: DockerRunnerAdapter | None
     tool_output_max_chars_by_tool: dict[str, int] = field(default_factory=dict)
-    """Per-tool ``output_max_chars`` map lifted from ``register_trial``'s
-    ``ToolSchema`` entries, threaded into :class:`~tolokaforge.core.loop.ToolCallingLoop`
+    """Per-tool ``output_max_chars`` map lifted from the agent slice of
+    ``register_trial``'s ``ToolSchema`` entries, threaded into :class:`~tolokaforge.core.loop.ToolCallingLoop`
     so the engine loop composes it with the per-model cap at the message-append
     site. Empty map = no per-tool caps declared, and the loop's min-of-both
     selection reduces to the per-model cap alone.
@@ -750,9 +751,15 @@ class InProcessConductor:
             else None
         )
 
+        # The caps the agent loop applies come from the agent slice only. The
+        # map is keyed by tool name, and both actors can serve a tool under one
+        # name with different caps (``tools.user.output_max_chars`` caps the
+        # user's whole block): read across the whole list, a user-side cap would
+        # land on the agent's same-named tool. The user side applies no cap
+        # (``TrialRunner._record_user_tool_step``), so its slice has no consumer.
         tool_output_max_chars_by_tool = {
             ts["name"]: ts["output_max_chars"]
-            for ts in register_result["tool_schemas"]
+            for ts in register_result["tool_schemas"][:num_agent_tools]
             if ts.get("output_max_chars") is not None
         }
 
@@ -976,6 +983,9 @@ class InProcessConductor:
             task_id=task.task_id,
             trial_index=setup.trial_idx,
             agent_client=self.agent_client,
+            tool_name_aliases=tool_name_aliases(
+                setup.tool_schemas, task.category, self.agent_client.config.tool_name_max_length
+            ),
             user_simulator=user_simulator,
             tool_executor=setup.tool_executor,
             tool_schemas=setup.tool_schemas,

@@ -23,6 +23,10 @@ Environment Variables:
     TOLOKAFORGE_GRPC_MAX_MESSAGE_MB: Largest gRPC message, in MiB, the server
         sends or accepts (default 50, accepted 4..2047). The engine sets it
         from ``compute.grpc_max_message_mb``; an invalid value fails startup.
+    TOLOKAFORGE_STATE_READ_TIMEOUT_S: Bound, in seconds, on one read of a state
+        holder's live state — an MCP server subprocess or an app world service
+        (default 20, any positive number). The engine sets it from
+        ``compute.state_read_timeout_s``; an invalid value fails startup.
     LOG_LEVEL: Logging level (default: INFO)
     TOLOKAFORGE_SECRETS_JSON: JSON-serialized credential map injected by the
         orchestrator at container start. Bootstraps the SecretManager
@@ -52,6 +56,10 @@ from tolokaforge.runner.grpc_limits import (
 )
 from tolokaforge.runner.rag_client import RAGServiceClient
 from tolokaforge.runner.service import RunnerServiceImpl
+from tolokaforge.runner.state_read_limits import (
+    DEFAULT_STATE_READ_TIMEOUT_S,
+    state_read_timeout_s_from_env,
+)
 from tolokaforge.runner.substrate_service import SubstrateServicer
 from tolokaforge.secrets import (
     CONTAINER_SECRETS_ENV_VAR,
@@ -144,6 +152,7 @@ def get_config() -> dict:
         "log_level": os.environ.get("LOG_LEVEL", DEFAULT_LOG_LEVEL),
         "max_workers": int(os.environ.get("MAX_WORKERS", DEFAULT_MAX_WORKERS)),
         "grpc_max_message_mb": max_message_mb_from_env(),
+        "state_read_timeout_s": state_read_timeout_s_from_env(),
     }
 
 
@@ -165,6 +174,7 @@ class RunnerServer:
         rag_service_url: str | None = None,
         expose_substrate: bool = False,
         grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
+        state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S,
     ):
         """
         Initialize the Runner server.
@@ -179,6 +189,8 @@ class RunnerServer:
                 :class:`RunnerService` on the same listen port.
             grpc_max_message_mb: Largest gRPC message, in MiB, the server
                 sends or accepts — the engine's ``compute.grpc_max_message_mb``.
+            state_read_timeout_s: Bound, in seconds, on one read of a state
+                holder's live state — the engine's ``compute.state_read_timeout_s``.
         """
         self.db_service_url = db_service_url
         self.rag_service_url = rag_service_url
@@ -186,6 +198,7 @@ class RunnerServer:
         self.max_workers = max_workers
         self.expose_substrate = expose_substrate
         self.grpc_max_message_mb = grpc_max_message_mb
+        self.state_read_timeout_s = state_read_timeout_s
         self.server: grpc.Server | None = None
         self.db_client: DBServiceClient | None = None
         self.rag_client: RAGServiceClient | None = None
@@ -213,7 +226,9 @@ class RunnerServer:
             self.logger.info("RAG client initialized")
 
         # Create service implementation
-        self.service = RunnerServiceImpl(self.db_client, self.rag_client)
+        self.service = RunnerServiceImpl(
+            self.db_client, self.rag_client, state_read_timeout_s=self.state_read_timeout_s
+        )
 
         # Create gRPC server
         self.server = grpc.server(
@@ -339,6 +354,7 @@ async def run_server() -> None:
     logger.info(f"  Runner Port: {config['runner_port']}")
     logger.info(f"  Expose SubstrateService: {config['expose_substrate']}")
     logger.info(f"  gRPC Max Message Size: {config['grpc_max_message_mb']} MiB")
+    logger.info(f"  State Read Timeout: {config['state_read_timeout_s']:g}s")
     logger.info(f"  Log Level: {config['log_level']}")
     logger.info(f"  Max Workers: {config['max_workers']}")
     logger.info("=" * 60)
@@ -351,6 +367,7 @@ async def run_server() -> None:
         rag_service_url=config["rag_service_url"],
         expose_substrate=config["expose_substrate"],
         grpc_max_message_mb=config["grpc_max_message_mb"],
+        state_read_timeout_s=config["state_read_timeout_s"],
     )
 
     # Setup signal handlers

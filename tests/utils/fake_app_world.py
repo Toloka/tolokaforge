@@ -14,6 +14,7 @@ holder an MCP pack uses, so one golden path can be graded through both holders.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from dataclasses import dataclass, field
 from typing import Any
@@ -50,6 +51,8 @@ class FakeAppWorld:
     admin_calls: list[str] = field(default_factory=list)
     read_tables_answer: tuple[int, str] | None = None
     """What ``GET /_admin/tables`` answers instead of the world: ``(status, body)``."""
+    read_tables_delay_s: float = 0.0
+    """How long ``GET /_admin/tables`` takes to answer, as a large world's read does."""
 
     def build(self) -> FastAPI:
         app = FastAPI()
@@ -71,8 +74,9 @@ class FakeAppWorld:
             return {"tables": len(self.tables)}
 
         @app.get("/_admin/tables")
-        def read_tables(request: Request) -> Any:
+        async def read_tables(request: Request) -> Any:
             self._admit(request)
+            await asyncio.sleep(self.read_tables_delay_s)
             if self.read_tables_answer is not None:
                 status, body = self.read_tables_answer
                 return Response(content=body, status_code=status, media_type="text/plain")

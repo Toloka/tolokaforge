@@ -126,6 +126,7 @@ class DefaultSubstrateComposer:
                     events=ctx.events,
                     component_id_prefix="engine",
                     grpc_max_message_mb=ctx.grpc_max_message_mb,
+                    state_read_timeout_s=ctx.state_read_timeout_s,
                 )
                 handle = self.materialiser.materialise(decl, m_ctx)
                 materialised.append(handle)
@@ -147,6 +148,7 @@ class DefaultSubstrateComposer:
                 log_capture=ctx.log_capture,
                 events=ctx.events,
                 grpc_max_message_mb=ctx.grpc_max_message_mb,
+                state_read_timeout_s=ctx.state_read_timeout_s,
             )
 
         assert runner_decl is not None  # narrowed by runner_handle presence
@@ -182,6 +184,7 @@ class DefaultSubstrateComposer:
             log_capture=ctx.log_capture,
             events=ctx.events,
             grpc_max_message_mb=ctx.grpc_max_message_mb,
+            state_read_timeout_s=ctx.state_read_timeout_s,
         )
 
     # ------------------------------------------------------------------
@@ -241,6 +244,7 @@ class DefaultSubstrateComposer:
                 mount_docker_socket=run_sub.mount_docker_socket,
                 expose_substrate=run_sub.expose_substrate,
                 grpc_max_message_mb=run_sub.grpc_max_message_mb,
+                state_read_timeout_s=run_sub.state_read_timeout_s,
                 log_capture=_trial_scope_log_capture(run_sub.log_capture, spec.trial_id),
                 write_compose_env=None,
                 events=run_sub.events,
@@ -271,6 +275,7 @@ class DefaultSubstrateComposer:
                 mount_docker_socket=run_sub.mount_docker_socket,
                 expose_substrate=run_sub.expose_substrate,
                 grpc_max_message_mb=run_sub.grpc_max_message_mb,
+                state_read_timeout_s=run_sub.state_read_timeout_s,
                 log_capture=_trial_scope_log_capture(run_sub.log_capture, spec.trial_id),
                 write_compose_env=WriteComposeEnv(
                     trial_id=spec.trial_id,

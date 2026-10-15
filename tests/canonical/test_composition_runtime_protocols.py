@@ -193,6 +193,7 @@ class TestCompanionDataclassFields:
             "bridged_services",
             "stripped_container_secrets",
             "grpc_max_message_mb",
+            "state_read_timeout_s",
         ]
 
     def test_run_ctx_fields(self) -> None:
@@ -205,6 +206,7 @@ class TestCompanionDataclassFields:
             "events",
             "seeds",
             "grpc_max_message_mb",
+            "state_read_timeout_s",
         ]
 
     def test_run_substrate_fields(self) -> None:
@@ -226,6 +228,7 @@ class TestCompanionDataclassFields:
             "log_capture",
             "events",
             "grpc_max_message_mb",
+            "state_read_timeout_s",
         ]
 
     def test_composed_env_handle_fields(self) -> None:

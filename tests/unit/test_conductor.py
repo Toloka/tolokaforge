@@ -561,15 +561,19 @@ def _register_result(
     user: list[str],
     *,
     caps_by_tool: dict[str, int] | None = None,
+    user_caps_by_tool: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """The register response's shape: one concatenated list, agent slice first,
-    partitioned at ``num_agent_tools`` (``runner.proto``)."""
+    partitioned at ``num_agent_tools`` (``runner.proto``). *caps_by_tool* caps
+    tools on both slices; *user_caps_by_tool* replaces it on the user slice."""
     caps_by_tool = caps_by_tool or {}
+    user_caps = caps_by_tool if user_caps_by_tool is None else user_caps_by_tool
     return {
         "success": True,
         "error": None,
         "tool_schemas": [
-            _wire_schema(n, output_max_chars=caps_by_tool.get(n)) for n in agent + user
+            *(_wire_schema(n, output_max_chars=caps_by_tool.get(n)) for n in agent),
+            *(_wire_schema(n, output_max_chars=user_caps.get(n)) for n in user),
         ],
         "num_agent_tools": len(agent),
         "num_user_tools": len(user),
@@ -770,10 +774,14 @@ def _trial_runner_kwargs(
     *,
     user_model_config: ModelConfig | None = None,
     rate_limit_probe: RateLimitProbeConfig | None = None,
+    agent_model_config: ModelConfig | None = None,
+    tool_schemas: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The keyword arguments ``_run_agent_loop`` builds ``TrialRunner`` with, for *task*
     run from the task root *tmp_path*."""
     conductor = _conductor_registering(tmp_path, _register_result([], []))
+    if agent_model_config is not None:
+        conductor.agent_client.config = agent_model_config
     if rate_limit_probe is not None:
         conductor.config.orchestrator.rate_limit_probe = rate_limit_probe
     spec = _make_spec().model_copy(update={"user_model_config": user_model_config})
@@ -784,7 +792,7 @@ def _trial_runner_kwargs(
         trial_dir=tmp_path / "trials" / "t1" / "0",
         env_state=MagicMock(),
         adapter_env=MagicMock(),
-        tool_schemas=[],
+        tool_schemas=tool_schemas or [],
         tool_executor=MagicMock(),
         user_tool_schemas=[],
         user_tool_executor=None,
@@ -795,6 +803,30 @@ def _trial_runner_kwargs(
     ):
         conductor._run_agent_loop(spec, task, setup, AGENT_LOOP_IDENTITY)
     return runner_cls.call_args.kwargs
+
+
+class TestToolNameAliasesReachTheRunner:
+    """``tool_name_max_length`` hands the runner aliases for the task's long tool names."""
+
+    LONG = "ots_bank_hr_d365_hr_service_api_hr_service_api_create_document_generation_request"
+
+    def _kwargs(self, tmp_path: Path, limit: int | None) -> dict[str, Any]:
+        config = ModelConfig(provider="openai", name="gpt-4", tool_name_max_length=limit)
+        task = TaskConfig(task_id="t1", description="d", category="ots_bank_hr_d365")
+        return _trial_runner_kwargs(
+            tmp_path,
+            task,
+            agent_model_config=config,
+            tool_schemas=[{"type": "function", "function": {"name": self.LONG}}],
+        )
+
+    def test_a_long_name_is_aliased(self, tmp_path: Path) -> None:
+        assert self._kwargs(tmp_path, 64)["tool_name_aliases"] == {
+            self.LONG: self.LONG.removeprefix("ots_bank_hr_d365_")
+        }
+
+    def test_off_by_default(self, tmp_path: Path) -> None:
+        assert self._kwargs(tmp_path, None)["tool_name_aliases"] == {}
 
 
 class TestUserStopRuleReachesTheRunner:
@@ -935,6 +967,39 @@ class TestTrialSetupToolOutputMaxCharsWiring:
     def test_setup_map_is_empty_when_no_tool_declares_a_cap(self, tmp_path: Path) -> None:
         conductor = self._conductor(
             tmp_path, _register_result(agent=["unbounded_a", "unbounded_b"], user=[])
+        )
+
+        setup = conductor._setup_trial(_make_spec(), TaskConfig(task_id="t1", description="d"))
+
+        assert setup.tool_output_max_chars_by_tool == {}
+
+    def test_a_user_side_cap_does_not_reach_the_agents_same_named_tool(
+        self, tmp_path: Path
+    ) -> None:
+        """Both actors serve ``search``; the user block caps it at 5000, the
+        agent block at 200000. The agent loop sees the agent's cap only."""
+        conductor = self._conductor(
+            tmp_path,
+            _register_result(
+                agent=["search"],
+                user=["search"],
+                caps_by_tool={"search": 200_000},
+                user_caps_by_tool={"search": 5_000},
+            ),
+        )
+
+        setup = conductor._setup_trial(_make_spec(), TaskConfig(task_id="t1", description="d"))
+
+        assert setup.tool_output_max_chars_by_tool == {"search": 200_000}
+
+    def test_a_user_only_cap_leaves_the_agents_same_named_tool_uncapped(
+        self, tmp_path: Path
+    ) -> None:
+        conductor = self._conductor(
+            tmp_path,
+            _register_result(
+                agent=["search"], user=["search"], user_caps_by_tool={"search": 5_000}
+            ),
         )
 
         setup = conductor._setup_trial(_make_spec(), TaskConfig(task_id="t1", description="d"))

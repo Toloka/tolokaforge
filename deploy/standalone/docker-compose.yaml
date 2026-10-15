@@ -113,6 +113,10 @@ services:
       # final state. Keep it equal to the grader's value and to the run
       # config's `compute.grpc_max_message_mb`.
       TOLOKAFORGE_GRPC_MAX_MESSAGE_MB: ${TOLOKAFORGE_GRPC_MAX_MESSAGE_MB:-50}
+      # Seconds the runner waits for one read of a trial's live state from the
+      # process holding it (an MCP server, an app world service) — the run
+      # config's `compute.state_read_timeout_s`.
+      TOLOKAFORGE_STATE_READ_TIMEOUT_S: ${TOLOKAFORGE_STATE_READ_TIMEOUT_S:-20}
       # LLM provider credentials — optional for a keyless bring-up, required for
       # real (paid) trials. Set them in a sibling `.env` (see `.env.example`),
       # which docker compose auto-loads for interpolation. Supply either a

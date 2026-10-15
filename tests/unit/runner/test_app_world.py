@@ -49,7 +49,9 @@ from tolokaforge.core.grading.golden_replay import (
 from tolokaforge.core.models import EnvironmentPatch, StackPatch
 from tolokaforge.core.models.task_config import TaskConfig
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.app_world import AppWorldClient, mint_credentials
 from tolokaforge.runner.models import AppWorldConfig, RunnerInitialStateConfig
+from tolokaforge.runner.state_read_limits import StateReadDeadlines
 from tolokaforge.secrets import get_default
 from tolokaforge.secrets.log_filter import PLACEHOLDER, install_global_redactor
 from tolokaforge.tools.builtin.http_request import (
@@ -675,6 +677,38 @@ def test_a_world_that_cannot_be_read_back_fails_get_state_loudly(
     assert message in state.error
     service = _host(world_url).split(":")[0]
     assert f"world service {service!r} at {world_url}" in state.error
+
+
+def test_a_world_slower_than_the_admin_budget_is_read_within_the_state_read_bound(
+    world: FakeAppWorld, world_url: str
+) -> None:
+    """Reading the world back is bounded by ``compute.state_read_timeout_s``, not the admin budget."""
+    config = AppWorldConfig(**{**WORLD, "url": world_url, "hosts": [_host(world_url)]})
+    credentials = mint_credentials(config.actors)
+    client = AppWorldClient(config, credentials, timeout_s=0.3, state_read_timeout_s=2.0)
+    try:
+        client.claim(credentials.callers(config.actors))
+        client.reset_state(INITIAL_TABLES)
+        world.read_tables_delay_s = 1.0
+
+        assert client.get_state() == INITIAL_TABLES
+    finally:
+        client.close()
+
+
+def test_a_world_slower_than_the_state_read_bound_fails_naming_the_setting(
+    trial: _Trial, world: FakeAppWorld, world_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The runner's bound fires before the client's own read timeout, so its cause is reported."""
+    monkeypatch.setattr(trial.runner, "state_read_deadlines", StateReadDeadlines(holder_read_s=0.3))
+    assert trial.register(_description(world_url)).success
+    world.read_tables_delay_s = 1.0
+
+    state = trial.state()
+
+    assert state.success is False
+    assert "the app world did not answer within 0.3s" in state.error
+    assert "compute.state_read_timeout_s" in state.error
 
 
 def _mcp_description(script: str) -> dict[str, Any]:

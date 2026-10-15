@@ -1223,6 +1223,68 @@ class TestUserStopRuleFind:
 
 
 # ===================================================================
+# Tool-name aliases on the wire
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestToolNameAliasesReachTheWire:
+    """A non-empty alias map wraps the agent's client; an empty one leaves it bare."""
+
+    LONG = "ots_bank_hr_d365_hr_service_api_hr_service_api_create_document_generation_request"
+    SHORT = "hr_service_api_hr_service_api_create_document_generation_request"
+
+    def _sent_tool_names(self, aliases: dict[str, str] | None) -> list[str]:
+        agent = _make_agent_client()
+        runner = _make_runner(
+            agent_client=agent,
+            tool_schemas=[{"type": "function", "function": {"name": self.LONG}}],
+            tool_name_aliases=aliases,
+        )
+        runner.run("System", "Task")
+        return [tool["function"]["name"] for tool in agent.generate.call_args.kwargs["tools"]]
+
+    def test_a_map_sends_the_short_name(self) -> None:
+        assert self._sent_tool_names({self.LONG: self.SHORT}) == [self.SHORT]
+
+    def test_no_map_sends_the_pack_name(self) -> None:
+        assert self._sent_tool_names(None) == [self.LONG]
+
+
+# ===================================================================
+# Loop-layer capability overrides from a run config
+# ===================================================================
+
+
+def _loop_config(
+    capabilities: dict[str, object] | None, model: str = "anthropic/claude-sonnet-4.6"
+) -> LoopConfig:
+    """The ``LoopConfig`` a trial's agent loop runs with under *capabilities*."""
+    cfg = ModelConfig(provider="openrouter", name=model, capabilities=capabilities)
+    agent = _make_agent_client()
+    agent.capabilities = build_capabilities(cfg.name, cfg.provider, cfg.capabilities or {})
+    runner = _make_runner(agent_client=agent)
+
+    seen: list[LoopConfig] = []
+    real_load = plugin_registry.load_agent_loop
+
+    def capturing_load(name: str):
+        factory = real_load(name)
+
+        def capturing_factory(context):
+            seen.append(context.config)
+            return factory(context)
+
+        return capturing_factory
+
+    with patch.object(plugin_registry, "load_agent_loop", capturing_load):
+        runner.run("System", "Task")
+
+    assert len(seen) == 1
+    return seen[0]
+
+
+# ===================================================================
 # Observation window from a run config
 # ===================================================================
 
@@ -1238,42 +1300,13 @@ class TestObservationWindowReachesTheLoop:
     than in a run that silently sends every observation in full.
     """
 
-    @staticmethod
-    def _loop_config(capabilities: dict[str, object] | None) -> LoopConfig:
-        cfg = ModelConfig(
-            provider="openrouter",
-            name="anthropic/claude-sonnet-4.6",
-            capabilities=capabilities,
-        )
-        agent = _make_agent_client()
-        agent.capabilities = build_capabilities(cfg.name, cfg.provider, cfg.capabilities or {})
-        runner = _make_runner(agent_client=agent)
-
-        seen: list[LoopConfig] = []
-        real_load = plugin_registry.load_agent_loop
-
-        def capturing_load(name: str):
-            factory = real_load(name)
-
-            def capturing_factory(context):
-                seen.append(context.config)
-                return factory(context)
-
-            return capturing_factory
-
-        with patch.object(plugin_registry, "load_agent_loop", capturing_load):
-            runner.run("System", "Task")
-
-        assert len(seen) == 1
-        return seen[0]
-
     def test_the_window_a_config_sets_is_the_window_the_loop_runs_with(self) -> None:
-        config = self._loop_config({"observation_window": 5, "observation_window_polling": 4})
+        config = _loop_config({"observation_window": 5, "observation_window_polling": 4})
 
         assert (config.observation_window, config.observation_window_polling) == (5, 4)
 
     def test_a_config_that_sets_neither_leaves_every_observation_in_full(self) -> None:
-        config = self._loop_config(None)
+        config = _loop_config(None)
 
         assert (config.observation_window, config.observation_window_polling) == (None, 1)
 
@@ -1295,4 +1328,42 @@ class TestObservationWindowReachesTheLoop:
         with pytest.raises(ValueError, match="Unknown capability override keys"):
             build_capabilities(
                 "anthropic/claude-sonnet-4.6", "openrouter", {"observation_windows": 5}
+            )
+
+
+@pytest.mark.unit
+class TestToolOutputCapReachesTheLoop:
+    """``models.<role>.capabilities.tool_output_max_chars`` from a run config.
+
+    The per-model cap on what one ``role=tool`` message carries into the next
+    prompt. A preset names it for a model that needs it; a run config sets it for
+    a run whose tools can return payloads larger than the model should read, or
+    clears a preset's with ``null``. These pin the chain from the config block to
+    the runner's ``LoopConfig``.
+    """
+
+    def test_the_cap_a_config_sets_is_the_cap_the_loop_runs_with(self) -> None:
+        config = _loop_config({"tool_output_max_chars": 200_000})
+
+        assert config.tool_output_max_chars == 200_000
+
+    def test_a_config_overrides_the_cap_a_preset_names(self) -> None:
+        preset_only = _loop_config(None, model="moonshotai/kimi-k3")
+        overridden = _loop_config({"tool_output_max_chars": 200_000}, model="moonshotai/kimi-k3")
+
+        assert (preset_only.tool_output_max_chars, overridden.tool_output_max_chars) == (
+            32768,
+            200_000,
+        )
+
+    def test_null_clears_the_cap_a_preset_names(self) -> None:
+        config = _loop_config({"tool_output_max_chars": None}, model="moonshotai/kimi-k3")
+
+        assert config.tool_output_max_chars is None
+
+    @pytest.mark.parametrize("value", [0, -1, 1.5, "200000", True])
+    def test_a_cap_that_is_not_a_positive_int_is_refused(self, value: object) -> None:
+        with pytest.raises(ValueError, match="tool_output_max_chars"):
+            build_capabilities(
+                "anthropic/claude-sonnet-4.6", "openrouter", {"tool_output_max_chars": value}
             )

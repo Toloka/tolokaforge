@@ -514,7 +514,13 @@ jobs:
     # no images to promote (see the publish job's `push: false`) and skips.
     # A manual stable `image-vX.Y.Z` push takes the move-tags branch below
     # untouched — auto-promote and move-tags are mutually exclusive.
-    if: github.event_name == 'push' && contains(github.ref_name, '-rc.')
+    # `!cancelled() && needs.smoke.result == 'success'` is the real gate: a
+    # bare boolean `if` carries an implicit `success()` over every ancestor, so
+    # a patch release (standalone gated off → `merge-standalone` skipped, an
+    # ancestor through `smoke`) would otherwise skip this job even though
+    # `smoke` itself ran. A status function keeps the job on a skipped ancestor;
+    # the explicit `smoke` success check is the gate that actually matters.
+    if: ${{ !cancelled() && needs.smoke.result == 'success' && github.event_name == 'push' && contains(github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     # Bound the blast radius of a hung Docker Hub call — the default 6h would
     # tie up the runner and hold the concurrency slot for the tag. move-tags
@@ -638,8 +644,11 @@ jobs:
     needs: [setup, smoke]
     env:
       IMAGES: ${{ needs.setup.outputs.images }}
-    # Stable tags only — rc tags carry no moving tags.
-    if: github.event_name == 'push' && !contains(github.ref_name, '-rc.')
+    # Stable tags only — rc tags carry no moving tags. The status-function form
+    # (see auto-promote above) keeps this job off a bare implicit `success()`,
+    # so a skipped ancestor such as `merge-standalone` on a patch stable push
+    # does not skip the move; `smoke` success is the gate that matters.
+    if: ${{ !cancelled() && needs.smoke.result == 'success' && github.event_name == 'push' && !contains(github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     # move-tags mints its own OIDC token, so it must declare environment: release
     # and id-token: write itself — without the environment the OIDC claim will not
@@ -686,7 +695,10 @@ jobs:
   release-notes:
     name: Release notes
     needs: [setup, move-tags]
-    if: github.event_name == 'push' && !contains(github.ref_name, '-rc.')
+    # Runs after a successful move-tags on a stable push; the status-function
+    # form keeps it off a bare implicit `success()` that a skipped ancestor
+    # would poison (see auto-promote above).
+    if: ${{ !cancelled() && needs['move-tags'].result == 'success' && github.event_name == 'push' && !contains(github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -144,6 +144,33 @@ async def test_any_other_jsonrpc_error_still_raises(server_script, pool):
     assert raised.value.code == -32603 and isinstance(raised.value, RuntimeError)
 
 
+REFUSING_HANDSHAKE_SERVER = r"""
+import json, sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    error = {"code": -32602, "message": "unsupported protocol version"}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": error}) + "\n")
+    sys.stdout.flush()
+"""
+
+
+async def test_a_refused_handshake_is_the_environments_failure_not_the_arguments(
+    tmp_path: Path, pool
+):
+    """``initialize`` answered with -32602 is a server that cannot serve, not refused input."""
+    script = tmp_path / "refusing_handshake_server.py"
+    script.write_text(REFUSING_HANDSHAKE_SERVER)
+
+    with pytest.raises(MCPProtocolError) as raised:
+        await _wrapper("set_quantity", str(script), pool).execute_call({"quantity": 3})
+
+    assert raised.value.code == -32602
+    assert "unsupported protocol version" in str(raised.value)
+
+
 def test_the_runner_records_argument_errors_apart_from_environment_errors(
     runner_service, mock_grpc_context, server_script, pool, request
 ):

@@ -136,7 +136,9 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
             return await read()
 
         try:
-            state = self._runner._run_async(_refreshed_read())
+            state = self._runner._run_async(
+                _refreshed_read(), timeout=self._runner.state_read_deadlines.final_state_read_s
+            )
         except DBTrialNotFoundError as exc:
             trial_context = self._runner.trials.get(trial_id)
             if trial_context is not None and provisions_database(
