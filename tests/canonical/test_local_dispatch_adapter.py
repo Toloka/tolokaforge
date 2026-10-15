@@ -17,11 +17,13 @@ from collections.abc import Callable
 import pytest
 
 from tests.canonical._factories import make_trial_spec
-from tolokaforge.core.dispatch.adapter import DispatchAdapter
+from tolokaforge.core.dispatch.adapter import ControllableDispatchAdapter, DispatchAdapter
+from tolokaforge.core.dispatch.control import JobHandle, JobState
 from tolokaforge.core.dispatch.errors import (
     DispatchProvisionError,
     DispatchRefused,
     DispatchTransient,
+    DispatchUnsupported,
 )
 from tolokaforge.core.dispatch.local import LocalDispatchAdapter
 from tolokaforge.core.models import TaskConfig, TrialStatus
@@ -71,6 +73,7 @@ def _thread_adapter(run_trial_fn: Callable[[TrialNodeInputs], TrialResult], *, w
 def test_is_a_dispatch_adapter_and_resolves_from_the_registry() -> None:
     adapter = LocalDispatchAdapter(mode="thread", workers=1)
     assert isinstance(adapter, DispatchAdapter)
+    assert isinstance(adapter, ControllableDispatchAdapter)
     assert load_dispatch_adapter("local") is not None
 
 
@@ -167,3 +170,111 @@ def test_thread_mode_maps_each_failure_to_its_neutral_dispatch_error(
             adapter.run_trial_node(_inputs())
     finally:
         adapter.close()
+
+
+# ---- Thread-mode control plane ---------------------------------------------
+
+
+def test_thread_status_runs_then_completes_and_retains_the_result() -> None:
+    release = threading.Event()
+    entered = threading.Event()
+
+    def run(inputs: TrialNodeInputs) -> TrialResult:
+        entered.set()
+        assert release.wait(timeout=10)
+        return _result(inputs.trial_spec.trial_id)
+
+    adapter = _thread_adapter(run)
+    handle = JobHandle(trial_id="t:0")
+    result_box: list[TrialResult] = []
+    caller = threading.Thread(target=lambda: result_box.append(adapter.run_trial_node(_inputs())))
+    try:
+        caller.start()
+        assert entered.wait(timeout=10)
+        assert adapter.status(handle).state is JobState.RUNNING
+        release.set()
+        caller.join(timeout=10)
+        assert adapter.status(handle).state is JobState.COMPLETED
+        # The retained result is the one the trial returned.
+        assert adapter.fetch_result(handle).trial_id == "t:0"
+        assert result_box[0].trial_id == "t:0"
+    finally:
+        release.set()
+        adapter.close()
+
+
+def test_thread_status_is_failed_after_the_trial_raises() -> None:
+    def run(inputs: TrialNodeInputs) -> TrialResult:
+        raise RuntimeError("blew up")
+
+    adapter = _thread_adapter(run)
+    try:
+        with pytest.raises(DispatchTransient):
+            adapter.run_trial_node(_inputs())
+        assert adapter.status(JobHandle(trial_id="t:0")).state is JobState.FAILED
+    finally:
+        adapter.close()
+
+
+def test_thread_status_is_unknown_for_a_trial_that_never_ran() -> None:
+    adapter = _thread_adapter(lambda inputs: _result(inputs.trial_spec.trial_id))
+    try:
+        assert adapter.status(JobHandle(trial_id="never:0")).state is JobState.UNKNOWN
+    finally:
+        adapter.close()
+
+
+def test_thread_cancel_of_an_unstarted_job_marks_it_cancelled() -> None:
+    occupy_entered = threading.Event()
+    occupy_release = threading.Event()
+
+    def run(inputs: TrialNodeInputs) -> TrialResult:
+        if inputs.trial_spec.trial_id == "t:0":
+            occupy_entered.set()
+            assert occupy_release.wait(timeout=10)
+        return _result(inputs.trial_spec.trial_id)
+
+    # One worker: the second trial cannot start until the first frees it.
+    adapter = _thread_adapter(run, workers=1)
+    occupier = threading.Thread(target=lambda: adapter.run_trial_node(_inputs("t:0")))
+    queued = threading.Thread(target=lambda: _swallow(adapter.run_trial_node, _inputs("t:1")))
+    try:
+        occupier.start()
+        assert occupy_entered.wait(timeout=10)
+        queued.start()
+        # Wait until the queued job is in the table (still waiting for the worker).
+        handle = JobHandle(trial_id="t:1")
+        _wait_until(lambda: adapter.status(handle).state is JobState.RUNNING)
+
+        adapter.cancel(handle)
+        assert adapter.status(handle).state is JobState.CANCELLED
+    finally:
+        occupy_release.set()
+        occupier.join(timeout=10)
+        queued.join(timeout=10)
+        adapter.close()
+
+
+def test_thread_fetch_result_without_a_retained_result_is_unsupported() -> None:
+    adapter = _thread_adapter(lambda inputs: _result(inputs.trial_spec.trial_id))
+    try:
+        with pytest.raises(DispatchUnsupported, match="not retained"):
+            adapter.fetch_result(JobHandle(trial_id="missing:0"))
+    finally:
+        adapter.close()
+
+
+def _swallow(fn: Callable[[TrialNodeInputs], TrialResult], inputs: TrialNodeInputs) -> None:
+    try:
+        fn(inputs)
+    except BaseException:  # noqa: BLE001 — the cancelled job's future reports back however it may
+        pass
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition not met within timeout")

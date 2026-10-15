@@ -172,15 +172,26 @@ class LocalDispatchAdapter:
         # Round-trip the inputs through JSON so a threaded trial sees exactly the
         # serialized value a node would, not a shared in-memory object.
         payload = inputs.model_dump_json()
-        future = self._pool.submit(self._run_one, payload)
+        # Submit and record RUNNING under one lock so a status read never races a
+        # worker that starts the instant the future is submitted.
         with self._jobs_lock:
+            future = self._pool.submit(self._run_one, payload)
             self._jobs[trial_id] = _ThreadJob(future=future, state=JobState.RUNNING)
         try:
             result = future.result()
-        except Exception:
-            self._mark_job(trial_id, JobState.FAILED)
+        except BaseException:
+            # Only a job still RUNNING becomes FAILED: a job cancelled before it
+            # started keeps its CANCELLED state when its future reports back.
+            with self._jobs_lock:
+                job = self._jobs.get(trial_id)
+                if job is not None and job.state is JobState.RUNNING:
+                    job.state = JobState.FAILED
             raise
-        self._mark_job(trial_id, JobState.COMPLETED, result=result)
+        with self._jobs_lock:
+            job = self._jobs.get(trial_id)
+            if job is not None:
+                job.state = JobState.COMPLETED
+                job.result = result
         return result
 
     def _run_one(self, payload: str) -> TrialResult:
@@ -189,17 +200,6 @@ class LocalDispatchAdapter:
             return self.run_trial_fn(rebuilt)
         except Exception as exc:
             raise _dispatch_error(*classify_trial_exception(exc)) from exc
-
-    def _mark_job(
-        self, trial_id: str, state: JobState, *, result: TrialResult | None = None
-    ) -> None:
-        with self._jobs_lock:
-            job = self._jobs.get(trial_id)
-            if job is None:
-                return
-            job.state = state
-            if result is not None:
-                job.result = result
 
     # ---- Control plane ----
 
