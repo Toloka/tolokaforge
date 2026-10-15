@@ -2287,17 +2287,23 @@ along three axes and the tighter set candidate wins. Ordered narrowest-first
 by scope:
 
 - `tools.<actor>.<tool_name>.output_max_chars: int | None` is the task-yaml
-  override — a pack author's per-tool cap on the tool as used in this pack,
-  tighter than the tool's own declared bound. Reserved sibling to the
-  block's per-tool init kwargs; positive int, else the loader rejects it at
-  authoring time.
+  override — a pack author's per-tool cap on the tool as used in this pack.
+  Reserved sibling to the block's per-tool init kwargs. A
+  `tools.<actor>.output_max_chars` sibling of `enabled` is the actor-wide
+  default for every tool the block enables, MCP-server tools included; a
+  per-tool value replaces it for that tool. Both are positive ints, else the
+  loader rejects them at authoring time. See
+  [TASKS.md § Capping tool output](TASKS.md#capping-tool-output).
 - `ToolPolicy.output_max_chars: int | None` is the per-tool declared bound
   a tool sets on its own output — a status poll that always returns ≤512
   chars declares that shape once at registration and every loop composes it
   correctly.
 - `ModelCapabilities.tool_output_max_chars: int | None` is the per-model
   backstop; a preset that names the key applies its cap uniformly to every
-  trial that runs on that model.
+  trial that runs on that model. A run config sets it, or clears a preset's
+  with `null`, through `models.<role>.capabilities.tool_output_max_chars`
+  ([CONFIG.md](CONFIG.md#model-capability-presets) "Available overrides");
+  it applies to the agent's loop.
 
 The composition runs at two sites, each using the same shape (`min` of the
 set candidates, `None` when none is set). The adapter site
@@ -2327,10 +2333,13 @@ sees on the next prompt is capped.
 The marker splices between the preserved head and tail:
 
 ```
-\n...[{N} chars omitted]...\n
+\n...[{N} of {M} chars omitted; narrow the request to see the rest]...\n
 ```
 
-`{N}` is the number of chars removed. Head and tail are each
+`{N}` is the number of chars removed and `{M}` the length of the full
+content. The hint is the one recovery that holds for every tool — ask for
+less — so a model that would otherwise re-issue the same call learns to add
+a filter, a page size or an id. Head and tail are each
 `effective_cap // 2` chars long, taken verbatim from the input — so a
 compilation output whose first failure is at the top and whose final
 error is at the bottom keeps both edges (the two most common tool-output

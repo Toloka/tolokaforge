@@ -95,6 +95,38 @@ description: "Add a POST /orders endpoint backed by the orders table."
 Those two fields are a complete native pack only with a `grading.yaml` beside them,
 which is the source the `grading` row above describes.
 
+### Capping tool output
+
+A tool whose result can be very large — a world an MCP server serves that can list
+thousands of records, a browser DOM, a database dump — can fill the agent's context in
+one call. `output_max_chars` caps how many characters of one result the agent's model
+reads, in two places:
+
+```yaml
+tools:
+  agent:
+    enabled: ["list_records", "get_record", "export_report"]
+    mcp_server: "mcp_server.py"
+    output_max_chars: 200000        # every tool this block enables
+    export_report:
+      output_max_chars: 500000      # this tool only; replaces the line above for it
+```
+
+- `tools.<actor>.output_max_chars`, a sibling of `enabled`, caps every tool the block
+  enables, MCP-server tools included. Declared under `task_defaults.tools.<actor>` in
+  `project.yaml` (or in a shared domain bundle), it covers every task of the pack.
+- `tools.<actor>.<tool_name>.output_max_chars` caps one tool and replaces the
+  actor-wide value for it, higher or lower.
+
+Each is a positive integer; anything else is refused when the task loads. The cap a
+task declares composes with the tool's own declared bound and the model's cap
+(`models.<role>.capabilities.tool_output_max_chars` in the run config, see
+[CONFIG.md](CONFIG.md#model-capability-presets)), and the tightest wins. A cut result
+keeps its head and tail with a line between them naming how many characters were
+dropped and asking for a narrower request; the trial's tool-call record and the grader
+read the full result. The native adapter applies these keys; see
+[LLM_LAYER.md § Tool-output truncation](LLM_LAYER.md#tool-output-truncation).
+
 ## Initial State
 
 - `json_db`: the trial's JSON DB seed, either a JSON file path relative to the task
@@ -557,8 +589,6 @@ tools:
 ```
 
 The `mobile` tool uses a phone-sized viewport (412x915) and only exposes tap, type, scroll, and gesture actions — no URL navigation, search, or browser-specific actions. See [BROWSER_TOOLS.md](BROWSER_TOOLS.md) for full details.
-
-Any tool block also accepts an `output_max_chars: int` sibling that caps the `role=tool` message content the loop appends for that tool in this pack. It composes with the tool's declared bound and the per-model backstop; the tighter set candidate wins. See [`LLM_LAYER.md § Tool-output truncation`](LLM_LAYER.md#tool-output-truncation) for the composition rule.
 
 ## Mobile App Fixtures
 

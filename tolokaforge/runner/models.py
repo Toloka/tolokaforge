@@ -182,9 +182,10 @@ class ToolSchema(BaseModel):
     The adapter composes two inputs into this value —
     :attr:`tolokaforge.tools.registry.ToolPolicy.output_max_chars` (the
     tool-declared bound) and the task-yaml override
-    ``tools.<actor>.<tool_name>.output_max_chars`` — as ``min`` of whichever
-    are set. The runner returns the composed value to the harness, and the
-    engine loop composes it in turn with the per-model
+    ``tools.<actor>.<tool_name>.output_max_chars`` (or the actor-wide
+    ``tools.<actor>.output_max_chars`` where the tool names none) — as ``min``
+    of whichever are set. The runner returns the composed value to the harness,
+    and the engine loop composes it in turn with the per-model
     :attr:`~tolokaforge.core.model_capabilities.ModelCapabilities.tool_output_max_chars`
     as ``min(tool_cap, capability_cap)``. ``None`` defers to the per-model cap;
     a tool with no declared bound, no task-yaml override, and no preset naming

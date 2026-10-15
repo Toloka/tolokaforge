@@ -695,7 +695,7 @@ one map instead of silently landing its declarations under the wrong identity.""
 
 
 def actor_tool_block(task: Any, actor: ToolActor) -> dict[str, Any]:
-    """The ``tools.<actor>`` block: ``enabled``, ``mcp_server`` and per-tool kwargs.
+    """The ``tools.<actor>`` block: ``enabled``, ``mcp_server``, ``output_max_chars``, tool blocks.
 
     A task object carrying no ``tools`` at all — what an external adapter's task
     can be — declares nothing for either actor.
@@ -891,36 +891,58 @@ def tool_configs(task: TaskConfig, actor: ToolActor) -> dict[str, dict]:
 
 
 def tool_output_max_chars_overrides(task: TaskConfig, actor: ToolActor) -> dict[str, int]:
-    """Per-tool ``output_max_chars`` overrides declared on ``tools.<actor>.<name>``.
+    """Per-tool ``output_max_chars`` overrides declared on ``tools.<actor>``.
 
-    Returns ``{tool_name: cap}`` for every enabled tool whose block names a
-    positive-int ``output_max_chars`` sibling. The value composes with the
-    tool's own :attr:`~tolokaforge.tools.registry.ToolPolicy.output_max_chars`
-    (adapter-side ``min``) into the emitted ``ToolSchema.output_max_chars``; the
-    loop then composes that with the per-model backstop. An absent key or
-    ``None`` value leaves the tool out of the returned mapping.
+    Two places declare one. ``tools.<actor>.output_max_chars`` — a sibling of
+    ``enabled`` — is the actor-wide default: every tool the block enables gets
+    it, the tools an MCP server serves included. ``tools.<actor>.<name>.output_max_chars``
+    is the per-tool value and replaces the default for that tool, so a pack can
+    raise the cap on one tool as well as lower it.
+
+    Returns ``{tool_name: cap}`` for every enabled tool either place covers. The
+    value composes with the tool's own
+    :attr:`~tolokaforge.tools.registry.ToolPolicy.output_max_chars` (adapter-side
+    ``min``) into the emitted ``ToolSchema.output_max_chars``; the loop then
+    composes that with the per-model backstop. An absent key or ``None`` value
+    declares nothing.
 
     Raises:
-        ValueError: If ``output_max_chars`` is present with a non-int or a
-            non-positive value. Task YAML is authoring surface, so a typo
-            fails loud rather than reaching the wire as a nonsense cap.
+        ValueError: If either key is present with a non-int or a non-positive
+            value. Task YAML is authoring surface, so a typo fails loud rather
+            than reaching the wire as a nonsense cap.
     """
     block = actor_tool_block(task, actor)
+    actor_default = _positive_output_max_chars(
+        block.get("output_max_chars"), f"tools.{actor.value}.output_max_chars", task
+    )
     overrides: dict[str, int] = {}
     for tool_name in block.get("enabled", []):
         raw = block.get(tool_name)
-        if not isinstance(raw, dict):
-            continue
-        value = raw.get("output_max_chars")
-        if value is None:
-            continue
-        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-            raise ValueError(
-                f"tools.{actor.value}.{tool_name}.output_max_chars must be a positive int "
-                f"(got {type(value).__name__}={value!r}) in task {task.task_id!r}"
+        per_tool = (
+            _positive_output_max_chars(
+                raw.get("output_max_chars"),
+                f"tools.{actor.value}.{tool_name}.output_max_chars",
+                task,
             )
-        overrides[tool_name] = value
+            if isinstance(raw, dict)
+            else None
+        )
+        cap = per_tool if per_tool is not None else actor_default
+        if cap is not None:
+            overrides[tool_name] = cap
     return overrides
+
+
+def _positive_output_max_chars(value: object, path: str, task: TaskConfig) -> int | None:
+    """*value* as a cap declared at *path*, ``None`` when it declares none."""
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(
+            f"{path} must be a positive int "
+            f"(got {type(value).__name__}={value!r}) in task {task.task_id!r}"
+        )
+    return value
 
 
 def resolve_tool_schemas(

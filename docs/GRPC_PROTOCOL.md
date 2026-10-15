@@ -740,7 +740,8 @@ carry an optional `output_max_chars: int` — the per-tool cap on the correspond
 tool's `role=tool` message content. The native adapter composes two inputs into
 the emitted value (`min` of whichever are set): `ToolPolicy.output_max_chars`
 (the tool-declared bound) and the task-yaml override at
-`tools.<actor>.<tool_name>.output_max_chars`. The harness reads the value back
+`tools.<actor>.<tool_name>.output_max_chars`, or the actor-wide
+`tools.<actor>.output_max_chars` where the tool names none. The harness reads the value back
 (via `HasField`) and threads it into the engine loop, where the loop composes
 it with the per-model
 [`ModelCapabilities.tool_output_max_chars`](LLM_LAYER.md#tool-output-truncation)

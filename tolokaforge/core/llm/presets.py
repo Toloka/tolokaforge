@@ -232,6 +232,24 @@ def _validated_observation_window_polling(value: object, where: str) -> int:
     return value
 
 
+def _validated_tool_output_max_chars(value: object, where: str) -> int | None:
+    """A preset's ``tool_output_max_chars``, or ``None`` when it declares none.
+
+    Validated here rather than coerced, because a run config can set it: ``"200000"``
+    or ``1.5`` would otherwise become a cap nobody wrote, and ``0`` would surface
+    only at the first tool result of the first trial. ``None`` is a value, not an
+    absence: it disables the per-model cap and is how a run config clears a
+    preset's cap.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"{where}: tool_output_max_chars {value!r} is not a positive integer or null."
+        )
+    return value
+
+
 def _merge_out_of_tree_policy_registrations() -> None:
     """Merge ``tolokaforge-models`` policy classes onto ``_POLICY_REGISTRIES``.
 
@@ -949,6 +967,8 @@ _RECOGNISED_OVERRIDE_KEYS: frozenset[str] = frozenset(
         # Observation window
         "observation_window",
         "observation_window_polling",
+        # Tool-output cap
+        "tool_output_max_chars",
         # Params policy
         "fixed_temperature",
         "supports_seed",
@@ -1011,6 +1031,9 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
 
     if "observation_window_polling" in overrides:
         cfg["observation_window_polling"] = overrides["observation_window_polling"]
+
+    if "tool_output_max_chars" in overrides:
+        cfg["tool_output_max_chars"] = overrides["tool_output_max_chars"]
 
     # dict_map_prompt_hints → prompt_policy
     if overrides.get("dict_map_prompt_hints"):
@@ -1218,9 +1241,7 @@ def build_capabilities(
         observation_window_polling=_validated_observation_window_polling(
             observation_window_polling, where
         ),
-        tool_output_max_chars=(
-            int(tool_output_max_chars) if tool_output_max_chars is not None else None
-        ),
+        tool_output_max_chars=_validated_tool_output_max_chars(tool_output_max_chars, where),
         default_max_turns=(int(default_max_turns) if default_max_turns is not None else None),
         default_agent_prompt_contract=(
             str(default_agent_prompt_contract)

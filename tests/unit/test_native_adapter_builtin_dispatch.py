@@ -584,6 +584,132 @@ def test_tool_output_max_chars_override_rejects_non_positive_int(tmp_path: Path,
 
 
 # ---------------------------------------------------------------------------
+# tools.<actor>.output_max_chars — actor-wide task-yaml default
+# ---------------------------------------------------------------------------
+
+
+def _mcp_task_dir(tmp_path: Path, agent_block: dict) -> Path:
+    """A task whose agent tools ``wide_read`` and ``narrow_read`` an MCP server serves."""
+    task_dir = tmp_path / "mcp_cap_task"
+    (task_dir / "fixtures").mkdir(parents=True)
+    (task_dir / "mcp_server.py").write_text("")
+    (task_dir / "fixtures" / "tools.json").write_text(
+        json.dumps(
+            [
+                {"name": name, "description": name, "parameters": {"type": "object"}}
+                for name in ("wide_read", "narrow_read")
+            ]
+        )
+    )
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "mcp_cap_task",
+                "name": "mcp cap task",
+                "description": "an MCP server whose reads can return large payloads",
+                "category": "support",
+                "max_turns": 2,
+                "interaction_mode": "conversational",
+                "initial_user_message": "list everything",
+                "initial_state": {},
+                "tools": {
+                    "agent": {
+                        "enabled": ["wide_read", "narrow_read"],
+                        "mcp_server": "mcp_server.py",
+                        **agent_block,
+                    },
+                    "user": {"enabled": []},
+                },
+                "actors": {"user": {"mode": "llm"}},
+            }
+        )
+    )
+    return tmp_path
+
+
+def _emitted_caps(base_dir: Path) -> dict[str, int | None]:
+    adapter = NativeAdapter({"tasks_glob": "*/task.yaml", "base_dir": str(base_dir)})
+    td = adapter.to_task_description("mcp_cap_task")
+    return {tool.name: tool.output_max_chars for tool in td.agent_tools}
+
+
+def test_the_actor_wide_cap_reaches_every_tool_an_mcp_server_serves(tmp_path: Path):
+    """``tools.agent.output_max_chars`` caps every enabled tool, MCP-served ones
+    included, so a pack whose world can return very large payloads bounds them
+    without naming each tool."""
+    base_dir = _mcp_task_dir(tmp_path, {"output_max_chars": 200_000})
+
+    assert _emitted_caps(base_dir) == {"wide_read": 200_000, "narrow_read": 200_000}
+
+
+@pytest.mark.parametrize("per_tool_cap", [500_000, 4_096], ids=["raises", "lowers"])
+def test_a_per_tool_cap_replaces_the_actor_wide_one(tmp_path: Path, per_tool_cap: int):
+    """The per-tool value is the more specific declaration, so it replaces the
+    actor-wide default for that tool in either direction; the other tools keep
+    the default."""
+    base_dir = _mcp_task_dir(
+        tmp_path,
+        {"output_max_chars": 200_000, "wide_read": {"output_max_chars": per_tool_cap}},
+    )
+
+    assert _emitted_caps(base_dir) == {"wide_read": per_tool_cap, "narrow_read": 200_000}
+
+
+def test_the_actor_wide_cap_still_yields_to_a_tighter_tool_declared_bound(
+    monkeypatch, tmp_path: Path
+):
+    """The actor-wide default composes with ``ToolPolicy.output_max_chars``
+    under the same tighter-wins rule as a per-tool value."""
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    monkeypatch.setattr(builtin_registry, "is_builtin", lambda name: name == "stub_capped")
+    monkeypatch.setattr(builtin_registry, "get_class", lambda name: _StubCappedTool)
+    base_dir = _task_dir_with_stub_block(tmp_path, "stub_capped", {})
+    task_yaml = base_dir / "override_task" / "task.yaml"
+    data = yaml.safe_load(task_yaml.read_text())
+    data["tools"]["agent"]["output_max_chars"] = 200_000
+    task_yaml.write_text(yaml.safe_dump(data))
+
+    adapter = NativeAdapter({"tasks_glob": "*/task.yaml", "base_dir": str(base_dir)})
+    td = adapter.to_task_description("override_task")
+
+    assert next(t for t in td.agent_tools if t.name == "stub_capped").output_max_chars == 512
+
+
+def test_a_project_task_default_caps_every_task_of_the_pack(tmp_path: Path):
+    """Declared once under ``task_defaults.tools.agent`` in ``project.yaml``, the
+    actor-wide cap reaches a task that declares none of its own, because the
+    project layer deep-merges under the task's ``tools.agent`` block."""
+    from tolokaforge.adapters._task_loader import ToolActor, tool_output_max_chars_overrides
+
+    base_dir = _mcp_task_dir(tmp_path, {})
+    task, _ = load_task_yaml(
+        base_dir / "mcp_cap_task" / "task.yaml",
+        project_task_defaults={"tools": {"agent": {"output_max_chars": 200_000}}},
+    )
+
+    assert tool_output_max_chars_overrides(task, ToolActor.AGENT) == {
+        "wide_read": 200_000,
+        "narrow_read": 200_000,
+    }
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [0, -1, 3.14, "200000", True],
+    ids=["zero", "negative", "float", "string", "bool"],
+)
+def test_an_actor_wide_cap_that_is_not_a_positive_int_is_refused(tmp_path: Path, bad_value):
+    from tolokaforge.adapters._task_loader import ToolActor, tool_output_max_chars_overrides
+
+    base_dir = _mcp_task_dir(tmp_path, {"output_max_chars": bad_value})
+    task, _ = load_task_yaml(base_dir / "mcp_cap_task" / "task.yaml")
+
+    with pytest.raises(ValueError, match=r"tools\.agent\.output_max_chars must be"):
+        tool_output_max_chars_overrides(task, ToolActor.AGENT)
+
+
+# ---------------------------------------------------------------------------
 # ToolPolicy.timeout_s — adapter bridge
 # ---------------------------------------------------------------------------
 

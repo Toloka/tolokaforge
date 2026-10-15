@@ -26,13 +26,21 @@ def test_input_equal_to_cap_returned_unchanged() -> None:
 def test_middle_elided_with_exact_marker() -> None:
     truncated, omitted = keep_head_and_tail("a" * 500, 100)
     assert omitted == 400
-    assert truncated == "a" * 50 + "\n...[400 chars omitted]...\n" + "a" * 50
+    assert truncated == (
+        "a" * 50
+        + "\n...[400 of 500 chars omitted; narrow the request to see the rest]...\n"
+        + "a" * 50
+    )
 
 
 def test_odd_cap_splits_both_halves_at_floor_division() -> None:
     truncated, omitted = keep_head_and_tail("a" * 500, 99)
     assert omitted == 402
-    assert truncated == "a" * 49 + "\n...[402 chars omitted]...\n" + "a" * 49
+    assert truncated == (
+        "a" * 49
+        + "\n...[402 of 500 chars omitted; narrow the request to see the rest]...\n"
+        + "a" * 49
+    )
 
 
 def test_head_and_tail_preserved_verbatim() -> None:
@@ -41,7 +49,7 @@ def test_head_and_tail_preserved_verbatim() -> None:
     assert omitted == len(text) - 8
     assert truncated.startswith("HEAD")
     assert truncated.endswith("TAIL")
-    assert f"[{omitted} chars omitted]" in truncated
+    assert f"[{omitted} of {len(text)} chars omitted;" in truncated
 
 
 @pytest.mark.parametrize("bad_cap", [0, -1, -100])
