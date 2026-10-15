@@ -22,6 +22,7 @@ calls are faked at the ``subprocess`` seam.
 
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -230,6 +231,76 @@ def test_absent_source_still_empties_destination(monkeypatch: pytest.MonkeyPatch
 
     # Destination emptied (reward 0), but no copy was attempted.
     assert any("mkdir" in c for c in run_commands)
+
+
+def test_probe_subprocess_exception_books_trial_ungradeable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operational subprocess failure during the source probe (a stalled
+    daemon raising ``TimeoutExpired``) becomes a clean ungradeable, not a raw
+    escape — same wrapping the exec seam applies."""
+
+    def boom_run(argv: list[str], **_: object) -> _FakeCompleted:  # noqa: ARG001 — scripted
+        raise subprocess.TimeoutExpired(cmd="docker", timeout=30.0)
+
+    monkeypatch.setattr(service_module.subprocess, "run", boom_run)
+    svc = _service_with_started_tool()
+
+    with pytest.raises(SubstrateUnreachableError, match="materialising"):
+        svc._materialise_path(
+            src_service=None,
+            dst_service="verifier",
+            path="/app/output",
+            exclude=(),
+            trial_id="t-1",
+        )
+
+
+def test_docker_cp_transport_failure_books_trial_ungradeable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ``docker cp`` pipe raising (daemon gone, ``docker`` binary missing)
+    is wrapped as ``SubstrateUnreachableError`` rather than escaping the
+    executor. The probe passes, so the failure is isolated to the copy stage."""
+    _install_fake_subprocess(monkeypatch)  # probe PRESENT, rm/mkdir succeed
+
+    def boom_popen(argv: list[str], **_: object) -> _FakeProc:  # noqa: ARG001 — scripted
+        raise FileNotFoundError("docker: command not found")
+
+    monkeypatch.setattr(service_module.subprocess, "Popen", boom_popen)
+    svc = _service_with_started_tool()
+
+    with pytest.raises(SubstrateUnreachableError, match="materialising"):
+        svc._materialise_path(
+            src_service=None,
+            dst_service="verifier",
+            path="/app/output",
+            exclude=(),
+            trial_id="t-1",
+        )
+
+
+def test_programming_bug_in_materialise_propagates_not_masked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A programming bug (``AttributeError``) is NOT swallowed into the
+    ungradeable path — only operational exec/transport failures are. Locks the
+    'do not over-catch' boundary."""
+
+    def buggy_run(argv: list[str], **_: object) -> _FakeCompleted:  # noqa: ARG001 — scripted
+        raise AttributeError("internal bug, not an infrastructure condition")
+
+    monkeypatch.setattr(service_module.subprocess, "run", buggy_run)
+    svc = _service_with_started_tool()
+
+    with pytest.raises(AttributeError, match="internal bug"):
+        svc._materialise_path(
+            src_service=None,
+            dst_service="verifier",
+            path="/app/output",
+            exclude=(),
+            trial_id="t-1",
+        )
 
 
 def test_unstarted_env_tool_surfaces_as_ungradeable(monkeypatch: pytest.MonkeyPatch) -> None:

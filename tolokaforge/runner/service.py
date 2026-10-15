@@ -2364,7 +2364,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         — which takes positional args only — invokes the kind synchronously
         off-loop. A raised :class:`GraderKindRefusedError` maps to
         ``pb2.GradeTrialResponse(success=False, error=exc.reason)``, byte-
-        parity with the pre-move tool-absent shape.
+        parity with the pre-move tool-absent shape. A
+        :class:`SubstrateUnreachableError` (collect / materialise /
+        run_test_suite transport failure) maps the same way, so a lost state
+        source books the trial ungradeable here just as the detached and CLI
+        lanes already translate it.
         """
         kind_cls = load_grader_kind(method_name)
         substrate = self._build_grading_substrate(
@@ -2384,6 +2388,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 grade = await asyncio.get_event_loop().run_in_executor(None, evaluate_call)
             except GraderKindRefusedError as exc:
                 return pb2.GradeTrialResponse(success=False, error=exc.reason)
+            except SubstrateUnreachableError as exc:
+                # The substrate lost its state source mid-grade (collect /
+                # materialise / run_test_suite transport failure). Book the
+                # trial ungradeable — success=False with the reason threaded
+                # through — matching the detached and CLI lanes, rather than
+                # letting it escape as an unhandled gRPC error.
+                return pb2.GradeTrialResponse(success=False, error=str(exc))
         finally:
             substrate.close()
 

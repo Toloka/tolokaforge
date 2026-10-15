@@ -217,6 +217,47 @@ def test_offline_dispatch_refuses_when_bundle_lacks_task_description() -> None:
     assert grade is None
 
 
+def test_offline_dispatch_refuses_db_probes_rather_than_scoring_zero() -> None:
+    """An offline recompute of a ``db_probes`` task refuses cleanly instead of
+    laundering the unreachable substrate to a score of 0.0.
+
+    The snapshot substrate's ``db_probe`` raises
+    :class:`SubstrateUnreachableError`; without the up-front refusal the
+    per-probe loop would turn that into a ``FAIL`` line and the composite would
+    fold a real 0.0. The kind refuses before the recompute reaches the
+    substrate, so the trial is ungradeable, not failed."""
+    from tolokaforge.core.grading.kinds import GraderKindRefusedError
+    from tolokaforge.runner.models import DbProbe
+
+    task_config = RunnerGradingConfig(
+        combine_method="weighted",
+        weights={"state_checks": 1.0},
+        pass_threshold=0.5,
+        state_checks=RunnerStateChecksConfig(
+            db_probes=[
+                DbProbe(
+                    name="ca_exists",
+                    dsn="postgresql://grader@app-db/mfg",
+                    query="SELECT 1",
+                    expect=[{"path": "$.row_count", "equals": 1}],
+                    description="corrective action recorded",
+                )
+            ]
+        ),
+    )
+    substrate = _OfflineV11Substrate(task_description=_minimal_task_description())
+
+    with pytest.raises(GraderKindRefusedError, match="cannot execute db_probes offline"):
+        CompositeGraderKind().evaluate(
+            substrate=substrate,  # type: ignore[arg-type]
+            task_config=task_config,
+            kind_config=None,
+            trial_id="task:0",
+            agent_tools={},
+            logger=_logger(),  # type: ignore[arg-type]
+        )
+
+
 def test_offline_dispatch_refuses_when_judge_config_missing_for_declared_judge() -> None:
     """A task declaring ``llm_judge`` but no ``judge_model_config.json`` in
     the bundle refuses actionably, naming the missing v1.1 part."""
