@@ -293,6 +293,27 @@ class GradingSubstrate(Protocol):
         """
         ...
 
+    def exec_in_service(
+        self,
+        *,
+        service: str | None,
+        command: str,
+        timeout_s: float,
+    ) -> tuple[int, str]:
+        """Run a shell *command* in *service*'s container, returning (exit_code, output).
+
+        A general exec into any of the trial's compose services, separate from
+        :meth:`run_test_suite` (which also reads a reward file). The
+        separate-verifier shape uses it to run a task-defined pre-grade step —
+        e.g. snapshotting a database sidecar to a file that a later
+        :meth:`materialise_path` carries into the verifier. The caller decides
+        what a non-zero exit means.
+
+        Raises :class:`SubstrateUnreachableError` when the substrate cannot reach
+        the container (e.g. a snapshot substrate, which has none).
+        """
+        ...
+
     def filesystem_state(self) -> dict[str, str] | None:
         """The agent-visible filesystem as ``{'/env/fs/agent-visible/<rel>': text}``,
         or ``None`` when the trial has no workspace tree.
@@ -408,6 +429,7 @@ class InProcessGradingSubstrate:
         filesystem_state_factory: Callable[[], dict[str, str] | None] | None = None,
         run_test_suite_impl: Callable[..., RunTestSuiteResult] | None = None,
         materialise_path_impl: Callable[..., None] | None = None,
+        exec_in_service_impl: Callable[..., tuple[int, str]] | None = None,
     ) -> None:
         if final_state is not None and final_state_factory is not None:
             raise ValueError(
@@ -424,6 +446,7 @@ class InProcessGradingSubstrate:
         self._filesystem_state_factory = filesystem_state_factory
         self._run_test_suite_impl = run_test_suite_impl
         self._materialise_path_impl = materialise_path_impl
+        self._exec_in_service_impl = exec_in_service_impl
         self._final_state_stable_cache: dict[str, Any] | Any = _MISSING
         self._filesystem_state_cache: dict[str, str] | None | Any = _MISSING
         self._closed = False
@@ -525,6 +548,25 @@ class InProcessGradingSubstrate:
             dst_service=dst_service,
             path=path,
             exclude=tuple(exclude),
+        )
+
+    def exec_in_service(
+        self,
+        *,
+        service: str | None,
+        command: str,
+        timeout_s: float,
+    ) -> tuple[int, str]:
+        if self._exec_in_service_impl is None:
+            raise SubstrateUnreachableError(
+                "InProcessGradingSubstrate.exec_in_service() called but "
+                "'exec_in_service_impl' was not supplied at construction — "
+                "separate-verifier grading requires an exec-capable callback."
+            )
+        return self._exec_in_service_impl(
+            service=service,
+            command=command,
+            timeout_s=timeout_s,
         )
 
     def trajectory(self) -> Mapping[str, Any] | None:
@@ -749,6 +791,19 @@ class SnapshotGradingSubstrate:
             f"SnapshotGradingSubstrate cannot materialise a path offline "
             f"(dst_service={dst_service!r}, path={path!r}) — bundle format v1.0 "
             f"carries no live containers. Pack requires live_callback for grading."
+        )
+
+    def exec_in_service(
+        self,
+        *,
+        service: str | None,
+        command: str,  # noqa: ARG002
+        timeout_s: float,  # noqa: ARG002
+    ) -> tuple[int, str]:
+        raise SubstrateUnreachableError(
+            f"SnapshotGradingSubstrate cannot exec in a service offline "
+            f"(service={service!r}) — bundle format v1.0 carries no live "
+            f"containers. Pack requires live_callback for grading."
         )
 
     def trajectory(self) -> Mapping[str, Any] | None:

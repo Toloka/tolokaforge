@@ -761,7 +761,26 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     self._verifier_budget_sec(meta),
                     service=env.verifier_service,
                     artifacts=(
-                        [{"source": a.source, "exclude": a.exclude} for a in meta.artifacts]
+                        [
+                            {
+                                "source": a.source,
+                                "exclude": a.exclude,
+                                "src_service": a.src_service,
+                            }
+                            for a in meta.artifacts
+                        ]
+                        if meta.is_v4
+                        else None
+                    ),
+                    collect=(
+                        [
+                            {
+                                "service": h.service,
+                                "command": h.command,
+                                "timeout_s": h.timeout_sec,
+                            }
+                            for h in meta.collect
+                        ]
                         if meta.is_v4
                         else None
                     ),

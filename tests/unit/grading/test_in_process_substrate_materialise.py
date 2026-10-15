@@ -74,3 +74,22 @@ def test_materialise_path_without_impl_is_unreachable() -> None:
     sub = _substrate()
     with pytest.raises(SubstrateUnreachableError):
         sub.materialise_path(src_service=None, dst_service="verifier", path="/app")
+
+
+def test_exec_in_service_delegates_to_impl() -> None:
+    seen: dict[str, Any] = {}
+
+    def impl(**kwargs: Any) -> tuple[int, str]:
+        seen.update(kwargs)
+        return (0, "ok")
+
+    sub = _substrate(exec_in_service_impl=impl)
+    rc, out = sub.exec_in_service(service="postgres", command="pg_dumpall", timeout_s=30.0)
+    assert (rc, out) == (0, "ok")
+    assert seen == {"service": "postgres", "command": "pg_dumpall", "timeout_s": 30.0}
+
+
+def test_exec_in_service_without_impl_is_unreachable() -> None:
+    sub = _substrate()
+    with pytest.raises(SubstrateUnreachableError):
+        sub.exec_in_service(service="postgres", command="x", timeout_s=1.0)

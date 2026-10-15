@@ -702,6 +702,14 @@ service SubstrateService {
   // (the destination is left empty); a container that cannot be reached is.
   rpc MaterialisePath(MaterialisePathRequest) returns (MaterialisePathResponse);
 
+  // Run a shell command in a named trial service container and return its exit
+  // code + merged stdout/stderr. A general exec seam distinct from RunTestSuite
+  // (which also reads a reward). The separate-verifier shape uses it for a
+  // task-defined pre-grade step (e.g. snapshotting a DB sidecar to a file). A
+  // non-zero command exit rides in the response; only an unreachable container
+  // sets the gRPC status.
+  rpc ExecInService(ExecInServiceRequest) returns (ExecInServiceResponse);
+
   // Substrate liveness + capacity signal. Distinct from RunnerService.
   // HealthCheck (that endpoint reports RunnerService plumbing; this one
   // reports the substrate seam and its active-trial count).
@@ -933,6 +941,26 @@ message MaterialisePathResponse {
   // could not be reached or a copy step failed.
   bool ok = 1;
   string error = 2;
+}
+
+message ExecInServiceRequest {
+  string trial_id = 1;
+  // Compose service whose container runs the command.
+  string service = 2;
+  // Shell command line, run as ``sh -c`` inside the container.
+  string command = 3;
+  // Wall-clock cap on the command. 0.0 → the servicer's default.
+  double timeout_s = 4;
+}
+
+message ExecInServiceResponse {
+  // The command's exit code (informational — a non-zero exit is not an error).
+  int32 exit_code = 1;
+  // Merged stdout/stderr of the command, wire-capped by the servicer.
+  string output = 2;
+  // Set only when the container could not be reached / the exec itself raised;
+  // the client raises SubstrateUnreachableError. Empty on a normal run.
+  string error = 3;
 }
 
 // -----------------------------------------------------------------------------

@@ -356,6 +356,7 @@ class CodingHarnessAdapterMixin:
         *,
         service: str | None = None,
         artifacts: list[dict[str, Any]] | None = None,
+        collect: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Payload the adapter passes to :class:`~tolokaforge.runner.models.RunnerGradingConfig`.
 
@@ -372,11 +373,14 @@ class CodingHarnessAdapterMixin:
         before it finishes writes no reward and scores zero, so a task asking
         for more time than the default is asking not to be failed by the clock.
 
-        *service* and *artifacts* cover the separate-verifier shape: the suite
-        runs in ``service``'s container rather than the agent's, and each
-        ``artifacts`` entry (``{"source": ..., "exclude": [...]}``) is
-        re-materialised from the agent container into it first. Both omitted
-        leaves the single-container behaviour untouched.
+        *service*, *artifacts* and *collect* cover the separate-verifier shape: the
+        suite runs in ``service``'s container rather than the agent's; each
+        ``artifacts`` entry (``{"source", "exclude", "src_service"}``) is
+        re-materialised into it first (from the agent, or from ``src_service``'s
+        sidecar); and each ``collect`` entry (``{"service", "command",
+        "timeout_s"}``) runs before that to snapshot a sidecar to a file an
+        artifact then carries across. All omitted leaves the single-container
+        behaviour untouched.
         """
         payload: dict[str, Any] = {
             "combine_method": "weighted",
@@ -391,6 +395,8 @@ class CodingHarnessAdapterMixin:
             config["service"] = service
         if artifacts:
             config["artifacts"] = artifacts
+        if collect:
+            config["collect"] = collect
         if config:
             payload["grading_method_config"] = config
         return payload

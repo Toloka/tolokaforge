@@ -203,6 +203,19 @@ class LiveRunnerCallbackGradingSubstrate:
             exclude=exclude,
         )
 
+    def exec_in_service(
+        self,
+        *,
+        service: str | None,
+        command: str,
+        timeout_s: float,
+    ) -> tuple[int, str]:
+        return self._client.exec_in_service(
+            service=service,
+            command=command,
+            timeout_s=timeout_s,
+        )
+
     def trajectory(self) -> Mapping[str, Any] | None:
         """LIVE substrate does not carry a serialised trajectory.
 
