@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.31.2 (2026-10-15)
+
+### Fix
+
+- **ci**: promote images on patch releases (#1902)
+
 ## v0.31.1 (2026-10-15)
 
 ### Feat
