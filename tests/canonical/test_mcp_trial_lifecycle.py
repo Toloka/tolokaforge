@@ -115,6 +115,41 @@ async def test_a_slow_starting_child_leaves_the_event_loop_free(tmp_path):
         owned.cleanup()
 
 
+async def test_a_call_that_timed_out_waiting_for_the_start_never_runs(tmp_path):
+    """A call the agent was told timed out does not change the world once the start ends.
+
+    Each retry against a child still loading its world times out; none of them
+    may run its ``tools/call`` after the start completes.
+    """
+    path = tmp_path / "slow_server.py"
+    path.write_text("import time\ntime.sleep(1.0)\n" + SERVER)
+    owned = tools(str(path), "abandoned-start")
+    try:
+        counter = owned.agent_tools["counter"]
+        for _ in range(3):
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(counter.execute({}), timeout=0.1)
+
+        assert json.loads(await counter.execute({}))["counter"] == 1
+    finally:
+        owned.cleanup()
+
+
+async def test_a_call_that_timed_out_waiting_its_turn_is_never_sent(script):
+    """A call queued behind a request that holds the connection is dropped once abandoned."""
+    owned = tools(script, "abandoned-turn")
+    try:
+        counter = owned.agent_tools["counter"]
+        server = counter._get_server()
+        with server._request_lock:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(counter.execute({}), timeout=0.2)
+
+        assert json.loads(await counter.execute({}))["counter"] == 1
+    finally:
+        owned.cleanup()
+
+
 def test_cleanup_reaps_a_child_and_unblocks_its_pending_request(script, tmp_path):
     server = MCPServerProcess(script_path=script)
     server.start()

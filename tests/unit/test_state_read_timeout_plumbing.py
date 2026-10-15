@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from tests.canonical._docker_compose_stubs import InertDockerCompose
+from tolokaforge.core import orchestrator as orchestrator_module
 from tolokaforge.core.compose_materialisation import inject_runner_limits_env_into_runner
 from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
 from tolokaforge.core.docker_compose_materialiser import (
@@ -31,24 +32,27 @@ from tolokaforge.core.models import (
     RunConfig,
     ServiceSpec,
 )
+from tolokaforge.core.models.run_config import GraderConfig, QueueGraderConfig
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.per_trial_runtime import (
     PerTrialRuntimeBackend,
     per_trial_runtime_backend_factory,
 )
-from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
+from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext, TrialGraderContext
 from tolokaforge.core.project_loader import _synthesise_composition_plan
 from tolokaforge.core.shared_stack_runtime import (
     SharedStackRuntimeBackend,
     shared_runtime_backend_factory,
 )
 from tolokaforge.core.trial import EnvironmentManifest
+from tolokaforge.core.trial_grader import QueueTrialGrader, queue_trial_grader_factory
 from tolokaforge.docker.stacks.core import core_stack
 from tolokaforge.docker.stacks.full import full_stack
 from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB, MAX_MESSAGE_ENV_VAR
 from tolokaforge.runner.state_read_limits import (
     DEFAULT_STATE_READ_TIMEOUT_S,
     STATE_READ_TIMEOUT_ENV_VAR,
+    StateReadDeadlines,
 )
 
 pytestmark = pytest.mark.unit
@@ -325,3 +329,67 @@ class TestOrchestrator:
 
         assert orch._state_read_timeout_s() == DEFAULT_STATE_READ_TIMEOUT_S
 
+
+# ---------------------------------------------------------------------------
+# Engine-side waits on a whole grade
+# ---------------------------------------------------------------------------
+
+
+def _queue_grader(**ctx_overrides: Any) -> QueueTrialGrader:
+    return queue_trial_grader_factory(
+        TrialGraderContext(
+            runner_address="stub:0",
+            logger=MagicMock(),
+            grader_config=GraderConfig(queue=QueueGraderConfig(workers=1)),
+            **ctx_overrides,
+        )
+    )
+
+
+class TestQueueGraderWait:
+    """The queue grader's wait on a grade outlasts the runner's grading budget."""
+
+    def test_default_wait_outlasts_the_default_grading_budget(self) -> None:
+        grader = _queue_grader()
+        try:
+            assert grader.timeout_s == QueueTrialGrader.DEFAULT_TIMEOUT_S
+            assert grader.timeout_s > StateReadDeadlines().grade_trial_s
+        finally:
+            grader.close()
+
+    def test_wait_grows_with_the_configured_bound(self) -> None:
+        grader = _queue_grader(state_read_timeout_s=_CONFIGURED_S)
+        try:
+            deadlines = StateReadDeadlines(holder_read_s=_CONFIGURED_S)
+            assert grader.timeout_s == deadlines.engine_grade_wait_s
+            assert grader.timeout_s > deadlines.grade_trial_s
+        finally:
+            grader.close()
+
+    def test_an_explicit_timeout_wins(self) -> None:
+        grader = QueueTrialGrader(
+            MagicMock(), MagicMock(), timeout_s=5.0, state_read_timeout_s=_CONFIGURED_S
+        )
+
+        assert grader.timeout_s == 5.0
+
+    def test_orchestrator_hands_the_bound_to_the_trial_grader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        contexts: list[TrialGraderContext] = []
+
+        def load_trial_grader(_name: str):
+            return lambda ctx: contexts.append(ctx) or MagicMock()
+
+        monkeypatch.setattr(orchestrator_module, "load_trial_grader", load_trial_grader)
+        orch = _orchestrator(ComputeConfig(state_read_timeout_s=_CONFIGURED_S))
+        orch._conductor_factory = lambda _ctx: MagicMock()
+
+        orch._build_conductor(
+            agent_client=MagicMock(),
+            runtime_backend=MagicMock(),
+            output_dir=tmp_path,
+            request_limiter=None,
+        )
+
+        assert [ctx.state_read_timeout_s for ctx in contexts] == [_CONFIGURED_S]

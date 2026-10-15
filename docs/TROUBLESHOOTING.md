@@ -129,9 +129,10 @@ so raise it there too; a separately deployed runner needs the same variable.
 
 The bound does not cover tool calls. The MCP server starts on the trial's first
 contact with it, so a tool call that is (or waits for) that first contact has only
-its own budget (`timeout_s`) to wait out the load, and times out. Keep the
-server's start-up short, or make sure the world is loaded before the agent's
-first tool call.
+its own budget (`timeout_s`) to wait out the load, and times out. Such a call is
+dropped, not sent once the server has started, so retries do not change the world
+behind the agent's back. Keep the server's start-up short, or make sure the world
+is loaded before the agent's first tool call.
 
 ## Every Tool Call Fails: MCP server closed connection
 

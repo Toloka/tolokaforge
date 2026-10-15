@@ -1216,6 +1216,7 @@ class Orchestrator:
                 grader_config=grader_config,
                 runtime_backend=in_process_backend_shim,
                 grpc_max_message_mb=self._grpc_max_message_mb(),
+                state_read_timeout_s=self._state_read_timeout_s(),
             )
         )
         # Drain any leftover from a prior aborted run on this orchestrator

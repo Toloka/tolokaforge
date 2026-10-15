@@ -834,7 +834,7 @@ class ComputeConfig(BaseModel):
     (de)serialising."""
 
     state_read_timeout_s: float = Field(
-        default=DEFAULT_STATE_READ_TIMEOUT_S, gt=0.0, allow_inf_nan=False, strict=True
+        default=DEFAULT_STATE_READ_TIMEOUT_S, gt=0.0, allow_inf_nan=False
     )
     """Longest time, in seconds, the runner waits for one read of a trial's live
     state from the process holding it — an MCP server subprocess, or an app
@@ -847,7 +847,16 @@ class ComputeConfig(BaseModel):
     contact. Every runner deadline waiting on such a read grows with it. The
     engine passes it to every runner container it starts as
     ``TOLOKAFORGE_STATE_READ_TIMEOUT_S``; a separately deployed runner sets
-    that variable itself."""
+    that variable itself. A numeric string (``"180"``, as a ``${VAR}``
+    interpolation yields) is read as its number, like the sibling
+    :attr:`grpc_max_message_mb`; a boolean is refused."""
+
+    @field_validator("state_read_timeout_s", mode="before")
+    @classmethod
+    def _refuse_boolean_state_read_timeout(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError(f"must be a number of seconds, not a boolean; got {value!r}")
+        return value
 
     capabilities: list[Any] = Field(default_factory=list)
     """Backend-capability declarations. Each entry is either a bare

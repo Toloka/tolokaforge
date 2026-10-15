@@ -60,7 +60,18 @@ class TestComputeConfigField:
         assert config.compute is not None
         assert config.compute.state_read_timeout_s == float(value)
 
-    @pytest.mark.parametrize("value", [0, -1, math.inf, math.nan, True, "180"])
+    @pytest.mark.parametrize(("value", "expected"), [("180", 180.0), ("2.5", 2.5)])
+    def test_a_numeric_string_is_read_as_its_number(self, value: str, expected: float) -> None:
+        """A ``${VAR}``-interpolated value is always a string, as for ``grpc_max_message_mb``."""
+        config = _run_config(compute={"state_read_timeout_s": value, "grpc_max_message_mb": "60"})
+
+        assert config.compute is not None
+        assert config.compute.state_read_timeout_s == expected
+        assert config.compute.grpc_max_message_mb == 60
+
+    @pytest.mark.parametrize(
+        "value", [0, -1, math.inf, math.nan, True, False, "0", "-5", "inf", "nan", "slow"]
+    )
     def test_a_value_that_is_not_a_positive_finite_number_is_refused(self, value: object) -> None:
         with pytest.raises(ValidationError) as exc:
             ComputeConfig(state_read_timeout_s=value)
@@ -121,6 +132,7 @@ class TestDeadlines:
         assert deadlines.holder_read_s == 20.0
         assert deadlines.judge_db_read_s == 30.0
         assert deadlines.final_state_read_s == 300.0
+        assert deadlines.reset_trial_s == 300.0
         assert deadlines.grade_trial_s == 600.0
 
     @pytest.mark.parametrize("holder_read_s", [0.5, 20.0, 100.0, 180.0, 900.0, 3600.0])
@@ -130,9 +142,13 @@ class TestDeadlines:
 
         assert deadlines.judge_db_read_s > deadlines.holder_read_s
         assert deadlines.final_state_read_s > deadlines.holder_read_s
-        # A hash-graded GradeTrial reads the holder twice: before grading and
-        # after the golden replay.
-        assert deadlines.grade_trial_s > 2 * deadlines.holder_read_s
+        assert deadlines.reset_trial_s > deadlines.holder_read_s
+        # A hash-graded GradeTrial makes up to three bounded holder calls: the
+        # read before grading, the read after the golden replay and, when grading
+        # fails after it, the restore of the trial's state.
+        assert deadlines.grade_trial_s > 3 * deadlines.holder_read_s
+        # The engine's wait on a whole grade gives up after the runner's own.
+        assert deadlines.engine_grade_wait_s > deadlines.grade_trial_s
 
     def test_a_cold_world_read_fits_a_raised_bound_end_to_end(self) -> None:
         """A world that takes ~100 s to load on first contact is read once the bound allows it."""
@@ -143,7 +159,9 @@ class TestDeadlines:
                 deadlines.holder_read_s,
                 deadlines.judge_db_read_s,
                 deadlines.final_state_read_s,
+                deadlines.reset_trial_s,
                 deadlines.grade_trial_s,
+                deadlines.engine_grade_wait_s,
             )
             > 100.0
         )

@@ -822,8 +822,8 @@ DB service only mirrors it. Every read of its final state — `GetState`, each
 — first syncs the mirror from the subprocess. `GradeTrial` syncs once per call,
 before any component reads, so an earlier `GetState` never stands in for state the
 agent changed after it, and hash grading's golden replay (which runs in the same
-subprocess, and hands it the trial's state back once scored) is never read as the
-agent's.
+subprocess, and hands it and the mirror the trial's state back once scored, or when
+grading fails after the replay) is never read as the agent's.
 
 When that sync fails — the subprocess is gone or does not answer within
 `compute.state_read_timeout_s` (default 20 s; see

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Collection, Mapping
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -135,6 +136,18 @@ class AppWorldClient:
             base_url=config.url,
             headers={ADMIN_TOKEN_HEADER: credentials.admin_token},
         )
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-world")
+
+    @property
+    def executor(self) -> Executor:
+        """The one worker thread the runner's event loop hands this client's calls to.
+
+        As for an MCP server (:attr:`~tolokaforge.runner.tool_factory.MCPServerProcess.executor`):
+        a call abandoned by a timeout keeps this worker, not a thread of the event
+        loop's shared pool, until the service answers, and calls run in the
+        order they were handed in.
+        """
+        return self._executor
 
     def claim(self, callers: Mapping[str, str | None]) -> None:
         """Bind the admin token and load the bearer tokens, in the service's first admin call.
@@ -172,6 +185,7 @@ class AppWorldClient:
 
     def close(self) -> None:
         """Close the connection and forget the trial's credentials."""
+        self._executor.shutdown(wait=False)
         self._client.close()
         for name in self._secret_names:
             forget_runtime_secret(name)

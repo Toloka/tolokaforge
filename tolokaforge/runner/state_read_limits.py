@@ -51,12 +51,18 @@ _JUDGE_READ_AFTER_SYNC_S = 10.0
 _FINAL_STATE_READ_AFTER_SYNC_S = 280.0
 """Budget of a whole-state mirror read itself, after the state holder's read."""
 
-_GRADE_TRIAL_AFTER_SYNCS_S = 560.0
-"""Budget of ``GradeTrial`` beyond its state holder reads (golden replay, judging)."""
+_GRADE_TRIAL_AFTER_HOLDER_CALLS_S = 540.0
+"""Budget of ``GradeTrial`` beyond its bounded state holder calls (golden replay, judging)."""
 
-_HOLDER_READS_PER_GRADE_TRIAL = 2
-"""State holder reads one ``GradeTrial`` makes at most: the live state before
-grading and, for hash grading, the state the golden replay left."""
+_BOUNDED_HOLDER_CALLS_PER_GRADE_TRIAL = 3
+"""Bounded state holder calls one ``GradeTrial`` makes at most: the read of the
+live state before grading and, for hash grading, the read of the state the golden
+replay left and — when grading fails after the replay — the restore of the
+trial's own state into the holder."""
+
+_ENGINE_GRADE_WAIT_MARGIN_S = 60.0
+"""Head start an engine-side wait on a whole grade keeps over the runner's
+``GradeTrial`` budget, for the transport and the queue around it."""
 
 
 def validate_state_read_timeout_s(value: float) -> float:
@@ -107,7 +113,7 @@ class StateReadDeadlines:
     it, so it always outlasts the holder read: a slow holder fails with
     :meth:`holder_timeout_error`'s cause instead of the waiting caller's
     timeout. At the default bound they are the runner's long-standing values
-    (30 s, 300 s, 600 s).
+    (30 s, 300 s, 300 s, 600 s); :attr:`engine_grade_wait_s` is the engine's side.
     """
 
     holder_read_s: float = DEFAULT_STATE_READ_TIMEOUT_S
@@ -126,9 +132,26 @@ class StateReadDeadlines:
         return self.holder_read_s + _FINAL_STATE_READ_AFTER_SYNC_S
 
     @property
+    def reset_trial_s(self) -> float:
+        """One whole ``ResetTrial`` call, whose holder reset may be the holder's first contact."""
+        return self.holder_read_s + _FINAL_STATE_READ_AFTER_SYNC_S
+
+    @property
     def grade_trial_s(self) -> float:
         """One whole ``GradeTrial`` call."""
-        return _HOLDER_READS_PER_GRADE_TRIAL * self.holder_read_s + _GRADE_TRIAL_AFTER_SYNCS_S
+        return (
+            _BOUNDED_HOLDER_CALLS_PER_GRADE_TRIAL * self.holder_read_s
+            + _GRADE_TRIAL_AFTER_HOLDER_CALLS_S
+        )
+
+    @property
+    def engine_grade_wait_s(self) -> float:
+        """An engine-side wait on one whole grade of a trial (the ``queue`` trial grader's).
+
+        It outlasts :attr:`grade_trial_s`, so a grade that runs long fails with the
+        grading side's own cause rather than the engine's wait.
+        """
+        return self.grade_trial_s + _ENGINE_GRADE_WAIT_MARGIN_S
 
     def holder_timeout_error(self, holder_kind: str) -> TimeoutError:
         """The error a holder read that outlived :attr:`holder_read_s` fails with.

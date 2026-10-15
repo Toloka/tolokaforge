@@ -290,8 +290,17 @@ it always outlasts the read and reports the read's own cause:
 | One state holder read | `T` | 20 s |
 | A judge DB tool read (`get_db_state` / `query_db`) | `T + 10 s` | 30 s |
 | A whole-state read (`GetState`, `SubstrateService` final reads, grading's final-state reads) | `T + 280 s` | 300 s |
-| One `GradeTrial` call (at most two holder reads) | `2T + 560 s` | 600 s |
+| One `ResetTrial` call (its holder reset may be the holder's first contact) | `T + 280 s` | 300 s |
+| One `GradeTrial` call (at most three bounded holder calls, see below) | `3T + 540 s` | 600 s |
 | An app world's `GET /_admin/tables` HTTP read | `T + 5 s` | 25 s |
+
+A hash-graded `GradeTrial` reads the holder before grading and again after the
+golden replay. When grading fails once the replay ran — that second read past
+the bound among the causes — the runner hands the trial's state back to the DB
+mirror and to the holder before reporting the failure, so no later read takes
+the golden world for the agent's; the holder's part of that restore is waited
+for at most `T`, and a restore still pending then runs before any later call
+into the holder.
 
 The engine passes the value to every runner container it starts as
 `TOLOKAFORGE_STATE_READ_TIMEOUT_S` — the built-in stack's runner, and the runner
@@ -303,15 +312,21 @@ number; unset means 20.
 The engine's own gRPC calls to the runner (`GetState`, `GradeTrial`,
 `SubstrateService` reads) carry no deadline, so the runner's bounds are the
 ones that apply. The one engine-side wait on them is the `queue` trial grader's
-600 s for a whole grade, judge included: keep the bound well under it when
-grading through that grader.
+wait for a whole grade, judge included: the `GradeTrial` budget plus 60 s
+(660 s by default), so it grows with the setting too.
 
 The bound covers state reads only. A tool call keeps its own budget (its
 `timeout_s`). The MCP server subprocess is started on the trial's first contact
 with it — a tool call or a state read, whichever comes first — off the runner's
 event loop, so a server that loads its world before answering `initialize`
 spends that time inside that first contact (and any contact waiting for the same
-start) while the runner keeps serving every other call.
+start) while the runner keeps serving every other call. A tool call that times
+out while it waits — for the start, or behind another request to the same
+server — is dropped and never sent once the server is free, so a call reported
+as timed out does not change the world afterwards. Each state holder (an MCP
+server, an app world client) runs its blocking calls on a worker thread of its
+own, in the order they are made, so one trial's slow holder cannot hold up
+another trial's tool calls or state reads.
 
 ## Runner Image Contents
 

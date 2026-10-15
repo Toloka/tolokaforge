@@ -493,6 +493,11 @@ class TrialGraderContext:
     """The run's ``compute.grpc_max_message_mb``: bounds the gRPC channel a
     grader opens to the runner (``runner_rpc``) or to the grader service
     (``grader_rpc``, ``queue``)."""
+    state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
+    """The run's ``compute.state_read_timeout_s``. A grader that waits on a whole
+    grade with a deadline of its own (``queue``) derives it from the runner's
+    budgets (:class:`~tolokaforge.runner.state_read_limits.StateReadDeadlines`),
+    so the grading side's own cause arrives before the wait gives up."""
 
 
 @dataclass(frozen=True)
