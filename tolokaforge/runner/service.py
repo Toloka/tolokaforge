@@ -141,7 +141,11 @@ from tolokaforge.runner.db_client import (
 from tolokaforge.runner.db_client import (
     ValidationError as DBValidationError,
 )
-from tolokaforge.runner.env_exec import exec_tool_for_service, first_env_exec_tool
+from tolokaforge.runner.env_exec import (
+    SupportsServiceResolution,
+    exec_tool_for_service,
+    first_env_exec_tool,
+)
 from tolokaforge.runner.grading import (
     compute_state_diff,
     grade_to_runner_wire,
@@ -195,7 +199,6 @@ from tolokaforge.runner.search_plane import (
 )
 from tolokaforge.runner.tool_factory import (
     INVALID_ARGUMENTS_CATEGORY,
-    DockerComposeExecToolWrapper,
     MCPServerToolWrapper,
     SearchToolWrapper,
     ToolCallOutcome,
@@ -2216,19 +2219,22 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if trial_context is None:
             raise SubstrateUnreachableError(f"Trial {trial_id!r} not registered")
         bash_tool = first_env_exec_tool(trial_context.agent_tools.values())
-        if not isinstance(bash_tool, DockerComposeExecToolWrapper):
+        if not isinstance(bash_tool, SupportsServiceResolution):
             raise SubstrateUnreachableError(
                 f"Trial {trial_id!r}: artifact re-materialisation needs a compose-backed "
                 "env tool to resolve sibling containers; none was registered."
             )
         if bash_tool.container_name is None:
-            # The wrapper resolves sibling containers off its started state; before
-            # start() ``for_service`` raises, which would escape MaterialisePath as an
-            # unhandled gRPC error. Convert it to the ungradeable path other
-            # unresolved-container cases below take.
+            # No per-trial container is resolvable: the compose wrapper resolves
+            # siblings off its started state and ``for_service`` raises before
+            # start(), or the tool targets a local environment with no sibling
+            # containers. Convert either case to the ungradeable path the other
+            # unresolved-container cases below take rather than letting a
+            # RuntimeError escape MaterialisePath as an unhandled gRPC error.
             raise SubstrateUnreachableError(
-                f"Trial {trial_id!r}: the compose env tool has not started, so its "
-                "sibling containers cannot be resolved for materialisation."
+                f"Trial {trial_id!r}: the compose env tool has not started (or targets a "
+                "local environment), so its sibling containers cannot be resolved for "
+                "materialisation."
             )
         src_tool = bash_tool if src_service is None else bash_tool.for_service(src_service)
         dst_tool = bash_tool.for_service(dst_service)
@@ -2240,7 +2246,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 "(the per-trial stack is not up), so a path cannot be materialised."
             )
 
-        parent = os.path.dirname(path.rstrip("/")) or "/"
+        # Normalise a trailing slash off the path so ``data/`` and ``data`` name
+        # the same artifact. ``docker cp src:data/ -`` streams the directory's
+        # *contents* (no top-level ``data/`` tar member), which then extract under
+        # the parent as loose files (``/app/…`` instead of ``/app/data/…``) while
+        # every step still reports success — a silent wrong grade. One canonical
+        # form drives the probe, the destination wipe, the copy and the prune.
+        path = path.rstrip("/") or "/"
+        parent = os.path.dirname(path) or "/"
 
         def _run(argv: list[str], *, stdin: int | None = None, stdout: int | None = None):
             return subprocess.Popen(argv, stdin=stdin, stdout=stdout)
@@ -2334,7 +2347,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # a separator (e.g. ``build/*.o``) is a path-relative pattern, matched
             # against each entry's path under *path* via ``find -path`` so it takes
             # effect at all — ``-name`` would test only the basename and never match.
-            base = path.rstrip("/")
+            base = path
             for glob in exclude:
                 if "/" in glob:
                     match = ["-path", f"{base}/{glob}"]

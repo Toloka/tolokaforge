@@ -18,7 +18,12 @@ from __future__ import annotations
 from collections.abc import Collection
 from typing import Any, Protocol, runtime_checkable
 
-__all__ = ["SupportsEnvExec", "exec_tool_for_service", "first_env_exec_tool"]
+__all__ = [
+    "SupportsEnvExec",
+    "SupportsServiceResolution",
+    "exec_tool_for_service",
+    "first_env_exec_tool",
+]
 
 
 @runtime_checkable
@@ -43,6 +48,36 @@ class SupportsEnvExec(Protocol):
         A deadline overrun raises :class:`subprocess.TimeoutExpired`, which the
         callers render as an observable grade outcome.
         """
+        ...
+
+
+@runtime_checkable
+class SupportsServiceResolution(SupportsEnvExec, Protocol):
+    """A per-trial compose executor that can resolve sibling-service containers.
+
+    A separate-verifier / ``service=`` / sidecar-artifact grade runs against a
+    service other than the agent's: it needs the name of that sibling's
+    container and an executor bound to it. A tool offers this capability
+    structurally — by naming its own resolved container and by minting a sibling
+    executor for another service of the same per-trial compose stack — not by
+    belonging to one concrete wrapper class. Grading (``exec_tool_for_service``
+    and the runner's ``_materialise_path``) accepts any implementer, so a
+    compose-backed trial grades the same whether its agent ran on the dedicated
+    ``docker exec`` wrapper or the session-lifetime shell on its compose backend.
+    """
+
+    @property
+    def container_name(self) -> str | None:
+        """The container this tool execs into, or ``None`` when none is resolvable.
+
+        ``None`` means no per-trial container can be named yet: the tool has not
+        started, or it runs against a local (non-compose) environment that has
+        no sibling-service containers.
+        """
+        ...
+
+    def for_service(self, service: str) -> SupportsServiceResolution:
+        """A sibling executor bound to another service of the same per-trial stack."""
         ...
 
 
@@ -72,11 +107,7 @@ def exec_tool_for_service(
     """
     if service is None:
         return bash_tool, None
-    # Imported here rather than at module scope: this module is the narrow exec
-    # capability seam, and tool_factory depends on the broader runner stack.
-    from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
-
-    if not isinstance(bash_tool, DockerComposeExecToolWrapper):
+    if not isinstance(bash_tool, SupportsServiceResolution):
         return None, (
             f"test-execution grading asked to run in service {service!r} but this "
             "trial's env tool is not a compose-backed executor, so a sibling "
@@ -84,12 +115,14 @@ def exec_tool_for_service(
             "docker-compose runtime."
         )
     if bash_tool.container_name is None:
-        # ``for_service`` resolves siblings off the started wrapper's state and
-        # raises before start(). Reporting it as an absent tool keeps the caller on
-        # its clean ungradeable path instead of letting the RuntimeError escape.
+        # No per-trial container is resolvable: the compose wrapper has not
+        # started yet (``for_service`` would raise before start()), or the tool
+        # runs against a local environment with no sibling services. Reporting it
+        # as a clean refusal keeps the caller on its ungradeable path instead of
+        # letting a RuntimeError escape.
         return None, (
             f"test-execution grading asked to run in service {service!r} but the "
-            "trial's compose env tool has not started, so its sibling container "
-            "cannot be resolved."
+            "trial's compose env tool has not started (or targets a local "
+            "environment), so its sibling container cannot be resolved."
         )
     return bash_tool.for_service(service), None

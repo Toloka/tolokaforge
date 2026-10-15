@@ -92,7 +92,9 @@ def test_grade_verb_no_verdict_writes_defined_zero_grade(
 ) -> None:
     """A kind returning None is a first-class no-verdict outcome, not an error.
     The offline lane books it as a defined zero-score grade and exits 0 — the
-    same semantics the live runner lane uses — rather than exiting 1."""
+    IDENTICAL grade the live runner lane produces: the ``custom_checks=-1.0``
+    no-verdict sentinel and the ``grader-kind '<name>' returned no verdict``
+    reason, byte for byte — rather than exiting 1."""
     uri, store_root = stored_bundle
     register_grader_kind(_NoVerdictKind.NAME, _NoVerdictKind)
     out_dir = tmp_path / "out"
@@ -117,7 +119,10 @@ def test_grade_verb_no_verdict_writes_defined_zero_grade(
     grade = _read_grade(grade_path)
     assert grade.binary_pass is False
     assert grade.score == 0.0
-    assert "no verdict" in (grade.reasons if isinstance(grade.reasons, str) else "")
+    # Matches the live lane (service._dispatch_via_grader_kind) exactly: the
+    # components sentinel and the reason wording, including repr-quoting the name.
+    assert grade.components.custom_checks == -1.0
+    assert grade.reasons == f"grader-kind {_NoVerdictKind.NAME!r} returned no verdict"
 
 
 def test_grade_verb_reports_refusal_and_exits_one(

@@ -367,6 +367,73 @@ def test_unstarted_env_tool_surfaces_as_ungradeable(monkeypatch: pytest.MonkeyPa
         )
 
 
+def _capture_docker_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[list[str]], list[list[str]]]:
+    """Fake the subprocess seam capturing FULL argv for ``run`` and ``Popen``.
+
+    Returns ``(run_argvs, popen_argvs)`` so a test can assert exactly which
+    ``docker`` commands were issued (the probe path, the ``docker cp`` source and
+    destination, the prune), not just their trailing shell string.
+    """
+    run_argvs: list[list[str]] = []
+    popen_argvs: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> _FakeCompleted:
+        run_argvs.append(list(argv))
+        command = argv[-1]
+        if "__TF_PRESENT__" in command:
+            return _FakeCompleted(returncode=0, stdout="__TF_PRESENT__\n")
+        return _FakeCompleted(returncode=0)
+
+    def fake_popen(argv: list[str], **_: object) -> _FakeProc:
+        popen_argvs.append(list(argv))
+        return _FakeProc()
+
+    monkeypatch.setattr(service_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(service_module.subprocess, "Popen", fake_popen)
+    return run_argvs, popen_argvs
+
+
+def test_trailing_slash_source_copies_like_non_slash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A source path with a trailing slash must materialise the same tree as the
+    bare form. ``docker cp src:/app/data/ -`` would stream the directory's
+    *contents* (no top-level ``data/`` member), extracting them loose under the
+    parent (``/app`` instead of ``/app/data``) while still reporting ok — a silent
+    wrong grade. The path is normalised so both forms issue byte-identical docker
+    commands: probe, destination wipe, ``docker cp`` source and destination."""
+
+    def _materialise(path: str) -> tuple[list[list[str]], list[list[str]]]:
+        run_argvs, popen_argvs = _capture_docker_argv(monkeypatch)
+        svc = _service_with_started_tool()
+        svc._materialise_path(
+            src_service=None,
+            dst_service="verifier",
+            path=path,
+            exclude=(),
+            trial_id="t-1",
+        )
+        return run_argvs, popen_argvs
+
+    slash_run, slash_popen = _materialise("/app/data/")
+    bare_run, bare_popen = _materialise("/app/data")
+
+    # The trailing-slash run issues exactly the commands the bare run does.
+    assert slash_run == bare_run
+    assert slash_popen == bare_popen
+
+    # And those commands target the directory itself, not its contents: the copy
+    # source is ``…:/app/data`` (no slash) and the destination parent is ``/app``.
+    cp_source = next(a for a in slash_popen if a[:2] == ["docker", "cp"] and a[-1] == "-")
+    cp_dest = next(a for a in slash_popen if a[:2] == ["docker", "cp"] and a[2] == "-")
+    assert cp_source[2] == "tbencht-1_agent:/app/data"
+    assert cp_dest[3] == "tbencht-1_verifier:/app"
+    # The destination wipe/parent-make names the directory and its parent exactly.
+    wipe = next(a for a in slash_run if "mkdir" in a[-1])
+    assert "rm -rf /app/data " in wipe[-1]
+    assert "mkdir -p /app" in wipe[-1]
+
+
 def test_non_compose_env_tool_surfaces_clear_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cross-container copy hard-requires a compose-backed executor. A trial whose
     env tool is NOT compose-backed fails with a CLEAR, actionable

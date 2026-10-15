@@ -234,13 +234,15 @@ def _regrade_bundle(
         # A kind returning None is a first-class "no verdict" outcome, not an
         # error (GraderKind contract: None == "opted out / not applicable"). The
         # live runner lane (``_dispatch_via_grader_kind``) books it as a defined
-        # zero-score grade with nothing measured; this offline lane agrees rather
-        # than exiting 1, so a no-verdict means the same thing on both lanes.
+        # zero-score grade carrying the ``custom_checks=-1.0`` no-verdict sentinel.
+        # This offline lane produces the identical grade — same components sentinel
+        # and same reason wording — so a no-verdict means the same thing, byte for
+        # byte, on both lanes rather than exiting 1.
         grade = Grade(
             binary_pass=False,
             score=0.0,
-            components=GradeComponents(),
-            reasons=f"kind {kind_name} returned no verdict",
+            components=GradeComponents(custom_checks=-1.0),
+            reasons=f"grader-kind {kind_name!r} returned no verdict",
         )
 
     target = out_dir / _GRADE_FILENAME

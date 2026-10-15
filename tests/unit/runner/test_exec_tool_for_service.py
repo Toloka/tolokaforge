@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import pytest
 
-from tolokaforge.runner.env_exec import exec_tool_for_service
+from tolokaforge.runner.env_exec import SupportsServiceResolution, exec_tool_for_service
 from tolokaforge.runner.models import ToolSchema, ToolSource
-from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
+from tolokaforge.runner.tool_factory import (
+    DockerComposeExecToolWrapper,
+    PersistentShellToolWrapper,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -81,3 +84,57 @@ def test_named_service_on_started_compose_tool_resolves_sibling() -> None:
     assert reason is None
     assert resolved is not None
     assert resolved.container_name == "tbench_t-1_verifier"
+
+
+def _persistent_shell(*, service: str | None, started: bool) -> PersistentShellToolWrapper:
+    """A session-lifetime shell on its compose backend (``service`` set) or local.
+
+    The compose backend is exactly how the native builtin-dispatch path and the
+    terminal-bench v4 route a compose-backed agent tool — a ``PersistentShell``,
+    not the dedicated ``docker exec`` wrapper — so the sibling-resolution seam has
+    to accept it too.
+    """
+    tool_config: dict[str, object] = {}
+    if service is not None:
+        tool_config = {"service": service, "compose_project_prefix": "tbench_"}
+    schema = ToolSchema(
+        name="bash_session",
+        description="stub",
+        parameters={"type": "object", "properties": {}},
+        category="compute",
+        timeout_s=30.0,
+        tool_config=tool_config,
+    )
+    wrapper = PersistentShellToolWrapper(schema)
+    if started:
+        wrapper._trial_id = "t-1"
+    return wrapper
+
+
+def test_compose_backed_persistent_shell_satisfies_the_resolution_protocol() -> None:
+    # The seam is structural, not a single concrete class: a compose-backed
+    # session shell implements it just as the dedicated docker-exec wrapper does.
+    assert isinstance(_persistent_shell(service="agent", started=True), SupportsServiceResolution)
+
+
+def test_named_service_on_compose_persistent_shell_resolves_sibling() -> None:
+    # The F5 fix: a compose-backed PersistentShell is no longer wrongly refused;
+    # it resolves the sibling verifier container the same way the compose-exec
+    # wrapper does, so a separate-verifier grade runs instead of booking ungradeable.
+    resolved, reason = exec_tool_for_service(
+        _persistent_shell(service="agent", started=True), "verifier"
+    )
+    assert reason is None
+    assert resolved is not None
+    assert resolved.container_name == "tbench_t-1_verifier"
+
+
+def test_named_service_on_local_persistent_shell_gives_clear_reason() -> None:
+    # A local (non-compose) shell has no sibling containers; the refusal is clear
+    # and accurate rather than a bare RuntimeError.
+    resolved, reason = exec_tool_for_service(
+        _persistent_shell(service=None, started=True), "verifier"
+    )
+    assert resolved is None
+    assert reason is not None
+    assert "cannot be resolved" in reason
