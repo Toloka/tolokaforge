@@ -186,8 +186,17 @@ class _PtyBashSession:
         if self._proc is not None:
             raise RuntimeError("bash session is already open")
         self._cwd = cwd
-        if not self._open_shell(cwd):
-            raise RuntimeError("bash session failed to become ready")
+        # Opening is one sentinel round-trip under a fixed budget, and on a
+        # loaded host the spawn alone can eat it — a container that has just
+        # come up, or a `docker exec` queued behind an image build. A failed
+        # round-trip leaves nothing to salvage, so the only recovery is a
+        # fresh shell; one retry turns a startup that was merely slow into a
+        # working session instead of a trial lost before it ran a command.
+        for _attempt in range(2):
+            if self._open_shell(cwd):
+                return
+            self.close()
+        raise RuntimeError("bash session failed to become ready")
 
     def run(self, command: str, timeout_s: float) -> CommandResult:
         if self._master_fd is None:

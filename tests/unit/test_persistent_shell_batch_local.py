@@ -167,3 +167,44 @@ def test_declared_batch_size_sets_the_call_band(tmp_path):
     assert PersistentShellToolWrapper(_schema(timeout_s=120.0)).effective_timeout_s == 1205.0
     bare = ToolSchema(name="bash_session", description="x", parameters={"type": "object"})
     assert PersistentShellToolWrapper(bare).declared_batch_size == 1
+
+
+def test_a_slow_first_open_is_retried_rather_than_losing_the_trial(tmp_path, monkeypatch):
+    """One failed readiness round-trip must not cost the whole trial.
+
+    A trial whose session never opens is a `provision_error`: zero turns, zero
+    cost, nothing measured. Opening is one sentinel round-trip under a fixed
+    budget, so a loaded host can lose it to a slow spawn alone.
+    """
+    from tolokaforge.tools.persistent_shell import LocalBashSession
+
+    session = LocalBashSession()
+    calls: list[int] = []
+    real_open_shell = session._open_shell
+
+    def flaky(cwd):
+        calls.append(1)
+        if len(calls) == 1:
+            return False
+        return real_open_shell(cwd)
+
+    monkeypatch.setattr(session, "_open_shell", flaky)
+    try:
+        session.open(str(tmp_path))
+        assert len(calls) == 2
+        assert session.is_open
+        assert session.run("echo alive", 5).output.strip() == "alive"
+    finally:
+        session.close()
+
+
+def test_an_open_that_never_becomes_ready_still_fails_loud(tmp_path, monkeypatch):
+    from tolokaforge.tools.persistent_shell import LocalBashSession
+
+    session = LocalBashSession()
+    monkeypatch.setattr(session, "_open_shell", lambda cwd: False)
+    try:
+        with pytest.raises(RuntimeError, match="failed to become ready"):
+            session.open(str(tmp_path))
+    finally:
+        session.close()
