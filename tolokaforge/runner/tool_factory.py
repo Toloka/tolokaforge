@@ -30,6 +30,8 @@ import json
 import logging
 import os
 import re
+import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -1369,6 +1371,79 @@ def _decode_partial_output(buf: bytes | str | None) -> str:
     return buf
 
 
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the process group *proc* leads, or *proc* alone if that fails.
+
+    A process started with ``start_new_session=True`` is the leader of its own
+    group, so ``os.killpg(proc.pid, …)`` reaps it together with every helper it
+    forked. The fallback covers the group already being gone or the platform
+    refusing the group signal.
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        proc.kill()
+
+
+def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str:
+    """Return *command* guarded by an in-container wall-clock watchdog.
+
+    The wrapped script runs *command* in a process group of its own and
+    SIGKILLs that whole group ``kill_after_s`` seconds in, from inside the
+    container — so a wedged CLI is stopped whether or not it cooperates and
+    whether or not the host-side ``docker exec`` client is still attached. The
+    wrapped script exits with the command's own code, or ``137``
+    (``128 + SIGKILL``) when the watchdog fired.
+
+    The new process group is opened with ``setsid`` where it exists, and under
+    bash job control (``set -m``) where it does not — some minimal images ship
+    neither ``setsid`` nor ``ps``. Both paths need only ``kill`` and shell
+    builtins.
+
+    Only the coding-harness episode command is wrapped; the per-command execs
+    the engine loop issues run unwrapped, so a backgrounded service they start
+    keeps outliving its exec as before.
+    """
+    quoted = shlex.quote(command)
+    # busybox ``sleep`` takes a whole number of seconds and rejects the ``%g``
+    # scientific form (e.g. ``1e+06``), which would fire the kill at once, so
+    # the budget is rendered as a plain integer, floored at one second.
+    budget = max(1, int(kill_after_s))
+    return (
+        f"__tf_cmd={quoted}; "
+        "if command -v setsid >/dev/null 2>&1; then "
+        # ``setsid bash -c … &`` does not fork: the backgrounded bash is itself
+        # the new session/group leader, so ``$!`` is that leader's PID and
+        # ``kill -KILL -$__tf_cpid`` reaps the whole group. This holds only
+        # because the wrapper runs embedded as a nested, non-group-leader
+        # ``bash -c`` (via the staged-stdio script); run it as a top-level exec
+        # and ``setsid`` would fork, leaving ``$!`` pointing at the wrong PID
+        # and the group-kill silently missing the CLI. The timer is a setsid
+        # group of its own for the same reason: ``kill -KILL -$__tf_wd`` then
+        # reaps its ``sleep`` child along with it.
+        'setsid bash -c "$__tf_cmd" & __tf_cpid=$!; '
+        f'setsid bash -c "sleep {budget}; kill -KILL -$__tf_cpid 2>/dev/null" & __tf_wd=$!; '
+        "else "
+        # No ``setsid``: bash job control (``set -m``) puts each background job
+        # in its own process group, so the same negative-PID ``kill`` reaps the
+        # command group, and the timer group with its ``sleep`` child.
+        "set -m; "
+        'bash -c "$__tf_cmd" & __tf_cpid=$!; '
+        f"{{ sleep {budget}; kill -KILL -$__tf_cpid 2>/dev/null; }} & __tf_wd=$!; "
+        "fi; "
+        # Killing the timer by its group takes its ``sleep`` child with it, so a
+        # command that finishes before the budget leaves no stray timer running
+        # the rest of it. The wait and the timer reap are stderr-muted so the
+        # ``set -m`` branch's job-control ``Killed`` notices never land in the
+        # captured episode output; the command's own stderr has already streamed
+        # straight through the inherited descriptor by then.
+        "{ wait $__tf_cpid; __tf_rc=$?; } 2>/dev/null; "
+        "kill -KILL -$__tf_wd 2>/dev/null; "
+        "wait $__tf_wd 2>/dev/null; "
+        "exit $__tf_rc"
+    )
+
+
 def _run_argv_preserving_partial_output(
     argv: list[str], timeout_s: float, *, partial_output_argv: list[str] | None = None
 ) -> str:
@@ -1392,12 +1467,16 @@ def _run_argv_preserving_partial_output(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # Own session: the client and anything it forks share one process
+        # group, so the deadline branch can reap the group rather than leave
+        # a helper orphaned behind a killed leader.
+        start_new_session=True,
     )
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
         timed_out = False
     except subprocess.TimeoutExpired as exc:
-        proc.kill()
+        _kill_process_group(proc)
         # subprocess.TimeoutExpired.stdout/stderr carry the raw bytes the
         # child had buffered when the deadline hit, even under text=True —
         # Popen only decodes at the point of a clean communicate() return.

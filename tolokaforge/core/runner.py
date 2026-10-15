@@ -85,6 +85,10 @@ from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.summarize_policy import LLMSummarizer, SummarizePolicy
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.runner.protocol import TrialNotRegisteredError
+from tolokaforge.runner.tool_factory import (
+    BACKSTOP_GRACE_S,
+    wrap_episode_command_with_watchdog,
+)
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
 if TYPE_CHECKING:
@@ -744,12 +748,25 @@ class TrialRunner:
                 )
             )
 
+            # Guard the single episode exec with an in-container wall-clock
+            # kill. The one escalation the host exec client has is to die, and
+            # Docker does not propagate that into the container, so a wedged CLI
+            # would otherwise run unbounded. The watchdog SIGKILLs the CLI's
+            # process group from inside the container a few seconds before the
+            # host deadline, making the in-container kill authoritative and the
+            # host deadline a true backstop. Only this harness-episode command
+            # is wrapped; the engine loop's per-command execs are untouched.
+            watchdog_command = wrap_episode_command_with_watchdog(
+                command, max(1.0, timeout_s - BACKSTOP_GRACE_S)
+            )
+            # The CLI invocation is what the trial recorded, so the trajectory
+            # shows the command the adapter built, not the watchdog plumbing.
             arguments = {"command": command}
             call_id = f"harness:{trial_id}"
             call_started = time.time()
             result = self.tool_executor.execute(
                 tool_name,
-                arguments,
+                {"command": watchdog_command},
                 call_id=call_id,
             )
             output = resolve_tool_output(result)
