@@ -1349,6 +1349,7 @@ def resolve_context_controls(capabilities: ModelCapabilities) -> dict[str, Any]:
             "reasoning_history":          "all" | "none" | "last",
             "observation_window":         int | None,
             "observation_window_polling": int,
+            "tool_output_max_chars":      int | None,
         }
 
     ``reasoning_history`` is the **effective** setting, not the requested one: a
@@ -1357,11 +1358,18 @@ def resolve_context_controls(capabilities: ModelCapabilities) -> dict[str, Any]:
     requested ``model_config.<role>.capabilities.reasoning_history`` sees when
     the two differ, which is the only record that a leg asking for less replay
     ran with more.
+
+    ``tool_output_max_chars`` is the per-model cap after a run config's override,
+    an explicit ``null`` included: a config can set or clear it, and it changes
+    what the agent's model reads, so two runs under different caps must not
+    record the same block. It bounds the agent's loop only, where the per-tool
+    caps a task declares compose with it; those belong to the task, not here.
     """
     return {
         "reasoning_history": effective_reasoning_history(capabilities),
         "observation_window": capabilities.observation_window,
         "observation_window_polling": capabilities.observation_window_polling,
+        "tool_output_max_chars": capabilities.tool_output_max_chars,
     }
 
 

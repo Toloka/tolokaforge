@@ -2697,7 +2697,8 @@ produce the JSON-serialisable preset fingerprint landed on
 * `resolve_context_controls(capabilities) -> dict[str, Any]` — the
   context-control values the route actually runs under:
   `reasoning_history`, `observation_window`,
-  `observation_window_polling`. `reasoning_history` is the **effective**
+  `observation_window_polling`, `tool_output_max_chars` (the per-model cap
+  after a run config's override or `null`). `reasoning_history` is the **effective**
   setting from
   [`effective_reasoning_history`](../tolokaforge/core/llm/reasoning_history.py),
   so a codec declaring `forced_history` is recorded as what it forced,
