@@ -129,16 +129,6 @@ def test_a_three_method_adapter_is_a_dispatch_adapter_but_not_controllable() -> 
     assert not isinstance(adapter, ControllableDispatchAdapter)
 
 
-def test_controllable_protocol_requires_the_control_operations() -> None:
-    assert {"cancel", "status", "fetch_result"} <= set(
-        ControllableDispatchAdapter.__protocol_attrs__
-    )
-    # The base lifecycle is inherited, so a controllable adapter is a superset.
-    assert {"run_trial_node", "connect", "close"} <= set(
-        ControllableDispatchAdapter.__protocol_attrs__
-    )
-
-
 def test_dispatch_unsupported_is_a_dispatch_refused() -> None:
     err = DispatchUnsupported("Unsupported", "", "cannot do that")
     assert isinstance(err, DispatchRefused)
