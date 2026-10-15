@@ -2,9 +2,10 @@
 
 Subprocess mode's control operations — cancel the leased worker, report coarse
 lease-derived status, collect the node-written bundle — are exercised here
-against the injected ``spawn_fn`` seam the registry tests use, so no Docker
-daemon, LLM or real node process is involved. The full Docker-backed run lives
-in ``test_local_dispatch_subprocess_e2e`` (Linux CI only).
+against the injected ``spawn_fn`` seam the registry tests use: no Docker daemon,
+LLM, API key or real node process is involved, only localhost sockets and a
+simulated worker lifecycle, so these run on the fast canonical lane. The full
+Docker-backed run lives in ``test_local_dispatch_subprocess_e2e`` (Linux CI only).
 """
 
 from __future__ import annotations
@@ -15,16 +16,18 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.dispatch.control import JobHandle, JobState
 from tolokaforge.core.dispatch.errors import DispatchUnsupported
 from tolokaforge.core.dispatch.grpc_node import GrpcNodeDispatchAdapter
 from tolokaforge.core.dispatch.local import LocalDispatchAdapter
+from tolokaforge.core.models import Metrics
 from tolokaforge.core.node_registry import SpawningNodeRegistry
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.output_writer import TRAJECTORY_FILENAME
 from tolokaforge.core.trial import TrialResult
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.canonical
 
 
 class _FakeWorker:
@@ -130,14 +133,33 @@ def test_fetch_result_reads_the_node_written_bundle() -> None:
         assert adapter.registry is not None
         root = adapter.registry.output_root
         assert root is not None
-        trajectory = _trajectory("task", 0)
+        # The node writes the grade, metrics and tool-call record to separate
+        # sidecars, not into trajectory.yaml; fetch_result must merge them back,
+        # so write the whole bundle the node would.
+        trajectory = _trajectory("task", 0).model_copy(
+            update={
+                "metrics": Metrics(turns=3, api_calls=2),
+                "tool_log": [recorded_call("bash", sequence=0)],
+            }
+        )
+        assert trajectory.grade is not None
         trial_dir = Path(root) / "run-xyz" / "trials" / "task" / "0"
-        FileArtifactWriter().write_trajectory(trial_dir, trajectory)
+        writer = FileArtifactWriter()
+        writer.write_trajectory(trial_dir, trajectory)
+        writer.write_metrics(trial_dir, trajectory)
+        writer.write_tool_log(trial_dir, trajectory)
+        writer.write_grade(trial_dir, trajectory.grade)
         assert (trial_dir / TRAJECTORY_FILENAME).exists()
 
         result = adapter.fetch_result(JobHandle(trial_id="task:0"))
         assert isinstance(result, TrialResult)
         assert result.trial_id == "task:0"
+        # The reconstructed result is graded, not a bare trajectory: the merge
+        # reader pulled the grade / metrics / tool_log sidecars back in.
+        assert result.trajectory.grade is not None
+        assert result.trajectory.grade.binary_pass is True
+        assert result.trajectory.metrics.turns == 3
+        assert [call.tool_name for call in result.trajectory.tool_log] == ["bash"]
     finally:
         adapter.close()
 

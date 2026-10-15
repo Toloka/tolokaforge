@@ -28,7 +28,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from tolokaforge.core.dispatch.control import JobHandle, JobState, JobStatus
@@ -39,8 +38,8 @@ from tolokaforge.core.dispatch.errors import (
     DispatchUnsupported,
 )
 from tolokaforge.core.dispatch.grpc_node import GrpcNodeDispatchAdapter
-from tolokaforge.core.models import Trajectory
 from tolokaforge.core.node_registry import SpawningNodeRegistry
+from tolokaforge.core.output.artifacts import read_report_trajectory
 from tolokaforge.core.output_writer import TRAJECTORY_FILENAME
 from tolokaforge.core.trial import TrialNodeInputs, TrialResult
 from tolokaforge.core.trial_node import run_trial_from_inputs
@@ -241,17 +240,30 @@ class LocalDispatchAdapter:
     def fetch_result(self, handle: JobHandle) -> TrialResult:
         """Return the job's graded result, or raise ``DispatchUnsupported``.
 
-        ``thread`` mode returns the retained in-process result. ``subprocess``
-        mode reads the node-written bundle under the worker output root.
+        ``thread`` mode returns the retained in-process result and then drops it,
+        so retrieval is one-shot: a second ``fetch_result`` for the same trial
+        raises the neutral "no result retained" error. The orchestrator has
+        already consumed the ``run_trial_node`` return value, so keeping every
+        result for the adapter's whole lifetime would only grow memory.
+        ``subprocess`` mode reads the node-written bundle under the worker output
+        root.
         """
         if self.mode == "thread":
             with self._jobs_lock:
                 job = self._jobs.get(handle.trial_id)
-            if job is not None and job.result is not None:
-                return job.result
-            raise DispatchUnsupported(
-                "Unsupported", "", f"result not retained for {handle.trial_id}"
-            )
+                if job is not None and job.result is not None:
+                    result = job.result
+                    # One-shot: free the retained result but keep JobState so
+                    # ``status`` still answers for this trial.
+                    job.result = None
+                    return result
+                if job is not None and job.state is JobState.FAILED:
+                    raise DispatchUnsupported(
+                        "Unsupported", "", f"trial {handle.trial_id} failed; no result retained"
+                    )
+                raise DispatchUnsupported(
+                    "Unsupported", "", f"no result retained for {handle.trial_id}"
+                )
         return self._fetch_result_subprocess(handle.trial_id)
 
     def _cancel_thread(self, handle: JobHandle) -> None:
@@ -270,15 +282,24 @@ class LocalDispatchAdapter:
     def _fetch_result_subprocess(self, trial_id: str) -> TrialResult:
         assert self.registry is not None  # built by the factory for subprocess mode
         root = self.registry.output_root
+        if root is None:
+            raise DispatchUnsupported("Unsupported", "", f"result not retained for {trial_id}")
         task_id, index = trial_id.rsplit(":", 1)
-        if root is not None:
-            for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-                trajectory_path = run_dir / "trials" / task_id / index / TRAJECTORY_FILENAME
-                if trajectory_path.exists():
-                    trajectory = Trajectory.model_validate(
-                        yaml.safe_load(trajectory_path.read_text())
-                    )
-                    return TrialResult.from_trajectory(trial_id=trial_id, trajectory=trajectory)
+        # The output root holds a single per-run subdir, so the lexicographic
+        # first match is that run's trial.
+        for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            trial_dir = run_dir / "trials" / task_id / index
+            if not (trial_dir / TRAJECTORY_FILENAME).exists():
+                continue
+            # The node writes grade / metrics / tool_log to separate sidecars;
+            # the report reader merges them back into one graded trajectory.
+            try:
+                trajectory = read_report_trajectory(trial_dir)
+            except FileNotFoundError as exc:
+                raise DispatchUnsupported(
+                    "Unsupported", "", f"incomplete bundle for {trial_id}"
+                ) from exc
+            return TrialResult.from_trajectory(trial_id=trial_id, trajectory=trajectory)
         raise DispatchUnsupported("Unsupported", "", f"result not retained for {trial_id}")
 
 

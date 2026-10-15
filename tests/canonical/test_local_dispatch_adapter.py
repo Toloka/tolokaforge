@@ -198,6 +198,12 @@ def test_thread_status_runs_then_completes_and_retains_the_result() -> None:
         # The retained result is the one the trial returned.
         assert adapter.fetch_result(handle).trial_id == "t:0"
         assert result_box[0].trial_id == "t:0"
+        # Retrieval is one-shot: the result is dropped after it is read, so a
+        # second fetch is the neutral "not retained" error, while status still
+        # answers from the kept JobState.
+        with pytest.raises(DispatchUnsupported, match="no result retained"):
+            adapter.fetch_result(handle)
+        assert adapter.status(handle).state is JobState.COMPLETED
     finally:
         release.set()
         adapter.close()
@@ -211,7 +217,11 @@ def test_thread_status_is_failed_after_the_trial_raises() -> None:
     try:
         with pytest.raises(DispatchTransient):
             adapter.run_trial_node(_inputs())
-        assert adapter.status(JobHandle(trial_id="t:0")).state is JobState.FAILED
+        handle = JobHandle(trial_id="t:0")
+        assert adapter.status(handle).state is JobState.FAILED
+        # A failed trial reads distinctly from one that never ran.
+        with pytest.raises(DispatchUnsupported, match="failed; no result retained"):
+            adapter.fetch_result(handle)
     finally:
         adapter.close()
 
@@ -258,7 +268,7 @@ def test_thread_cancel_of_an_unstarted_job_marks_it_cancelled() -> None:
 def test_thread_fetch_result_without_a_retained_result_is_unsupported() -> None:
     adapter = _thread_adapter(lambda inputs: _result(inputs.trial_spec.trial_id))
     try:
-        with pytest.raises(DispatchUnsupported, match="not retained"):
+        with pytest.raises(DispatchUnsupported, match="no result retained"):
             adapter.fetch_result(JobHandle(trial_id="missing:0"))
     finally:
         adapter.close()
