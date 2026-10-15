@@ -45,6 +45,7 @@ from tolokaforge.core.compose_materialisation import (
 from tolokaforge.core.conductor import ConductorFactory
 from tolokaforge.core.dispatch.adapter import ControllableDispatchAdapter, DispatchAdapter
 from tolokaforge.core.dispatch.control import JobHandle
+from tolokaforge.core.dispatch.errors import DispatchUnsupported
 from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
     write_engine_run_state,
@@ -3861,16 +3862,28 @@ class Orchestrator:
     def _cancel_active_dispatch_jobs(
         self, adapter: ControllableDispatchAdapter, leases: Iterable[AttemptLease]
     ) -> None:
-        """Ask the dispatch backend to cancel every still-in-flight job.
+        """Ask the dispatch backend to cancel every still-in-flight dispatch job.
 
-        Fired as the run stops (budget-exhausted drain, ``KeyboardInterrupt`` or
-        an explicit stop) so a backend that can stop a job does not keep it
-        running past the orchestrator. Each cancel is isolated: one failure logs
-        and the rest still run.
+        Fired on an explicit stop or ``KeyboardInterrupt``, where futures are
+        still in flight; the budget path drains in-flight futures to completion
+        first, so there is nothing left for this to cancel there. A backend that
+        can stop a job does not keep it running past the orchestrator. Each
+        cancel is isolated: one failure logs and the rest still run.
+
+        An adapter whose backend cannot stop a leased job answers ``cancel`` with
+        ``DispatchUnsupported``; that is the expected answer, not a fault, so it
+        is logged once at debug rather than a warning per in-flight lease.
         """
         for lease in leases:
             try:
                 adapter.cancel(JobHandle(trial_id=f"{lease.task_id}:{lease.trial_index}"))
+            except DispatchUnsupported as exc:
+                self.logger.debug(
+                    "Dispatch backend cannot cancel an in-flight job; leaving it to finish",
+                    task_id=lease.task_id,
+                    trial_index=lease.trial_index,
+                    error=str(exc),
+                )
             except Exception as exc:  # noqa: BLE001 — one job's cancel must not stop the others
                 self.logger.warning(
                     "Cancelling the dispatched job failed; continuing",
