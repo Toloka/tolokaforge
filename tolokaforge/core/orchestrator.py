@@ -1610,6 +1610,32 @@ class Orchestrator:
             budget_s=timeout_s,
         )
 
+    def _teardown_engine_services(self, service_stack: Any) -> None:
+        """Best-effort teardown of the auto-started engine services.
+
+        Stops the TypeSense bridge first — it joins ``runner-net`` and must
+        leave before the network is removed — then destroys the EngineStack,
+        releasing the fixed-name ``tolokaforge-runner`` /
+        ``tolokaforge-db-service`` containers and ``runner-net``. Never
+        raises, so it is safe to call from a ``finally`` and from the
+        auto-start error path; a ``service_stack`` of ``None`` is a no-op.
+        Idempotent for TypeSense (the handle is cleared after one stop).
+        """
+        if self._typesense_server is not None:
+            try:
+                self._typesense_server.stop()
+                self.logger.info("TypeSense server stopped")
+            except Exception as e:
+                self.logger.warning(f"Failed to stop TypeSense server: {e}")
+            finally:
+                self._typesense_server = None
+        if service_stack is not None:
+            try:
+                service_stack.destroy()
+                self.logger.info("EngineStack destroyed")
+            except Exception as e:
+                self.logger.warning("Failed to destroy EngineStack", error=str(e))
+
     def _construct_runtime_backend(
         self,
         runner_address: str,
@@ -1648,6 +1674,21 @@ class Orchestrator:
         else:
             runtime_choice = override
             source = f"override:{override}"
+
+        # Per-trial isolation is materialised from each task's declared
+        # ``environment_manifest`` (the composer provisions a trial-scoped
+        # substrate from it). With no manifest anywhere in the pack there is
+        # no per-trial environment to provision, so the override cannot be
+        # honoured — fail loud instead of silently degrading to the shared
+        # engine stack.
+        if override == "per_trial" and not self._any_task_declares_environment_manifest():
+            raise RuntimeError(
+                "orchestrator.runtime='per_trial' requires at least one task to declare "
+                "an environment_manifest describing the per-trial substrate, but none of "
+                "the tasks in this run declare one, so per-trial isolation cannot be "
+                "provisioned. Remove the override to run on the shared engine stack, or "
+                "add an environment_manifest to the task(s)."
+            )
 
         factory = load_runtime_backend(runtime_choice)
         adapter_type = (
@@ -3307,63 +3348,72 @@ class Orchestrator:
                     )
                 else:
                     self.logger.error("Failed to auto-start services", error=str(e))
+                # A partial start can leave the fixed-name containers and
+                # ``runner-net`` behind; tear them down before re-raising so
+                # the next run isn't blocked by a stale stack.
+                self._teardown_engine_services(service_stack)
                 raise
         else:
             runner_address = None
 
-        # Resolve the runtime backend: injected for tests / alternate
-        # backends, default :class:`SharedStackRuntimeBackend` otherwise.
-        if runner_address is None:
-            runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
-
-        runtime_backend: RuntimeBackend
-        if self._injected_runtime_backend is not None:
-            runtime_backend = self._injected_runtime_backend
-        else:
-            runtime_backend = self._construct_runtime_backend(
-                runner_address,
-                env_manifest=run_env_manifest,
-                run_id=run_id,
-            )
-        self._events.phase_changed(phase="connecting_runtime")
-        runtime_backend.connect()
-        self.logger.info("Runtime backend connected")
-        self._verify_isolation_compatibility(runtime_backend)
-        self._validate_snapshot_mode_compatibility(runtime_backend)
-
-        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
-
-        env_endpoints = _build_env_endpoints(runner_address)
-        # Any task-declared manifest hands endpoint resolution to the composer:
-        # the backend either materialises run-scope stacks at ``connect`` or
-        # ``provision_trial`` per trial. The default ``env_endpoints`` built
-        # from ``runner_address`` are phantom in that case, so logging them
-        # would misdirect log-based diagnosis.
-        if self._any_task_declares_environment_manifest():
-            self.logger.info(
-                "Trial-scoped service endpoints resolved by backend from task-declared stack"
-            )
-        else:
-            self.logger.info(
-                "Resolved trial-scoped service endpoints",
-                db_url=env_endpoints.db_url,
-                rag_url=env_endpoints.rag_url,
-                runner_url=env_endpoints.runner_url,
-            )
-
-        conductor = self._build_conductor(
-            agent_client=agent_client,
-            runtime_backend=runtime_backend,
-            output_dir=output_dir,
-            request_limiter=request_limiter,
-        )
-        # ``try/finally`` from here to the run's return guarantees the
-        # grader teardown (broker close + worker join, gRPC channel close)
-        # fires even when the trial loop or a mid-run cleanup raises. The
-        # rest of the existing sequential teardown lives inside the try
+        # ``try/finally`` from here to the run's return guarantees teardown on
+        # every exit path. The ``finally`` tears down the auto-started
+        # EngineStack (and the TypeSense bridge) via
+        # ``_teardown_engine_services``, so a failure while connecting the
+        # runtime backend, building the conductor, or anywhere in the trial
+        # loop cannot leak the fixed-name ``tolokaforge-runner`` /
+        # ``tolokaforge-db-service`` containers or ``runner-net``. It also
+        # fires the grader teardown (broker close + worker join, gRPC channel
+        # close). The rest of the sequential teardown lives inside the try
         # body — a mid-run exception still surfaces to the caller after
-        # the grader is closed.
+        # cleanup.
         try:
+            # Resolve the runtime backend: injected for tests / alternate
+            # backends, default :class:`SharedStackRuntimeBackend` otherwise.
+            if runner_address is None:
+                runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
+
+            runtime_backend: RuntimeBackend
+            if self._injected_runtime_backend is not None:
+                runtime_backend = self._injected_runtime_backend
+            else:
+                runtime_backend = self._construct_runtime_backend(
+                    runner_address,
+                    env_manifest=run_env_manifest,
+                    run_id=run_id,
+                )
+            self._events.phase_changed(phase="connecting_runtime")
+            runtime_backend.connect()
+            self.logger.info("Runtime backend connected")
+            self._verify_isolation_compatibility(runtime_backend)
+            self._validate_snapshot_mode_compatibility(runtime_backend)
+
+            from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
+
+            env_endpoints = _build_env_endpoints(runner_address)
+            # Any task-declared manifest hands endpoint resolution to the composer:
+            # the backend either materialises run-scope stacks at ``connect`` or
+            # ``provision_trial`` per trial. The default ``env_endpoints`` built
+            # from ``runner_address`` are phantom in that case, so logging them
+            # would misdirect log-based diagnosis.
+            if self._any_task_declares_environment_manifest():
+                self.logger.info(
+                    "Trial-scoped service endpoints resolved by backend from task-declared stack"
+                )
+            else:
+                self.logger.info(
+                    "Resolved trial-scoped service endpoints",
+                    db_url=env_endpoints.db_url,
+                    rag_url=env_endpoints.rag_url,
+                    runner_url=env_endpoints.runner_url,
+                )
+
+            conductor = self._build_conductor(
+                agent_client=agent_client,
+                runtime_backend=runtime_backend,
+                output_dir=output_dir,
+                request_limiter=request_limiter,
+            )
             trial_executor = self._build_trial_executor(
                 runtime_backend, conductor, output_dir=output_dir
             )
@@ -3661,23 +3711,10 @@ class Orchestrator:
             if runtime_backend:
                 runtime_backend.close()
 
-            # Stop TypeSense BEFORE destroying the EngineStack.
-            # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
-            # so it must be removed from that network before the stack can tear it down.
-            if self._typesense_server is not None:
-                try:
-                    self._typesense_server.stop()
-                    self.logger.info("TypeSense server stopped")
-                except Exception as e:
-                    self.logger.warning(f"Failed to stop TypeSense server: {e}")
-
-            # Cleanup EngineStack if auto-started
-            if service_stack is not None:
-                try:
-                    service_stack.destroy()
-                    self.logger.info("EngineStack destroyed")
-                except Exception as e:
-                    self.logger.warning("Failed to destroy EngineStack", error=str(e))
+            # TypeSense teardown and EngineStack destroy run in the ``finally``
+            # below (``_teardown_engine_services``), which stops TypeSense
+            # before destroying the stack and fires on every exit path — not
+            # only this success path.
 
             # Publish completeness and generate reports before stamping the
             # run as completed, so ``run_state.json``'s completion gates are
@@ -3708,6 +3745,10 @@ class Orchestrator:
             # export thread is a daemon and would otherwise die with the last batch unsent.
             self._finish_tracing(output_dir)
             self._close_trial_graders()
+            # Tear down the auto-started engine services last so a failure
+            # anywhere above still releases the fixed-name EngineStack
+            # containers and ``runner-net`` instead of leaking them.
+            self._teardown_engine_services(service_stack)
 
     def _finish_tracing(self, output_dir: Path) -> None:
         """Flush and close the run's trial observer; the export receipt lands in the run

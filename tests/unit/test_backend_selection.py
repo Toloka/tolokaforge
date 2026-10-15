@@ -287,6 +287,40 @@ class TestConstructRuntimeBackend:
         assert coerced is not None
         assert all(decl.stack_scope == "trial" for decl in coerced.stacks)
 
+    def test_per_trial_override_without_manifest_raises(self) -> None:
+        """``"per_trial"`` on a pack where no task declares an
+        ``environment_manifest`` cannot be satisfied — there is no per-trial
+        environment to provision — so it fails loud instead of silently
+        degrading to the shared engine stack."""
+        tasks = [_task_stub("t1")]
+        task_descs = {"t1": make_task_description(task_id="t1", environment_manifest=None)}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            orch = _make_orchestrator(tasks, task_descs, run_config_kwargs={"runtime": "per_trial"})
+
+        with pytest.raises(RuntimeError, match="per_trial.*environment_manifest"):
+            orch._construct_runtime_backend(
+                runner_address="sentinel:50051",
+                env_manifest=None,
+                run_id="test-run",
+            )
+
+    def test_shared_override_without_manifest_still_builds_backend(self) -> None:
+        """The ``per_trial`` guard must not fire for ``shared`` — a manifest-less
+        pack under ``shared`` builds the backend normally."""
+        tasks = [_task_stub("t1")]
+        task_descs = {"t1": make_task_description(task_id="t1", environment_manifest=None)}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            orch = _make_orchestrator(tasks, task_descs, run_config_kwargs={"runtime": "shared"})
+
+        backend = orch._construct_runtime_backend(
+            runner_address="sentinel:50051",
+            env_manifest=None,
+            run_id="test-run",
+        )
+        assert isinstance(backend, SharedStackRuntimeBackend)
+
     def test_override_refuses_multi_stack_plan(self) -> None:
         """The coercion knob is defined for single-stack packs only —
         multi-stack packs must declare stack-scope explicitly (ADR-0044
