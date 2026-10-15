@@ -790,7 +790,7 @@ def _trial_runner_kwargs(
         adapter_env=MagicMock(),
         tool_schemas=tool_schemas or [],
         tool_executor=MagicMock(),
-        user_tool_schemas=tool_schemas or [],
+        user_tool_schemas=[],
         user_tool_executor=None,
     )
     with (

@@ -1223,6 +1223,35 @@ class TestUserStopRuleFind:
 
 
 # ===================================================================
+# Tool-name aliases on the wire
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestToolNameAliasesReachTheWire:
+    """A non-empty alias map wraps the agent's client; an empty one leaves it bare."""
+
+    LONG = "ots_bank_hr_d365_hr_service_api_hr_service_api_create_document_generation_request"
+    SHORT = "hr_service_api_hr_service_api_create_document_generation_request"
+
+    def _sent_tool_names(self, aliases: dict[str, str] | None) -> list[str]:
+        agent = _make_agent_client()
+        runner = _make_runner(
+            agent_client=agent,
+            tool_schemas=[{"type": "function", "function": {"name": self.LONG}}],
+            tool_name_aliases=aliases,
+        )
+        runner.run("System", "Task")
+        return [tool["function"]["name"] for tool in agent.generate.call_args.kwargs["tools"]]
+
+    def test_a_map_sends_the_short_name(self) -> None:
+        assert self._sent_tool_names({self.LONG: self.SHORT}) == [self.SHORT]
+
+    def test_no_map_sends_the_pack_name(self) -> None:
+        assert self._sent_tool_names(None) == [self.LONG]
+
+
+# ===================================================================
 # Observation window from a run config
 # ===================================================================
 

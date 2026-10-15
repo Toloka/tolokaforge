@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from tolokaforge.core.llm import GenerationResult
+from tolokaforge.core.llm.client import ParserError
 from tolokaforge.core.llm.tool_name_alias import ToolNameAliasingClient, tool_name_aliases
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 
@@ -46,6 +47,18 @@ def test_no_limit_or_no_long_name_means_no_aliases() -> None:
     assert tool_name_aliases(_schemas(FITS, CONNECTOR), CATEGORY, 64) == {}
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "x" * 70,  # no prefix and no segment to drop
+        f"{CATEGORY}_{'y' * 70}",  # one segment longer than the limit after the prefix
+    ],
+)
+def test_a_name_that_cannot_fit_is_refused(name: str) -> None:
+    with pytest.raises(ValueError, match="cannot be shortened to 64"):
+        tool_name_aliases(_schemas(name), CATEGORY, 64)
+
+
 def test_a_name_offered_twice_is_refused() -> None:
     with pytest.raises(ValueError, match="twice"):
         tool_name_aliases(_schemas(LONG, SHORT), CATEGORY, 64)
@@ -58,7 +71,9 @@ class _RecordingClient:
 
     def generate(self, *, system, messages, tools, tool_choice, observation):
         self.seen = {"messages": messages, "tools": tools}
-        return GenerationResult(text="", tool_calls=list(self.calls))
+        result = GenerationResult(text="", tool_calls=list(self.calls))
+        result.parser_errors = (ParserError(tool_name=SHORT, reason="bad json", raw_arguments="{"),)
+        return result
 
 
 def test_the_client_aliases_the_wire_and_restores_the_result() -> None:
@@ -79,6 +94,7 @@ def test_the_client_aliases_the_wire_and_restores_the_result() -> None:
             content=f"Error: Invalid arguments for tool '{LONG}'",
             tool_call_id="c1",
         ),
+        Message(role=MessageRole.USER, content=f"- tool='{LONG}': bad json"),
     ]
     client = ToolNameAliasingClient(inner, tool_name_aliases(tools, CATEGORY, 64))
 
@@ -88,7 +104,9 @@ def test_the_client_aliases_the_wire_and_restores_the_result() -> None:
     assert inner.seen["tools"][1] is tools[1]
     assert inner.seen["messages"][1].tool_calls[0].name == SHORT
     assert inner.seen["messages"][2].content == f"Error: Invalid arguments for tool '{SHORT}'"
+    assert inner.seen["messages"][3].content == f"- tool='{SHORT}': bad json"
     assert inner.seen["messages"][0] is history[0]
+    assert [e.tool_name for e in result.parser_errors] == [LONG]
     assert [call.name for call in result.tool_calls] == [LONG, FITS]
     assert result.tool_calls[0].arguments == {"x": 1}
     # The loop's own records are never rewritten.

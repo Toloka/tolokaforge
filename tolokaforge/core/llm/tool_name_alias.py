@@ -7,9 +7,10 @@ set, only the names over the limit are shortened — first by their
 ``<task category>_`` prefix, then, if still too long, by further leading
 ``_``-segments until they fit — and the agent's loop talks to its model
 through :class:`ToolNameAliasingClient`, which offers the short names on the
-wire — as the tools' function names, in replayed tool calls, and in tool-result
+wire — as the tools' function names, in replayed tool calls, and in message
 text such as an executor's "Invalid arguments for tool '<name>'" — and maps
-every tool call the model returns back to the pack's name.
+every tool call and parser-error record the model's reply produced back to the
+pack's name.
 
 Everything downstream of the loop therefore reads the pack's own names: the
 tool executor, the recorded trajectory, the trace checks and the grader.
@@ -17,10 +18,11 @@ tool executor, the recorded trajectory, the trace checks and the grader.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Protocol
 
 from tolokaforge.core.llm.client import GenerationResult
-from tolokaforge.core.models.trajectory import Message, MessageRole, ToolCall
+from tolokaforge.core.models.trajectory import Message, ToolCall
 from tolokaforge.core.run_display_events import LLMCallObservation
 
 
@@ -29,9 +31,9 @@ def tool_name_aliases(
 ) -> dict[str, str]:
     """``{pack name: model name}`` for every tool whose name exceeds ``limit``.
 
-    Empty when ``limit`` is ``None`` or every name fits. Refuses a result that
-    offers two tools under one name, since the model's calls to it could not be
-    told apart.
+    Empty when ``limit`` is ``None`` or every name fits. Refuses a name that
+    cannot be shortened to fit, and a result that offers two tools under one
+    name, since the model's calls to it could not be told apart.
     """
     if limit is None:
         return {}
@@ -47,6 +49,9 @@ def tool_name_aliases(
         if short != name:
             aliases[name] = short
     offered = [aliases.get(name, name) for name in names]
+    too_long = sorted(n for n in offered if len(n) > limit)
+    if too_long:
+        raise ValueError(f"tool names {too_long} cannot be shortened to {limit} characters")
     if len(set(offered)) != len(offered):
         clashes = sorted({n for n in offered if offered.count(n) > 1})
         raise ValueError(f"shortening tool names to {limit} characters offers {clashes} twice")
@@ -93,13 +98,17 @@ class ToolNameAliasingClient:
             observation=observation,
         )
         result.tool_calls = _renamed(result.tool_calls, self._inbound)
+        result.parser_errors = tuple(
+            replace(e, tool_name=self._inbound.get(e.tool_name, e.tool_name))
+            for e in result.parser_errors
+        )
         return result
 
     def _wire(self, message: Message) -> Message:
         update: dict[str, Any] = {}
         if message.tool_calls:
             update["tool_calls"] = _renamed(message.tool_calls, self._outbound)
-        if message.role is MessageRole.TOOL and any(n in message.content for n in self._in_text):
+        if any(name in message.content for name in self._in_text):
             content = message.content
             for name in self._in_text:
                 content = content.replace(name, self._outbound[name])
