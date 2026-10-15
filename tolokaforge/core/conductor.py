@@ -976,6 +976,11 @@ class InProcessConductor:
             task_id=task.task_id,
             trial_index=setup.trial_idx,
             agent_client=self.agent_client,
+            tool_name_prefix=(
+                f"{task.category}_"
+                if self.agent_client.config.strip_task_tool_prefix and task.category
+                else None
+            ),
             user_simulator=user_simulator,
             tool_executor=setup.tool_executor,
             tool_schemas=setup.tool_schemas,

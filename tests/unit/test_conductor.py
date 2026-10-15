@@ -770,10 +770,13 @@ def _trial_runner_kwargs(
     *,
     user_model_config: ModelConfig | None = None,
     rate_limit_probe: RateLimitProbeConfig | None = None,
+    agent_model_config: ModelConfig | None = None,
 ) -> dict[str, Any]:
     """The keyword arguments ``_run_agent_loop`` builds ``TrialRunner`` with, for *task*
     run from the task root *tmp_path*."""
     conductor = _conductor_registering(tmp_path, _register_result([], []))
+    if agent_model_config is not None:
+        conductor.agent_client.config = agent_model_config
     if rate_limit_probe is not None:
         conductor.config.orchestrator.rate_limit_probe = rate_limit_probe
     spec = _make_spec().model_copy(update={"user_model_config": user_model_config})
@@ -795,6 +798,29 @@ def _trial_runner_kwargs(
     ):
         conductor._run_agent_loop(spec, task, setup, AGENT_LOOP_IDENTITY)
     return runner_cls.call_args.kwargs
+
+
+class TestToolNamePrefixReachesTheRunner:
+    """``strip_task_tool_prefix`` hands the runner the task's ``<category>_`` prefix."""
+
+    def _task(self, category: str | None) -> TaskConfig:
+        return TaskConfig(task_id="t1", description="d", category=category)
+
+    def test_the_option_strips_the_task_category(self, tmp_path: Path) -> None:
+        config = ModelConfig(provider="openai", name="gpt-4", strip_task_tool_prefix=True)
+        kwargs = _trial_runner_kwargs(
+            tmp_path, self._task("ots_bank_hr_d365"), agent_model_config=config
+        )
+        assert kwargs["tool_name_prefix"] == "ots_bank_hr_d365_"
+
+    def test_off_by_default(self, tmp_path: Path) -> None:
+        kwargs = _trial_runner_kwargs(tmp_path, self._task("ots_bank_hr_d365"))
+        assert kwargs["tool_name_prefix"] is None
+
+    def test_a_task_without_a_category_strips_nothing(self, tmp_path: Path) -> None:
+        config = ModelConfig(provider="openai", name="gpt-4", strip_task_tool_prefix=True)
+        kwargs = _trial_runner_kwargs(tmp_path, self._task(None), agent_model_config=config)
+        assert kwargs["tool_name_prefix"] is None
 
 
 class TestUserStopRuleReachesTheRunner:

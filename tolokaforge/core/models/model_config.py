@@ -137,6 +137,14 @@ class ModelConfig(_RefusesUndeclaredKeys):
     # completions-only call omits ``parallel_tool_calls`` regardless of
     # what this field is set to.
     parallel_tool_calls: bool | None = None
+    # Offer the agent's tools without their ``<task category>_`` prefix, for a
+    # provider that caps a tool name's length (Meta and Cohere refuse a name
+    # over 64 characters). The model's calls are mapped back to the pack's
+    # names before they are executed or recorded, so the trajectory and the
+    # grader see the pack's names; only the model's view changes. Read from
+    # the agent's primary model and applied to its whole fallback chain. See
+    # docs/CONFIG.md (``strip_task_tool_prefix``).
+    strip_task_tool_prefix: bool = False
     # Coding-harness selector. When set, the trial's LLM loop is replaced by a
     # single invocation of the named vendor CLI (``claude-code``, ``codex``,
     # ``gemini-cli``, ``kimi-code``, ``opencode``, ``grok-build`` — see the

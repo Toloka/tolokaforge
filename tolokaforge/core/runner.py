@@ -36,11 +36,13 @@ from tolokaforge.core.llm import (
     Usage,
 )
 from tolokaforge.core.llm.client import ParserError
+from tolokaforge.core.llm.tool_name_alias import ToolNameAliases, ToolNameAliasingClient
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.logging_context import trial_id_scope
 from tolokaforge.core.loop import (
     AgentLoopContext,
     LoopConfig,
+    LoopLLMClient,
     LoopOutcome,
     MetricsSink,
     TerminationDecision,
@@ -276,6 +278,7 @@ class TrialRunner:
         user_tool_turns: UserToolTurnRule = UserToolTurnRule(),
         first_agent_message: str | None = None,
         trace_id: str | None = None,
+        tool_name_prefix: str | None = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -283,6 +286,9 @@ class TrialRunner:
         self.user_simulator = user_simulator
         self.tool_executor = tool_executor
         self.tool_schemas = tool_schemas
+        # ``<task category>_`` when the agent's model offers tools without it
+        # (``ModelConfig.strip_task_tool_prefix``); ``None`` offers them as is.
+        self.tool_name_prefix = tool_name_prefix
         self.max_turns = max_turns
         self.max_simulation_steps = max_simulation_steps
         self.max_environment_errors = max_environment_errors
@@ -559,9 +565,15 @@ class TrialRunner:
                     and capabilities.context_watermark is not None
                 ):
                     summarize_policy = LLMSummarizer(self.agent_client, agent_metrics_sink)
+                loop_client: LoopLLMClient = self.agent_client
+                if self.tool_name_prefix is not None:
+                    loop_client = ToolNameAliasingClient(
+                        self.agent_client,
+                        ToolNameAliases.for_tools(self.tool_schemas, self.tool_name_prefix),
+                    )
                 loop = loop_factory(
                     AgentLoopContext(
-                        llm_client=self.agent_client,
+                        llm_client=loop_client,
                         tool_executor=self.tool_executor,
                         tool_schemas=self.tool_schemas,
                         validation_schemas_by_tool=self.agent_client.sanitize_tools_for_execution(
