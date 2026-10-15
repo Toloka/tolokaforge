@@ -585,6 +585,35 @@ class InProcessConductor:
             trial_id=setup.trial_id, trajectory=trajectory, worker_id=spec.worker_id
         )
 
+    def _apply_agent_episode_override(self, spec: TrialSpec) -> None:
+        """Replace every agent tool's ``timeout_s`` with the run-level override.
+
+        ``orchestrator.timeouts.agent_episode_s`` supersedes the task-derived
+        agent budget — a vendor-CLI harness carries the task's ``[agent]
+        timeout_sec`` on its sole agent tool; a native run carries each tool's
+        own budget. Rewriting it on the spec before registration reaches every
+        consumer at once: the runner enforces it as the per-command budget (and,
+        for a harness exec, the single-exec episode budget its in-container
+        watchdog kills at), and the harness branch reads the same value for its
+        episode-budget floor check. ``None`` is the no-op default, so a run that
+        sets nothing registers the exact timeouts the adapter assigned.
+
+        The overridden tools are a fresh list of copies assigned to a copy of
+        ``spec.task``; the adapter's cached :class:`TaskDescription` is left
+        untouched so concurrent trials never share a mutated tool.
+        """
+        override = self.config.orchestrator.timeouts.agent_episode_s
+        if override is None or not spec.task.agent_tools:
+            return
+        spec.task = spec.task.model_copy(
+            update={
+                "agent_tools": [
+                    tool.model_copy(update={"timeout_s": float(override)})
+                    for tool in spec.task.agent_tools
+                ]
+            }
+        )
+
     def _setup_trial(
         self,
         spec: TrialSpec,
@@ -599,6 +628,8 @@ class InProcessConductor:
         snapshot, and issues the ``register_trial`` RPC — returning
         everything downstream phases need.
         """
+        self._apply_agent_episode_override(spec)
+
         task = task_config
         trial_idx = int(spec.trial_id.rsplit(":", 1)[1])
         trial_id = f"{task.task_id}:{trial_idx}"
