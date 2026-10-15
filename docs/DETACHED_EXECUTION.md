@@ -17,7 +17,7 @@ Two separate decisions sit on top of that unit, and they are independent:
 
 - **The orchestrator decides _what_ runs.** It reads the run config, picks the
   trials, hands each one out, collects the results, and writes the report. It is a
-  lean scheduler — a control plane.
+  lean control plane — the unified interface to operate the system.
 - **A dispatch adapter decides _where and how a trial is sent to run._** It takes
   one trial's inputs and returns its graded result. The orchestrator does not care
   how the adapter does that.
@@ -120,7 +120,7 @@ trial at a time, so the number of nodes bounds how many trials run at once.
 
 ```mermaid
 flowchart LR
-    Orch["Orchestrator<br/>control plane / scheduler"]
+    Orch["Orchestrator<br/>unified control plane"]
     Adapter["Dispatch adapter<br/>(grpc_node)"]
     Node["Trial node<br/>run_trial_from_inputs"]
 
