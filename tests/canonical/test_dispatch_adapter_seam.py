@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from tolokaforge.core.dispatch.adapter import DispatchAdapter
+from tolokaforge.core.dispatch.adapter import ControllableDispatchAdapter, DispatchAdapter
+from tolokaforge.core.dispatch.control import JobHandle, JobState, JobStatus
 from tolokaforge.core.dispatch.errors import (
     DispatchProvisionError,
     DispatchRefused,
     DispatchTransient,
+    DispatchUnsupported,
 )
 from tolokaforge.core.dispatch.grpc_node import GrpcNodeDispatchAdapter
 from tolokaforge.core.plugin_registry import (
@@ -17,6 +21,7 @@ from tolokaforge.core.plugin_registry import (
     UnknownImplementationError,
     load_dispatch_adapter,
 )
+from tolokaforge.core.run_queue import SqliteRunQueue
 from tolokaforge.core.trial_executor import TrialOwningBackend
 
 pytestmark = pytest.mark.canonical
@@ -77,3 +82,67 @@ def test_neutral_errors_carry_classification(error_cls: type[RuntimeError]) -> N
     err = error_cls("Internal", "preflight", "bad thing")  # type: ignore[call-arg]
     assert (err.error_type, err.stage, err.reason) == ("Internal", "preflight", "bad thing")  # type: ignore[attr-defined]
     assert str(err) == "[Internal/preflight] bad thing"
+
+
+# ---- Control-plane contract ------------------------------------------------
+
+
+class _Controllable:
+    """A structurally-complete :class:`ControllableDispatchAdapter`."""
+
+    def run_trial_node(self, inputs: object) -> object:
+        return inputs
+
+    def connect(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def cancel(self, handle: JobHandle) -> None: ...
+
+    def status(self, handle: JobHandle) -> JobStatus:
+        return JobStatus(state=JobState.UNKNOWN)
+
+    def fetch_result(self, handle: JobHandle) -> object:
+        return None
+
+
+class _ThreeMethod:
+    """A plain three-method :class:`DispatchAdapter` with no control plane."""
+
+    def run_trial_node(self, inputs: object) -> object:
+        return inputs
+
+    def connect(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+def test_a_controllable_adapter_satisfies_both_protocols() -> None:
+    adapter = _Controllable()
+    assert isinstance(adapter, DispatchAdapter)
+    assert isinstance(adapter, ControllableDispatchAdapter)
+
+
+def test_a_three_method_adapter_is_a_dispatch_adapter_but_not_controllable() -> None:
+    adapter = _ThreeMethod()
+    assert isinstance(adapter, DispatchAdapter)
+    assert not isinstance(adapter, ControllableDispatchAdapter)
+
+
+def test_dispatch_unsupported_is_a_dispatch_refused() -> None:
+    err = DispatchUnsupported("Unsupported", "", "cannot do that")
+    assert isinstance(err, DispatchRefused)
+    assert (err.error_type, err.stage, err.reason) == ("Unsupported", "", "cannot do that")
+
+
+def test_job_state_values_match_the_run_queue_status_vocabulary(tmp_path: Path) -> None:
+    # The run queue is the source of the state words; JobState must reuse them
+    # verbatim so one vocabulary runs from the queue through the control plane.
+    queue = SqliteRunQueue(tmp_path / "q.sqlite")
+    queue_states = set(queue.get_counts()) - {"total"}
+
+    assert queue_states == {"pending", "leased", "running", "completed", "failed", "cancelled"}
+    assert queue_states <= {state.value for state in JobState}
+    assert JobState.UNKNOWN.value == "unknown"
+    for word in queue_states:
+        assert JobState(word).value == word

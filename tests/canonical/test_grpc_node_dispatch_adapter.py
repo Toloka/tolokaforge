@@ -13,11 +13,13 @@ from __future__ import annotations
 import pytest
 
 from tests.canonical._factories import make_trial_spec
-from tolokaforge.core.dispatch.adapter import DispatchAdapter
+from tolokaforge.core.dispatch.adapter import ControllableDispatchAdapter, DispatchAdapter
+from tolokaforge.core.dispatch.control import JobHandle, JobState
 from tolokaforge.core.dispatch.errors import (
     DispatchProvisionError,
     DispatchRefused,
     DispatchTransient,
+    DispatchUnsupported,
 )
 from tolokaforge.core.dispatch.grpc_node import GrpcNodeDispatchAdapter
 from tolokaforge.core.models import TaskConfig, TrialStatus
@@ -252,6 +254,32 @@ def test_factory_from_the_build_context_threads_the_budget_registry_and_message_
     assert adapter.registry.lease("t:0").runner_address == "a:1"
     assert (adapter.connect_timeout_s, adapter.retry_interval_s) == (9.0, 0.25)
     assert adapter.grpc_max_message_mb == 13
+
+
+def test_is_a_controllable_dispatch_adapter() -> None:
+    assert isinstance(_adapter(_Factory()), ControllableDispatchAdapter)
+
+
+def test_cancel_is_unsupported_honestly() -> None:
+    with pytest.raises(DispatchUnsupported, match="cannot cancel"):
+        _adapter(_Factory()).cancel(JobHandle(trial_id="t:0"))
+
+
+def test_fetch_result_is_unsupported_honestly() -> None:
+    with pytest.raises(DispatchUnsupported, match="collect a result"):
+        _adapter(_Factory()).fetch_result(JobHandle(trial_id="t:0"))
+
+
+def test_status_is_running_while_a_lease_is_held_else_unknown() -> None:
+    adapter = _adapter(_Factory())
+    handle = JobHandle(trial_id="t:0")
+
+    assert adapter.status(handle).state is JobState.UNKNOWN
+
+    adapter._leases["t:0"] = adapter.registry.lease("t:0")
+    status = adapter.status(handle)
+    assert status.state is JobState.RUNNING
+    assert "lease" in status.detail
 
 
 def test_factory_requires_a_nodes_list() -> None:

@@ -21,25 +21,33 @@ so a run reads the same whichever mode it picks.
 
 from __future__ import annotations
 
+import logging
+import threading
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from tolokaforge.core.dispatch.control import JobHandle, JobState, JobStatus
 from tolokaforge.core.dispatch.errors import (
     DispatchProvisionError,
     DispatchRefused,
     DispatchTransient,
+    DispatchUnsupported,
 )
 from tolokaforge.core.dispatch.grpc_node import GrpcNodeDispatchAdapter
 from tolokaforge.core.node_registry import SpawningNodeRegistry
+from tolokaforge.core.output.artifacts import read_report_trajectory
+from tolokaforge.core.output_writer import TRAJECTORY_FILENAME
 from tolokaforge.core.trial import TrialNodeInputs, TrialResult
 from tolokaforge.core.trial_node import run_trial_from_inputs
 from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
 from tolokaforge.trial_node.classify import classify_trial_exception
 from tolokaforge.trial_node.protocol import NodeErrorType
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from tolokaforge.core.dispatch.errors import _DispatchFailure
@@ -78,14 +86,30 @@ class _LocalConfig(BaseModel):
 
 
 @dataclass
+class _ThreadJob:
+    """One in-process trial's table entry: its future, state and retained result."""
+
+    future: Future[TrialResult]
+    state: JobState
+    result: TrialResult | None = None
+
+
+@dataclass
 class LocalDispatchAdapter:
-    """:class:`~tolokaforge.core.dispatch.adapter.DispatchAdapter` that runs trials locally.
+    """:class:`~tolokaforge.core.dispatch.adapter.ControllableDispatchAdapter` that runs trials locally.
 
     ``mode`` picks the substrate: ``thread`` runs each trial in-process on
     :attr:`_pool`; ``subprocess`` delegates to :attr:`grpc_adapter` over
     :attr:`registry`'s spawned worker processes. The factory builds the registry
     and gRPC adapter for ``subprocess`` mode; ``thread`` mode builds its pool on
     :meth:`connect`.
+
+    The control-plane operations dispatch to the active mode. ``thread`` keeps an
+    in-process job table (:attr:`_jobs`) so status is real and pre-start cancel
+    genuine; a running in-process thread cannot be force-killed, so cancelling one
+    is a best-effort no-op. ``subprocess`` cancels by killing the leased worker
+    process, reports coarse lease-derived status, and collects the node-written
+    bundle.
 
     ``run_trial_fn`` is the thread-mode seam: tests inject a fake in place of
     :func:`~tolokaforge.core.trial_node.run_trial_from_inputs` so no backend,
@@ -98,6 +122,8 @@ class LocalDispatchAdapter:
     registry: SpawningNodeRegistry | None = None
     grpc_adapter: GrpcNodeDispatchAdapter | None = None
     _pool: ThreadPoolExecutor | None = field(default=None, init=False)
+    _jobs: dict[str, _ThreadJob] = field(default_factory=dict, init=False)
+    _jobs_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     # ---- Run-level lifecycle ----
 
@@ -141,10 +167,31 @@ class LocalDispatchAdapter:
     def _run_on_thread(self, inputs: TrialNodeInputs) -> TrialResult:
         if self._pool is None:
             raise RuntimeError("LocalDispatchAdapter is not connected; call connect().")
+        trial_id = inputs.trial_spec.trial_id
         # Round-trip the inputs through JSON so a threaded trial sees exactly the
         # serialized value a node would, not a shared in-memory object.
         payload = inputs.model_dump_json()
-        return self._pool.submit(self._run_one, payload).result()
+        # Submit and record RUNNING under one lock so a status read never races a
+        # worker that starts the instant the future is submitted.
+        with self._jobs_lock:
+            future = self._pool.submit(self._run_one, payload)
+            self._jobs[trial_id] = _ThreadJob(future=future, state=JobState.RUNNING)
+        try:
+            result = future.result()
+        except BaseException:
+            # Only a job still RUNNING becomes FAILED: a job cancelled before it
+            # started keeps its CANCELLED state when its future reports back.
+            with self._jobs_lock:
+                job = self._jobs.get(trial_id)
+                if job is not None and job.state is JobState.RUNNING:
+                    job.state = JobState.FAILED
+            raise
+        with self._jobs_lock:
+            job = self._jobs.get(trial_id)
+            if job is not None:
+                job.state = JobState.COMPLETED
+                job.result = result
+        return result
 
     def _run_one(self, payload: str) -> TrialResult:
         rebuilt = TrialNodeInputs.model_validate_json(payload)
@@ -152,6 +199,108 @@ class LocalDispatchAdapter:
             return self.run_trial_fn(rebuilt)
         except Exception as exc:
             raise _dispatch_error(*classify_trial_exception(exc)) from exc
+
+    # ---- Control plane ----
+
+    def cancel(self, handle: JobHandle) -> None:
+        """Request cancellation of the job the handle names. Idempotent.
+
+        ``thread`` mode cancels a job that has not started; a running in-process
+        thread cannot be force-killed, so cancelling one is a logged best-effort
+        no-op. ``subprocess`` mode kills the leased worker process outright.
+        """
+        if self.mode == "thread":
+            self._cancel_thread(handle)
+            return
+        assert self.registry is not None  # built by the factory for subprocess mode
+        if not self.registry.terminate_worker_for_trial(handle.trial_id):
+            logger.debug("No leased worker to cancel for trial %s", handle.trial_id)
+
+    def status(self, handle: JobHandle) -> JobStatus:
+        """Return the job's current state; an unknown id is ``JobState.UNKNOWN``."""
+        if self.mode == "thread":
+            with self._jobs_lock:
+                job = self._jobs.get(handle.trial_id)
+            if job is None:
+                return JobStatus(
+                    state=JobState.UNKNOWN,
+                    detail=f"no in-process job for {handle.trial_id}",
+                )
+            return JobStatus(state=job.state)
+        assert self.grpc_adapter is not None  # built by the factory for subprocess mode
+        # Coarse: the adapter knows only that it holds a lease for the trial, not
+        # the worker-side job state.
+        if handle.trial_id in self.grpc_adapter._leases:
+            return JobStatus(
+                state=JobState.RUNNING,
+                detail="coarse: the adapter holds a lease for this trial; node-side state is not queried",
+            )
+        return JobStatus(state=JobState.UNKNOWN, detail="no lease held for this trial")
+
+    def fetch_result(self, handle: JobHandle) -> TrialResult:
+        """Return the job's graded result, or raise ``DispatchUnsupported``.
+
+        ``thread`` mode returns the retained in-process result and then drops it,
+        so retrieval is one-shot: a second ``fetch_result`` for the same trial
+        raises the neutral "no result retained" error. The orchestrator has
+        already consumed the ``run_trial_node`` return value, so keeping every
+        result for the adapter's whole lifetime would only grow memory.
+        ``subprocess`` mode reads the node-written bundle under the worker output
+        root.
+        """
+        if self.mode == "thread":
+            with self._jobs_lock:
+                job = self._jobs.get(handle.trial_id)
+                if job is not None and job.result is not None:
+                    result = job.result
+                    # One-shot: free the retained result but keep JobState so
+                    # ``status`` still answers for this trial.
+                    job.result = None
+                    return result
+                if job is not None and job.state is JobState.FAILED:
+                    raise DispatchUnsupported(
+                        "Unsupported", "", f"trial {handle.trial_id} failed; no result retained"
+                    )
+                raise DispatchUnsupported(
+                    "Unsupported", "", f"no result retained for {handle.trial_id}"
+                )
+        return self._fetch_result_subprocess(handle.trial_id)
+
+    def _cancel_thread(self, handle: JobHandle) -> None:
+        with self._jobs_lock:
+            job = self._jobs.get(handle.trial_id)
+            if job is None:
+                return
+            if job.future.cancel():
+                job.state = JobState.CANCELLED
+                return
+        logger.info(
+            "Cancel of running in-process trial %s is a no-op; a thread cannot be force-killed",
+            handle.trial_id,
+        )
+
+    def _fetch_result_subprocess(self, trial_id: str) -> TrialResult:
+        assert self.registry is not None  # built by the factory for subprocess mode
+        root = self.registry.output_root
+        if root is None:
+            raise DispatchUnsupported("Unsupported", "", f"result not retained for {trial_id}")
+        task_id, index = trial_id.rsplit(":", 1)
+        # The output root holds a single per-run subdir, so the lexicographic
+        # first match is that run's trial.
+        for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            trial_dir = run_dir / "trials" / task_id / index
+            if not (trial_dir / TRAJECTORY_FILENAME).exists():
+                continue
+            # The node writes grade / metrics / tool_log to separate sidecars;
+            # the report reader merges them back into one graded trajectory.
+            try:
+                trajectory = read_report_trajectory(trial_dir)
+            except FileNotFoundError as exc:
+                raise DispatchUnsupported(
+                    "Unsupported", "", f"incomplete bundle for {trial_id}"
+                ) from exc
+            return TrialResult.from_trajectory(trial_id=trial_id, trajectory=trajectory)
+        raise DispatchUnsupported("Unsupported", "", f"result not retained for {trial_id}")
 
 
 def _dispatch_error(error_type: str, stage: str, reason: str) -> _DispatchFailure:
