@@ -211,8 +211,14 @@ class SpawningNodeRegistry(InMemoryNodeRegistry):
         self._python_executable = python_executable
         self._free_port_fn = free_port_fn
         self._procs: list[subprocess.Popen[bytes]] = []
+        self._procs_by_node: dict[str, subprocess.Popen[bytes]] = {}
         self._output_root: Path | None = None
         self._started = False
+
+    @property
+    def output_root(self) -> Path | None:
+        """The temp root every worker writes its trial artifacts under, or ``None``."""
+        return self._output_root
 
     def start(self) -> None:
         """Spawn and health-wait every worker, then register each one.
@@ -251,17 +257,36 @@ class SpawningNodeRegistry(InMemoryNodeRegistry):
                 process = self._spawn_fn(command, env)
                 self._procs.append(process)
                 _wait_for_listen(port, process, budget)
-                self.register_node(f"local-{index}", f"127.0.0.1:{port}")
+                node_id = f"local-{index}"
+                self._procs_by_node[node_id] = process
+                self.register_node(node_id, f"127.0.0.1:{port}")
                 logger.debug("Started local trial-node worker local-%d on port %d", index, port)
         except BaseException:
             self.close()
             raise
+
+    def terminate_worker_for_trial(self, trial_id: str) -> bool:
+        """Terminate the worker process leased to ``trial_id``; genuine process kill.
+
+        Resolves the trial's lease to the node that holds it and stops that
+        node's worker. Returns whether a worker was found and signalled. A trial
+        that holds no lease — none was taken, or it was already released — is a
+        no-op that returns ``False``.
+        """
+        with self._cond:
+            lease = self._leases.get(trial_id)
+            process = self._procs_by_node.get(lease.node_id) if lease is not None else None
+        if process is None:
+            return False
+        _terminate(process)
+        return True
 
     def close(self) -> None:
         """Terminate every worker and discard the temp output root. Idempotent."""
         for process in self._procs:
             _terminate(process)
         self._procs.clear()
+        self._procs_by_node.clear()
         self._reset_nodes()
         if self._output_root is not None:
             shutil.rmtree(self._output_root, ignore_errors=True)
