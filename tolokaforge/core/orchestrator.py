@@ -110,8 +110,16 @@ from tolokaforge.core.plugin_registry import (
     load_trial_grader,
     load_user_simulator,
 )
-from tolokaforge.core.pricing import pricing_table_metadata, resolve_pricing
-from tolokaforge.core.pricing_freshness import compare_against_source, live_prices
+from tolokaforge.core.pricing import (
+    normalize_model_name,
+    pricing_table_metadata,
+    resolve_pricing,
+)
+from tolokaforge.core.pricing_freshness import (
+    compare_against_source,
+    live_endpoint_prices,
+    live_prices,
+)
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
@@ -2769,7 +2777,9 @@ class Orchestrator:
                 source_url=metadata.source_url,
             )
             return
-        drifts = compare_against_source(configured, source)
+        drifts = compare_against_source(
+            configured, source, self._pinned_route_prices(metadata.source_url)
+        )
         if not drifts:
             self.logger.info("Pricing table agrees with its source", models=len(configured))
             return
@@ -2781,6 +2791,36 @@ class Orchestrator:
             "charges. Refresh with `uv run pricing-updater update`, or set "
             "TOLOKAFORGE_SKIP_PRICING_FRESHNESS=1 to run anyway."
         )
+
+    def _pinned_route_prices(self, source_url: str) -> dict[str, list[dict[str, float]]]:
+        """Rates of the only routes a provider-pinned model can be billed at.
+
+        A source publishes one price per model: its *cheapest* route. A config
+        pinning ``openrouter.provider_order`` with ``allow_fallbacks: false``
+        cannot be billed at that price unless the pinned provider happens to be
+        the cheapest, so checking the table against it asks a question the run
+        does not pose — and refuses correct tables. Observed on a GLM-5.3 cost
+        study pinned to ``z-ai``: the table matched that provider's published
+        rate exactly and the run was refused against a reseller charging a
+        seventeenth of it.
+
+        A model whose endpoints cannot be read is left out, so the caller falls
+        back to the model-level comparison rather than to no check at all.
+        """
+        pinned: dict[str, list[dict[str, float]]] = {}
+        for model in (self.config.models or {}).values():
+            routing = getattr(model, "openrouter", None)
+            if not model.name or routing is None:
+                continue
+            if routing.allow_fallbacks or not routing.provider_order:
+                continue
+            key = normalize_model_name(model.name)
+            if key in pinned:
+                continue
+            routes = live_endpoint_prices(source_url, key, routing.provider_order)
+            if routes:
+                pinned[key] = routes
+        return pinned
 
     def _warn_on_unreliable_pricing(self) -> None:
         """Warn per configured role whose model prices badly, before any trial runs.

@@ -29,7 +29,12 @@ from urllib import request as urllib_request
 
 from tolokaforge.core.pricing import MODEL_PRICING, normalize_model_name
 
-__all__ = ["PriceDrift", "compare_against_source", "live_prices"]
+__all__ = [
+    "PriceDrift",
+    "compare_against_source",
+    "live_endpoint_prices",
+    "live_prices",
+]
 
 _FETCH_TIMEOUT_S = 15.0
 """Seconds to wait on the source. Short: this runs before every priced run,
@@ -93,25 +98,75 @@ def live_prices(source_url: str) -> dict[str, dict[str, float]] | None:
         if not isinstance(entry, dict):
             continue
         model_id = entry.get("id")
-        pricing = entry.get("pricing")
-        if not isinstance(model_id, str) or not isinstance(pricing, dict):
-            continue
-        rates: dict[str, float] = {}
-        for ours, theirs in _COMPARED_RATES.items():
-            raw = pricing.get(theirs)
-            if raw in (None, "", "0"):
-                continue
-            try:
-                rates[ours] = float(raw) * 1_000_000
-            except (TypeError, ValueError):
-                continue
-        if rates:
+        rates = _rates_from(entry.get("pricing"))
+        if isinstance(model_id, str) and rates:
             prices[model_id] = rates
     return prices or None
 
 
+def live_endpoint_prices(
+    source_url: str, model_id: str, providers: Iterable[str]
+) -> list[dict[str, float]] | None:
+    """Rates each of *providers* publishes for *model_id*, or ``None``.
+
+    The model-level price a source publishes is its *cheapest* route. A run
+    that pins ``openrouter.provider_order`` with fallbacks off cannot be billed
+    at that rate unless the pinned provider happens to be the cheapest one, so
+    comparing the table against it asks the wrong question — see
+    :func:`compare_against_source`.
+
+    ``None`` for any transport or shape failure, and for a provider the source
+    does not list, so the caller falls back to "not checked" rather than to a
+    rate this run could not be billed at.
+    """
+    url = f"{source_url.rstrip('/')}/{model_id}/endpoints"
+    try:
+        with urllib_request.urlopen(url, timeout=_FETCH_TIMEOUT_S) as response:
+            payload = json.loads(response.read())
+    except Exception:  # noqa: BLE001 — every failure means "could not ask"
+        return None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    endpoints = data.get("endpoints") if isinstance(data, dict) else None
+    if not isinstance(endpoints, list):
+        return None
+    wanted = {_provider_key(p) for p in providers}
+    found: list[dict[str, float]] = []
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict):
+            continue
+        if _provider_key(endpoint.get("provider_name") or "") not in wanted:
+            continue
+        rates = _rates_from(endpoint.get("pricing"))
+        if rates:
+            found.append(rates)
+    return found or None
+
+
+def _rates_from(pricing: object) -> dict[str, float]:
+    """Per-million rates from a source ``pricing`` block, skipping what it omits."""
+    if not isinstance(pricing, dict):
+        return {}
+    rates: dict[str, float] = {}
+    for ours, theirs in _COMPARED_RATES.items():
+        raw = pricing.get(theirs)
+        if raw in (None, "", "0"):
+            continue
+        try:
+            rates[ours] = float(raw) * 1_000_000
+        except (TypeError, ValueError):
+            continue
+    return rates
+
+
+def _provider_key(name: str) -> str:
+    """A provider slug comparable across spellings — ``z-ai`` and ``Z.AI`` are one."""
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
 def compare_against_source(
-    models: Iterable[str], source: Mapping[str, Mapping[str, float]]
+    models: Iterable[str],
+    source: Mapping[str, Mapping[str, float]],
+    pinned: Mapping[str, list[Mapping[str, float]]] | None = None,
 ) -> list[PriceDrift]:
     """Rates in the shipped table that *source* no longer agrees with.
 
@@ -119,18 +174,39 @@ def compare_against_source(
     the cache-rate preflight's question, and a rate the source omits is not
     evidence the table is wrong — neither is drift, and reporting them here
     would bury the real thing.
+
+    *pinned* maps a pricing key to the rates of the only routes a run can be
+    billed at, for a model whose config pins ``openrouter.provider_order`` with
+    fallbacks off. Such a model is compared against those routes instead of the
+    model-level price, which is the *cheapest* route across every provider and
+    so is not a rate the run could be charged. A rate drifts only when **no**
+    permitted route charges it: with two providers allowed, agreeing with
+    either is agreement.
     """
     drifts: list[PriceDrift] = []
     for model in models:
         key = normalize_model_name(model)
         ours = MODEL_PRICING.get(key)
-        theirs = source.get(key)
-        if not ours or not theirs:
+        if not ours:
             continue
-        for rate in _COMPARED_RATES:
-            if rate not in ours or rate not in theirs:
+        routes = list(pinned.get(key) or []) if pinned else []
+        if not routes:
+            theirs = source.get(key)
+            if not theirs:
                 continue
-            mine, yours = float(ours[rate]), float(theirs[rate])
-            if yours and abs(mine - yours) / yours > _TOLERANCE:
-                drifts.append(PriceDrift(model=key, rate=rate, ours=mine, theirs=yours))
+            routes = [theirs]
+        for rate in _COMPARED_RATES:
+            if rate not in ours:
+                continue
+            mine = float(ours[rate])
+            charged = [float(route[rate]) for route in routes if rate in route]
+            comparable = [yours for yours in charged if yours]
+            if not comparable:
+                continue
+            if any(abs(mine - yours) / yours <= _TOLERANCE for yours in comparable):
+                continue
+            # Report the nearest permitted rate: with several routes allowed,
+            # the smallest real gap is the one a reader has to act on.
+            nearest = min(comparable, key=lambda yours: abs(mine - yours))
+            drifts.append(PriceDrift(model=key, rate=rate, ours=mine, theirs=nearest))
     return drifts
