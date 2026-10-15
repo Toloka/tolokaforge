@@ -25,10 +25,12 @@ from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
+from tolokaforge.core.dispatch.control import JobHandle, JobState, JobStatus
 from tolokaforge.core.dispatch.errors import (
     DispatchProvisionError,
     DispatchRefused,
     DispatchTransient,
+    DispatchUnsupported,
 )
 from tolokaforge.core.node_registry import InMemoryNodeRegistry, NodeRegistry, RunnerLease
 from tolokaforge.core.trial import TrialNodeInputs, TrialResult
@@ -135,6 +137,49 @@ class GrpcNodeDispatchAdapter:
         finally:
             self._release(trial_id)
         return _result_from(outcome)
+
+    # ---- Control plane ----
+
+    def cancel(self, handle: JobHandle) -> None:
+        """Honest stub: a one-RPC node exposes no cancel path.
+
+        The node runs one trial per unary ``RunTrial``, exposes no cancel RPC,
+        and ignores the RPC context; abandoning the channel would leave the node
+        running the trial to completion. So cancellation is refused outright
+        rather than silently dropped.
+        """
+        raise DispatchUnsupported(
+            "Unsupported",
+            "",
+            "the grpc_node adapter cannot cancel a trial: the node runs one trial per unary "
+            "RunTrial, exposes no cancel RPC, and ignores the RPC context; abandoning the "
+            "channel would leave the node running.",
+        )
+
+    def status(self, handle: JobHandle) -> JobStatus:
+        """Return RUNNING while a lease is held for the trial, else UNKNOWN.
+
+        Derived from the adapter's own lease bookkeeping; the node exposes no
+        job-state RPC, so this is all the control plane can observe.
+        """
+        detail = "grpc_node tracks only the live lease, not node-side job state."
+        if handle.trial_id in self._leases:
+            return JobStatus(state=JobState.RUNNING, detail=detail)
+        return JobStatus(state=JobState.UNKNOWN, detail=detail)
+
+    def fetch_result(self, handle: JobHandle) -> TrialResult:
+        """Honest stub: the node returns its result inline, not out of band.
+
+        ``RunTrial`` returns the graded :class:`TrialResult` inline and the node
+        exposes no result-collection RPC, so there is nothing to fetch after the
+        fact.
+        """
+        raise DispatchUnsupported(
+            "Unsupported",
+            "",
+            "the grpc_node adapter cannot collect a result out of band: the node returns the "
+            "graded TrialResult inline from RunTrial and exposes no result-collection RPC.",
+        )
 
     # ---- Internals ----
 
