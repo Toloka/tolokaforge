@@ -107,6 +107,7 @@ from tolokaforge.core.project_loader import (
     deep_merge,
     resolve_effective_grading_combine,
 )
+from tolokaforge.core.tool_output_truncation import validated_output_max_chars
 from tolokaforge.runner.models import ToolSchema
 from tolokaforge.tools.registry import ToolCategory
 
@@ -899,12 +900,19 @@ def tool_output_max_chars_overrides(task: TaskConfig, actor: ToolActor) -> dict[
     is the per-tool value and replaces the default for that tool, so a pack can
     raise the cap on one tool as well as lower it.
 
-    Returns ``{tool_name: cap}`` for every enabled tool either place covers. The
+    Key presence decides, not the value: a tool block that names
+    ``output_max_chars`` replaces the actor-wide default even when the value is
+    ``null``, which leaves that one tool without a task-side cap — how a task
+    uncaps a tool under a block-wide cap that a project's ``task_defaults`` set.
+    A tool block that does not name the key inherits the default. A ``null``
+    actor-wide default declares none.
+
+    Returns ``{tool_name: cap}`` for every enabled tool either place caps. The
     value composes with the tool's own
     :attr:`~tolokaforge.tools.registry.ToolPolicy.output_max_chars` (adapter-side
     ``min``) into the emitted ``ToolSchema.output_max_chars``; the loop then
-    composes that with the per-model backstop. An absent key or ``None`` value
-    declares nothing.
+    composes that with the per-model backstop. Neither of those is lifted by a
+    task-side ``null``.
 
     Raises:
         ValueError: If either key is present with a non-int or a non-positive
@@ -912,37 +920,24 @@ def tool_output_max_chars_overrides(task: TaskConfig, actor: ToolActor) -> dict[
             than reaching the wire as a nonsense cap.
     """
     block = actor_tool_block(task, actor)
-    actor_default = _positive_output_max_chars(
-        block.get("output_max_chars"), f"tools.{actor.value}.output_max_chars", task
+    context = f"task {task.task_id!r}"
+    actor_default = validated_output_max_chars(
+        block.get("output_max_chars"), f"tools.{actor.value}.output_max_chars", context=context
     )
     overrides: dict[str, int] = {}
     for tool_name in block.get("enabled", []):
         raw = block.get(tool_name)
-        per_tool = (
-            _positive_output_max_chars(
-                raw.get("output_max_chars"),
+        if isinstance(raw, dict) and "output_max_chars" in raw:
+            cap = validated_output_max_chars(
+                raw["output_max_chars"],
                 f"tools.{actor.value}.{tool_name}.output_max_chars",
-                task,
+                context=context,
             )
-            if isinstance(raw, dict)
-            else None
-        )
-        cap = per_tool if per_tool is not None else actor_default
+        else:
+            cap = actor_default
         if cap is not None:
             overrides[tool_name] = cap
     return overrides
-
-
-def _positive_output_max_chars(value: object, path: str, task: TaskConfig) -> int | None:
-    """*value* as a cap declared at *path*, ``None`` when it declares none."""
-    if value is None:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise ValueError(
-            f"{path} must be a positive int "
-            f"(got {type(value).__name__}={value!r}) in task {task.task_id!r}"
-        )
-    return value
 
 
 def resolve_tool_schemas(

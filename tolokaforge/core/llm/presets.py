@@ -80,6 +80,7 @@ from tolokaforge.core.model_data import (
 )
 from tolokaforge.core.models.model_config import ModelConfig, OpenRouterConfig
 from tolokaforge.core.models.run_config import iter_model_configs
+from tolokaforge.core.tool_output_truncation import validated_output_max_chars
 from tolokaforge.core.unknown_keys import refuse_undeclared_keys
 
 __all__ = [
@@ -228,24 +229,6 @@ def _validated_observation_window_polling(value: object, where: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(
             f"{where}: observation_window_polling {value!r} is not a positive integer."
-        )
-    return value
-
-
-def _validated_tool_output_max_chars(value: object, where: str) -> int | None:
-    """A preset's ``tool_output_max_chars``, or ``None`` when it declares none.
-
-    Validated here rather than coerced, because a run config can set it: ``"200000"``
-    or ``1.5`` would otherwise become a cap nobody wrote, and ``0`` would surface
-    only at the first tool result of the first trial. ``None`` is a value, not an
-    absence: it disables the per-model cap and is how a run config clears a
-    preset's cap.
-    """
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ValueError(
-            f"{where}: tool_output_max_chars {value!r} is not a positive integer or null."
         )
     return value
 
@@ -1241,7 +1224,11 @@ def build_capabilities(
         observation_window_polling=_validated_observation_window_polling(
             observation_window_polling, where
         ),
-        tool_output_max_chars=_validated_tool_output_max_chars(tool_output_max_chars, where),
+        # ``None`` is a value, not an absence: it disables the per-model cap and
+        # is how a run config clears a preset's cap.
+        tool_output_max_chars=validated_output_max_chars(
+            tool_output_max_chars, "tool_output_max_chars", context=where
+        ),
         default_max_turns=(int(default_max_turns) if default_max_turns is not None else None),
         default_agent_prompt_contract=(
             str(default_agent_prompt_contract)

@@ -116,9 +116,16 @@ tools:
   enables, MCP-server tools included. Declared under `task_defaults.tools.<actor>` in
   `project.yaml` (or in a shared domain bundle), it covers every task of the pack.
 - `tools.<actor>.<tool_name>.output_max_chars` caps one tool and replaces the
-  actor-wide value for it, higher or lower.
+  actor-wide value for it, higher or lower. Naming the key is what replaces it:
+  `output_max_chars: null` on a tool leaves that tool without a task-side cap, which
+  is how one task lifts a block-wide cap its project's `task_defaults` set. A tool
+  block that does not name the key keeps the actor-wide value.
 
-Each is a positive integer; anything else is refused when the task loads. The cap a
+Each is a positive integer or `null`; anything else is refused when the task loads. A
+`null` lifts only the task's own cap: the tool's declared bound and the model's cap
+still apply. The cap bounds what the agent's model reads, so it takes effect on the
+agent's block: the user simulator's tool results are not capped, and a cap under
+`tools.user` never reaches an agent tool of the same name. The cap a
 task declares composes with the tool's own declared bound and the model's cap
 (`models.<role>.capabilities.tool_output_max_chars` in the run config, see
 [CONFIG.md](CONFIG.md#model-capability-presets)), and the tightest wins. A cut result

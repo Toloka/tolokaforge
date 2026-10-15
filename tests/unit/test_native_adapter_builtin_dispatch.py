@@ -694,6 +694,46 @@ def test_a_project_task_default_caps_every_task_of_the_pack(tmp_path: Path):
     }
 
 
+def test_a_per_tool_null_uncaps_that_tool_under_a_project_wide_cap(tmp_path: Path):
+    """A tool block naming ``output_max_chars: null`` replaces the actor-wide
+    default with no task-side cap, so a task can lift the project's block-wide
+    cap off one tool; the deep merge keeps the explicit ``null`` over the
+    project layer's value, and the other tools keep the default."""
+    from tolokaforge.adapters._task_loader import ToolActor, tool_output_max_chars_overrides
+
+    base_dir = _mcp_task_dir(tmp_path, {"wide_read": {"output_max_chars": None}})
+    task, _ = load_task_yaml(
+        base_dir / "mcp_cap_task" / "task.yaml",
+        project_task_defaults={"tools": {"agent": {"output_max_chars": 200_000}}},
+    )
+
+    assert tool_output_max_chars_overrides(task, ToolActor.AGENT) == {"narrow_read": 200_000}
+
+
+def test_a_per_tool_null_reaches_the_wire_as_no_cap(tmp_path: Path):
+    base_dir = _mcp_task_dir(
+        tmp_path, {"output_max_chars": 200_000, "wide_read": {"output_max_chars": None}}
+    )
+
+    assert _emitted_caps(base_dir) == {"wide_read": None, "narrow_read": 200_000}
+
+
+def test_a_tool_block_that_does_not_name_the_key_inherits_the_actor_wide_cap(tmp_path: Path):
+    """Only key presence replaces the default: a block carrying other keys, or
+    none, leaves the tool on the actor-wide cap."""
+    from tolokaforge.adapters._task_loader import ToolActor, tool_output_max_chars_overrides
+
+    base_dir = _mcp_task_dir(
+        tmp_path, {"output_max_chars": 200_000, "wide_read": {}, "narrow_read": {"x": 1}}
+    )
+    task, _ = load_task_yaml(base_dir / "mcp_cap_task" / "task.yaml")
+
+    assert tool_output_max_chars_overrides(task, ToolActor.AGENT) == {
+        "wide_read": 200_000,
+        "narrow_read": 200_000,
+    }
+
+
 @pytest.mark.parametrize(
     "bad_value",
     [0, -1, 3.14, "200000", True],
