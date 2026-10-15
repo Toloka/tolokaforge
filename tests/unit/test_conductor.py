@@ -771,6 +771,7 @@ def _trial_runner_kwargs(
     user_model_config: ModelConfig | None = None,
     rate_limit_probe: RateLimitProbeConfig | None = None,
     agent_model_config: ModelConfig | None = None,
+    tool_schemas: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The keyword arguments ``_run_agent_loop`` builds ``TrialRunner`` with, for *task*
     run from the task root *tmp_path*."""
@@ -787,9 +788,9 @@ def _trial_runner_kwargs(
         trial_dir=tmp_path / "trials" / "t1" / "0",
         env_state=MagicMock(),
         adapter_env=MagicMock(),
-        tool_schemas=[],
+        tool_schemas=tool_schemas or [],
         tool_executor=MagicMock(),
-        user_tool_schemas=[],
+        user_tool_schemas=tool_schemas or [],
         user_tool_executor=None,
     )
     with (
@@ -800,27 +801,28 @@ def _trial_runner_kwargs(
     return runner_cls.call_args.kwargs
 
 
-class TestToolNamePrefixReachesTheRunner:
-    """``strip_task_tool_prefix`` hands the runner the task's ``<category>_`` prefix."""
+class TestToolNameAliasesReachTheRunner:
+    """``tool_name_max_length`` hands the runner aliases for the task's long tool names."""
 
-    def _task(self, category: str | None) -> TaskConfig:
-        return TaskConfig(task_id="t1", description="d", category=category)
+    LONG = "ots_bank_hr_d365_hr_service_api_hr_service_api_create_document_generation_request"
 
-    def test_the_option_strips_the_task_category(self, tmp_path: Path) -> None:
-        config = ModelConfig(provider="openai", name="gpt-4", strip_task_tool_prefix=True)
-        kwargs = _trial_runner_kwargs(
-            tmp_path, self._task("ots_bank_hr_d365"), agent_model_config=config
+    def _kwargs(self, tmp_path: Path, limit: int | None) -> dict[str, Any]:
+        config = ModelConfig(provider="openai", name="gpt-4", tool_name_max_length=limit)
+        task = TaskConfig(task_id="t1", description="d", category="ots_bank_hr_d365")
+        return _trial_runner_kwargs(
+            tmp_path,
+            task,
+            agent_model_config=config,
+            tool_schemas=[{"type": "function", "function": {"name": self.LONG}}],
         )
-        assert kwargs["tool_name_prefix"] == "ots_bank_hr_d365_"
+
+    def test_a_long_name_is_aliased(self, tmp_path: Path) -> None:
+        assert self._kwargs(tmp_path, 64)["tool_name_aliases"] == {
+            self.LONG: self.LONG.removeprefix("ots_bank_hr_d365_")
+        }
 
     def test_off_by_default(self, tmp_path: Path) -> None:
-        kwargs = _trial_runner_kwargs(tmp_path, self._task("ots_bank_hr_d365"))
-        assert kwargs["tool_name_prefix"] is None
-
-    def test_a_task_without_a_category_strips_nothing(self, tmp_path: Path) -> None:
-        config = ModelConfig(provider="openai", name="gpt-4", strip_task_tool_prefix=True)
-        kwargs = _trial_runner_kwargs(tmp_path, self._task(None), agent_model_config=config)
-        assert kwargs["tool_name_prefix"] is None
+        assert self._kwargs(tmp_path, None)["tool_name_aliases"] == {}
 
 
 class TestUserStopRuleReachesTheRunner:

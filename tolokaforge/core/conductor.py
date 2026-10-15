@@ -46,6 +46,7 @@ from tolokaforge.core.llm.presets import (
     resolve_effective_preset,
     resolve_policy_names,
 )
+from tolokaforge.core.llm.tool_name_alias import tool_name_aliases
 from tolokaforge.core.models import (
     RESOLVED_RECORD_KEY,
     Grade,
@@ -976,10 +977,8 @@ class InProcessConductor:
             task_id=task.task_id,
             trial_index=setup.trial_idx,
             agent_client=self.agent_client,
-            tool_name_prefix=(
-                f"{task.category}_"
-                if self.agent_client.config.strip_task_tool_prefix and task.category
-                else None
+            tool_name_aliases=tool_name_aliases(
+                setup.tool_schemas, task.category, self.agent_client.config.tool_name_max_length
             ),
             user_simulator=user_simulator,
             tool_executor=setup.tool_executor,

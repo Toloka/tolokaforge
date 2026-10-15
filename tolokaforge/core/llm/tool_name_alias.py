@@ -1,28 +1,54 @@
-"""Offer the agent its tools under shorter names, and map its calls back.
+"""Shorten the tool names a provider would refuse, and map the model's calls back.
 
 Some providers cap a tool name's length (Meta's API and Cohere refuse a name
 over 64 characters), while packs namespace every tool as
-``<task category>_<service>_<tool>`` and so routinely exceed it. With
-``ModelConfig.strip_task_tool_prefix`` set, the agent's loop talks to its
-model through :class:`ToolNameAliasingClient`: the ``<task category>_``
-prefix is stripped from each tool name on the wire — in the request's
-``tools`` and in the tool calls replayed from history — and every tool call
-the model returns is mapped back to the pack's name before the loop sees it.
+``<task category>_<service>_<tool>``. With ``ModelConfig.tool_name_max_length``
+set, only the names over the limit are shortened — first by their
+``<task category>_`` prefix, then, if still too long, by further leading
+``_``-segments until they fit — and the agent's loop talks to its model
+through :class:`ToolNameAliasingClient`, which offers the short names on the
+wire and maps every tool call the model returns back to the pack's name.
 
 Everything downstream of the loop therefore reads the pack's own names: the
-tool executor, the recorded trajectory, the trace checks and the grader. Only
-the model's view of the names changes, which is why the option is per model
-and off by default.
+tool executor, the recorded trajectory, the trace checks and the grader.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Any, Protocol
 
 from tolokaforge.core.llm.client import GenerationResult
-from tolokaforge.core.models.trajectory import Message
+from tolokaforge.core.models.trajectory import Message, ToolCall
 from tolokaforge.core.run_display_events import LLMCallObservation
+
+
+def tool_name_aliases(
+    tool_schemas: list[dict[str, Any]], category: str | None, limit: int | None
+) -> dict[str, str]:
+    """``{pack name: model name}`` for every tool whose name exceeds ``limit``.
+
+    Empty when ``limit`` is ``None`` or every name fits. Refuses a result that
+    offers two tools under one name, since the model's calls to it could not be
+    told apart.
+    """
+    if limit is None:
+        return {}
+    prefix = f"{category}_" if category else None
+    names = [schema["function"]["name"] for schema in tool_schemas]
+    aliases: dict[str, str] = {}
+    for name in names:
+        short = name
+        if len(short) > limit and prefix and short.startswith(prefix):
+            short = short[len(prefix) :]
+        while len(short) > limit and "_" in short:
+            short = short.split("_", 1)[1]
+        if short != name:
+            aliases[name] = short
+    offered = [aliases.get(name, name) for name in names]
+    if len(set(offered)) != len(offered):
+        clashes = sorted({n for n in offered if offered.count(n) > 1})
+        raise ValueError(f"shortening tool names to {limit} characters offers {clashes} twice")
+    return aliases
 
 
 class _AgentClient(Protocol):
@@ -39,83 +65,13 @@ class _AgentClient(Protocol):
     ) -> GenerationResult: ...
 
 
-class ToolNameAliases:
-    """The bijection between a trial's tool names and the names the model sees.
-
-    A name that does not carry ``prefix`` is offered unchanged. Construction
-    refuses a prefix whose removal would leave two tools under one name, or a
-    tool with no name at all — either would make a model's call ambiguous.
-    """
-
-    def __init__(self, names: Iterable[str], prefix: str) -> None:
-        if not prefix:
-            raise ValueError("a tool-name prefix to strip must be non-empty")
-        self.prefix = prefix
-        self._outbound: dict[str, str] = {}
-        self._inbound: dict[str, str] = {}
-        for name in names:
-            alias = name[len(prefix) :] if name.startswith(prefix) else name
-            if not alias:
-                raise ValueError(f"stripping {prefix!r} from tool {name!r} leaves an empty name")
-            taken = self._inbound.get(alias)
-            if taken is not None and taken != name:
-                raise ValueError(
-                    f"stripping {prefix!r} offers tools {taken!r} and {name!r} under one "
-                    f"name {alias!r}; the model's calls to it could not be told apart"
-                )
-            self._outbound[name] = alias
-            self._inbound[alias] = name
-
-    @classmethod
-    def for_tools(cls, tool_schemas: list[dict[str, Any]], prefix: str) -> ToolNameAliases:
-        return cls((_schema_name(schema) for schema in tool_schemas), prefix)
-
-    def outbound(self, name: str) -> str:
-        """The name the model is offered for the pack's tool ``name``."""
-        return self._outbound.get(name, name)
-
-    def inbound(self, name: str) -> str:
-        """The pack's name for a tool the model called ``name``.
-
-        A name the model invented, or a pack name it repeated in full, passes
-        through unchanged, so the executor reports it exactly as it would
-        without aliasing.
-        """
-        return self._inbound.get(name, name)
-
-    def schemas(self, tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Copies of ``tool_schemas`` carrying the model-facing names."""
-        return [
-            _with_schema_name(schema, self.outbound(_schema_name(schema)))
-            for schema in tool_schemas
-        ]
-
-    def messages(self, messages: list[Message]) -> list[Message]:
-        """``messages`` with each replayed tool call under its model-facing name."""
-        return [self._message(message, self.outbound) for message in messages]
-
-    def result(self, result: GenerationResult) -> GenerationResult:
-        """``result`` with each tool call under the pack's name, in place."""
-        result.tool_calls = [
-            call.model_copy(update={"name": self.inbound(call.name)}) for call in result.tool_calls
-        ]
-        return result
-
-    @staticmethod
-    def _message(message: Message, rename: Any) -> Message:
-        if not message.tool_calls:
-            return message
-        calls = [call.model_copy(update={"name": rename(call.name)}) for call in message.tool_calls]
-        return message.model_copy(update={"tool_calls": calls})
-
-
 class ToolNameAliasingClient:
-    """A :class:`~tolokaforge.core.loop.LoopLLMClient` that runs ``inner`` under
-    :class:`ToolNameAliases`."""
+    """A :class:`~tolokaforge.core.loop.LoopLLMClient` offering ``aliases`` on the wire."""
 
-    def __init__(self, inner: _AgentClient, aliases: ToolNameAliases) -> None:
+    def __init__(self, inner: _AgentClient, aliases: dict[str, str]) -> None:
         self._inner = inner
-        self._aliases = aliases
+        self._outbound = aliases
+        self._inbound = {short: name for name, short in aliases.items()}
 
     def generate(
         self,
@@ -127,23 +83,29 @@ class ToolNameAliasingClient:
     ) -> GenerationResult:
         result = self._inner.generate(
             system=system,
-            messages=self._aliases.messages(messages),
-            tools=self._aliases.schemas(tools),
+            messages=[
+                m.model_copy(update={"tool_calls": _renamed(m.tool_calls, self._outbound)})
+                if m.tool_calls
+                else m
+                for m in messages
+            ],
+            tools=[_renamed_schema(schema, self._outbound) for schema in tools],
             tool_choice=tool_choice,
             observation=observation,
         )
-        return self._aliases.result(result)
+        result.tool_calls = _renamed(result.tool_calls, self._inbound)
+        return result
 
 
-def _schema_name(schema: dict[str, Any]) -> str:
-    function = schema.get("function")
-    if isinstance(function, dict):
-        return str(function["name"])
-    return str(schema["name"])
+def _renamed(calls: list[ToolCall], names: dict[str, str]) -> list[ToolCall]:
+    return [
+        call.model_copy(update={"name": names[call.name]}) if call.name in names else call
+        for call in calls
+    ]
 
 
-def _with_schema_name(schema: dict[str, Any], name: str) -> dict[str, Any]:
-    function = schema.get("function")
-    if isinstance(function, dict):
-        return {**schema, "function": {**function, "name": name}}
-    return {**schema, "name": name}
+def _renamed_schema(schema: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
+    function = schema["function"]
+    if function["name"] not in names:
+        return schema
+    return {**schema, "function": {**function, "name": names[function["name"]]}}
