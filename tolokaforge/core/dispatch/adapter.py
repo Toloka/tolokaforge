@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from tolokaforge.core.dispatch.control import JobHandle, JobStatus
     from tolokaforge.core.trial import TrialNodeInputs, TrialResult
 
-__all__ = ["DispatchAdapter"]
+__all__ = ["ControllableDispatchAdapter", "DispatchAdapter"]
 
 
 @runtime_checkable
@@ -45,4 +46,32 @@ class DispatchAdapter(Protocol):
 
     def close(self) -> None:
         """Release run-level resources; called once after the last trial."""
+        ...
+
+
+@runtime_checkable
+class ControllableDispatchAdapter(DispatchAdapter, Protocol):
+    """A :class:`DispatchAdapter` that also exposes the control-plane operations.
+
+    ``run_trial_node`` is the synchronous submit-and-await convenience every
+    adapter has; this sibling Protocol adds the id-keyed operations that let the
+    orchestrator operate a job after it is submitted: cancel it, read its state,
+    and collect its result. It is a separate Protocol, not extra methods on
+    :class:`DispatchAdapter`, so a third-party three-method adapter keeps
+    satisfying ``DispatchAdapter`` unchanged.
+
+    An adapter whose backend cannot honour one of these raises
+    :class:`~tolokaforge.core.dispatch.errors.DispatchUnsupported`.
+    """
+
+    def cancel(self, handle: JobHandle) -> None:
+        """Request cancellation of the job the handle names. Idempotent."""
+        ...
+
+    def status(self, handle: JobHandle) -> JobStatus:
+        """Return the job's current state; an unknown id is ``JobState.UNKNOWN``."""
+        ...
+
+    def fetch_result(self, handle: JobHandle) -> TrialResult:
+        """Return the job's graded result, or raise ``DispatchUnsupported``."""
         ...

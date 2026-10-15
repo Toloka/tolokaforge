@@ -6,6 +6,7 @@ __all__ = [
     "DispatchProvisionError",
     "DispatchRefused",
     "DispatchTransient",
+    "DispatchUnsupported",
 ]
 
 
@@ -35,3 +36,12 @@ class DispatchTransient(_DispatchFailure):
 
 class DispatchProvisionError(_DispatchFailure):
     """The adapter could not place or start the trial on its backend."""
+
+
+class DispatchUnsupported(DispatchRefused):
+    """The backend cannot perform a requested control operation at all.
+
+    A ``DispatchRefused`` subclass, so the orchestrator's existing non-retryable
+    path handles it unchanged: a backend that cannot cancel, report status or
+    collect a result says so honestly rather than pretending to.
+    """
