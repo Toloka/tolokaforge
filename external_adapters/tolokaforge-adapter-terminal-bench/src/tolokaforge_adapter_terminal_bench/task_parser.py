@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import tomllib
 import yaml
 
 
@@ -189,30 +189,42 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
     declared |= {p.parent for p in base_dir.glob("*/task.yaml")}
 
     for task_dir in sorted(declared):
-        task_id = task_dir.name
-        compose_file = _find_compose(task_dir)
-
-        yaml_data = _load_task_yaml(task_dir)
-        instruction = _parse_instruction(task_dir, yaml_data)
-        toml_data = _parse_task_toml(task_dir)
-
-        metadata = toml_data.get("metadata", {})
-        agent = toml_data.get("agent", {})
-        verifier = toml_data.get("verifier", {})
-        environment = toml_data.get("environment", {})
-
-        tasks[task_id] = TerminalBenchTask(
-            task_id=task_id,
-            task_dir=task_dir,
-            compose_file=compose_file,
-            instruction=instruction,
-            difficulty=metadata.get("difficulty", "medium"),
-            tags=metadata.get("tags", []),
-            agent_timeout_sec=agent.get("timeout_sec", 1800.0),
-            verifier_timeout_sec=_parse_verifier_timeout(task_id, verifier),
-            cpus=environment.get("cpus", 2),
-            memory_mb=environment.get("memory_mb", 4096),
-            harness_skills_dir=_parse_harness_skills_dir(task_id, task_dir, yaml_data),
-        )
+        tasks[task_dir.name] = parse_task_dir(task_dir)
 
     return tasks
+
+
+def parse_task_dir(task_dir: Path) -> TerminalBenchTask:
+    """Parse one terminal-bench task directory; its name is the task id.
+
+    Raises :class:`FileNotFoundError` when *task_dir* declares neither
+    ``task.toml`` nor ``task.yaml`` — a directory that does not declare itself
+    is not a task.
+    """
+    if not (task_dir / "task.toml").exists() and not (task_dir / "task.yaml").exists():
+        raise FileNotFoundError(
+            f"{task_dir} is not a terminal-bench task directory: "
+            "it declares neither task.toml nor task.yaml"
+        )
+    task_id = task_dir.name
+    yaml_data = _load_task_yaml(task_dir)
+    toml_data = _parse_task_toml(task_dir)
+
+    metadata = toml_data.get("metadata", {})
+    agent = toml_data.get("agent", {})
+    verifier = toml_data.get("verifier", {})
+    environment = toml_data.get("environment", {})
+
+    return TerminalBenchTask(
+        task_id=task_id,
+        task_dir=task_dir,
+        compose_file=_find_compose(task_dir),
+        instruction=_parse_instruction(task_dir, yaml_data),
+        difficulty=metadata.get("difficulty", "medium"),
+        tags=metadata.get("tags", []),
+        agent_timeout_sec=agent.get("timeout_sec", 1800.0),
+        verifier_timeout_sec=_parse_verifier_timeout(task_id, verifier),
+        cpus=environment.get("cpus", 2),
+        memory_mb=environment.get("memory_mb", 4096),
+        harness_skills_dir=_parse_harness_skills_dir(task_id, task_dir, yaml_data),
+    )

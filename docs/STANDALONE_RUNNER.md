@@ -37,6 +37,9 @@ your code / your language  <------> |  three consumer surfaces             |
                                     |  * tolokaforge run-trial              |
                                     |    (subprocess CLI, JSON-Lines wire) |
                                     |                                      |
+                                    |  * run_trial_from_inputs(...)        |
+                                    |    (standalone node entry)           |
+                                    |                                      |
                                     |  * importlib.metadata entry points   |
                                     |    (register your own Protocol impl) |
                                     +---------------+----------------------+
@@ -59,7 +62,7 @@ your code / your language  <------> |  three consumer surfaces             |
                                     +--------------------------------------+
 ```
 
-The three consumer surfaces all compose the same Protocol seams — they differ
+The consumer surfaces all compose the same Protocol seams — they differ
 in how *you* reach them, not in what the runner does underneath.
 
 ## Which surface should you use
@@ -68,6 +71,7 @@ in how *you* reach them, not in what the runner does underneath.
 |---|---|
 | Python codebase, want in-process control, care about types | `tolokaforge.runner.run_trial(...)` |
 | Non-Python control plane (Rust / Go / TypeScript / shell) | `tolokaforge run-trial` subprocess |
+| A node that holds serialized inputs and a mounted task pack, with no orchestrator | `tolokaforge.runner.run_trial_from_inputs(...)` |
 | Want to add a new runtime backend, grader, or conductor | Entry-point registries |
 | Want isolation between trials (crash containment, per-trial resource caps) | `tolokaforge run-trial` subprocess, one process per trial |
 | Want the lowest per-trial overhead | `tolokaforge.runner.run_trial(...)`, in-process |
@@ -192,12 +196,14 @@ verbatim; other operator ergonomics differ from a base-wheel install:
   local runner gRPC service on `localhost:50051`; it **cannot** spin up
   compose stacks, switch backends, or exercise adapter-specific setup —
   the adapter machinery (`tolokaforge.adapters.*`, `tolokaforge.core.run_trial`,
-  runtime-backend factories) is base-wheel-only per [ADR-0025](adr/0025-runner-wheel-split.md).
+  `tolokaforge.core.trial_node`, runtime-backend factories) is base-wheel-only per [ADR-0025](adr/0025-runner-wheel-split.md).
   A `start` envelope whose task shape needs adapter processing surfaces as
   a well-formed `{"v":1,"type":"error","error_type":"ProvisionError",…}`
   wire response, naming the base wheel's
   `tolokaforge.core.run_trial.run_trial(…)` or the runner service's raw
-  `RegisterTrial` gRPC as the right entry.
+  `RegisterTrial` gRPC as the right entry (or
+  `tolokaforge.core.trial_node.run_trial_from_inputs(…)` for a node holding
+  serialized inputs).
 - **No other CLI subcommands** are available inside the image. Commands
   that live under the base wheel's `tolokaforge/dx/cli/*` — `tolokaforge run`,
   `tolokaforge adapter`, `tolokaforge docker …` — are not part of the
@@ -333,6 +339,45 @@ is guaranteed in a `finally`, so a driver that runs `run_trial` in a loop does
 not leak gRPC channels or Docker stacks.
 
 Runnable version: [`examples/library/run_trial.py`](../examples/library/run_trial.py).
+
+`run_trial` is a convenience over the standalone entry below: it resolves the
+task's wire description through its adapter and hands the call to
+`run_trial_from_inputs`, so the library, the subprocess CLI, and a node all
+compose a trial the same way.
+
+### From a node — `tolokaforge.runner.run_trial_from_inputs(...)`
+
+A node is a process that holds serialized inputs and a mounted task pack and
+nothing else: no orchestrator, run queue, or batch lifecycle. It runs **one
+trial per process** (the secret manager is process-global) and exits.
+
+```python
+from tolokaforge.core.trial import TrialNodeInputs
+from tolokaforge.runner import run_trial_from_inputs
+
+inputs = TrialNodeInputs.model_validate_json(payload)
+result = run_trial_from_inputs(inputs)  # a graded TrialResult
+```
+
+`TrialNodeInputs` is pure data: the full `TaskConfig` (the same JSON the
+`run-trial` wire carries as `task`), the `TrialSpec`, the run's `grader` block,
+`grpc_max_message_mb`, the runtime and conductor names, and a content hash of
+the task pack. It also names where the pack is mounted (`task_pack_dir`), where
+to write artifacts (`output_dir`), and the rate-limit probe block. It carries no
+credentials — model configs hold `${secret:NAME}` references that the node
+resolves from its own `TOLOKAFORGE_SECRETS_JSON` payload — and no runner or
+grader address.
+
+The entry recomputes the pack's content hash and refuses to run on a mismatch
+(`TaskPackDriftError`): the pack a node mounts must be the one the trial was
+planned against. The hash covers every regular file under the pack directory
+(`compute_task_pack_hash`). The pack is otherwise read only for file assets;
+everything else comes from the serialized `TaskConfig`.
+
+A provisioning failure propagates as `ProvisionError`. An adapter is
+node-runnable when it implements `register_preloaded_task(task, task_dir)`; the
+native and terminal-bench adapters do, and any other adapter raises a clear
+"not node-runnable" error.
 
 ### From any language — `tolokaforge run-trial`
 

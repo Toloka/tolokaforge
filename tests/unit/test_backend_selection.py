@@ -310,7 +310,7 @@ class TestUnknownRuntimeName:
         """An unknown ``orchestrator.runtime`` override propagates the loader's
         actionable error (listing the known names) out of run start rather than
         being swallowed."""
-        known = ["in_memory", "per_trial", "shared"]
+        known = ["in_memory", "per_trial", "remote", "shared"]
 
         def _raise(name: str):
             raise UnknownImplementationError(name, "tolokaforge.runtime_backends", known)

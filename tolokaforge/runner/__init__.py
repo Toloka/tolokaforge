@@ -2,11 +2,12 @@
 Runner Package
 
 Hosts the runtime-independence library surface (:func:`run_trial`,
-:func:`load_task`) alongside the gRPC protocol definitions and service
-implementation used for Host ↔ Runner communication.
+:func:`run_trial_from_inputs`, :func:`load_task`) alongside the gRPC protocol
+definitions and service implementation used for Host ↔ Runner communication.
 
 Components:
 - ``run_trial`` — single-trial library entry (ADR-0022 § Surface 2)
+- ``run_trial_from_inputs`` — standalone trial entry over serialized inputs
 - ``load_task`` — ``task.yaml`` → validated ``TaskConfig`` loader
 - Protocol definitions (runner_pb2, runner_pb2_grpc)
 - DB Service client (db_client)
@@ -61,6 +62,12 @@ def __getattr__(name: str):
         obj = importlib.import_module("tolokaforge.core.run_trial").run_trial
         globals()[name] = obj
         return obj
+    if name == "run_trial_from_inputs":
+        import importlib
+
+        obj = importlib.import_module("tolokaforge.core.trial_node").run_trial_from_inputs
+        globals()[name] = obj
+        return obj
     if name == "load_task":
         import importlib
 
@@ -73,6 +80,7 @@ def __getattr__(name: str):
 __all__ = [
     # Library entry (ADR-0022 § Surface 2)
     "run_trial",
+    "run_trial_from_inputs",
     "load_task",
     # Request/Response messages
     "RegisterTrialRequest",

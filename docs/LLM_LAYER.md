@@ -3172,7 +3172,7 @@ budget assertions cannot be bypassed.
 The client is only half the mode. The orchestrator arms this client; the
 **conductor** wires the user-simulator probe, the per-task effective-budget
 re-check and the per-trial telemetry accumulator. Conductors are a plugin group,
-so `Orchestrator._build_conductor` and `run_trial` both refuse to start an armed
+so `build_trial_execution_unit` and `run_trial` both refuse to start an armed
 run on a conductor that does not declare `supports_rate_limit_probe` — otherwise
 the run would absorb 429s while writing all-default `rate_limit_*` / `probe_*`
 metrics, and nothing in the artifacts would show it.

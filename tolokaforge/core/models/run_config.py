@@ -40,8 +40,10 @@ __all__ = [
     "BundleStoreBackend",
     "ComputeConfig",
     "DOCKER_RUNTIME_ALIAS_TARGET",
+    "DispatchConfig",
     "EngineConfig",
     "EvaluationConfig",
+    "GRPC_NODE_DISPATCH_ADAPTER",
     "GraderConfig",
     "HarnessAdapterConfig",
     "JudgeGraderConfig",
@@ -58,6 +60,7 @@ __all__ = [
     "RATE_LIMIT_PROBE_ATTEMPT_CEILING_S",
     "RATE_LIMIT_PROBE_MIN_EPISODE_S",
     "RateLimitProbeConfig",
+    "RemoteConfig",
     "RunConfig",
     "RunDefaults",
     "S3BundleStoreConfig",
@@ -474,6 +477,61 @@ DOCKER_RUNTIME_ALIAS_TARGET = "shared"
 """Registered runtime-backend name :data:`LEGACY_DOCKER_RUNTIME_ALIAS` maps to."""
 
 
+REMOTE_RUNTIME_NAME = "remote"
+"""Registered runtime-backend name that dispatches trials to remote trial nodes."""
+
+
+class RemoteConfig(BaseModel):
+    """Runner nodes the ``remote`` runtime backend dispatches trials to."""
+
+    model_config = {"extra": "forbid"}
+
+    nodes: list[str]
+    """``host:port`` gRPC address of each trial node. Each node serves one trial
+    at a time, so the list length bounds trial concurrency."""
+
+    lease_timeout_s: float = Field(default=300.0, gt=0.0)
+    """How long a trial waits for a free node before the run fails."""
+
+    @field_validator("nodes")
+    @classmethod
+    def _nodes_are_unique_host_ports(cls, nodes: list[str]) -> list[str]:
+        for node in nodes:
+            host, sep, port = node.rpartition(":")
+            if not (sep and host and port.isdigit()):
+                raise ValueError(f"remote node {node!r} must be shaped 'host:port'")
+            if not (1 <= int(port) <= 65535):
+                raise ValueError(f"remote node {node!r} has a port outside 1-65535")
+        duplicates = sorted({node for node in nodes if nodes.count(node) > 1})
+        if duplicates:
+            raise ValueError(
+                f"remote nodes must be unique; each entry is one runner slot: {duplicates}"
+            )
+        return nodes
+
+
+GRPC_NODE_DISPATCH_ADAPTER = "grpc_node"
+"""Registered dispatch-adapter name ``orchestrator.runtime='remote'`` aliases to."""
+
+
+class DispatchConfig(BaseModel):
+    """Selects where a whole trial runs: the dispatch adapter and its options.
+
+    ``adapter`` names an entry in the ``tolokaforge.dispatch_adapters`` group
+    (``grpc_node`` ships in-tree); ``config`` is that adapter's own options
+    block, whose shape the adapter defines and validates. When this block is
+    absent the run takes the single-box substrate path unchanged.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    adapter: str
+    """Registered dispatch-adapter name (``tolokaforge.dispatch_adapters``)."""
+
+    config: dict[str, Any] = Field(default_factory=dict)
+    """The adapter-specific options block; validated by the adapter's factory."""
+
+
 class OrchestratorConfig(BaseModel):
     """Orchestrator configuration"""
 
@@ -637,6 +695,33 @@ class OrchestratorConfig(BaseModel):
             stacklevel=2,
         )
         return value
+
+    remote: RemoteConfig | None = None
+    """Runner nodes for the deprecated ``runtime: remote`` alias; required by it,
+    ignored otherwise. Declare ``dispatch`` directly instead."""
+
+    dispatch: DispatchConfig | None = None
+    """Selects where a whole trial runs. When set, the orchestrator builds the
+    named dispatch adapter and ships each whole trial to it; when ``None`` the run
+    takes the single-box substrate path unchanged. ``runtime='remote'`` is a
+    deprecated alias for ``dispatch.adapter='grpc_node'`` with ``config.nodes``
+    taken from ``remote.nodes``."""
+
+    @model_validator(mode="after")
+    def _require_nodes_for_remote_runtime(self) -> Self:
+        if self.runtime != REMOTE_RUNTIME_NAME:
+            return self
+        if self.dispatch is not None:
+            raise ValueError(
+                "orchestrator.runtime='remote' is a deprecated alias for "
+                "orchestrator.dispatch={adapter: grpc_node, ...}; set one, not both."
+            )
+        if self.remote is None or not self.remote.nodes:
+            raise ValueError(
+                "orchestrator.runtime='remote' requires orchestrator.remote.nodes "
+                "to list at least one trial node as 'host:port'."
+            )
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -1295,7 +1380,7 @@ def require_user_simulator_config(user_config: ModelConfig | None) -> ModelConfi
     """Return ``user_config`` or raise if it is missing.
 
     Callers that dispatch a user simulator (``Orchestrator.run``,
-    ``Orchestrator.run_worker``, the library entry ``core.run_trial``)
+    ``Orchestrator.run_worker``, the standalone entry ``core.trial_node.run_trial_from_inputs``)
     fail loud here when ``RunConfig.models["user"]`` is unset, so a run
     always names the provider it ships user turns to. There is
     deliberately no hardcoded default: a project that wants a shared

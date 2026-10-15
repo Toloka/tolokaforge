@@ -6,8 +6,10 @@ import random
 import shutil
 import socket
 import tempfile
-from collections.abc import Callable, Mapping
+import warnings
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,11 +22,8 @@ from pydantic import ValidationError
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters._task_loader import (
     GradingSourceKind,
-    ToolActor,
-    actor_tool_block,
     declared_search_backend,
     declared_tool_names,
-    enabled_tool_names,
     grading_source_under_adapter,
     replay_world_under_adapter,
     search_declaration,
@@ -40,13 +39,14 @@ from tolokaforge.core.budgets import (
     CostBudget,
     write_limit_hit_marker,
 )
-from tolokaforge.core.compose_materialisation import LogCaptureConfig
-from tolokaforge.core.conductor import (
-    Conductor,
-    ConductorContext,
-    ConductorFactory,
-    require_rate_limit_probe_support,
+from tolokaforge.core.compose_materialisation import (
+    LogCaptureConfig,
+    run_needs_docker_cli,
 )
+from tolokaforge.core.conductor import ConductorFactory
+from tolokaforge.core.dispatch.adapter import ControllableDispatchAdapter, DispatchAdapter
+from tolokaforge.core.dispatch.control import JobHandle
+from tolokaforge.core.dispatch.errors import DispatchUnsupported
 from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
     write_engine_run_state,
@@ -89,7 +89,13 @@ from tolokaforge.core.models import (
     TypeSenseConfig,
     require_user_simulator_config,
 )
-from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, sets_user_temperature
+from tolokaforge.core.models.run_config import (
+    GRPC_NODE_DISPATCH_ADAPTER,
+    REMOTE_RUNTIME_NAME,
+    USER_TEMPERATURE_IGNORED,
+    DispatchConfig,
+    sets_user_temperature,
+)
 from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION, _engine_version
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import (
@@ -100,14 +106,13 @@ from tolokaforge.core.output.artifacts import (
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.plugin_registry import (
     RAG_SERVICE_STACK_SERVICE,
+    DispatchAdapterBuildContext,
     RegistryError,
     RuntimeBackendBuildContext,
-    TrialGraderContext,
     UnknownImplementationError,
     load_agent_loop,
-    load_conductor,
+    load_dispatch_adapter,
     load_runtime_backend,
-    load_trial_grader,
     load_user_simulator,
 )
 from tolokaforge.core.pricing import pricing_table_metadata, resolve_pricing
@@ -128,7 +133,11 @@ from tolokaforge.core.trial import (
     EnvironmentManifest,
     TrialSpec,
 )
-from tolokaforge.core.trial_executor import TrialExecutor
+from tolokaforge.core.trial_node import (
+    TrialExecutionContext,
+    TrialExecutionUnit,
+    build_trial_execution_unit,
+)
 from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.observability.factory import (
     RunIdentity,
@@ -199,45 +208,6 @@ def _tasks_need_playwright(tasks: list[Any]) -> bool:
     return any(_PLAYWRIGHT_TOOL_NAMES & declared_tool_names(task) for task in tasks)
 
 
-# Tools whose compose variant runs inside a sibling compose service via
-# ``docker exec`` from the runner container. Extend this set when a new
-# tool ships a compose variant that needs the same runner-side docker CLI
-# + socket bind-mount treatment (see ``_run_needs_docker_cli`` and the
-# ``mount_docker_socket`` seam threaded through
-# :class:`tolokaforge.core.plugin_registry.RuntimeBackendBuildContext`).
-_COMPOSE_VARIANT_TOOL_NAMES: frozenset[str] = frozenset({"bash_session", "str_replace_editor"})
-
-
-def _tasks_use_compose_variant_tools(tasks: list[Any]) -> bool:
-    """Return True iff any task routes a shipped tool into a sibling service
-    via the compose variant (``tools.<actor>.<tool>.service: <name>``).
-
-    ``bash_session`` and ``str_replace_editor`` each ship a compose variant
-    that executes inside a sibling compose service by ``docker exec``-ing
-    from the runner container into it. The runner image needs the docker
-    CLI when any enabled tool is in that shape — e.g. the Migration Bench
-    adapter's task packs (``services.mb-server`` running the workload,
-    tools routed there via ``bash_session.service: mb-server``).
-
-    The ``service:`` key is read from the block that enabled the tool, so a
-    user-declared tool is routed by ``tools.user.<tool>.service`` and never by
-    the agent's block for the same name.
-    """
-    return any(
-        _actor_routes_a_compose_variant(task, actor) for task in tasks for actor in ToolActor
-    )
-
-
-def _actor_routes_a_compose_variant(task: Any, actor: ToolActor) -> bool:
-    """Whether *actor*'s block enables a compose-variant tool and names its service."""
-    block = actor_tool_block(task, actor)
-    for tool_name in _COMPOSE_VARIANT_TOOL_NAMES & enabled_tool_names(task, actor):
-        tool_cfg = block.get(tool_name)
-        if isinstance(tool_cfg, dict) and tool_cfg.get("service"):
-            return True
-    return False
-
-
 def _run_uses_coding_harness(config: "RunConfig") -> bool:
     """Return True iff the run config selects a coding-harness CLI.
 
@@ -251,33 +221,6 @@ def _run_uses_coding_harness(config: "RunConfig") -> bool:
     """
     agent_model = config.models.get("agent") if config.models else None
     return agent_model is not None and agent_model.harness is not None
-
-
-def _run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
-    """Return True iff the run needs the docker CLI baked into the runner image.
-
-    Two triggers today:
-
-    - The adapter declares ``requires_docker_cli_in_runner = True`` — the
-      class-level capability flag says its grading needs to shell out to
-      docker from the runner container (against the host daemon via the
-      mounted socket). Terminal-bench is the shipped example.
-    - Any task that routes a shipped tool through the compose variant (see
-      :func:`_tasks_use_compose_variant_tools`) — the runner ``docker exec``\\ s
-      into the sibling service.
-
-    Detected before build so the slim default image ships without the CLI for
-    every other run. Pure function for unit testing — the adapter class is
-    resolved from ``adapter_type`` via the registry, no adapter instance
-    required.
-    """
-    if adapter_type is not None:
-        from tolokaforge.adapters import adapter_class
-
-        cls = adapter_class(adapter_type)
-        if cls is not None and cls.requires_docker_cli_in_runner:
-            return True
-    return _tasks_use_compose_variant_tools(tasks)
 
 
 def _compose_service_image_ref(compose_file: Path, service: str) -> str | None:
@@ -312,6 +255,43 @@ def _compose_service_image_ref(compose_file: Path, service: str) -> str | None:
 _PROVIDER_PROBE_TIMEOUT_S = 10.0
 """Seconds to wait on the preflight probe. Short: a slow endpoint is a
 separate problem from a dead one, and this runs before every harness run."""
+
+
+def _node_hosting_problems(
+    task_id: str, pack_dir: Path | None, manifest: EnvironmentManifest
+) -> list[str]:
+    """What keeps *manifest* from being hosted on a node, one phrase per problem."""
+    problems: list[str] = []
+    if len(manifest.stacks) > 1:
+        problems.append(
+            f"task {task_id!r} declares {len(manifest.stacks)} stacks (multi-stack manifests "
+            "run under the shared or per_trial runtime)"
+        )
+    reset = sorted(name for name, spec in manifest.services.items() if spec.isolation == "reset")
+    if reset:
+        problems.append(
+            f"task {task_id!r} declares isolation: reset for {', '.join(reset)} (reset-isolation "
+            "seeds are not yet shipped to the node; run under shared or per_trial)"
+        )
+    if pack_dir is None:
+        problems.append(
+            f"task {task_id!r} has no task pack directory its compose file could ship in"
+        )
+        return problems
+    root = pack_dir.resolve()
+    outside = sorted(
+        {
+            str(path)
+            for path in (manifest.compose_file, *(stack.compose_file for stack in manifest.stacks))
+            if not path.resolve().is_relative_to(root)
+        }
+    )
+    if outside:
+        problems.append(
+            f"task {task_id!r} declares compose file {', '.join(outside)} outside its own "
+            "directory (project-level or shared compose does not ship with the task pack)"
+        )
+    return problems
 
 
 def _configured_harness(config: Any) -> str | None:
@@ -705,6 +685,7 @@ class OrchestratorDeps:
     artifact_writer: TrialArtifactWriter = field(default_factory=FileArtifactWriter)
     run_aggregate_writer: RunAggregateWriter = field(default_factory=FileAggregateWriter)
     runtime_backend: RuntimeBackend | None = None
+    dispatch_adapter: DispatchAdapter | None = None
     conductor_factory: ConductorFactory | None = None
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
     budget: CompositeBudget | None = None
@@ -828,12 +809,11 @@ class Orchestrator:
         self._previous_report_results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
-        # Trial graders whose ``close()`` must fire at run teardown. Populated
-        # by :meth:`_build_conductor`; drained in reverse order at the end of
-        # :meth:`run` / :meth:`run_worker` so a broker + worker-pool grader
-        # (``queue``) shuts down cleanly regardless of the caller's flow.
-        # list[TrialGrader]; annotated bare to avoid a runtime import cycle.
-        self._trial_graders_to_close: list = []
+        # Trial execution units whose ``close()`` must fire at run teardown.
+        # Populated by :meth:`_build_trial_unit`; drained in reverse order at
+        # the end of :meth:`run` / :meth:`run_worker` so a broker + worker-pool
+        # grader (``queue``) shuts down cleanly regardless of the caller's flow.
+        self._trial_units_to_close: list[TrialExecutionUnit] = []
         # Shared per-trial writer — every per-trial write goes through it
         # so the orchestrator stays decoupled from filesystem details and
         # alternative writers (in-memory tests, remote stores) can plug in.
@@ -844,14 +824,15 @@ class Orchestrator:
         # ``None``, ``run()`` / ``run_worker()`` construct a default
         # :class:`SharedStackRuntimeBackend` from the resolved runner address — the
         # legacy behaviour. Tests / alternate backends inject via ``deps``.
-        # Per-trial executor: the orchestrator delegates each trial to a
-        # :class:`Conductor`. ``_build_conductor`` invokes the injected
-        # factory (typed against :class:`ConductorContext`) when one is
-        # supplied; otherwise it constructs :class:`InProcessConductor`.
         resolved_deps = deps if deps is not None else OrchestratorDeps()
         self._artifact_writer: TrialArtifactWriter = resolved_deps.artifact_writer
         self._run_aggregate_writer: RunAggregateWriter = resolved_deps.run_aggregate_writer
         self._injected_runtime_backend: RuntimeBackend | None = resolved_deps.runtime_backend
+        self._injected_dispatch_adapter: DispatchAdapter | None = resolved_deps.dispatch_adapter
+        # Resolved once (incl. the deprecated ``runtime='remote'`` alias, whose
+        # warning then fires once per orchestrator); see :meth:`_dispatch_config`.
+        self._dispatch_config_resolved = False
+        self._dispatch_config_cache: DispatchConfig | None = None
         self._conductor_factory: ConductorFactory | None = resolved_deps.conductor_factory
         # Live tracing (ADR-0047): built per run from ``observability.tracing`` in :meth:`run`.
         self._trial_observer: TrialObserver = NullTrialObserver()
@@ -1151,109 +1132,60 @@ class Orchestrator:
             return True
         return False
 
-    def _build_conductor(
+    def _build_trial_unit(
         self,
         *,
         agent_client: LLMClient,
-        runtime_backend: RuntimeBackend,
+        runtime_backend: RuntimeBackend | None,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None,
-    ) -> Conductor:
-        """Construct the per-trial executor for this run.
+        dispatch_adapter: DispatchAdapter | None = None,
+    ) -> TrialExecutionUnit:
+        """Build this run's per-trial execution unit and register it for teardown.
 
-        Invokes the injected ``conductor_factory`` when one was supplied
-        on ``__init__``; otherwise defaults to a fresh :class:`InProcessConductor`
-        wired against the orchestrator's per-run dependencies.
-
-        Called once per ``run()`` / ``run_worker()`` invocation, after
-        the adapter is loaded, the artifact writer is initialised, and the
-        per-run wiring (LLM client, runtime backend, output directory,
-        rate limiter) is resolved. Raises ``RuntimeError`` if ``self.adapter``
-        is unset — surfaces a clear failure rather than propagating ``None``
-        into the Conductor's body (where it would crash deep in ``run()``).
-
-        Also the single choke point where rate-limit probe mode's two halves
-        meet: the orchestrator arms the agent client, but the simulator probe,
-        the per-task budget re-check and the telemetry accumulator belong to the
-        conductor. A conductor that does not declare support gets a raise here,
-        because the alternative is a run that really absorbs 429s while its
-        artifacts read all-default — see
-        :func:`~tolokaforge.core.conductor.require_rate_limit_probe_support`.
+        Called once per ``run()`` / ``run_worker()`` invocation, after the
+        adapter is loaded, the artifact writer is initialised, and the
+        per-run wiring (LLM client, runtime backend or dispatch adapter, output
+        directory, rate limiter) is resolved. When ``dispatch_adapter`` is set
+        the whole trial is shipped to it and ``runtime_backend`` is ``None``.
+        Raises ``RuntimeError`` if ``self.adapter`` is unset. The unit is closed
+        by :meth:`_close_trial_units`.
         """
         if self.adapter is None:
             raise RuntimeError(
-                "Conductor cannot be built before the adapter is loaded. "
+                "Trial execution unit cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
-        # ``None`` when the backend has no runner surface (in-memory / test,
-        # or ``PerTrialRuntimeBackend`` — each trial owns its own runner
-        # endpoint so no single address applies); the built-in
-        # address-needing factories (``grader_rpc``, ``queue``) raise loudly
-        # when they observe it. Downstream graders that do not need a
-        # network address receive the ``None`` verbatim and ignore it, and
-        # ``runner_rpc`` picks the ``runtime_backend`` dispatch path below
-        # instead of dialling.
-        runner_address = getattr(runtime_backend, "runner_address", None)
-        # ``config.grader.name`` overrides the adapter's default for this
-        # run; the queue subblock rides the same context so
-        # ``queue_trial_grader_factory`` can build its broker + worker pool
-        # without a second config lookup. Absent block keeps every existing
-        # run's behaviour.
-        grader_config = self.config.grader
-        grader_name = (
-            grader_config.name if grader_config and grader_config.name else None
-        ) or self.adapter.trial_grader_name
-        # In-process routing shim: only populated when the backend has no
-        # static runner endpoint (``PerTrialRuntimeBackend`` — each trial
-        # owns its own endpoint). Shared-stack keeps its address-only,
-        # orchestrator-independent grader client so ADR-0038's seam
-        # invariant is preserved for every case that can honour it.
-        in_process_backend_shim = runtime_backend if runner_address is None else None
-        trial_grader = load_trial_grader(grader_name)(
-            TrialGraderContext(
-                runner_address=runner_address,
+        # Drain any leftover from a prior aborted run on this orchestrator
+        # instance before recording the fresh unit — a re-entered ``run()``
+        # on the same instance must never close a stale grader from the
+        # previous attempt.
+        if self._trial_units_to_close:
+            self._close_trial_units()
+        unit = build_trial_execution_unit(
+            TrialExecutionContext(
+                adapter=self.adapter,
+                artifact_writer=self._artifact_writer,
+                config=self.config,
                 logger=self.logger,
-                grader_config=grader_config,
-                runtime_backend=in_process_backend_shim,
+                verbose=self.verbose,
+                strict=self.strict,
+                agent_client=agent_client,
+                runtime_backend=runtime_backend,
+                dispatch_adapter=dispatch_adapter,
+                output_dir=output_dir,
+                request_limiter=request_limiter,
+                events=self._events,
+                trial_observer=self._trial_observer,
+                run_identity=self._run_identity,
+                conductor_factory=self._conductor_factory,
+                grader_config=self.config.grader,
                 grpc_max_message_mb=self._grpc_max_message_mb(),
                 state_read_timeout_s=self._state_read_timeout_s(),
             )
         )
-        # Drain any leftover from a prior aborted run on this orchestrator
-        # instance before recording the fresh grader — a re-entered ``run()``
-        # on the same instance must never close a stale grader from the
-        # previous attempt.
-        if self._trial_graders_to_close:
-            self._close_trial_graders()
-        self._trial_graders_to_close.append(trial_grader)
-
-        ctx = ConductorContext(
-            adapter=self.adapter,
-            artifact_writer=self._artifact_writer,
-            config=self.config,
-            logger=self.logger,
-            verbose=self.verbose,
-            strict=self.strict,
-            agent_client=agent_client,
-            runtime_backend=runtime_backend,
-            trial_grader=trial_grader,
-            output_dir=output_dir,
-            request_limiter=request_limiter,
-            events=self._events,
-            trial_observer=self._trial_observer,
-            run_identity=self._run_identity,
-        )
-        factory = self._conductor_factory or load_conductor("in_process")
-        conductor = factory(ctx)
-        # Conductors are a plugin group, so the resolved implementation may be
-        # anything a downstream package registered — and the agent client handed
-        # in above is already armed.
-        require_rate_limit_probe_support(
-            conductor,
-            self.config.orchestrator.rate_limit_probe,
-            source="orchestrator",
-        )
-        return conductor
+        self._trial_units_to_close.append(unit)
+        return unit
 
     def _task_description(self, task_id: str) -> TaskDescription:
         """The task's wire-format description, resolved once per adapter configuration.
@@ -1335,7 +1267,7 @@ class Orchestrator:
 
     def _cleanup_runner_state_for_retry(
         self,
-        runtime_backend: RuntimeBackend,
+        runtime_backend: RuntimeBackend | None,
         task_id: str,
         trial_idx: int,
     ) -> None:
@@ -1349,7 +1281,13 @@ class Orchestrator:
         Idempotent: a stale or already-absent trial is logged and ignored so a
         failing cleanup never blocks the retry attempt itself (the
         re-registration will surface a clearer error if state is unrecoverable).
+
+        No-op on a dispatch run: the node owns its substrate and its lease is
+        freed per trial inside :meth:`DispatchAdapter.run_trial_node`, so there
+        is no control-plane runner state to forget.
         """
+        if runtime_backend is None:
+            return
         trial_id = f"{task_id}:{trial_idx}"
         try:
             result = runtime_backend.cleanup_trial(trial_id)
@@ -1477,6 +1415,204 @@ class Orchestrator:
             if self._task_description(task.task_id).environment_manifest is not None:
                 return True
         return False
+
+    def _dispatch_config(self) -> DispatchConfig | None:
+        """The run's dispatch config, or ``None`` for the single-box substrate path.
+
+        Resolved once: the explicit ``orchestrator.dispatch`` block, or the
+        deprecated ``orchestrator.runtime='remote'`` alias mapped onto the
+        ``grpc_node`` adapter (its ``config.nodes`` taken from
+        ``orchestrator.remote``). The alias's :class:`DeprecationWarning` fires
+        once per orchestrator, here.
+        """
+        if not self._dispatch_config_resolved:
+            self._dispatch_config_cache = self._resolve_dispatch_config()
+            self._dispatch_config_resolved = True
+        return self._dispatch_config_cache
+
+    def _resolve_dispatch_config(self) -> DispatchConfig | None:
+        orchestrator = self.config.orchestrator
+        if orchestrator.dispatch is not None:
+            return orchestrator.dispatch
+        if orchestrator.runtime != REMOTE_RUNTIME_NAME:
+            return None
+        warnings.warn(
+            "orchestrator.runtime='remote' is a deprecated alias for "
+            "orchestrator.dispatch={adapter: 'grpc_node', config: {nodes: ...}}; "
+            "migrate to the dispatch block. Retired in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        remote = orchestrator.remote
+        assert remote is not None  # OrchestratorConfig requires remote.nodes for runtime='remote'
+        return DispatchConfig(
+            adapter=GRPC_NODE_DISPATCH_ADAPTER,
+            config={"nodes": remote.nodes, "lease_timeout_s": remote.lease_timeout_s},
+        )
+
+    def _is_dispatch_run(self) -> bool:
+        """Whether this run ships whole trials to a dispatch adapter."""
+        return self._dispatch_config() is not None
+
+    def _dispatches_via_grpc_node(self) -> bool:
+        """Whether the resolved dispatch adapter is the in-tree ``grpc_node``."""
+        config = self._dispatch_config()
+        return config is not None and config.adapter == GRPC_NODE_DISPATCH_ADAPTER
+
+    def _build_dispatch_adapter(self, dispatch: DispatchConfig) -> DispatchAdapter:
+        """Build the run's dispatch adapter from its config via the entry-point group.
+
+        The run's ``compute.grpc_max_message_mb`` is injected into the adapter's
+        config block (an explicit value in the block wins), and the connect
+        budget is threaded from ``runtime_connect``.
+        """
+        connect_timeout_s, connect_retry_interval_s = self._resolve_runtime_connect_budget()
+        config = dict(dispatch.config)
+        config.setdefault("grpc_max_message_mb", self._grpc_max_message_mb())
+        adapter = load_dispatch_adapter(dispatch.adapter)(
+            DispatchAdapterBuildContext(
+                events=self._events,
+                connect_timeout_s=connect_timeout_s,
+                connect_retry_interval_s=connect_retry_interval_s,
+                config=config,
+            )
+        )
+        self.logger.info("dispatch.adapter.selected", adapter=dispatch.adapter)
+        return adapter
+
+    def _refuse_unsupported_remote_run(self) -> None:
+        """Fail loud on run shapes the ``grpc_node`` dispatch adapter cannot serve.
+
+        The adapter hands each whole trial to a leased node and starts no
+        local stack, so it refuses an explicit ``auto_start_services: true``,
+        task-declared stacks the node cannot host (see
+        :meth:`_refuse_manifests_the_node_cannot_host`), trial graders that dial
+        a static runner address (``grader_rpc`` / ``queue``), snapshot grade-bundle
+        production (the node grades in-process and produces no control-plane
+        bundle), and every run setting the node does not carry (see
+        :meth:`_refuse_settings_the_node_does_not_carry`).
+        """
+        orchestrator = self.config.orchestrator
+        if (
+            orchestrator.auto_start_services
+            and "auto_start_services" in orchestrator.model_fields_set
+        ):
+            raise ValueError(
+                "orchestrator.dispatch.adapter='grpc_node' leases nodes and starts no local "
+                "stack; it contradicts orchestrator.auto_start_services=true. Set "
+                "auto_start_services: false."
+            )
+        self._refuse_manifests_the_node_cannot_host()
+        grader_name = self.config.grader.name if self.config.grader else None
+        if not grader_name and self.adapter is not None:
+            grader_name = self.adapter.trial_grader_name
+        if grader_name in ("grader_rpc", "queue"):
+            raise ValueError(
+                f"orchestrator.dispatch.adapter='grpc_node' cannot use grader {grader_name!r}: "
+                "it dials a static runner address the node does not expose. Use "
+                "the 'runner_rpc' grader."
+            )
+        grader = self.config.grader
+        if grader is not None and grader.snapshot is not None and grader.snapshot.enabled:
+            raise ValueError(
+                "orchestrator.dispatch.adapter='grpc_node' cannot honour "
+                "grader.snapshot.enabled=true: the node grades the trial in-process and "
+                "produces no control-plane grade bundle. Run under the shared or per_trial "
+                "substrate, or disable snapshot mode."
+            )
+        self._refuse_settings_the_node_does_not_carry()
+        self._warn_observability_the_node_does_not_carry()
+
+    def _refuse_manifests_the_node_cannot_host(self) -> None:
+        """Refuse task-declared stacks a node cannot materialise for one trial.
+
+        A node hosts one single-stack manifest whose compose file ships inside
+        the task's own pack. Each offending task is named in one error: a
+        multi-stack manifest, a service with ``isolation: reset`` (reset-isolation
+        seeds are not yet shipped to the node), and a compose file outside the task's
+        directory or a task with no pack directory (neither ships with, nor is
+        hashed into, the pack).
+        """
+        if self.adapter is None:
+            return
+        problems: list[str] = []
+        for task in self.tasks:
+            manifest = self._task_description(task.task_id).environment_manifest
+            if manifest is None:
+                continue
+            problems.extend(_node_hosting_problems(task.task_id, task.source_dir, manifest))
+        if problems:
+            raise ValueError(
+                "orchestrator.dispatch.adapter='grpc_node' runs each trial on a node that hosts one "
+                f"single-stack, non-reset, in-pack environment_manifest, but {'; '.join(problems)}."
+            )
+
+    def _refuse_settings_the_node_does_not_carry(self) -> None:
+        """Refuse run settings a node would silently drop.
+
+        A node rebuilds its run configuration from the trial inputs, which carry
+        the timeouts, turn and token caps, stuck heuristics, agent loop, log
+        capture and the agent's fallback chain. What they do not carry would be
+        ignored there while the run reported it as applied. Each such setting in
+        use is named in one error, with the reason a node cannot honour it.
+        A fallback chain is refused alongside an enabled rate-limit probe: a chain
+        that switches models mid-probe corrupts the measurement.
+        """
+        orchestrator = self.config.orchestrator
+        unsupported: list[str] = []
+        if self._conductor_factory is not None:
+            unsupported.append(
+                "a custom conductor_factory (the node runs its own in_process conductor)"
+            )
+        if any(task.adapter_type != "native" for task in self.tasks) or (
+            _configured_harness(self.config) is not None
+        ):
+            unsupported.append(
+                "a non-native adapter or coding-harness mode (the grpc_node dispatch adapter "
+                "runs only the native adapter without harness mode)"
+            )
+        if self.config.effective_max_requests_per_second is not None:
+            unsupported.append(
+                "max_requests_per_second (a run-level request throttle is global across all "
+                "trials; a node runs one trial and cannot enforce a shared limit)"
+            )
+        if self._agent_client_factory is not None:
+            unsupported.append(
+                "a custom agent_client_factory (inject fallbacks via models.agent.fallbacks, "
+                "which the node carries, not through a custom agent_client_factory)"
+            )
+        agent = self.config.models.get("agent")
+        if agent is not None and agent.fallbacks and orchestrator.rate_limit_probe.enabled:
+            unsupported.append(
+                "a fallback model chain together with orchestrator.rate_limit_probe (switching "
+                "models mid-probe corrupts the measurement; probe a single model)"
+            )
+        if orchestrator.effective_typesense() is not None:
+            unsupported.append(
+                "the orchestrator.typesense search plane (it is a control-plane-local container "
+                "bridged onto the runner's Docker network; a remote node has no such bridge)"
+            )
+        if unsupported:
+            raise ValueError(
+                "orchestrator.dispatch.adapter='grpc_node' runs each trial on a node that does "
+                f"not carry {', '.join(unsupported)}. Remove them, or run under the shared or "
+                "per_trial substrate."
+            )
+
+    def _warn_observability_the_node_does_not_carry(self) -> None:
+        """Warn that a configured trace exporter sees only the reduced bundle.
+
+        The node runs the trial with no observer, so the control plane can attach
+        only what it writes from the returned trajectory.
+        """
+        observability = self.config.observability
+        tracing = observability.tracing if observability is not None else None
+        if tracing is not None and tracing.exporter != "none":
+            self.logger.warning(
+                "observability.tracing is configured, but the grpc_node dispatch adapter runs "
+                "trials on nodes that emit no live traces; exporters see the reduced bundle only",
+                exporter=tracing.exporter,
+            )
 
     def _coerce_plan_shape_for_override(self, override: str | None) -> None:
         """Rewrite every task's resolved plan ``stack_scope`` to match the
@@ -1685,7 +1821,7 @@ class Orchestrator:
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
-                mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks)
+                mount_docker_socket=run_needs_docker_cli(adapter_type, self.tasks)
                 or _run_uses_coding_harness(self.config),
                 expose_substrate=(
                     self.config.grader is not None and self.config.grader.expose_substrate
@@ -1841,40 +1977,6 @@ class Orchestrator:
                 "load its result into the daemon (buildx without `--load`) produces "
                 "this; point DOCKER_BUILDKIT / the compose builder at the local store."
             )
-
-    def _build_trial_executor(
-        self,
-        runtime_backend: RuntimeBackend,
-        conductor: Conductor,
-        output_dir: Path,
-    ) -> TrialExecutor:
-        """Compose the per-run :class:`TrialExecutor` (ADR-0015).
-
-        The executor owns the per-trial substrate lifecycle bracket
-        (``provision`` / ``await_ready`` / ``endpoints`` / ``teardown``)
-        around ``conductor.run``. The orchestrator submits
-        ``trial_executor.execute`` to the worker pool in place of
-        ``conductor.run``; the bracket runs on the worker thread so
-        provisioning parallelism equals worker count.
-
-        Threads :attr:`_events` in so the executor can fire
-        ``trial_provisioned`` after :meth:`RuntimeBackend.await_ready`
-        returns — the runtime is the only place with a handle on the
-        materialised infrastructure snapshot.
-
-        ``output_dir`` is the run's output root, threaded so the executor can
-        amend a trial's ``metrics.yaml`` with host-side per-trial values.
-        """
-        from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
-
-        return ProvisioningTrialExecutor(
-            runtime_backend=runtime_backend,
-            conductor=conductor,
-            logger=self.logger,
-            output_dir=output_dir,
-            artifact_writer=self._artifact_writer,
-            events=self._events,
-        )
 
     def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
         """Refuse to start the run when the runtime backend's composer
@@ -3108,15 +3210,18 @@ class Orchestrator:
         # already-coerced scopes. Fires BEFORE ``_extract_run_env_manifest`` so
         # the extract sees the coerced plan.
         self._coerce_plan_shape_for_override(self.config.orchestrator.runtime)
+        if self._dispatches_via_grpc_node():
+            self._refuse_unsupported_remote_run()
 
         # Task-declared shared-stack manifest: if the run's tasks declare an
         # environment_manifest, extract the shared manifest here — mixed / divergent
         # declarations fail loud before we touch docker.
         run_env_manifest = self._extract_run_env_manifest()
 
-        # Auto-start services via EngineStack if configured
+        # Auto-start services via EngineStack if configured. A dispatch run ships
+        # each whole trial to a node that owns its substrate and starts no local stack.
         service_stack = None
-        if self.config.orchestrator.auto_start_services:
+        if self.config.orchestrator.auto_start_services and not self._is_dispatch_run():
             try:
                 from tolokaforge.docker.stacks import core_stack, full_stack
 
@@ -3148,7 +3253,7 @@ class Orchestrator:
                     if self.config.evaluation.harness_adapter
                     else None
                 )
-                if _run_needs_docker_cli(adapter_type, self.tasks) or _run_uses_coding_harness(
+                if run_needs_docker_cli(adapter_type, self.tasks) or _run_uses_coding_harness(
                     self.config
                 ):
                     self.logger.info(
@@ -3326,20 +3431,31 @@ class Orchestrator:
         if runner_address is None:
             runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
-        runtime_backend: RuntimeBackend
-        if self._injected_runtime_backend is not None:
-            runtime_backend = self._injected_runtime_backend
+        # Dispatch run: ship each whole trial to a dispatch adapter, which owns
+        # the substrate. No local substrate backend is constructed or auto-started.
+        dispatch_config = self._dispatch_config()
+        runtime_backend: RuntimeBackend | None = None
+        dispatch_adapter: DispatchAdapter | None = self._injected_dispatch_adapter
+        if dispatch_adapter is None and dispatch_config is not None:
+            dispatch_adapter = self._build_dispatch_adapter(dispatch_config)
+        if dispatch_adapter is not None:
+            self._events.phase_changed(phase="connecting_runtime")
+            dispatch_adapter.connect()
+            self.logger.info("Dispatch adapter connected")
         else:
-            runtime_backend = self._construct_runtime_backend(
-                runner_address,
-                env_manifest=run_env_manifest,
-                run_id=run_id,
-            )
-        self._events.phase_changed(phase="connecting_runtime")
-        runtime_backend.connect()
-        self.logger.info("Runtime backend connected")
-        self._verify_isolation_compatibility(runtime_backend)
-        self._validate_snapshot_mode_compatibility(runtime_backend)
+            if self._injected_runtime_backend is not None:
+                runtime_backend = self._injected_runtime_backend
+            else:
+                runtime_backend = self._construct_runtime_backend(
+                    runner_address,
+                    env_manifest=run_env_manifest,
+                    run_id=run_id,
+                )
+            self._events.phase_changed(phase="connecting_runtime")
+            runtime_backend.connect()
+            self.logger.info("Runtime backend connected")
+            self._verify_isolation_compatibility(runtime_backend)
+            self._validate_snapshot_mode_compatibility(runtime_backend)
 
         from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
@@ -3353,6 +3469,10 @@ class Orchestrator:
             self.logger.info(
                 "Trial-scoped service endpoints resolved by backend from task-declared stack"
             )
+        elif self._is_dispatch_run():
+            self.logger.info(
+                "Trial-scoped service endpoints resolved by the dispatch adapter's node"
+            )
         else:
             self.logger.info(
                 "Resolved trial-scoped service endpoints",
@@ -3361,24 +3481,28 @@ class Orchestrator:
                 runner_url=env_endpoints.runner_url,
             )
 
-        conductor = self._build_conductor(
+        trial_unit = self._build_trial_unit(
             agent_client=agent_client,
             runtime_backend=runtime_backend,
+            dispatch_adapter=dispatch_adapter,
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
-        # ``try/finally`` from here to the run's return guarantees the
-        # grader teardown (broker close + worker join, gRPC channel close)
-        # fires even when the trial loop or a mid-run cleanup raises. The
+        # ``try/finally`` from here to the run's return guarantees the trial
+        # unit teardown (its grader's broker close + worker join, gRPC channel
+        # close) fires even when the trial loop or a mid-run cleanup raises. The
         # rest of the existing sequential teardown lives inside the try
-        # body — a mid-run exception still surfaces to the caller after
-        # the grader is closed.
+        # body — a mid-run exception still surfaces to the caller after the
+        # units are closed.
+        #
+        # ``active_futures`` lives out here, not in the worker-pool block below,
+        # so the dispatch cancel-on-stop hook in ``finally`` can read whatever
+        # leases are still in flight on an abrupt exit.
+        active_futures: dict[Any, AttemptLease] = {}
         try:
-            trial_executor = self._build_trial_executor(
-                runtime_backend, conductor, output_dir=output_dir
+            executor_healthy = (
+                runtime_backend.health_check() if runtime_backend is not None else True
             )
-
-            executor_healthy = runtime_backend.health_check()
             self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
 
             # Build pending task/trial pairs and initialize durable queue.
@@ -3439,217 +3563,260 @@ class Orchestrator:
             )
 
             # Run tasks with parallel workers using the durable queue.
-            with ThreadPoolExecutor(max_workers=self.config.effective_workers) as executor:
-                active_futures: dict[Any, AttemptLease] = {}
+            #
+            # A dispatch run with a controllable adapter manages the pool's
+            # shutdown by hand: on a stop (an exception or KeyboardInterrupt) it
+            # cancels the in-flight leases *before* the pool joins them, so a
+            # detached subprocess/remote trial is actually cancelled instead of
+            # drained to completion. A budget pause is not a stop — it drains the
+            # in-flight work and joins with ``wait=True`` like a clean finish. The
+            # single-box path keeps the plain context-manager join unchanged.
+            executor = ThreadPoolExecutor(max_workers=self.config.effective_workers)
+            dispatch_stop_cancel = self._is_dispatch_run() and isinstance(
+                dispatch_adapter, ControllableDispatchAdapter
+            )
+            pool_scope: AbstractContextManager[ThreadPoolExecutor] = (
+                nullcontext(executor) if dispatch_stop_cancel else executor
+            )
+            try:
+                with pool_scope as executor:
 
-                def submit_one() -> bool:
-                    if budget_exhausted:
-                        return False
-                    lease = run_queue.lease_next(worker_id=lease_owner, lease_seconds=lease_seconds)
-                    if lease is None:
-                        return False
-                    task = task_by_id.get(lease.task_id)
-                    if task is None:
-                        # Should never happen; fail-fast and continue scheduling.
-                        run_queue.mark_failed(
-                            lease.id,
-                            f"Task not found in loaded set: {lease.task_id}",
-                            retryable=False,
+                    def submit_one() -> bool:
+                        if budget_exhausted:
+                            return False
+                        lease = run_queue.lease_next(
+                            worker_id=lease_owner, lease_seconds=lease_seconds
                         )
-                        run_state.mark_failed(
-                            lease.task_id, lease.trial_index, f"Task not found: {lease.task_id}"
-                        )
+                        if lease is None:
+                            return False
+                        task = task_by_id.get(lease.task_id)
+                        if task is None:
+                            # Should never happen; fail-fast and continue scheduling.
+                            run_queue.mark_failed(
+                                lease.id,
+                                f"Task not found in loaded set: {lease.task_id}",
+                                retryable=False,
+                            )
+                            run_state.mark_failed(
+                                lease.task_id, lease.trial_index, f"Task not found: {lease.task_id}"
+                            )
+                            self.state_manager.save_state(run_state)
+                            return True
+
+                        # Mark as running
+                        run_queue.mark_running(lease.id, lease_owner)
+                        run_state.mark_running(lease.task_id, lease.trial_index)
                         self.state_manager.save_state(run_state)
-                        return True
 
-                    # Mark as running
-                    run_queue.mark_running(lease.id, lease_owner)
-                    run_state.mark_running(lease.task_id, lease.trial_index)
-                    self.state_manager.save_state(run_state)
-
-                    self._events.trial_started(
-                        trial_id=f"{lease.task_id}:{lease.trial_index}",
-                        task_id=lease.task_id,
-                        trial_index=lease.trial_index,
-                        total_index=self._total_index_by_key.get(
-                            (lease.task_id, lease.trial_index), 0
-                        ),
-                        agent_model=f"{agent_config.provider}/{agent_config.name}",
-                        user_model=f"{user_config.provider}/{user_config.name}",
-                    )
-
-                    try:
-                        spec = self._build_trial_spec(
-                            task=task,
-                            trial_idx=lease.trial_index,
-                            attempt_id=lease.retry_count,
-                            worker_id=lease_owner,
-                            run_id=run_id,
-                            agent_client=agent_client,
-                            user_config=user_config,
-                            judge_config=judge_config,
-                            env_endpoints=env_endpoints,
-                        )
-                    except Exception as e:
-                        self.logger.error(
-                            "Trial spec build failed",
+                        self._events.trial_started(
+                            trial_id=f"{lease.task_id}:{lease.trial_index}",
                             task_id=lease.task_id,
                             trial_index=lease.trial_index,
-                            error=str(e),
+                            total_index=self._total_index_by_key.get(
+                                (lease.task_id, lease.trial_index), 0
+                            ),
+                            agent_model=f"{agent_config.provider}/{agent_config.name}",
+                            user_model=f"{user_config.provider}/{user_config.name}",
                         )
-                        run_queue.mark_failed(lease.id, f"Spec build failed: {e}", retryable=False)
-                        run_state.mark_failed(lease.task_id, lease.trial_index, str(e))
-                        self.state_manager.save_state(run_state)
-                        self._events.trial_failed(
-                            trial_id=f"{lease.task_id}:{lease.trial_index}",
-                            error=str(e),
-                            retryable=False,
-                        )
-                        return True
-                    future = executor.submit(trial_executor.execute, spec, task)
-                    active_futures[future] = lease
-                    return True
 
-                while len(active_futures) < self.config.effective_workers and submit_one():
-                    pass
-
-                while active_futures:
-                    done, _ = wait(active_futures.keys(), return_when=FIRST_COMPLETED)
-                    for future in done:
-                        lease = active_futures.pop(future)
-                        task_id = lease.task_id
-                        trial_idx = lease.trial_index
                         try:
-                            trial_result = future.result()
-                            trajectory = trial_result.trajectory
-                            self._record_attempt(trajectory)
-                            trial_cost = self._trial_total_spend_usd(trajectory)
-                            total_cost_usd += trial_cost
-                            if budget is not None:
-                                budget.record_generation_cost(trial_cost)
+                            spec = self._build_trial_spec(
+                                task=task,
+                                trial_idx=lease.trial_index,
+                                attempt_id=lease.retry_count,
+                                worker_id=lease_owner,
+                                run_id=run_id,
+                                agent_client=agent_client,
+                                user_config=user_config,
+                                judge_config=judge_config,
+                                env_endpoints=env_endpoints,
+                            )
+                        except Exception as e:
+                            self.logger.error(
+                                "Trial spec build failed",
+                                task_id=lease.task_id,
+                                trial_index=lease.trial_index,
+                                error=str(e),
+                            )
+                            run_queue.mark_failed(
+                                lease.id, f"Spec build failed: {e}", retryable=False
+                            )
+                            run_state.mark_failed(lease.task_id, lease.trial_index, str(e))
+                            self.state_manager.save_state(run_state)
+                            self._events.trial_failed(
+                                trial_id=f"{lease.task_id}:{lease.trial_index}",
+                                error=str(e),
+                                retryable=False,
+                            )
+                            return True
+                        future = executor.submit(trial_unit.execute, spec, task)
+                        active_futures[future] = lease
+                        return True
 
-                            # Retry transient infra failures based on queue retry policy.
-                            if self._is_retryable_trajectory(trajectory):
-                                reason = (
-                                    trajectory.termination_reason.value
-                                    if trajectory.termination_reason
-                                    else trajectory.status.value
-                                )
+                    while len(active_futures) < self.config.effective_workers and submit_one():
+                        pass
+
+                    while active_futures:
+                        done, _ = wait(active_futures.keys(), return_when=FIRST_COMPLETED)
+                        for future in done:
+                            lease = active_futures.pop(future)
+                            task_id = lease.task_id
+                            trial_idx = lease.trial_index
+                            try:
+                                trial_result = future.result()
+                                trajectory = trial_result.trajectory
+                                self._record_attempt(trajectory)
+                                trial_cost = self._trial_total_spend_usd(trajectory)
+                                total_cost_usd += trial_cost
+                                if budget is not None:
+                                    budget.record_generation_cost(trial_cost)
+
+                                # Retry transient infra failures based on queue retry policy.
+                                if self._is_retryable_trajectory(trajectory):
+                                    reason = (
+                                        trajectory.termination_reason.value
+                                        if trajectory.termination_reason
+                                        else trajectory.status.value
+                                    )
+                                    should_retry = run_queue.mark_failed(
+                                        lease.id,
+                                        f"Retryable failure: {reason}",
+                                        retryable=True,
+                                    )
+                                    if should_retry:
+                                        self._cleanup_runner_state_for_retry(
+                                            runtime_backend, task_id, trial_idx
+                                        )
+                                        self.logger.warning(
+                                            "Retrying trial after transient failure",
+                                            task_id=task_id,
+                                            trial_index=trial_idx,
+                                            retry_count_next=lease.retry_count + 1,
+                                            status=trajectory.status.value,
+                                            termination_reason=reason,
+                                        )
+                                    else:
+                                        run_state.mark_failed(
+                                            task_id,
+                                            trial_idx,
+                                            f"Retry limit reached after transient failure: {reason}",
+                                        )
+                                        self.state_manager.save_state(run_state)
+                                        self._events.trial_failed(
+                                            trial_id=f"{task_id}:{trial_idx}",
+                                            error=f"Retry limit reached after transient failure: {reason}",
+                                            retryable=True,
+                                        )
+                                        if budget is not None:
+                                            budget.record_trial_terminated()
+                                    self.logger.info(
+                                        "Trial failed (transient)",
+                                        task_id=task_id,
+                                        trial_index=trial_idx,
+                                        trial_cost_usd=trial_cost,
+                                        total_cost_usd=round(total_cost_usd, 6),
+                                    )
+                                else:
+                                    run_queue.mark_completed(lease.id, cost_usd=trial_cost)
+                                    # An ungraded trial records no verdict: a 0.0 here
+                                    # is indistinguishable from a task the agent failed.
+                                    run_state.mark_completed(
+                                        task_id,
+                                        trial_idx,
+                                        trajectory.grade.binary_pass if trajectory.grade else None,
+                                        trajectory.grade.score if trajectory.grade else None,
+                                    )
+                                    self.state_manager.save_state(run_state)
+
+                                    self._events.trial_completed(
+                                        trial_id=f"{task_id}:{trial_idx}",
+                                        binary_pass=(
+                                            trajectory.grade.binary_pass
+                                            if trajectory.grade
+                                            else None
+                                        ),
+                                        score=trajectory.grade.score if trajectory.grade else None,
+                                    )
+                                    if budget is not None:
+                                        budget.record_trial_terminated()
+
+                                    self.logger.info(
+                                        "Trial completed",
+                                        task_id=trajectory.task_id,
+                                        trial_index=trajectory.trial_index,
+                                        status=trajectory.status.value,
+                                        score=trajectory.grade.score if trajectory.grade else None,
+                                        trial_cost_usd=trial_cost,
+                                        total_cost_usd=round(total_cost_usd, 6),
+                                    )
+                            except Exception as e:
                                 should_retry = run_queue.mark_failed(
-                                    lease.id,
-                                    f"Retryable failure: {reason}",
-                                    retryable=True,
+                                    lease.id, str(e), retryable=True
+                                )
+                                self.logger.error(
+                                    "Trial execution exception",
+                                    task_id=task_id,
+                                    trial_index=trial_idx,
+                                    error=str(e),
+                                    will_retry=should_retry,
                                 )
                                 if should_retry:
                                     self._cleanup_runner_state_for_retry(
                                         runtime_backend, task_id, trial_idx
                                     )
-                                    self.logger.warning(
-                                        "Retrying trial after transient failure",
-                                        task_id=task_id,
-                                        trial_index=trial_idx,
-                                        retry_count_next=lease.retry_count + 1,
-                                        status=trajectory.status.value,
-                                        termination_reason=reason,
-                                    )
                                 else:
-                                    run_state.mark_failed(
-                                        task_id,
-                                        trial_idx,
-                                        f"Retry limit reached after transient failure: {reason}",
-                                    )
+                                    # Mark as failed only when retries are exhausted.
+                                    run_state.mark_failed(task_id, trial_idx, str(e))
                                     self.state_manager.save_state(run_state)
                                     self._events.trial_failed(
                                         trial_id=f"{task_id}:{trial_idx}",
-                                        error=f"Retry limit reached after transient failure: {reason}",
+                                        error=str(e),
                                         retryable=True,
                                     )
                                     if budget is not None:
                                         budget.record_trial_terminated()
-                                self.logger.info(
-                                    "Trial failed (transient)",
-                                    task_id=task_id,
-                                    trial_index=trial_idx,
-                                    trial_cost_usd=trial_cost,
-                                    total_cost_usd=round(total_cost_usd, 6),
-                                )
-                            else:
-                                run_queue.mark_completed(lease.id, cost_usd=trial_cost)
-                                # An ungraded trial records no verdict: a 0.0 here
-                                # is indistinguishable from a task the agent failed.
-                                run_state.mark_completed(
-                                    task_id,
-                                    trial_idx,
-                                    trajectory.grade.binary_pass if trajectory.grade else None,
-                                    trajectory.grade.score if trajectory.grade else None,
-                                )
-                                self.state_manager.save_state(run_state)
 
-                                self._events.trial_completed(
-                                    trial_id=f"{task_id}:{trial_idx}",
-                                    binary_pass=(
-                                        trajectory.grade.binary_pass if trajectory.grade else None
-                                    ),
-                                    score=trajectory.grade.score if trajectory.grade else None,
-                                )
-                                if budget is not None:
-                                    budget.record_trial_terminated()
+                            # Stop scheduling new work once any active budget cap is reached.
+                            if budget is not None and not budget_exhausted:
+                                hit = budget.poll()
+                                if hit is not None:
+                                    budget_exhausted = True
+                                    last_hit = hit
+                                    self._stopped_reason = f"{hit.which} limit"
+                                    write_limit_hit_marker(output_dir, hit)
+                                    self.logger.warning(
+                                        "Budget limit reached; no new trials will be scheduled",
+                                        limit_kind=hit.which,
+                                        threshold=hit.threshold,
+                                        value_at_hit=round(hit.value_at_hit, 6),
+                                        total_cost_usd=round(total_cost_usd, 6),
+                                        remaining_trials=run_queue.get_counts().get("pending", 0),
+                                    )
+                            if budget_exhausted:
+                                continue
 
-                                self.logger.info(
-                                    "Trial completed",
-                                    task_id=trajectory.task_id,
-                                    trial_index=trajectory.trial_index,
-                                    status=trajectory.status.value,
-                                    score=trajectory.grade.score if trajectory.grade else None,
-                                    trial_cost_usd=trial_cost,
-                                    total_cost_usd=round(total_cost_usd, 6),
-                                )
-                        except Exception as e:
-                            should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
-                            self.logger.error(
-                                "Trial execution exception",
-                                task_id=task_id,
-                                trial_index=trial_idx,
-                                error=str(e),
-                                will_retry=should_retry,
-                            )
-                            if should_retry:
-                                self._cleanup_runner_state_for_retry(
-                                    runtime_backend, task_id, trial_idx
-                                )
-                            else:
-                                # Mark as failed only when retries are exhausted.
-                                run_state.mark_failed(task_id, trial_idx, str(e))
-                                self.state_manager.save_state(run_state)
-                                self._events.trial_failed(
-                                    trial_id=f"{task_id}:{trial_idx}",
-                                    error=str(e),
-                                    retryable=True,
-                                )
-                                if budget is not None:
-                                    budget.record_trial_terminated()
+                            while (
+                                len(active_futures) < self.config.effective_workers and submit_one()
+                            ):
+                                pass
 
-                        # Stop scheduling new work once any active budget cap is reached.
-                        if budget is not None and not budget_exhausted:
-                            hit = budget.poll()
-                            if hit is not None:
-                                budget_exhausted = True
-                                last_hit = hit
-                                self._stopped_reason = f"{hit.which} limit"
-                                write_limit_hit_marker(output_dir, hit)
-                                self.logger.warning(
-                                    "Budget limit reached; no new trials will be scheduled",
-                                    limit_kind=hit.which,
-                                    threshold=hit.threshold,
-                                    value_at_hit=round(hit.value_at_hit, 6),
-                                    total_cost_usd=round(total_cost_usd, 6),
-                                    remaining_trials=run_queue.get_counts().get("pending", 0),
-                                )
-                        if budget_exhausted:
-                            continue
-
-                        while len(active_futures) < self.config.effective_workers and submit_one():
-                            pass
+                # A clean or budget-drained finish joins the in-flight work: the
+                # context manager does this (wait=True) on the single-box path;
+                # the hand-managed dispatch path joins here instead.
+                if dispatch_stop_cancel:
+                    executor.shutdown(wait=True)
+            except BaseException:
+                # A stop with work still in flight on a controllable dispatch run:
+                # cancel the active leases before the pool joins them, then tear
+                # the pool down without draining, so detached trials are cancelled
+                # rather than run to completion. The single-box path never enters
+                # here (its context manager has already joined on the way out).
+                if dispatch_stop_cancel and isinstance(
+                    dispatch_adapter, ControllableDispatchAdapter
+                ):
+                    self._cancel_active_dispatch_jobs(dispatch_adapter, active_futures.values())
+                    executor.shutdown(wait=False, cancel_futures=True)
+                raise
 
             counts = run_queue.get_counts()
             remaining = (
@@ -3665,11 +3832,6 @@ class Orchestrator:
                     threshold=last_hit.threshold if last_hit is not None else None,
                     total_cost_usd=round(total_cost_usd, 6),
                 )
-
-            # Cleanup runtime backend if used; SharedStackRuntimeBackend
-            # logs its own "Shared-stack runtime closed" line, no dup needed.
-            if runtime_backend:
-                runtime_backend.close()
 
             # Stop TypeSense BEFORE destroying the EngineStack.
             # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
@@ -3714,10 +3876,21 @@ class Orchestrator:
             self._events.run_finished(output_dir=resolved_output_dir)
             return resolved_output_dir
         finally:
+            # Release the run's execution substrate on every exit path, not only a
+            # clean finish: a mid-run failure must still close the runtime backend
+            # and the dispatch adapter. SharedStackRuntimeBackend logs its own
+            # "Shared-stack runtime closed" line, no dup needed; the local dispatch
+            # adapter's and spawning registry's close() are idempotent. In-flight
+            # dispatch leases are cancelled in the run loop's own stop handler,
+            # before the pool joins, so there is nothing left for teardown to stop.
+            if runtime_backend is not None:
+                runtime_backend.close()
+            if dispatch_adapter is not None:
+                dispatch_adapter.close()
             # Flush the live traces on every exit path (an exception or Ctrl-C included): the
             # export thread is a daemon and would otherwise die with the last batch unsent.
             self._finish_tracing(output_dir)
-            self._close_trial_graders()
+            self._close_trial_units()
 
     def _finish_tracing(self, output_dir: Path) -> None:
         """Flush and close the run's trial observer; the export receipt lands in the run
@@ -3739,28 +3912,57 @@ class Orchestrator:
         else:
             self.logger.info("Live tracing export complete", **summary)
 
-    def _close_trial_graders(self) -> None:
-        """Release every ``TrialGrader`` built during this orchestrator's
+    def _cancel_active_dispatch_jobs(
+        self, adapter: ControllableDispatchAdapter, leases: Iterable[AttemptLease]
+    ) -> None:
+        """Ask the dispatch backend to cancel every still-in-flight dispatch job.
+
+        Fired from the run loop's stop handler on an exception or
+        ``KeyboardInterrupt``, before the worker pool joins, so a detached
+        subprocess/remote trial is actually cancelled rather than drained to
+        completion. The budget path is not a stop: it drains the in-flight
+        futures first, so by the time a paused run reaches here nothing is in
+        flight to cancel. A backend that can stop a job does not keep it running
+        past the orchestrator. Each cancel is isolated: one failure logs and the
+        rest still run.
+
+        An adapter whose backend cannot stop a leased job answers ``cancel`` with
+        ``DispatchUnsupported``; that is the expected answer, not a fault, so it
+        is logged once at debug rather than a warning per in-flight lease.
+        """
+        for lease in leases:
+            try:
+                adapter.cancel(JobHandle(trial_id=f"{lease.task_id}:{lease.trial_index}"))
+            except DispatchUnsupported as exc:
+                self.logger.debug(
+                    "Dispatch backend cannot cancel an in-flight job; leaving it to finish",
+                    task_id=lease.task_id,
+                    trial_index=lease.trial_index,
+                    error=str(exc),
+                )
+            except Exception as exc:  # noqa: BLE001 — one job's cancel must not stop the others
+                self.logger.warning(
+                    "Cancelling the dispatched job failed; continuing",
+                    task_id=lease.task_id,
+                    trial_index=lease.trial_index,
+                    error=str(exc),
+                )
+
+    def _close_trial_units(self) -> None:
+        """Release every trial execution unit built during this orchestrator's
         lifetime, in reverse construction order.
 
         The queue transport owns a broker + a worker pool that must shut
         down before the process exits, and the ``grader_rpc`` transport
-        owns a gRPC channel. Every built-in Protocol implementation ships
-        a ``close()`` (a noop for the transport-less ones); a downstream
-        registered grader that lacks one is tolerated so an old
-        registration does not fail a new run at teardown.
+        owns a gRPC channel; closing a unit releases its grader's transport.
         """
-        while self._trial_graders_to_close:
-            grader = self._trial_graders_to_close.pop()
-            close = getattr(grader, "close", None)
-            if not callable(close):
-                continue
+        while self._trial_units_to_close:
+            unit = self._trial_units_to_close.pop()
             try:
-                close()
+                unit.close()
             except Exception as exc:  # noqa: BLE001 — teardown must survive
                 self.logger.warning(
-                    "Trial grader close() raised",
-                    grader=type(grader).__name__,
+                    "Trial execution unit close() raised",
                     error=str(exc),
                 )
 
@@ -3770,6 +3972,14 @@ class Orchestrator:
         This mode is intended for distributed execution where multiple worker
         processes lease from the same queue backend.
         """
+        if self._is_dispatch_run():
+            raise ValueError(
+                "orchestrator.dispatch (and the deprecated orchestrator.runtime='remote' alias) "
+                "is not supported in worker mode: each worker process builds its own dispatch "
+                "adapter and node registry, so workers would lease the same node and "
+                "over-subscribe it. Run the orchestrator as a single process."
+            )
+
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3859,14 +4069,11 @@ class Orchestrator:
             runner_url=env_endpoints.runner_url,
         )
 
-        conductor = self._build_conductor(
+        trial_unit = self._build_trial_unit(
             agent_client=agent_client,
             runtime_backend=runtime_backend,
             output_dir=output_dir,
             request_limiter=request_limiter,
-        )
-        trial_executor = self._build_trial_executor(
-            runtime_backend, conductor, output_dir=output_dir
         )
 
         task_by_id = {task.task_id: task for task in self.tasks}
@@ -3945,7 +4152,7 @@ class Orchestrator:
                         judge_config=judge_config,
                         env_endpoints=env_endpoints,
                     )
-                    trial_result = trial_executor.execute(spec, task)
+                    trial_result = trial_unit.execute(spec, task)
                     trajectory = trial_result.trajectory
                     self._record_attempt(trajectory)
                     trial_cost = self._trial_total_spend_usd(trajectory)
@@ -3998,7 +4205,7 @@ class Orchestrator:
             # teardown; each failure is logged rather than raised so the
             # outer flow still surfaces the original exception.
             self._finish_tracing(output_dir)
-            self._close_trial_graders()
+            self._close_trial_units()
 
         self._publish_grading_completeness()
         summary = {

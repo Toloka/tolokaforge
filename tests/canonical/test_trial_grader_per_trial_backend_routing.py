@@ -1,7 +1,7 @@
 """Regression lock: ``PerTrialRuntimeBackend`` + ``RunnerRPCTrialGrader``
 must produce a real :class:`Grade`, not a phantom-address gRPC error.
 
-Before this fix, ``orchestrator._build_conductor`` did
+Before this fix, ``orchestrator._build_trial_unit`` did
 ``runner_address = getattr(runtime_backend, "runner_address", None)`` and
 passed the resulting ``None`` into ``TrialGraderContext``. The
 ``runner_rpc`` factory then built a ``GrpcRunnerClient(runner_address="")``.
@@ -151,7 +151,7 @@ class TestPerTrialBackendRoutesThroughRunnerRPCGrader:
 
 
 class TestBuildConductorGatesRuntimeBackendOnAddress:
-    """``orchestrator._build_conductor`` populates ``TrialGraderContext.
+    """``orchestrator._build_trial_unit`` populates ``TrialGraderContext.
     runtime_backend`` ONLY when the backend has no static ``runner_address``.
     For shared-stack backends (which have one), the shim stays ``None`` so
     ADR-0038's "grader owns its own client, independent of the orchestrator"
@@ -169,7 +169,7 @@ class TestBuildConductorGatesRuntimeBackendOnAddress:
         ``backend_runner_address`` (``None`` means the attribute is
         missing entirely, mirroring ``PerTrialRuntimeBackend``); return
         the ``TrialGraderContext`` the orchestrator passed to
-        ``load_trial_grader``. Real ``_build_conductor``; real
+        ``load_trial_grader``. Real ``_build_trial_unit``; real
         ``runner_rpc_trial_grader_factory`` swapped for a capturing shim."""
         from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
         from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
@@ -186,7 +186,7 @@ class TestBuildConductorGatesRuntimeBackendOnAddress:
             return _Stub()
 
         monkeypatch.setattr(
-            "tolokaforge.core.orchestrator.load_trial_grader",
+            "tolokaforge.core.trial_node.load_trial_grader",
             lambda name: _capturing_factory,
         )
 
@@ -220,7 +220,7 @@ class TestBuildConductorGatesRuntimeBackendOnAddress:
         orch.adapter = MagicMock()
         orch.adapter.trial_grader_name = "runner_rpc"
 
-        orch._build_conductor(
+        orch._build_trial_unit(
             agent_client=MagicMock(),
             runtime_backend=backend,
             output_dir=tmp_path,
