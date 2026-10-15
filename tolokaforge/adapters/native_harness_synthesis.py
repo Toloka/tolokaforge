@@ -316,7 +316,15 @@ def _db_service_body(db_service_image: str) -> dict[str, Any]:
         "image": db_service_image,
         "ports": ["8000"],
         "healthcheck": {
-            "test": ["CMD-SHELL", "curl -fs http://localhost:8000/health || exit 1"],
+            # Probed with the stdlib, not curl: the db-service image is a
+            # python slim base and carries no curl layer, so a curl probe can
+            # only ever report the service unhealthy.
+            "test": [
+                "CMD",
+                "python",
+                "-c",
+                "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+            ],
             "interval": "2s",
             "timeout": "3s",
             "retries": 30,
