@@ -74,7 +74,11 @@ def test_the_client_aliases_the_wire_and_restores_the_result() -> None:
         Message(
             role=MessageRole.ASSISTANT, tool_calls=[ToolCall(id="c1", name=LONG, arguments={})]
         ),
-        Message(role=MessageRole.TOOL, content="{}", tool_call_id="c1"),
+        Message(
+            role=MessageRole.TOOL,
+            content=f"Error: Invalid arguments for tool '{LONG}'",
+            tool_call_id="c1",
+        ),
     ]
     client = ToolNameAliasingClient(inner, tool_name_aliases(tools, CATEGORY, 64))
 
@@ -83,11 +87,14 @@ def test_the_client_aliases_the_wire_and_restores_the_result() -> None:
     assert [t["function"]["name"] for t in inner.seen["tools"]] == [SHORT, FITS]
     assert inner.seen["tools"][1] is tools[1]
     assert inner.seen["messages"][1].tool_calls[0].name == SHORT
+    assert inner.seen["messages"][2].content == f"Error: Invalid arguments for tool '{SHORT}'"
+    assert inner.seen["messages"][0] is history[0]
     assert [call.name for call in result.tool_calls] == [LONG, FITS]
     assert result.tool_calls[0].arguments == {"x": 1}
     # The loop's own records are never rewritten.
     assert tools[0]["function"]["name"] == LONG
     assert history[1].tool_calls[0].name == LONG
+    assert LONG in history[2].content
 
 
 def test_the_limit_is_off_by_default() -> None:
