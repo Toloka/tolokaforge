@@ -506,6 +506,32 @@ def test_db_probe_connection_error_fails_loud():
     assert "ConnectionError" in (reasons or "")
 
 
+def test_db_probe_substrate_unreachable_propagates_not_laundered_to_fail():
+    """A substrate that cannot reach its state source at all must propagate,
+    not be swallowed into a per-probe FAIL line (which would score 0.0).
+
+    The offline snapshot substrate refuses ``db_probe`` with
+    :class:`SubstrateUnreachableError`; the backend re-raises it so the trial
+    is booked ungradeable rather than scored a real zero."""
+    from tolokaforge.core.grading.substrate import SubstrateUnreachableError
+
+    backend = DbProbesStateCheckBackend()
+    substrate = _StubProbeSubstrate(
+        raises=SubstrateUnreachableError("snapshot substrate cannot serve db_probes offline")
+    )
+    probes = [
+        {
+            "name": "ca_exists",
+            "dsn": "postgresql://grader@app-db/mfg",
+            "query": "SELECT 1",
+            "expect": [{"path": "$.row_count", "equals": 1}],
+            "description": "corrective action recorded",
+        }
+    ]
+    with pytest.raises(SubstrateUnreachableError, match="cannot serve db_probes offline"):
+        backend.query(expression=probes, substrate=substrate)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(("hash_score", "expected"), [(1.0, (1.0, True)), (0.0, (0.0, False))])
 def test_combine_components_uses_a_lone_hash_verdict_as_state_checks(hash_score, expected):
     """The golden-replay pack with no assertion set: the hash verdict *is* the component.

@@ -32,6 +32,7 @@ from tolokaforge.core.grading.jsonpath_evaluators import (
     evaluate_jsonpath_state_checks,
 )
 from tolokaforge.core.grading.state_check_backend import StateCheckBackend
+from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
 
 if TYPE_CHECKING:
@@ -126,12 +127,17 @@ class DbProbesStateCheckBackend:
     :func:`~tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_state_checks`.
 
     A probe passes iff every ``expect`` assertion passes (JSONPath score
-    1.0); the component score is the fraction of passing probes. A
-    ``substrate.db_probe`` failure — asyncpg connection error, gRPC
-    ``SubstrateUnreachableError``, anything the substrate raises — is
-    caught per-probe and reported as a ``FAIL`` line naming the exception,
-    matching the shipped fail-loud contract locked by
+    1.0); the component score is the fraction of passing probes. A genuine
+    per-probe query failure — asyncpg connection error, a bad query, a row
+    the substrate could read but could not shape — is caught and reported as
+    a ``FAIL`` line naming the exception, matching the shipped fail-loud
+    contract locked by
     ``tests/unit/test_runner_jsonpath_grading.py::test_db_probe_connection_error_fails_loud``.
+    A :class:`~tolokaforge.core.grading.substrate.SubstrateUnreachableError`
+    is the exception: it means the substrate cannot reach its state source at
+    all (the offline snapshot substrate refuses ``db_probe`` this way), so it
+    propagates rather than being laundered into a ``FAIL`` line that scores
+    0.0 — the trial is booked ungradeable instead.
     Empty probe list returns the ``(None, None)`` sentinel every backend
     ships for "nothing to score".
     """
@@ -154,6 +160,12 @@ class DbProbesStateCheckBackend:
             expect = probe.get("expect", []) or []
             try:
                 rows = substrate.db_probe(probe.get("dsn", ""), probe.get("query", ""))
+            except SubstrateUnreachableError:
+                # The substrate cannot reach its state source at all — the grader
+                # could not read the inputs it needs. Propagate so the trial is
+                # booked ungradeable; swallowing it into a FAIL line would launder
+                # an unreachable substrate to a real score of 0.0.
+                raise
             except Exception as exc:
                 reasons_parts.append(
                     f"FAIL: probe {name!r} could not query postgres: "
