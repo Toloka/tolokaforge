@@ -2286,16 +2286,17 @@ The `content` a `role=tool` message carries into the next prompt is capped
 along three axes and the tighter set candidate wins. Ordered narrowest-first
 by scope:
 
-- `tools.<actor>.<tool_name>.output_max_chars: int | None` is the task-yaml
+- `tools.agent.<tool_name>.output_max_chars: int | None` is the task-yaml
   override — a pack author's per-tool cap on the tool as used in this pack.
   Reserved sibling to the block's per-tool init kwargs. A
-  `tools.<actor>.output_max_chars` sibling of `enabled` is the actor-wide
+  `tools.agent.output_max_chars` sibling of `enabled` is the actor-wide
   default for every tool the block enables, MCP-server tools included; a
   per-tool key replaces it for that tool, and a per-tool `null` leaves the
   tool with no task-side cap. Both are positive ints or `null`, else the
   loader rejects them at authoring time. Only the agent's block takes
-  effect: the engine reads the caps off the agent's slice of the registered
-  schemas, so a user-side cap never lands on a same-named agent tool. See
+  them: the user simulator's tool results are not capped, so the loader
+  refuses `output_max_chars` anywhere under `tools.user`, and the engine
+  reads the caps off the agent's slice of the registered schemas. See
   [TASKS.md § Capping tool output](TASKS.md#capping-tool-output).
 - `ToolPolicy.output_max_chars: int | None` is the per-tool declared bound
   a tool sets on its own output — a status poll that always returns ≤512

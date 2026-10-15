@@ -750,6 +750,58 @@ def test_an_actor_wide_cap_that_is_not_a_positive_int_is_refused(tmp_path: Path,
 
 
 # ---------------------------------------------------------------------------
+# tools.user — output_max_chars refused: the user's tool results are never cut
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("user_block", "named_path"),
+    [
+        ({"enabled": ["lookup"], "output_max_chars": 5000}, r"tools\.user\.output_max_chars"),
+        (
+            {"enabled": ["lookup"], "lookup": {"output_max_chars": 5000}},
+            r"tools\.user\.lookup\.output_max_chars",
+        ),
+        (
+            {"enabled": ["lookup"], "lookup": {"output_max_chars": None}},
+            r"tools\.user\.lookup\.output_max_chars",
+        ),
+    ],
+    ids=["actor_wide", "per_tool", "per_tool_null"],
+)
+def test_a_cap_in_the_users_block_is_refused(user_block: dict, named_path: str):
+    from tolokaforge.core.models.task_config import ToolsConfig
+
+    with pytest.raises(ValueError, match=named_path):
+        ToolsConfig(user=user_block)
+
+
+def test_a_cap_in_the_users_task_defaults_is_refused_when_the_task_loads(tmp_path: Path):
+    base_dir = _mcp_task_dir(tmp_path, {})
+
+    with pytest.raises(ValueError, match=r"tools\.user\.output_max_chars"):
+        load_task_yaml(
+            base_dir / "mcp_cap_task" / "task.yaml",
+            project_task_defaults={"tools": {"user": {"enabled": [], "output_max_chars": 5000}}},
+        )
+
+
+def test_the_agents_block_still_takes_caps():
+    from tolokaforge.core.models.task_config import ToolsConfig
+
+    tools = ToolsConfig(
+        agent={
+            "enabled": ["lookup"],
+            "output_max_chars": 5000,
+            "lookup": {"output_max_chars": None},
+        },
+        user={"enabled": ["lookup"], "lookup": {"some_kwarg": 1}},
+    )
+
+    assert tools.agent["output_max_chars"] == 5000
+
+
+# ---------------------------------------------------------------------------
 # ToolPolicy.timeout_s — adapter bridge
 # ---------------------------------------------------------------------------
 
