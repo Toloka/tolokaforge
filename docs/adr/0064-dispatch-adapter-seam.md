@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-14
+- **Amended:** 2026-10-15
 - **Deciders:** @CiroGamboa
 - **Supersedes:** none
 - **Superseded by:** none
@@ -29,9 +30,10 @@ dispatching jobs.
 
 ## Decision Drivers
 
-- **One orchestrator, many places to run.** The orchestrator stays a lean,
-  centralized job scheduler; execution, scaling and durability belong to the
-  backend that runs the job.
+- **One orchestrator, many places to run.** The orchestrator is the **unified
+  control plane** — the single interface to operate the system in tolokaforge's
+  own vocabulary (launch, stop, see status, collect results); execution, scaling
+  and durability belong to the backend that runs the job.
 - **Backend-agnostic.** Open-source users must be able to adapt tolokaforge to
   their own runtime, so no single execution system is wired into core.
 - **Two axes, kept apart.** Dispatch and substrate vary independently.
@@ -61,6 +63,18 @@ We adopt **option 3**.
 is not a `RuntimeBackend`: it implements none of the substrate lifecycle and
 `TrialOwningBackend` is replaced by it.
 
+`run_trial_node` is the synchronous submit-and-await convenience every adapter
+has. A sibling `ControllableDispatchAdapter` Protocol adds the control-plane
+operations the orchestrator needs to operate a job after it is submitted —
+id-keyed `cancel` / `status` / `fetch_result` over a `JobHandle`. Status reuses
+the run-queue state vocabulary (`JobState`), results reuse `TrialResult`, and
+collection ties to the offline bundle. The operations are a separate Protocol,
+not extra methods on `DispatchAdapter`, so a third-party three-method adapter
+keeps conforming unchanged. Implementation status: `local` is real for status
+and pre-start cancel, plus a process kill for a subprocess worker, and
+best-effort otherwise; `grpc_node` carries honest stubs — a one-RPC node exposes
+no control plane; an external distributed backend implements them fully.
+
 **A dispatch-neutral vocabulary.** Adapters raise three exceptions that name no
 transport:
 
@@ -69,6 +83,9 @@ transport:
 - `DispatchTransient` — an infrastructure fault; raised, and retried by the
   orchestrator.
 - `DispatchProvisionError` — the backend could not place or start the job.
+- `DispatchUnsupported` — the honest "this backend can't do that" refusal for a
+  control operation it cannot serve. A `DispatchRefused` subclass, so it travels
+  the existing non-retryable path unchanged.
 
 **Selection.** A new `orchestrator.dispatch` config block names the adapter and
 its options. When the block is absent the run takes the existing single-box
@@ -85,8 +102,9 @@ deprecated alias for the `grpc_node` adapter.
   the job over `RunTrial`, release the lease.
 - an **external distributed backend** adapter is designed for and built outside
   core as a separate project or plugin wheel. A job maps to the backend's unit of
-  work, a job category maps to one of its work queues, and durability, scaling and
-  cancellation come from the backend. Tolokaforge core never imports it.
+  work, a job category maps to one of its work queues, and durability, scaling,
+  cancellation, status and result collection come from the backend. Tolokaforge
+  core never imports it.
 
 The distributed backend owns execution, scaling and durability; tolokaforge does
 not build a node fleet of its own.
@@ -103,9 +121,17 @@ Settled for now; revisit as the model matures:
   wheel — is finalised when it is built.
 - Trial-unit parity gaps (the refusals listed in ADR-0063) ship incrementally so
   the job covers every scenario.
+- Commands over data sources and fleet operations stay direction-only for now.
+- CLI `stop` / `status` / `results` verbs over the control plane are a follow-up.
+- Wiring the run-queue `cancelled` terminal state through to the control-plane
+  cancel path is a follow-up.
 
 ## Consequences
 
+- The orchestrator is now the unified control interface: one TF-vocabulary
+  surface to launch, stop, see status and collect results, over any backend.
+- The control operations are an optional sibling Protocol, so a third-party
+  `DispatchAdapter` that implements only the three-method contract keeps working.
 - Backend-agnostic and extensible: other runtimes plug in through an entry-point
   group, in or out of tree.
 - Native, Harbor and Inspect runs executed through tolokaforge share one
