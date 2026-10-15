@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from tests.canonical._docker_compose_stubs import InertDockerCompose
-from tolokaforge.core.compose_materialisation import inject_state_read_timeout_env_into_runner
+from tolokaforge.core.compose_materialisation import inject_runner_limits_env_into_runner
 from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
 from tolokaforge.core.docker_compose_materialiser import (
     DockerComposeMaterialiser,
@@ -45,6 +45,7 @@ from tolokaforge.core.shared_stack_runtime import (
 from tolokaforge.core.trial import EnvironmentManifest
 from tolokaforge.docker.stacks.core import core_stack
 from tolokaforge.docker.stacks.full import full_stack
+from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB, MAX_MESSAGE_ENV_VAR
 from tolokaforge.runner.state_read_limits import (
     DEFAULT_STATE_READ_TIMEOUT_S,
     STATE_READ_TIMEOUT_ENV_VAR,
@@ -116,20 +117,33 @@ def test_built_in_stack_refuses_a_non_positive_bound() -> None:
 # ---------------------------------------------------------------------------
 
 
-class TestInjectStateReadTimeoutEnvIntoRunner:
+def _inject(compose_file: Path, runner_service: str, state_read_timeout_s: float) -> None:
+    inject_runner_limits_env_into_runner(
+        compose_file,
+        runner_service,
+        grpc_max_message_mb=DEFAULT_MAX_MESSAGE_MB,
+        state_read_timeout_s=state_read_timeout_s,
+    )
+
+
+class TestInjectRunnerLimitsEnvIntoRunner:
     def test_mapping_environment_gains_the_variable(self, tmp_path: Path) -> None:
         compose_file = _write_compose(tmp_path, {"DB_SERVICE_URL": "http://db:8000"})
 
-        inject_state_read_timeout_env_into_runner(compose_file, _RUNNER_SERVICE, _CONFIGURED_S)
+        _inject(compose_file, _RUNNER_SERVICE, _CONFIGURED_S)
 
         env = _service_env(compose_file, _RUNNER_SERVICE)
-        assert env == {"DB_SERVICE_URL": "http://db:8000", STATE_READ_TIMEOUT_ENV_VAR: "180.0"}
+        assert env == {
+            "DB_SERVICE_URL": "http://db:8000",
+            MAX_MESSAGE_ENV_VAR: str(DEFAULT_MAX_MESSAGE_MB),
+            STATE_READ_TIMEOUT_ENV_VAR: "180.0",
+        }
         assert _service_env(compose_file, "db") is None
 
     def test_list_environment_gains_the_variable(self, tmp_path: Path) -> None:
         compose_file = _write_compose(tmp_path, ["DB_SERVICE_URL=http://db:8000"])
 
-        inject_state_read_timeout_env_into_runner(compose_file, _RUNNER_SERVICE, _CONFIGURED_S)
+        _inject(compose_file, _RUNNER_SERVICE, _CONFIGURED_S)
 
         env = _service_env(compose_file, _RUNNER_SERVICE)
         assert "DB_SERVICE_URL=http://db:8000" in env
@@ -146,9 +160,22 @@ class TestInjectStateReadTimeoutEnvIntoRunner:
     )
     def test_a_compose_declaring_its_own_value_keeps_it(self, tmp_path: Path, declared) -> None:
         compose_file = _write_compose(tmp_path, declared)
+
+        _inject(compose_file, _RUNNER_SERVICE, _CONFIGURED_S)
+
+        env = _service_env(compose_file, _RUNNER_SERVICE)
+        if isinstance(declared, dict):
+            assert env[STATE_READ_TIMEOUT_ENV_VAR] == "600"
+        else:
+            assert [e for e in env if e.split("=", 1)[0] == STATE_READ_TIMEOUT_ENV_VAR] == declared
+
+    def test_a_compose_declaring_both_variables_is_left_untouched(self, tmp_path: Path) -> None:
+        compose_file = _write_compose(
+            tmp_path, {STATE_READ_TIMEOUT_ENV_VAR: "600", MAX_MESSAGE_ENV_VAR: "300"}
+        )
         before = compose_file.read_text()
 
-        inject_state_read_timeout_env_into_runner(compose_file, _RUNNER_SERVICE, _CONFIGURED_S)
+        _inject(compose_file, _RUNNER_SERVICE, _CONFIGURED_S)
 
         assert compose_file.read_text() == before
 
@@ -156,13 +183,13 @@ class TestInjectStateReadTimeoutEnvIntoRunner:
         compose_file = _write_compose(tmp_path)
 
         with pytest.raises(ValueError, match="'worker'"):
-            inject_state_read_timeout_env_into_runner(compose_file, "worker", _CONFIGURED_S)
+            _inject(compose_file, "worker", _CONFIGURED_S)
 
     def test_a_non_positive_bound_is_refused(self, tmp_path: Path) -> None:
         compose_file = _write_compose(tmp_path)
 
         with pytest.raises(ValueError):
-            inject_state_read_timeout_env_into_runner(compose_file, _RUNNER_SERVICE, -1.0)
+            _inject(compose_file, _RUNNER_SERVICE, -1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -297,3 +324,4 @@ class TestOrchestrator:
         orch = _orchestrator(None)
 
         assert orch._state_read_timeout_s() == DEFAULT_STATE_READ_TIMEOUT_S
+

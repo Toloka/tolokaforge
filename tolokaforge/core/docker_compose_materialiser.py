@@ -51,9 +51,8 @@ from tolokaforge.core.compose_materialisation import (
     cleanup_partial_materialisation,
     compose_container_to_snapshot,
     copy_compose_context,
-    inject_grpc_limit_env_into_runner,
     inject_runner_credentials,
-    inject_state_read_timeout_env_into_runner,
+    inject_runner_limits_env_into_runner,
     inject_substrate_env_into_runner,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
@@ -157,11 +156,11 @@ class DockerComposeMaterialiser:
                     mount_docker_socket_into_runner(compose_file, decl.runner_service)
                 if ctx.expose_substrate:
                     inject_substrate_env_into_runner(compose_file, decl.runner_service)
-                inject_grpc_limit_env_into_runner(
-                    compose_file, decl.runner_service, ctx.grpc_max_message_mb
-                )
-                inject_state_read_timeout_env_into_runner(
-                    compose_file, decl.runner_service, ctx.state_read_timeout_s
+                inject_runner_limits_env_into_runner(
+                    compose_file,
+                    decl.runner_service,
+                    grpc_max_message_mb=ctx.grpc_max_message_mb,
+                    state_read_timeout_s=ctx.state_read_timeout_s,
                 )
             compose = self.docker_compose_factory(
                 context=str(temp_dir),

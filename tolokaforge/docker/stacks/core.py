@@ -17,22 +17,15 @@ from pathlib import Path
 from typing import Literal
 
 from tolokaforge.core.models.docker_config import DockerConfig
+from tolokaforge.core.runner_limits_env import runner_limits_env
 from tolokaforge.docker.builder import get_image_definition
 from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.policy import Capability, ResourcePolicy
 from tolokaforge.docker.ports import PortConfig
 from tolokaforge.docker.stack import EngineStack, ServiceDefinition
-from tolokaforge.runner.grpc_limits import (
-    DEFAULT_MAX_MESSAGE_MB,
-    MAX_MESSAGE_ENV_VAR,
-    validate_max_message_mb,
-)
-from tolokaforge.runner.state_read_limits import (
-    DEFAULT_STATE_READ_TIMEOUT_S,
-    STATE_READ_TIMEOUT_ENV_VAR,
-    validate_state_read_timeout_s,
-)
+from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
+from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 from tolokaforge.secrets import container_secrets_env
 
 
@@ -166,8 +159,10 @@ def core_stack(
     runner_env = {
         "PYTHONUNBUFFERED": "1",
         "DB_SERVICE_URL": "http://tolokaforge-db-service:8000",
-        MAX_MESSAGE_ENV_VAR: str(validate_max_message_mb(grpc_max_message_mb)),
-        STATE_READ_TIMEOUT_ENV_VAR: repr(validate_state_read_timeout_s(state_read_timeout_s)),
+        **runner_limits_env(
+            grpc_max_message_mb=grpc_max_message_mb,
+            state_read_timeout_s=state_read_timeout_s,
+        ),
     }
     # Inject RAG_SERVICE_URL only when a rag-service is actually provisioned
     # (full stack). Absent on the core stack so the runner builds no RAG
