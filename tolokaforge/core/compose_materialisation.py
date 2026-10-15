@@ -47,6 +47,10 @@ from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
 from tolokaforge.runner.compose_naming import compose_trial_slug
 from tolokaforge.runner.grpc_limits import MAX_MESSAGE_ENV_VAR, validate_max_message_mb
 from tolokaforge.runner.models import bind_mount_source
+from tolokaforge.runner.state_read_limits import (
+    STATE_READ_TIMEOUT_ENV_VAR,
+    validate_state_read_timeout_s,
+)
 from tolokaforge.secrets import (
     CONTAINER_SECRETS_ENV_VAR,
     compose_escaped,
@@ -523,6 +527,26 @@ def inject_grpc_limit_env_into_runner(
         runner_service,
         MAX_MESSAGE_ENV_VAR,
         str(validate_max_message_mb(max_message_mb)),
+    )
+
+
+def inject_state_read_timeout_env_into_runner(
+    compose_file: Path, runner_service: str, state_read_timeout_s: float
+) -> None:
+    """Set ``TOLOKAFORGE_STATE_READ_TIMEOUT_S`` on ``runner_service`` in place.
+
+    The built-in shared stack's ``core_stack`` factory sets the variable on
+    the engine-owned runner from ``compute.state_read_timeout_s``; a
+    task-declared runner gets the same value here. A compose file that
+    declares the variable itself keeps its own value. Raises ``ValueError``
+    when ``runner_service`` is not declared, like
+    :func:`inject_substrate_env_into_runner`.
+    """
+    _set_runner_env_unless_declared(
+        compose_file,
+        runner_service,
+        STATE_READ_TIMEOUT_ENV_VAR,
+        repr(validate_state_read_timeout_s(state_read_timeout_s)),
     )
 
 

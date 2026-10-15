@@ -882,19 +882,20 @@ class MCPServerToolWrapper(ToolWrapper):
         )
         state_changed = False
         try:
-            server = self._get_server()
-
             # MCP tool call format
             params = {
                 "name": self.name,
                 "arguments": arguments,
             }
 
-            # Run in thread pool to avoid blocking
+            # Run in thread pool to avoid blocking — the server's start too: the
+            # first contact spawns it and waits out its ``initialize`` answer,
+            # which a server loading a large world gives late, and the event loop
+            # serves every trial's calls and state reads meanwhile.
             loop = asyncio.get_event_loop()
             try:
                 result = await loop.run_in_executor(
-                    None, lambda: server.send_request("tools/call", params)
+                    None, lambda: self._get_server().send_request("tools/call", params)
                 )
             except MCPProtocolError as refusal:
                 if refusal.code != JSONRPC_INVALID_PARAMS:

@@ -22,6 +22,7 @@ from tolokaforge.runner.grpc_limits import (
     MAX_MESSAGE_MB_CEILING,
     MAX_MESSAGE_MB_FLOOR,
 )
+from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.bundle_store import BundleStore
@@ -831,6 +832,22 @@ class ComputeConfig(BaseModel):
     upper bound is gRPC's signed 32-bit byte limit. Memory per call grows with
     the message, since each side holds several copies of it while
     (de)serialising."""
+
+    state_read_timeout_s: float = Field(
+        default=DEFAULT_STATE_READ_TIMEOUT_S, gt=0.0, allow_inf_nan=False, strict=True
+    )
+    """Longest time, in seconds, the runner waits for one read of a trial's live
+    state from the process holding it — an MCP server subprocess, or an app
+    world service. The runner reads it whenever the trial's DB mirror must
+    follow it: ``GetState`` (the engine's final-state capture among its
+    callers), ``GradeTrial``, the grader's substrate reads and the judge's DB
+    tools. A holder that has not answered by then fails the read, and the trial
+    is left ungraded, with an error naming this setting. Raise it for a state
+    holder that is slow to answer — e.g. one that loads a large world on first
+    contact. Every runner deadline waiting on such a read grows with it. The
+    engine passes it to every runner container it starts as
+    ``TOLOKAFORGE_STATE_READ_TIMEOUT_S``; a separately deployed runner sets
+    that variable itself."""
 
     capabilities: list[Any] = Field(default_factory=list)
     """Backend-capability declarations. Each entry is either a bare

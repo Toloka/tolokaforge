@@ -4,7 +4,8 @@ compose-transform primitives.
 The materialiser wraps a fixed sequence of compose-file transforms
 (``copy_compose_context``, ``apply_network_policy_to_compose_file``,
 ``inject_runner_credentials``, ``mount_docker_socket_into_runner``,
-``inject_grpc_limit_env_into_runner``, ``write_compose_env_file``) plus a ``testcontainers.compose.DockerCompose``
+``inject_grpc_limit_env_into_runner``, ``inject_state_read_timeout_env_into_runner``,
+``write_compose_env_file``) plus a ``testcontainers.compose.DockerCompose``
 driver call. This test drives both:
 
 - **Flow A** — run-scope shape (network-policy + credential injection,
@@ -41,6 +42,7 @@ from tolokaforge.core.compose_materialisation import (
     copy_compose_context,
     inject_grpc_limit_env_into_runner,
     inject_runner_credentials,
+    inject_state_read_timeout_env_into_runner,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
     write_compose_env_file,
@@ -54,6 +56,7 @@ from tolokaforge.core.run_display_events import _NULL_EVENTS
 from tolokaforge.core.trial import NetworkPolicy
 from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
 from tolokaforge.runner.models import StackDecl
+from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 
 pytestmark = pytest.mark.canonical
 
@@ -82,6 +85,9 @@ def _run_baseline_flow_a(dest_dir: Path) -> tuple[bytes, InertDockerCompose]:
     )
     inject_runner_credentials(compose_file, _FIXTURE_RUNNER_SERVICE)
     inject_grpc_limit_env_into_runner(compose_file, _FIXTURE_RUNNER_SERVICE, DEFAULT_MAX_MESSAGE_MB)
+    inject_state_read_timeout_env_into_runner(
+        compose_file, _FIXTURE_RUNNER_SERVICE, DEFAULT_STATE_READ_TIMEOUT_S
+    )
     stub = InertDockerCompose(
         context=str(dest_dir),
         compose_file_name=_FIXTURE.name,
@@ -113,6 +119,9 @@ def _run_baseline_flow_b(dest_dir: Path, trial_id: str) -> tuple[bytes, InertDoc
     inject_runner_credentials(compose_file, _FIXTURE_RUNNER_SERVICE)
     mount_docker_socket_into_runner(compose_file, _FIXTURE_RUNNER_SERVICE)
     inject_grpc_limit_env_into_runner(compose_file, _FIXTURE_RUNNER_SERVICE, DEFAULT_MAX_MESSAGE_MB)
+    inject_state_read_timeout_env_into_runner(
+        compose_file, _FIXTURE_RUNNER_SERVICE, DEFAULT_STATE_READ_TIMEOUT_S
+    )
     stub = InertDockerCompose(
         context=str(dest_dir),
         compose_file_name=_FIXTURE.name,

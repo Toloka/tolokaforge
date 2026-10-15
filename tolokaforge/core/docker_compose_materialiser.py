@@ -15,8 +15,9 @@ structurally. Each :meth:`materialise` call:
    docker socket into the runner when the run needs compose-variant
    tools, sets ``RUNNER_EXPOSE_SUBSTRATE=true`` on the runner when
    the run exposes the grading substrate, and sets
-   ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` on the runner from the run's
-   ``compute.grpc_max_message_mb`` unless the compose file declares it.
+   ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` and ``TOLOKAFORGE_STATE_READ_TIMEOUT_S``
+   on the runner from the run's ``compute.grpc_max_message_mb`` and
+   ``compute.state_read_timeout_s`` unless the compose file declares them.
 3. Constructs a ``testcontainers.compose.DockerCompose`` via the
    injectable :attr:`DockerComposeMaterialiser.docker_compose_factory`
    seam (defaults to the real class; tests substitute a stub) and
@@ -52,6 +53,7 @@ from tolokaforge.core.compose_materialisation import (
     copy_compose_context,
     inject_grpc_limit_env_into_runner,
     inject_runner_credentials,
+    inject_state_read_timeout_env_into_runner,
     inject_substrate_env_into_runner,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
@@ -157,6 +159,9 @@ class DockerComposeMaterialiser:
                     inject_substrate_env_into_runner(compose_file, decl.runner_service)
                 inject_grpc_limit_env_into_runner(
                     compose_file, decl.runner_service, ctx.grpc_max_message_mb
+                )
+                inject_state_read_timeout_env_into_runner(
+                    compose_file, decl.runner_service, ctx.state_read_timeout_s
                 )
             compose = self.docker_compose_factory(
                 context=str(temp_dir),

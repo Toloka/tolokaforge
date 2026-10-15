@@ -142,6 +142,7 @@ from tolokaforge.core.search.backend import (
 )
 from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
 from tolokaforge.runner.models import SearchPlane
+from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 
 if TYPE_CHECKING:
     from importlib.metadata import EntryPoint
@@ -435,6 +436,11 @@ class RuntimeBackendBuildContext:
     Bounds every gRPC channel the backend opens to a runner and is injected
     as ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` into every runner container the
     backend materialises, so both ends of the channel share one limit."""
+    state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
+    """Set by the orchestrator from ``RunConfig.compute.state_read_timeout_s``.
+    Injected as ``TOLOKAFORGE_STATE_READ_TIMEOUT_S`` into every runner container
+    the backend materialises: the runner's bound on one read of a state holder's
+    live state."""
 
 
 @dataclass(frozen=True)

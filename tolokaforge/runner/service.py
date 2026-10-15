@@ -190,6 +190,10 @@ from tolokaforge.runner.search_plane import (
     resolve_search_plane,
     resolve_typesense_binding,
 )
+from tolokaforge.runner.state_read_limits import (
+    DEFAULT_STATE_READ_TIMEOUT_S,
+    StateReadDeadlines,
+)
 from tolokaforge.runner.tool_factory import (
     INVALID_ARGUMENTS_CATEGORY,
     MCPServerToolWrapper,
@@ -217,16 +221,6 @@ AGENT_WORK_DIR = "/work"
 # winner is scheduler noise — and an outer win reports a genuine timeout as ERROR.
 _TOOL_TIMEOUT_SLACK_S = 5.0
 
-# Bound on one grading read through the judge's DB tools (``get_db_state`` /
-# ``query_db``), the read a judge waits on mid-loop.
-_JUDGE_DB_READ_TIMEOUT_S = 30.0
-
-# Bound on reading an MCP subprocess's live state for a mirror sync. A child that
-# hangs instead of dying would otherwise stall every final-state read for as long
-# as the reader waits; it stays inside the judge's read bound so the reader sees
-# the sync's own cause rather than its own timeout.
-_MCP_STATE_READ_TIMEOUT_S = 20.0
-
 # The documented read-only mcp_core TypeSense KB connector the agent uses. The
 # judge is allowed to reuse this ONE reconstructed tool (read-only passthrough)
 # so it reads the same corpus the agent did. It is a closed (mcp_core) tool, not
@@ -235,6 +229,11 @@ _MCP_STATE_READ_TIMEOUT_S = 20.0
 # judge's "harness-owned allowlist" rule (no generic MCP-tool passthrough — we
 # cannot classify arbitrary MCP tools' read-only-ness).
 _SEARCH_POLICY_TOOL_NAME = "search_policy"
+
+
+def _holder_kind(holder: AppWorldClient | MCPServerToolWrapper) -> str:
+    """What a state holder is called in an error about it."""
+    return "app world" if isinstance(holder, AppWorldClient) else "MCP server"
 
 
 def _tool_registered_for_trial(name: str, registered: Collection[str]) -> str | None:
@@ -841,6 +840,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         db_client: DBServiceClient,
         rag_client: RAGServiceClient | None = None,
         check_executor: CheckExecutor | None = None,
+        *,
+        state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S,
     ):
         """
         Initialize the Runner service.
@@ -852,9 +853,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 the ``check_runner`` entry point of
                 ``tolokaforge.custom_check_executors``; tests inject
                 :class:`InMemoryCheckExecutor`.
+            state_read_timeout_s: Bound on one read of a state holder's live
+                state — the engine's ``compute.state_read_timeout_s``. Every
+                deadline waiting on such a read derives from it
+                (:class:`StateReadDeadlines`).
         """
         self.db_client = db_client
         self.rag_client = rag_client
+        self.state_read_deadlines = StateReadDeadlines(holder_read_s=state_read_timeout_s)
         self.check_executor: CheckExecutor = (
             check_executor
             if check_executor is not None
@@ -1871,12 +1877,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Trial '{trial_id}' not found",
             )
 
-        # Run async grading on dedicated event loop thread. The 600s budget (up
-        # from 300s) accommodates the runner-side rubric judge, which runs its own
-        # multi-turn LLM loop; the judge has its own internal max_turns + wall-time
-        # budget and fails loud well within this outer ceiling.
+        # Run async grading on dedicated event loop thread. The budget (600s at the
+        # default state read bound) accommodates the runner-side rubric judge, which
+        # runs its own multi-turn LLM loop with its own max_turns + wall-time budget,
+        # and grows with the state read bound so a slow state holder fails with its
+        # own cause rather than this ceiling.
         try:
-            result = self._run_async(self._grade_trial_async(request), timeout=600.0)
+            result = self._run_async(
+                self._grade_trial_async(request),
+                timeout=self.state_read_deadlines.grade_trial_s,
+            )
             return result
         except GradingFailedError as e:
             logger.error(f"GradeTrial: Grader could not produce a verdict: {e}")
@@ -1923,6 +1933,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         DB client's own errors, which the evaluators already read as "no database".
         """
         db_client = self.db_client
+        deadlines = self.state_read_deadlines
         provisions_db = provisions_database(trial_context.task_description.initial_state)
 
         def _unreadable(cause: str) -> SubstrateUnreachableError:
@@ -1958,17 +1969,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
             def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
                 read = partial(db_client.get_state, trial_id, tables)
-                return _bridged_read(read, _JUDGE_DB_READ_TIMEOUT_S).data
+                return _bridged_read(read, deadlines.judge_db_read_s).data
 
             def query(self, jsonpath: str) -> dict[str, Any]:
                 read = partial(db_client.query, trial_id, jsonpath)
-                return {"results": _bridged_read(read, _JUDGE_DB_READ_TIMEOUT_S).results}
+                return {"results": _bridged_read(read, deadlines.judge_db_read_s).results}
 
         def _get_raw_state() -> dict[str, Any]:
-            return _bridged_read(partial(db_client.get_state, trial_id), 300.0).data
+            read = partial(db_client.get_state, trial_id)
+            return _bridged_read(read, deadlines.final_state_read_s).data
 
         def _get_stable_state() -> dict[str, Any]:
-            return _bridged_read(partial(db_client.get_stable_state, trial_id), 300.0).data
+            read = partial(db_client.get_stable_state, trial_id)
+            return _bridged_read(read, deadlines.final_state_read_s).data
 
         def _get_filesystem_state() -> dict[str, str]:
             return self._read_filesystem_for_state(trial_id)
@@ -3295,6 +3308,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 initial_state.app_world,
                 initial_state.tables,
                 {"agent": trial_context.agent_tools, "user": trial_context.user_tools},
+                state_read_timeout_s=self.state_read_deadlines.holder_read_s,
             )
         except AppWorldError as e:
             error = f"App world load failed: {e}"
@@ -3379,24 +3393,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """Bring the db-service mirror up to the state holder's live state.
 
         Raises :class:`SubstrateUnreachableError` carrying the cause when the
-        holder cannot answer (within ``_MCP_STATE_READ_TIMEOUT_S``, so a hung
-        holder fails like a dead one) or the mirror cannot take the update — a
-        mirror that missed the sync still holds an earlier state, and handing
-        that out would grade the trial on evidence its tool calls never left.
+        holder cannot answer (within the state read bound, so a hung holder
+        fails like a dead one) or the mirror cannot take the update — a mirror
+        that missed the sync still holds an earlier state, and handing that out
+        would grade the trial on evidence its tool calls never left.
         """
-        kind = "app world" if isinstance(holder, AppWorldClient) else "MCP server"
+        kind = _holder_kind(holder)
         try:
-            loop = asyncio.get_running_loop()
-            try:
-                held_state = await asyncio.wait_for(
-                    loop.run_in_executor(None, holder.get_state),
-                    timeout=_MCP_STATE_READ_TIMEOUT_S,
-                )
-            except TimeoutError as exc:
-                raise TimeoutError(
-                    f"the {kind} did not answer within {_MCP_STATE_READ_TIMEOUT_S:g}s"
-                ) from exc
-            await self._sync_mcp_state_to_db(trial_id, held_state)
+            await self._sync_held_state_to_db(trial_id, holder)
         except Exception as exc:
             raise SubstrateUnreachableError(
                 f"Trial {trial_id!r}: the live state of its {kind} could not be "
@@ -3408,9 +3412,30 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self, trial_id: str, holder: AppWorldClient | MCPServerToolWrapper
     ) -> None:
         """Read the holder's state back and write it into the trial's db-service."""
-        loop = asyncio.get_event_loop()
-        held_state = await loop.run_in_executor(None, holder.get_state)
+        held_state = await self._read_held_state(holder)
         await self._sync_mcp_state_to_db(trial_id, held_state)
+
+    async def _read_held_state(
+        self, holder: AppWorldClient | MCPServerToolWrapper
+    ) -> dict[str, list[dict]]:
+        """The holder's live state, read within the state read bound.
+
+        A holder that hangs instead of dying would otherwise stall every reader
+        for as long as it waits. The read itself keeps running in the executor
+        after the bound fires.
+
+        Raises:
+            TimeoutError: the holder did not answer within the bound; the
+                message names ``compute.state_read_timeout_s``.
+        """
+        deadlines = self.state_read_deadlines
+        loop = asyncio.get_running_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, holder.get_state), timeout=deadlines.holder_read_s
+            )
+        except TimeoutError as exc:
+            raise deadlines.holder_timeout_error(_holder_kind(holder)) from exc
 
     async def _sync_mcp_state_to_db(
         self,
@@ -3484,7 +3509,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # Run async operation on dedicated event loop thread
         try:
-            result = self._run_async(self._get_state_async(request))
+            result = self._run_async(
+                self._get_state_async(request),
+                timeout=self.state_read_deadlines.final_state_read_s,
+            )
             return result
         except DBTrialNotFoundError:
             return pb2.GetStateResponse(

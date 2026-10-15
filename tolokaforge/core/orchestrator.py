@@ -1542,6 +1542,13 @@ class Orchestrator:
         """
         return (self.config.compute or ComputeConfig()).grpc_max_message_mb
 
+    def _state_read_timeout_s(self) -> float:
+        """The runner's bound on one state holder read (``compute.state_read_timeout_s``).
+
+        The schema default applies when no ``compute`` block is declared.
+        """
+        return (self.config.compute or ComputeConfig()).state_read_timeout_s
+
     def _resolve_runtime_connect_budget(self) -> tuple[float, float]:
         """Resolve the runner health-check budget (env → YAML → default).
 
@@ -1686,6 +1693,7 @@ class Orchestrator:
                 connect_timeout_s=connect_timeout_s,
                 connect_retry_interval_s=connect_retry_interval_s,
                 grpc_max_message_mb=self._grpc_max_message_mb(),
+                state_read_timeout_s=self._state_read_timeout_s(),
             )
         )
         self.logger.info(
@@ -3210,6 +3218,7 @@ class Orchestrator:
                 # The runner container serves with the bound the engine's
                 # client channels use (``compute.grpc_max_message_mb``).
                 core_stack_kwargs["grpc_max_message_mb"] = self._grpc_max_message_mb()
+                core_stack_kwargs["state_read_timeout_s"] = self._state_read_timeout_s()
                 service_stack = stack_factory(config=docker_config, **core_stack_kwargs)
                 # Any task-declared manifest hands the substrate to the
                 # composer — the task-declared compose owns the runner +

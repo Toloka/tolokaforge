@@ -36,6 +36,7 @@ from typing import Any, Protocol, runtime_checkable
 import httpx
 
 from tolokaforge.runner.models import AppWorldActor, AppWorldConfig
+from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 from tolokaforge.runner.tool_factory import BuiltinGenericToolWrapper
 from tolokaforge.secrets import forget_runtime_secret, register_runtime_secret
 
@@ -43,6 +44,11 @@ ADMIN_TOKEN_HEADER = "X-Admin-Token"
 
 ADMIN_TIMEOUT_S = 30.0
 """Budget of one administration call; loading a whole world is one request."""
+
+_STATE_READ_SLACK_S = 5.0
+"""Head start the runner's own bound on a state read gets over this client's read
+timeout on ``GET /_admin/tables``: a slow world then fails with the runner's error,
+which names the setting that raises the bound, rather than with a read timeout."""
 
 _TOKEN_BYTES = 32
 
@@ -117,13 +123,17 @@ class AppWorldClient:
         credentials: AppWorldCredentials,
         *,
         timeout_s: float = ADMIN_TIMEOUT_S,
+        state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S,
     ) -> None:
         self.config = config
         self._secret_names = credentials.secret_names
+        self._admin_timeout = httpx.Timeout(timeout_s)
+        self._state_read_timeout = httpx.Timeout(
+            timeout_s, read=state_read_timeout_s + _STATE_READ_SLACK_S
+        )
         self._client = httpx.Client(
             base_url=config.url,
             headers={ADMIN_TOKEN_HEADER: credentials.admin_token},
-            timeout=timeout_s,
         )
 
     def claim(self, callers: Mapping[str, str | None]) -> None:
@@ -134,7 +144,7 @@ class AppWorldClient:
                 already bound, so the world is not this trial's to grade.
             AppWorldError: the service failed the call otherwise.
         """
-        response = self._send("PUT", "/_admin/tokens", dict(callers))
+        response = self._send("PUT", "/_admin/tokens", dict(callers), timeout=self._admin_timeout)
         if response.status_code == httpx.codes.FORBIDDEN:
             raise AppWorldClaimLost(
                 f"world service {self.config.service!r} at {self.config.url} refused the "
@@ -146,7 +156,7 @@ class AppWorldClient:
 
     def get_state(self) -> dict[str, list[dict[str, Any]]]:
         """The world as ``{table: [record, ...]}``, as an MCP state holder answers it."""
-        state = self._call("GET", "/_admin/tables")
+        state = self._call("GET", "/_admin/tables", timeout=self._state_read_timeout)
         if not isinstance(state, dict) or not all(
             isinstance(records, list) for records in state.values()
         ):
@@ -158,7 +168,7 @@ class AppWorldClient:
 
     def reset_state(self, initial_state: Mapping[str, Any]) -> None:
         """Replace the world with ``initial_state`` (the task's initial tables)."""
-        self._call("PUT", "/_admin/tables", dict(initial_state))
+        self._call("PUT", "/_admin/tables", dict(initial_state), timeout=self._admin_timeout)
 
     def close(self) -> None:
         """Close the connection and forget the trial's credentials."""
@@ -166,8 +176,15 @@ class AppWorldClient:
         for name in self._secret_names:
             forget_runtime_secret(name)
 
-    def _call(self, method: str, path: str, payload: Any = None) -> Any:
-        response = self._send(method, path, payload)
+    def _call(
+        self,
+        method: str,
+        path: str,
+        payload: Any = None,
+        *,
+        timeout: httpx.Timeout,
+    ) -> Any:
+        response = self._send(method, path, payload, timeout=timeout)
         self._refuse_failure(method, path, response)
         if method != "GET":
             return None
@@ -179,9 +196,16 @@ class AppWorldClient:
                 f"{path} with a body that is not JSON: {error}; body {response.text[:500]!r}"
             ) from error
 
-    def _send(self, method: str, path: str, payload: Any) -> httpx.Response:
+    def _send(
+        self,
+        method: str,
+        path: str,
+        payload: Any,
+        *,
+        timeout: httpx.Timeout,
+    ) -> httpx.Response:
         try:
-            return self._client.request(method, path, json=payload)
+            return self._client.request(method, path, json=payload, timeout=timeout)
         except httpx.HTTPError as error:
             raise AppWorldError(
                 f"world service {self.config.service!r} at {self.config.url} is unreachable "
@@ -201,6 +225,8 @@ def open_app_world(
     config: AppWorldConfig,
     tables: Mapping[str, Any],
     tools_by_actor: Mapping[AppWorldActor, Mapping[str, Any]],
+    *,
+    state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S,
 ) -> AppWorldClient:
     """Mint the trial's credentials, claim the service, load the world, arm ``http_request``.
 
@@ -214,7 +240,7 @@ def open_app_world(
     """
     http_tools = {actor: _http_request_tool(actor, tools_by_actor) for actor in config.actors}
     credentials = mint_credentials(config.actors)
-    client = AppWorldClient(config, credentials)
+    client = AppWorldClient(config, credentials, state_read_timeout_s=state_read_timeout_s)
     try:
         client.claim(credentials.callers(config.actors))
         client.reset_state(tables)

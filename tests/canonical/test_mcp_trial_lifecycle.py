@@ -94,6 +94,27 @@ async def test_concurrent_tools_receive_their_own_responses(script):
         owned.cleanup()
 
 
+async def test_a_slow_starting_child_leaves_the_event_loop_free(tmp_path):
+    """The first call spawns the child and waits out its start off the event loop.
+
+    A child that loads a large world before answering ``initialize`` keeps that
+    first call waiting; every other coroutine on the runner's loop — other trials'
+    calls, state reads, the call's own timeout — keeps running meanwhile.
+    """
+    path = tmp_path / "slow_server.py"
+    path.write_text("import time\ntime.sleep(1.5)\n" + SERVER)
+    owned = tools(str(path), "slow-start")
+    try:
+        call = asyncio.ensure_future(owned.agent_tools["counter"].execute({}))
+        started = time.monotonic()
+        await asyncio.sleep(0.05)
+
+        assert time.monotonic() - started < 1.0
+        assert json.loads(await call)["counter"] == 1
+    finally:
+        owned.cleanup()
+
+
 def test_cleanup_reaps_a_child_and_unblocks_its_pending_request(script, tmp_path):
     server = MCPServerProcess(script_path=script)
     server.start()

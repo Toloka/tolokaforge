@@ -23,9 +23,10 @@ from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.runner import service as runner_service_module
+from tolokaforge.runner import state_read_limits
 from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
 from tolokaforge.runner.service import RunnerServiceImpl, _LiveStateSync
+from tolokaforge.runner.state_read_limits import StateReadDeadlines
 from tolokaforge.runner.substrate_service import SubstrateServicer
 from tolokaforge.runner.tool_factory import MCPServerProcess, MCPServerToolWrapper, ToolFactory
 
@@ -146,9 +147,9 @@ def _kill(wrapper: MCPServerToolWrapper) -> None:
     process.wait(timeout=5)
 
 
-def _hang(wrapper: MCPServerToolWrapper, monkeypatch) -> None:
+def _hang(service: RunnerServiceImpl, wrapper: MCPServerToolWrapper, monkeypatch) -> None:
     """Make the child stop answering state reads, past a shortened sync bound."""
-    monkeypatch.setattr(runner_service_module, "_MCP_STATE_READ_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(service, "state_read_deadlines", StateReadDeadlines(holder_read_s=0.5))
     monkeypatch.setattr(wrapper, "get_state", lambda: time.sleep(3))
 
 
@@ -338,12 +339,94 @@ class TestChildLostBeforeTheFinalRead:
     ) -> None:
         wrapper = mcp_trial(_task())
         _mutate(runner_service, wrapper, 120)
-        _hang(wrapper, monkeypatch)
+        _hang(runner_service, wrapper, monkeypatch)
 
         state = _get_state(runner_service, mock_grpc_context, trial_id)
 
         assert state.success is False
         assert "did not answer within 0.5s" in state.error
+        assert "compute.state_read_timeout_s" in state.error
+
+
+def _slow(wrapper: MCPServerToolWrapper, monkeypatch, delay_s: float, *, after: int = 0) -> None:
+    """Make the child answer state reads ``delay_s`` late, after ``after`` prompt answers.
+
+    A slow child is not a hung one: it answers with the state it holds, as one
+    that loads a large world on first contact does once it has loaded.
+    """
+    real_get_state = wrapper.get_state
+    prompt_answers_left = [after]
+
+    def slow_get_state() -> dict[str, Any]:
+        if prompt_answers_left[0] > 0:
+            prompt_answers_left[0] -= 1
+        else:
+            time.sleep(delay_s)
+        return real_get_state()
+
+    monkeypatch.setattr(wrapper, "get_state", slow_get_state)
+
+
+def _bound(service: RunnerServiceImpl, monkeypatch, holder_read_s: float) -> None:
+    """Configure the service as ``compute.state_read_timeout_s: holder_read_s`` would."""
+    monkeypatch.setattr(
+        service, "state_read_deadlines", StateReadDeadlines(holder_read_s=holder_read_s)
+    )
+
+
+class TestSlowChild:
+    """A child that answers late is read when the configured bound allows it, and only then."""
+
+    def test_a_child_slower_than_the_bound_fails_naming_the_setting(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        _bound(runner_service, monkeypatch, 0.3)
+        _slow(wrapper, monkeypatch, 1.0)
+
+        state = _get_state(runner_service, mock_grpc_context, trial_id)
+
+        assert state.success is False
+        assert "did not answer within 0.3s" in state.error
+        assert "raise `compute.state_read_timeout_s`" in state.error
+
+    def test_raising_the_bound_lets_every_reader_through(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        _bound(runner_service, monkeypatch, 3.0)
+        _slow(wrapper, monkeypatch, 1.0)
+
+        state = _get_state(runner_service, mock_grpc_context, trial_id)
+        detached = SubstrateServicer(runner_service).ReadFinalDBState(
+            pb2.ReadFinalDBStateRequest(trial_id=trial_id), mock_grpc_context
+        )
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert state.success, state.error
+        assert _u1_balance(state) == 120
+        assert json.loads(detached.state_json)["users"][0]["balance"] == 120
+        mock_grpc_context.set_code.assert_not_called()
+        assert graded.success, graded.error
+        assert graded.grade.binary_pass is True
+
+    def test_the_read_after_the_golden_replay_is_bounded_too(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """Hash grading reads the child twice; the second read is held to the same bound."""
+        wrapper = mcp_trial(_task(golden_balance=120))
+        _mutate(runner_service, wrapper, 120)
+        _bound(runner_service, monkeypatch, 0.5)
+        _slow(wrapper, monkeypatch, 3.0, after=1)
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success is False
+        assert "did not answer within 0.5s" in graded.error
+        assert "compute.state_read_timeout_s" in graded.error
+        assert not graded.HasField("grade")
 
 
 class TestMirrorReadFailsAfterASuccessfulSync:
@@ -475,7 +558,7 @@ class TestJudgeReadsOfTheState:
         task, tables = self._judged_task()
         wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
         _mutate(runner_service, wrapper, 120)
-        _hang(wrapper, monkeypatch)
+        _hang(runner_service, wrapper, monkeypatch)
         self._judge_reads_then_passes(runner_service, monkeypatch)
 
         graded = _grade(runner_service, mock_grpc_context, trial_id)
@@ -490,7 +573,11 @@ class TestJudgeReadsOfTheState:
         task, tables = self._judged_task()
         wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
         _mutate(runner_service, wrapper, 120)
-        monkeypatch.setattr(runner_service_module, "_JUDGE_DB_READ_TIMEOUT_S", 0.5)
+        # The judge's read bound is the sync's bound plus the read's own budget.
+        monkeypatch.setattr(state_read_limits, "_JUDGE_READ_AFTER_SYNC_S", 0.4)
+        monkeypatch.setattr(
+            runner_service, "state_read_deadlines", StateReadDeadlines(holder_read_s=0.1)
+        )
         real_get_state = runner_service.db_client.get_state
 
         async def stall(trial: str, tables: Any = None) -> Any:

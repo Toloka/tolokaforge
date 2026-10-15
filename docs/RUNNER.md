@@ -262,6 +262,57 @@ several copies of it at once (the wire bytes, the decoded string and the
 parsed state), so budget a few times the world's size per concurrent trial on
 both the engine host and the runner.
 
+### State read timeout
+
+A trial whose tools keep its state in a state holder — an MCP server subprocess,
+or an app world service (ADR-0062) — has that state read back into the DB mirror
+before the mirror is read: by `GetState` (the engine's final-state capture, and
+any other caller), `GradeTrial` (before grading, and after hash grading's golden
+replay), `SubstrateService`'s final-state reads and the judge's DB tools. One
+such read may take at most:
+
+```yaml
+compute:
+  state_read_timeout_s: 180   # default 20; any positive number of seconds
+```
+
+A holder that has not answered by then fails the read like a dead one: the
+trial's final state is not captured and the trial is left ungraded, with an
+error naming `compute.state_read_timeout_s`. Raise it for a holder that is slow
+rather than hung — e.g. an MCP server that loads a large world when it is first
+contacted.
+
+Every runner deadline that waits on such a read is derived from the setting, so
+it always outlasts the read and reports the read's own cause:
+
+| Deadline | Value | Default |
+|---|---|---|
+| One state holder read | `T` | 20 s |
+| A judge DB tool read (`get_db_state` / `query_db`) | `T + 10 s` | 30 s |
+| A whole-state read (`GetState`, `SubstrateService` final reads, grading's final-state reads) | `T + 280 s` | 300 s |
+| One `GradeTrial` call (at most two holder reads) | `2T + 560 s` | 600 s |
+| An app world's `GET /_admin/tables` HTTP read | `T + 5 s` | 25 s |
+
+The engine passes the value to every runner container it starts as
+`TOLOKAFORGE_STATE_READ_TIMEOUT_S` — the built-in stack's runner, and the runner
+service of a task-declared compose file unless that file declares the variable
+itself. A runner deployed outside the engine sets the variable directly. A
+runner fails at startup when it is set to anything other than a positive, finite
+number; unset means 20.
+
+The engine's own gRPC calls to the runner (`GetState`, `GradeTrial`,
+`SubstrateService` reads) carry no deadline, so the runner's bounds are the
+ones that apply. The one engine-side wait on them is the `queue` trial grader's
+600 s for a whole grade, judge included: keep the bound well under it when
+grading through that grader.
+
+The bound covers state reads only. A tool call keeps its own budget (its
+`timeout_s`). The MCP server subprocess is started on the trial's first contact
+with it — a tool call or a state read, whichever comes first — off the runner's
+event loop, so a server that loads its world before answering `initialize`
+spends that time inside that first contact (and any contact waiting for the same
+start) while the runner keeps serving every other call.
+
 ## Runner Image Contents
 
 `runner.Dockerfile` is a multi-stage build on a `python:3.12-slim` base
