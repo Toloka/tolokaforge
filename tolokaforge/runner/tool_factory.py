@@ -80,16 +80,19 @@ from tolokaforge.tools.str_replace_editor import (
 logger = logging.getLogger(__name__)
 
 
-def _resolve_compose_container_name(trial_id: str, service: str, project_prefix: str) -> str:
+def _resolve_compose_container_name(
+    trial_id: str, service: str, project_prefix: str, run_id: str = ""
+) -> str:
     """Container name for *service* in the per-trial compose stack.
 
     Thin re-export of :func:`tolokaforge.runner.compose_naming.compose_container_name`
     that keeps the ``bash_session`` and ``str_replace_editor`` wrappers' local
     resolver-name stable; the shared implementation is what the compose lifecycle
     consumer on the host uses to name the project directory, so an exec targets
-    the same container the stack brought up.
+    the same container the stack brought up — scoped by ``run_id`` so concurrent
+    runs of the same task do not collide.
     """
-    return compose_container_name(trial_id, service, project_prefix)
+    return compose_container_name(trial_id, service, project_prefix, run_id)
 
 
 # =============================================================================
@@ -164,6 +167,10 @@ class ToolLifecycleContext:
     trial_id: str
     artifacts_dir: str | None = None
     work_dir: str | None = None
+    # Run id, carried so a compose-exec tool can scope its container name by run
+    # (two concurrent runs of the same task share a trial_id). Empty keeps the
+    # historical trial-only name.
+    run_id: str = ""
 
 
 #: The one failure category a substrate can declare (see ``ToolCallOutcome.category``).
@@ -1472,7 +1479,68 @@ def _docker_exec_plan(
     )
 
 
-class DockerComposeExecToolWrapper(ToolWrapper):
+class _ComposeServiceResolutionMixin:
+    """Sibling-container resolution shared by the compose-backed exec wrappers.
+
+    Both exec wrappers that target a compose ``service`` — the dedicated
+    ``docker exec`` wrapper and the session-lifetime shell on its compose
+    backend — resolve per-trial container names the same way (run id + trial id
+    + project prefix, via
+    :func:`~tolokaforge.runner.compose_naming.compose_container_name`). This
+    mixin exposes that shared seam as
+    :class:`~tolokaforge.runner.env_exec.SupportsServiceResolution`: the name of
+    the tool's own container, and a sibling executor bound to another service of
+    the same per-trial compose stack. Grading accepts any implementer, so a
+    separate-verifier trial grades the same whichever wrapper the agent ran on.
+    """
+
+    tool_schema: ToolSchemaModel
+    _service: str | None
+    _trial_id: str | None
+    _project_prefix: str | None
+    _run_id: str
+
+    @property
+    def container_name(self) -> str | None:
+        """The container this tool execs into, or ``None`` when none is resolvable.
+
+        ``None`` means no per-trial container can be named yet: the tool has not
+        started (``_trial_id`` unset), or it is configured against a local
+        (non-compose) environment (``_service`` / ``_project_prefix`` unset),
+        which has no sibling-service containers.
+        """
+        if self._trial_id is None or self._service is None or not self._project_prefix:
+            return None
+        return compose_container_name(
+            self._trial_id, self._service, self._project_prefix, self._run_id
+        )
+
+    def for_service(self, service: str) -> "DockerComposeExecToolWrapper":
+        """A sibling exec wrapper bound to another service of the same trial stack.
+
+        The agent and a separate verifier are two services in one per-trial
+        compose project; grading that runs the suite in the verifier needs an
+        executor for that container. Reuses this started wrapper's resolved trial
+        id, run id and project prefix so both target the same stack. The sibling
+        is always a plain :class:`DockerComposeExecToolWrapper` — the verifier
+        runs as the container's default user, independent of any privilege-drop
+        on the agent's own session.
+        """
+        if self._trial_id is None or not self._project_prefix:
+            raise RuntimeError(
+                f"{type(self).__name__}.for_service() called before start(): no "
+                "trial is bound yet, so the sibling container cannot be resolved."
+            )
+        sibling = DockerComposeExecToolWrapper(self.tool_schema, service, self._project_prefix)
+        sibling._trial_id = self._trial_id
+        sibling._run_id = self._run_id
+        sibling._container = compose_container_name(
+            self._trial_id, service, self._project_prefix, self._run_id
+        )
+        return sibling
+
+
+class DockerComposeExecToolWrapper(_ComposeServiceResolutionMixin, ToolWrapper):
     """Execute a command inside an already-running compose service via ``docker exec``.
 
     The wrapper never brings a compose stack up or down: :class:`~tolokaforge.
@@ -1505,34 +1573,15 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         self._service = service
         self._project_prefix = compose_project_prefix
         self._trial_id: str | None = None
+        self._run_id: str = ""
         self._container: str | None = None
 
     def start(self, ctx: "ToolLifecycleContext") -> None:
         self._trial_id = ctx.trial_id
-        self._container = compose_container_name(ctx.trial_id, self._service, self._project_prefix)
-
-    @property
-    def container_name(self) -> str | None:
-        """The resolved container this wrapper execs into, or ``None`` before start()."""
-        return self._container
-
-    def for_service(self, service: str) -> "DockerComposeExecToolWrapper":
-        """A sibling exec wrapper bound to another service in the same trial stack.
-
-        The agent and a separate verifier are two services in one per-trial
-        compose project; grading that runs the suite in the verifier needs an
-        executor for that container. This reuses the started wrapper's resolved
-        trial id and project prefix, so both target the same stack.
-        """
-        if self._trial_id is None:
-            raise RuntimeError(
-                "DockerComposeExecToolWrapper.for_service() called before start(): "
-                "no trial is bound yet, so the sibling container cannot be resolved."
-            )
-        sibling = DockerComposeExecToolWrapper(self.tool_schema, service, self._project_prefix)
-        sibling._trial_id = self._trial_id
-        sibling._container = compose_container_name(self._trial_id, service, self._project_prefix)
-        return sibling
+        self._run_id = ctx.run_id
+        self._container = compose_container_name(
+            ctx.trial_id, self._service, self._project_prefix, ctx.run_id
+        )
 
     @property
     def own_budget_s(self) -> float:
@@ -1643,7 +1692,7 @@ class DockerComposeExecToolWrapper(ToolWrapper):
 # =============================================================================
 
 
-class PersistentShellToolWrapper(ToolWrapper):
+class PersistentShellToolWrapper(_ComposeServiceResolutionMixin, ToolWrapper):
     """Runner-side executor for the session-lifetime ``bash_session`` tool.
 
     Holds one bash session for the trial: ``start()`` opens it (seeding the
@@ -1687,6 +1736,7 @@ class PersistentShellToolWrapper(ToolWrapper):
                 "prefix used to bring the stack up)",
             )
         self._trial_id: str | None = None
+        self._run_id: str = ""
         self._session: BashSession | None = None
         self._cwd: str | None = None
 
@@ -1696,6 +1746,7 @@ class PersistentShellToolWrapper(ToolWrapper):
 
     def start(self, ctx: "ToolLifecycleContext") -> None:
         self._trial_id = ctx.trial_id
+        self._run_id = ctx.run_id
         self._cwd = ctx.work_dir if ctx.work_dir and os.path.isdir(ctx.work_dir) else None
         session = self._new_session()
         session.open(self._cwd)
@@ -1768,7 +1819,7 @@ class PersistentShellToolWrapper(ToolWrapper):
                 "bash_session executed before start() — container name unresolved",
             )
         container = self._resolve_container_name(
-            self._trial_id, self._service, self._project_prefix
+            self._trial_id, self._service, self._project_prefix, self._run_id
         )
         return _docker_exec_plan(container, command, user=self._user)
 
@@ -1778,13 +1829,15 @@ class PersistentShellToolWrapper(ToolWrapper):
             return LocalBashSession()
         assert self._trial_id is not None and self._project_prefix is not None
         container = self._resolve_container_name(
-            self._trial_id, self._service, self._project_prefix
+            self._trial_id, self._service, self._project_prefix, self._run_id
         )
         return DockerComposeBashSession(container, user=self._user)
 
     @staticmethod
-    def _resolve_container_name(trial_id: str, service: str, project_prefix: str) -> str:
-        return _resolve_compose_container_name(trial_id, service, project_prefix)
+    def _resolve_container_name(
+        trial_id: str, service: str, project_prefix: str, run_id: str = ""
+    ) -> str:
+        return _resolve_compose_container_name(trial_id, service, project_prefix, run_id)
 
     async def _restart(self) -> str:
         assert self._session is not None
@@ -1840,7 +1893,7 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
     # start() the way the lifecycle-managed shell does.
     _DEFAULT_WORKING_ROOT = "/work"
 
-    def __init__(self, tool_schema: ToolSchemaModel, trial_id: str):
+    def __init__(self, tool_schema: ToolSchemaModel, trial_id: str, run_id: str = ""):
         super().__init__(tool_schema)
         tool_config = tool_schema.tool_config or {}
         self._service: str | None = tool_config.get("service")
@@ -1859,6 +1912,7 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
         # user and preserves prior behaviour.
         self._user: str | None = tool_config.get("user")
         self._trial_id = trial_id
+        self._run_id = run_id
         self._backend = self._new_backend()
 
     def _new_backend(self) -> EditorBackend:
@@ -1866,13 +1920,15 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
             return LocalFilesystemEditor(self._working_root)
         assert self._project_prefix is not None  # validated in __init__
         container = self._resolve_container_name(
-            self._trial_id, self._service, self._project_prefix
+            self._trial_id, self._service, self._project_prefix, self._run_id
         )
         return DockerComposeEditor(container, base_path=self._working_root, user=self._user)
 
     @staticmethod
-    def _resolve_container_name(trial_id: str, service: str, project_prefix: str) -> str:
-        return _resolve_compose_container_name(trial_id, service, project_prefix)
+    def _resolve_container_name(
+        trial_id: str, service: str, project_prefix: str, run_id: str = ""
+    ) -> str:
+        return _resolve_compose_container_name(trial_id, service, project_prefix, run_id)
 
     async def execute(self, arguments: dict[str, Any]) -> str:
         loop = asyncio.get_event_loop()
@@ -1966,6 +2022,7 @@ class ToolFactory:
         search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
         search_index: SearchIndex | None = None,
         artifacts_dir: str | None = None,
+        run_id: str = "",
     ):
         """
         Initialize the tool factory.
@@ -1997,6 +2054,10 @@ class ToolFactory:
         """
         self.db_client = db_client
         self.trial_id = trial_id
+        # Scopes the str_replace_editor compose container name by run (that
+        # wrapper is has_lifecycle=False and resolves its container at
+        # construction, so it cannot learn the run id from a lifecycle context).
+        self.run_id = run_id
         self.search_tool_name = search_tool_name
         self.search_index = search_index
         self.db_table_names = db_table_names or []
@@ -2091,7 +2152,9 @@ class ToolFactory:
             if dispatch is builtin_registry.Dispatch.PERSISTENT_SHELL:
                 return PersistentShellToolWrapper(schema)
             if dispatch is builtin_registry.Dispatch.EDITOR:
-                return StrReplaceEditorToolWrapper(schema, trial_id=self.trial_id)
+                return StrReplaceEditorToolWrapper(
+                    schema, trial_id=self.trial_id, run_id=self.run_id
+                )
             if dispatch is builtin_registry.Dispatch.JSON_DB:
                 return JsonDBToolWrapper(schema, self.db_client, self.trial_id)
             return BuiltinGenericToolWrapper(schema)

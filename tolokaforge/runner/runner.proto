@@ -861,8 +861,21 @@ message RunDbProbeResponse {
   // JSON array of objects; each object is one row. Column values encoded
   // via json.dumps(default=str) — asyncpg scalars (datetime, Decimal,
   // UUID, bytes) coerce to str. Empty JSON array ("[]") when the query
-  // matches no rows; the field is never absent.
+  // matches no rows; the field is never absent. Empty when the probe failed
+  // (see `error`).
   string rows_json = 1;
+
+  // Set when the probe failed. True means the probe DB was UNREACHABLE
+  // (connection refused, DSN down, driver connection error): the client maps
+  // it to SubstrateUnreachableError and the trial is ungradeable. False with a
+  // non-empty `error` means the DB answered and the QUERY failed (bad SQL,
+  // missing table): the client raises a non-unreachable error the grader folds
+  // to a FAIL line. False with an empty `error` is the success case above.
+  bool unreachable = 2;
+
+  // Human-readable failure detail, empty on success. Populated for both the
+  // unreachable and the query-failure cases; `unreachable` disambiguates which.
+  string error = 3;
 }
 
 // -----------------------------------------------------------------------------

@@ -44,7 +44,7 @@ from tolokaforge.core.netpolicy_constants import (
 )
 from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
-from tolokaforge.runner.compose_naming import compose_trial_slug
+from tolokaforge.runner.compose_naming import compose_scope_slug, compose_trial_slug
 from tolokaforge.runner.grpc_limits import MAX_MESSAGE_ENV_VAR, validate_max_message_mb
 from tolokaforge.runner.models import bind_mount_source
 from tolokaforge.secrets import (
@@ -705,15 +705,17 @@ rejected before provision starts — a task overriding an engine-reserved
 variable would be silent shadowing."""
 
 TOLOKAFORGE_TRIAL_SLUG_ENV = "TOLOKAFORGE_TRIAL_SLUG"
-"""Reserved compose variable that resolves to :func:`compose_trial_slug` of the
+"""Reserved compose variable that resolves to
+:func:`~tolokaforge.runner.compose_naming.compose_scope_slug` of the run id +
 trial id. Task compose files interpolate ``${TOLOKAFORGE_TRIAL_SLUG}`` into
-``container_name:`` to make container names per-trial unique — the same slug
-the per-trial temp-dir basename embeds, so the wrapper's exec targets the
-container the stack actually brought up."""
+``container_name:`` to make container names per-trial (and per-run) unique, so
+the runner-side resolver (:func:`compose_container_name`) targets the container
+the stack actually brought up — including across two concurrent runs of the
+same task on one host."""
 
 
 def write_compose_env_file(
-    context_dir: Path, *, trial_id: str, stack_inputs: Mapping[str, str]
+    context_dir: Path, *, trial_id: str, stack_inputs: Mapping[str, str], run_id: str = ""
 ) -> None:
     """Write the per-trial compose ``.env`` into ``context_dir``.
 
@@ -739,7 +741,7 @@ def write_compose_env_file(
         lines.append(existing.read_text().rstrip("\n"))
     for key, value in stack_inputs.items():
         lines.append(f"{key}={value}")
-    lines.append(f"{TOLOKAFORGE_TRIAL_SLUG_ENV}={compose_trial_slug(trial_id)}")
+    lines.append(f"{TOLOKAFORGE_TRIAL_SLUG_ENV}={compose_scope_slug(run_id, trial_id)}")
     existing.write_text("\n".join(lines) + "\n")
 
 

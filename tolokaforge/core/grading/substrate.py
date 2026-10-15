@@ -258,7 +258,7 @@ class GradingSubstrate(Protocol):
         subprocess timeout — the trial completed but the verifier crashed).
         Both are distinct from :class:`SubstrateUnreachableError`, which
         this method raises only when the substrate itself is unreachable
-        (e.g. snapshot substrate — bundle format v1.0 carries no test
+        (e.g. snapshot substrate — bundle format v1.1 carries no test
         suite; grader-side gRPC transport failure).
 
         ``exit_code`` is informational: callers do NOT gate on it. A
@@ -496,9 +496,25 @@ class InProcessGradingSubstrate:
         return self._filesystem_state_cache
 
     def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:
-        from tolokaforge.core.grading.db_probes import _fetch_probe_rows
+        from tolokaforge.core.grading.db_probes import (
+            DbProbeQueryError,
+            _fetch_probe_rows,
+            is_db_transport_error,
+        )
 
-        rows = asyncio.run(_fetch_probe_rows(dsn, query))
+        try:
+            rows = asyncio.run(_fetch_probe_rows(dsn, query))
+        except Exception as exc:
+            # A DB that cannot be reached is ungradeable; a query that the DB
+            # answered and rejected is a per-probe FAIL. Split the two so the
+            # in-process lane books each the same way the detached (gRPC) and
+            # offline lanes do.
+            if is_db_transport_error(exc):
+                raise SubstrateUnreachableError(
+                    f"db_probe could not reach postgres (dsn={dsn!r}): "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            raise DbProbeQueryError(f"{type(exc).__name__}: {exc}") from exc
         return json.loads(json.dumps(rows, default=str))
 
     def run_test_suite(
@@ -775,7 +791,7 @@ class SnapshotGradingSubstrate:
     ) -> RunTestSuiteResult:
         raise SubstrateUnreachableError(
             f"SnapshotGradingSubstrate cannot run a test suite offline "
-            f"(script_path={script_path!r}) — bundle format v1.0 carries no "
+            f"(script_path={script_path!r}) — bundle format v1.1 carries no "
             f"test-suite hook. Pack requires live_callback for grading."
         )
 
@@ -789,7 +805,7 @@ class SnapshotGradingSubstrate:
     ) -> None:
         raise SubstrateUnreachableError(
             f"SnapshotGradingSubstrate cannot materialise a path offline "
-            f"(dst_service={dst_service!r}, path={path!r}) — bundle format v1.0 "
+            f"(dst_service={dst_service!r}, path={path!r}) — bundle format v1.1 "
             f"carries no live containers. Pack requires live_callback for grading."
         )
 
@@ -802,7 +818,7 @@ class SnapshotGradingSubstrate:
     ) -> tuple[int, str]:
         raise SubstrateUnreachableError(
             f"SnapshotGradingSubstrate cannot exec in a service offline "
-            f"(service={service!r}) — bundle format v1.0 carries no live "
+            f"(service={service!r}) — bundle format v1.1 carries no live "
             f"containers. Pack requires live_callback for grading."
         )
 

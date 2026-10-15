@@ -1,4 +1,4 @@
-"""Grade bundle format v1.0 — reader, producer, and manifest schema.
+"""Grade bundle format v1.1 — reader, producer, and manifest schema.
 
 A grade bundle is a manifest-first, part-addressable, content-addressable
 directory carrying everything a grader needs to score one trial without a
@@ -11,22 +11,33 @@ this module ships the Python reader + producer both sides use.
 Layout::
 
     <bundle_dir>/
-      manifest.json           # schema v1.0 — written LAST, canonical bytes
+      manifest.json           # schema v1.1 — written LAST, canonical bytes
       initial_state.json      # required
       final_state.json        # required
       final_state_stable.json # required
       trajectory.json         # required
       grading_config.json     # required
       filesystem.tar          # required — USTAR, no PAX extensions
+      task_description.json   # optional (v1.1) — enables offline recompute
+      judge_model_config.json # optional (v1.1) — enables offline llm_judge
       checks/                 # optional subtree
         manifest.json         # per-file digests inside checks/
         <rel-path>            # each file digested by checks/manifest.json
       kb/                     # optional subtree — same shape as checks/
 
-Manifest schema v1.0::
+The manifest always carries the current schema version (``"1.1"``). The two
+v1.1 JSON parts are written only when the producer is handed them
+(``serialize_grade_bundle``'s keyword-only ``task_description`` /
+``judge_model_config``); a caller that omits both produces the same byte layout
+as before — same parts, same canonical encoding — except for the manifest's
+``schema_version`` field, which now reads ``"1.1"``. They feed the offline
+``CompositeGraderKind.evaluate`` recompute path via
+``SnapshotGradingSubstrate.task_description()`` / ``judge_model_config()``.
+
+Manifest schema v1.1::
 
     {
-      "schema_version": "1.0",
+      "schema_version": "1.1",
       "trial_id": "<opaque str>",
       "parts": {
         "<rel path>": {"sha256": "<hex>", "size": <int>},
@@ -127,7 +138,7 @@ class GradeBundleView:
         root = self.bundle_dir.resolve(strict=False)
         if candidate != root and root not in candidate.parents:
             raise BundleIntegrityError(
-                f"part {rel_path!r} resolves outside bundle_dir " f"({candidate} not under {root})"
+                f"part {rel_path!r} resolves outside bundle_dir ({candidate} not under {root})"
             )
         data = candidate.read_bytes()
         actual = hashlib.sha256(data).hexdigest()
@@ -297,11 +308,15 @@ def serialize_grade_bundle(
     the top-level ``manifest.json`` is written LAST so its bytes see every
     part's digest.
 
+    The manifest always stamps ``schema_version = BUNDLE_SCHEMA_VERSION``
+    (currently ``"1.1"``).
+
     v1.1-optional parts — the two keyword-only args ``task_description``
     and ``judge_model_config`` add matching JSON parts when non-None.
-    Absent means the manifest simply omits the entry; a v1.0-shape
-    caller passes neither and the bundle is byte-identical to what
-    ``BUNDLE_SCHEMA_VERSION="1.0"`` produced. Consumed by
+    Absent means the manifest simply omits the entry; a caller that passes
+    neither produces the same byte layout as before — same parts, same
+    canonical encoding — differing only in the manifest's ``schema_version``
+    field, which reads ``"1.1"``. Consumed by
     :class:`~tolokaforge.core.grading.substrate.SnapshotGradingSubstrate`
     via ``task_description()`` / ``judge_model_config()`` — used by the
     full offline ``CompositeGraderKind.evaluate`` path.

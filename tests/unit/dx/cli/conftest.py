@@ -155,5 +155,14 @@ class _RefusingTestKind:
         raise GraderKindRefusedError("no exec tool")
 
 
+class _NoVerdictKind:
+    """Kind that opts out — returns ``None`` (a first-class no-verdict outcome)."""
+
+    NAME = "_no_verdict"
+
+    def evaluate(self, **_: object) -> Grade | None:
+        return None
+
+
 def canned_grade() -> Grade:
     return _FixedScoreKind._canned

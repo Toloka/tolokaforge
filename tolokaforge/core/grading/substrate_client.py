@@ -205,6 +205,15 @@ class GrpcSubstrateClient:
             response = self._stub.RunDbProbe(pb2.RunDbProbeRequest(dsn=dsn, query=query))
         except grpc.RpcError as err:
             raise SubstrateUnreachableError(str(err)) from err
+        # The servicer signals the two failure cases apart on the response, not
+        # via a status code: an unreachable DB marks the trial ungradeable; a
+        # query failure folds to a FAIL line. Reconstruct each distinctly.
+        if response.error:
+            if response.unreachable:
+                raise SubstrateUnreachableError(response.error)
+            from tolokaforge.core.grading.db_probes import DbProbeQueryError
+
+            raise DbProbeQueryError(response.error)
         decoded = json.loads(response.rows_json) if response.rows_json else []
         if not isinstance(decoded, list):
             raise SubstrateUnreachableError(

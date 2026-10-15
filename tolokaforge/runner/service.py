@@ -141,7 +141,11 @@ from tolokaforge.runner.db_client import (
 from tolokaforge.runner.db_client import (
     ValidationError as DBValidationError,
 )
-from tolokaforge.runner.env_exec import exec_tool_for_service, first_env_exec_tool
+from tolokaforge.runner.env_exec import (
+    SupportsServiceResolution,
+    exec_tool_for_service,
+    first_env_exec_tool,
+)
 from tolokaforge.runner.grading import (
     compute_state_diff,
     grade_to_runner_wire,
@@ -195,7 +199,6 @@ from tolokaforge.runner.search_plane import (
 )
 from tolokaforge.runner.tool_factory import (
     INVALID_ARGUMENTS_CATEGORY,
-    DockerComposeExecToolWrapper,
     MCPServerToolWrapper,
     SearchToolWrapper,
     ToolCallOutcome,
@@ -621,8 +624,14 @@ class TrialContextRuntime:
         task_description: TaskDescription,
         default_timeout: float = 30.0,
         judge_model_config: ModelConfig | None = None,
+        run_id: str = "",
     ):
         self.trial_id = trial_id
+        # Carried from the TrialSpec so per-trial compose container names can be
+        # scoped by run — two concurrent runs of the same task share a trial_id
+        # and would otherwise collide on container names / reuse one stack. Empty
+        # keeps the historical trial-only name.
+        self.run_id = run_id
         self.task_description = task_description
         self.agent_tools: dict[str, Callable] = {}
         self.user_tools: dict[str, Callable] = {}
@@ -1222,6 +1231,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             task_description=task_description,
             default_timeout=request.default_tool_timeout_s or DEFAULT_TOOL_TIMEOUT_S,
             judge_model_config=trial_spec.judge_model_config,
+            run_id=trial_spec.run_id,
         )
 
         # A task that provisions no database (e.g. an adapter grading via
@@ -1331,6 +1341,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 search_tool_name=search_config.tool_name,
                 search_index=search_index,
                 artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
+                run_id=trial_context.run_id,
             )
 
             # Set domain on DB proxy so search_policy tools can resolve
@@ -1382,6 +1393,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_id=trial_id,
             artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
             work_dir=AGENT_WORK_DIR,
+            run_id=trial_context.run_id,
         )
         for tool in (*trial_context.agent_tools.values(), *trial_context.user_tools.values()):
             if getattr(tool, "has_lifecycle", False):
@@ -2151,9 +2163,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         container = getattr(exec_tool, "container_name", None)
         try:
             if container is None:
-                # No resolvable sibling container (a non-compose executor): run
-                # through the tool's own exec seam, which already stages stdio
-                # and preserves partial output under bash.
+                # No resolvable sibling container (a non-compose executor). This
+                # is reachable only for ``service=None`` — the agent's own
+                # container: ``exec_tool_for_service`` resolves a NAMED service
+                # exclusively through a started compose wrapper (whose
+                # ``container_name`` is set) and otherwise returns a
+                # ``service_reason`` refused above. The agent's own exec seam runs
+                # under bash, matching ``shell == "bash"`` here; assert the
+                # invariant so a future named-service non-compose executor cannot
+                # silently mis-shell through this fallback.
+                assert service is None, (
+                    f"container-None exec fallback reached for named service {service!r}; "
+                    "a named service must resolve to a started compose container"
+                )
+                # Runs through the tool's own exec seam, which already stages
+                # stdio and preserves partial output under bash.
                 return exec_tool.exec_in_env_with_exit_code(command, timeout_s)
             # Reuse the shared docker-exec seam (EPIPE-safe staged stdio) rather
             # than a raw subprocess, selecting the shell for this service.
@@ -2195,19 +2219,22 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if trial_context is None:
             raise SubstrateUnreachableError(f"Trial {trial_id!r} not registered")
         bash_tool = first_env_exec_tool(trial_context.agent_tools.values())
-        if not isinstance(bash_tool, DockerComposeExecToolWrapper):
+        if not isinstance(bash_tool, SupportsServiceResolution):
             raise SubstrateUnreachableError(
                 f"Trial {trial_id!r}: artifact re-materialisation needs a compose-backed "
                 "env tool to resolve sibling containers; none was registered."
             )
         if bash_tool.container_name is None:
-            # The wrapper resolves sibling containers off its started state; before
-            # start() ``for_service`` raises, which would escape MaterialisePath as an
-            # unhandled gRPC error. Convert it to the ungradeable path other
-            # unresolved-container cases below take.
+            # No per-trial container is resolvable: the compose wrapper resolves
+            # siblings off its started state and ``for_service`` raises before
+            # start(), or the tool targets a local environment with no sibling
+            # containers. Convert either case to the ungradeable path the other
+            # unresolved-container cases below take rather than letting a
+            # RuntimeError escape MaterialisePath as an unhandled gRPC error.
             raise SubstrateUnreachableError(
-                f"Trial {trial_id!r}: the compose env tool has not started, so its "
-                "sibling containers cannot be resolved for materialisation."
+                f"Trial {trial_id!r}: the compose env tool has not started (or targets a "
+                "local environment), so its sibling containers cannot be resolved for "
+                "materialisation."
             )
         src_tool = bash_tool if src_service is None else bash_tool.for_service(src_service)
         dst_tool = bash_tool.for_service(dst_service)
@@ -2219,7 +2246,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 "(the per-trial stack is not up), so a path cannot be materialised."
             )
 
-        parent = os.path.dirname(path.rstrip("/")) or "/"
+        # Normalise a trailing slash off the path so ``data/`` and ``data`` name
+        # the same artifact. ``docker cp src:data/ -`` streams the directory's
+        # *contents* (no top-level ``data/`` tar member), which then extract under
+        # the parent as loose files (``/app/…`` instead of ``/app/data/…``) while
+        # every step still reports success — a silent wrong grade. One canonical
+        # form drives the probe, the destination wipe, the copy and the prune.
+        path = path.rstrip("/") or "/"
+        parent = os.path.dirname(path) or "/"
 
         def _run(argv: list[str], *, stdin: int | None = None, stdout: int | None = None):
             return subprocess.Popen(argv, stdin=stdin, stdout=stdout)
@@ -2279,10 +2313,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             src_proc = _run(
                 ["docker", "cp", f"{src_container}:{path}", "-"], stdout=subprocess.PIPE
             )
-            dst_proc = _run(
-                ["docker", "cp", "-", f"{dst_container}:{parent}"], stdin=src_proc.stdout
-            )
+            # ``dst_proc`` is built INSIDE the try whose finally kills both: if
+            # the second ``Popen`` raises (OSError/FileNotFoundError before any
+            # wait is reached) the already-started ``src_proc`` is still killed
+            # and reaped rather than orphaned. It stays None until built so the
+            # finally skips it when it never started.
+            dst_proc: subprocess.Popen | None = None
             try:
+                dst_proc = _run(
+                    ["docker", "cp", "-", f"{dst_container}:{parent}"], stdin=src_proc.stdout
+                )
                 if src_proc.stdout is not None:
                     src_proc.stdout.close()  # let src see SIGPIPE if dst exits early
                 dst_rc = dst_proc.wait(timeout=_MATERIALISE_PATH_TIMEOUT_S)
@@ -2290,8 +2330,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             finally:
                 # A stalled daemon (the case the timeout exists for) leaves a child
                 # hung; Popen does not reap on GC, so kill anything still running.
+                # ``dst_proc`` is None when its Popen construction raised — only
+                # ``src_proc`` is reaped then.
                 for proc in (src_proc, dst_proc):
-                    if proc.poll() is None:
+                    if proc is not None and proc.poll() is None:
                         proc.kill()
                         proc.wait()
             if src_rc != 0 or dst_rc != 0:
@@ -2305,7 +2347,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # a separator (e.g. ``build/*.o``) is a path-relative pattern, matched
             # against each entry's path under *path* via ``find -path`` so it takes
             # effect at all — ``-name`` would test only the basename and never match.
-            base = path.rstrip("/")
+            base = path
             for glob in exclude:
                 if "/" in glob:
                     match = ["-path", f"{base}/{glob}"]
@@ -2364,7 +2406,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         — which takes positional args only — invokes the kind synchronously
         off-loop. A raised :class:`GraderKindRefusedError` maps to
         ``pb2.GradeTrialResponse(success=False, error=exc.reason)``, byte-
-        parity with the pre-move tool-absent shape.
+        parity with the pre-move tool-absent shape. A
+        :class:`SubstrateUnreachableError` (collect / materialise /
+        run_test_suite transport failure) maps the same way, so a lost state
+        source books the trial ungradeable here just as the detached and CLI
+        lanes already translate it.
         """
         kind_cls = load_grader_kind(method_name)
         substrate = self._build_grading_substrate(
@@ -2384,6 +2430,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 grade = await asyncio.get_event_loop().run_in_executor(None, evaluate_call)
             except GraderKindRefusedError as exc:
                 return pb2.GradeTrialResponse(success=False, error=exc.reason)
+            except SubstrateUnreachableError as exc:
+                # The substrate lost its state source mid-grade (collect /
+                # materialise / run_test_suite transport failure). Book the
+                # trial ungradeable — success=False with the reason threaded
+                # through — matching the detached and CLI lanes, rather than
+                # letting it escape as an unhandled gRPC error.
+                return pb2.GradeTrialResponse(success=False, error=str(exc))
         finally:
             substrate.close()
 

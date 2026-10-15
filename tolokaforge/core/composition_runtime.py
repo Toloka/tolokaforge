@@ -92,12 +92,17 @@ class WriteComposeEnv:
 
     Present iff the composer explicitly requests it — run-scope stacks
     today do not write ``.env`` files, only trial-scope stacks do (they
-    seed the ``TOLOKAFORGE_TRIAL_ID`` variable + the ``stack_inputs`` map
+    seed the ``TOLOKAFORGE_TRIAL_SLUG`` variable + the ``stack_inputs`` map
     the compose file's ``${var}`` slots consume).
+
+    ``run_id`` scopes the per-trial container names by run so two concurrent
+    runs of the same task on one host do not collide; empty keeps the
+    historical trial-only name.
     """
 
     trial_id: str
     stack_inputs: Mapping[str, str]
+    run_id: str = ""
 
 
 @dataclass(frozen=True)

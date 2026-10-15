@@ -136,6 +136,7 @@ class DockerComposeMaterialiser:
                     temp_dir,
                     trial_id=ctx.write_compose_env.trial_id,
                     stack_inputs=ctx.write_compose_env.stack_inputs,
+                    run_id=ctx.write_compose_env.run_id,
                 )
             apply_network_policy_to_compose_file(
                 compose_file,
