@@ -175,7 +175,7 @@ def test_thread_mode_maps_each_failure_to_its_neutral_dispatch_error(
 # ---- Thread-mode control plane ---------------------------------------------
 
 
-def test_thread_status_runs_then_completes_and_retains_the_result() -> None:
+def test_thread_status_runs_then_completes_but_the_result_is_not_retained() -> None:
     release = threading.Event()
     entered = threading.Event()
 
@@ -195,17 +195,47 @@ def test_thread_status_runs_then_completes_and_retains_the_result() -> None:
         release.set()
         caller.join(timeout=10)
         assert adapter.status(handle).state is JobState.COMPLETED
-        # The retained result is the one the trial returned.
-        assert adapter.fetch_result(handle).trial_id == "t:0"
+        # The result was returned live from run_trial_node; thread mode keeps no
+        # durable copy, so fetch_result is the neutral "not retained" error while
+        # status still answers from the kept JobState.
         assert result_box[0].trial_id == "t:0"
-        # Retrieval is one-shot: the result is dropped after it is read, so a
-        # second fetch is the neutral "not retained" error, while status still
-        # answers from the kept JobState.
-        with pytest.raises(DispatchUnsupported, match="no result retained"):
+        with pytest.raises(DispatchUnsupported, match="not retained"):
             adapter.fetch_result(handle)
         assert adapter.status(handle).state is JobState.COMPLETED
     finally:
         release.set()
+        adapter.close()
+
+
+def test_thread_status_is_pending_while_queued_then_running_once_started() -> None:
+    occupy_entered = threading.Event()
+    occupy_release = threading.Event()
+
+    def run(inputs: TrialNodeInputs) -> TrialResult:
+        if inputs.trial_spec.trial_id == "t:0":
+            occupy_entered.set()
+            assert occupy_release.wait(timeout=10)
+        return _result(inputs.trial_spec.trial_id)
+
+    # One worker: the second trial is queued (PENDING) until the first frees it,
+    # then flips to RUNNING when a worker picks it up.
+    adapter = _thread_adapter(run, workers=1)
+    occupier = threading.Thread(target=lambda: adapter.run_trial_node(_inputs("t:0")))
+    queued = threading.Thread(target=lambda: _swallow(adapter.run_trial_node, _inputs("t:1")))
+    handle = JobHandle(trial_id="t:1")
+    try:
+        occupier.start()
+        assert occupy_entered.wait(timeout=10)
+        queued.start()
+        _wait_until(lambda: adapter.status(handle).state is JobState.PENDING)
+        # Still queued behind the single occupied worker.
+        assert adapter.status(handle).state is JobState.PENDING
+        occupy_release.set()
+        _wait_until(lambda: adapter.status(handle).state is JobState.COMPLETED)
+    finally:
+        occupy_release.set()
+        occupier.join(timeout=10)
+        queued.join(timeout=10)
         adapter.close()
 
 
@@ -219,8 +249,9 @@ def test_thread_status_is_failed_after_the_trial_raises() -> None:
             adapter.run_trial_node(_inputs())
         handle = JobHandle(trial_id="t:0")
         assert adapter.status(handle).state is JobState.FAILED
-        # A failed trial reads distinctly from one that never ran.
-        with pytest.raises(DispatchUnsupported, match="failed; no result retained"):
+        # Thread mode retains no result, so fetch_result is the neutral "not
+        # retained" error; status still reports the terminal FAILED state.
+        with pytest.raises(DispatchUnsupported, match="not retained"):
             adapter.fetch_result(handle)
     finally:
         adapter.close()
@@ -252,9 +283,10 @@ def test_thread_cancel_of_an_unstarted_job_marks_it_cancelled() -> None:
         occupier.start()
         assert occupy_entered.wait(timeout=10)
         queued.start()
-        # Wait until the queued job is in the table (still waiting for the worker).
+        # Wait until the queued job is in the table, still PENDING behind the one
+        # occupied worker so cancelling it genuinely stops it before it starts.
         handle = JobHandle(trial_id="t:1")
-        _wait_until(lambda: adapter.status(handle).state is JobState.RUNNING)
+        _wait_until(lambda: adapter.status(handle).state is JobState.PENDING)
 
         adapter.cancel(handle)
         assert adapter.status(handle).state is JobState.CANCELLED
@@ -265,10 +297,10 @@ def test_thread_cancel_of_an_unstarted_job_marks_it_cancelled() -> None:
         adapter.close()
 
 
-def test_thread_fetch_result_without_a_retained_result_is_unsupported() -> None:
+def test_thread_fetch_result_is_unsupported_because_nothing_is_retained() -> None:
     adapter = _thread_adapter(lambda inputs: _result(inputs.trial_spec.trial_id))
     try:
-        with pytest.raises(DispatchUnsupported, match="no result retained"):
+        with pytest.raises(DispatchUnsupported, match="not retained"):
             adapter.fetch_result(JobHandle(trial_id="missing:0"))
     finally:
         adapter.close()

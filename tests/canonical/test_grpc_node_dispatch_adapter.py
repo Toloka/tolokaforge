@@ -282,6 +282,15 @@ def test_status_is_running_while_a_lease_is_held_else_unknown() -> None:
     assert "lease" in status.detail
 
 
+def test_has_active_lease_is_the_public_lease_probe() -> None:
+    adapter = _adapter(_Factory())
+
+    # The public accessor other adapters read instead of touching ``_leases``.
+    assert adapter.has_active_lease("t:0") is False
+    adapter._leases["t:0"] = adapter.registry.lease("t:0")
+    assert adapter.has_active_lease("t:0") is True
+
+
 def test_factory_requires_a_nodes_list() -> None:
     with pytest.raises(ValueError, match="grpc_node"):
         load_dispatch_adapter("grpc_node")(DispatchAdapterBuildContext(config={}))
