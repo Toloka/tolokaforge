@@ -83,17 +83,25 @@ inherits the same lock."""
 
 
 _DB_PROBES_REFUSAL_FRAGMENT: str = (
-    "CompositeGraderKind cannot execute db_probes offline — the snapshot "
-    "substrate has no live postgres to query. Configure grader: runner_rpc "
-    "for this task to grade db_probes against the live runner, or regrade "
-    "with a components config that carries a pre-computed db_probe_score."
+    "snapshot substrate cannot serve db_probes offline — it has no live postgres "
+    "to query. Configure grader: runner_rpc for this task to grade db_probes "
+    "against the live runner, or regrade with a components config that carries a "
+    "pre-computed db_probe_score."
 )
-"""Up-front refusal for an offline recompute of a ``db_probes`` task. The
-offline substrate's :meth:`~tolokaforge.core.grading.substrate.SnapshotGradingSubstrate.db_probe`
-refuses with :class:`~tolokaforge.core.grading.substrate.SubstrateUnreachableError`;
-refusing here keeps the composite from attempting a recompute that could only
-end in that per-probe failure — an ungradeable task is refused cleanly rather
-than scored 0.0."""
+"""Up-front refusal for an offline recompute of a ``db_probes`` task.
+
+Carries the same ``cannot serve db_probes offline`` fragment the substrate-level
+refusal surfaces, so both offline lanes — this kinds-registry lane and
+:class:`~tolokaforge.grader.composite_dispatch.GraderCompositeDispatch` — emit
+one consistent message. The guard is kept (not removed in favour of the
+substrate refusal alone) because reaching that refusal through a full recompute
+would first rehydrate the trajectory, extract tool artifacts to disk, and run
+jsonpath grading — meaningful wasted work before the inevitable db_probe
+failure. The offline substrate's
+:meth:`~tolokaforge.core.grading.substrate.SnapshotGradingSubstrate.db_probe`
+would raise :class:`~tolokaforge.core.grading.substrate.SubstrateUnreachableError`
+with the identical fragment; refusing up front skips that wasted work and books
+the task ungradeable cleanly rather than scoring 0.0."""
 
 
 class CompositeGraderKind:

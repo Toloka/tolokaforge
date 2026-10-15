@@ -271,16 +271,30 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
     def RunDbProbe(  # noqa: N802
         self,
         request: pb2.RunDbProbeRequest,
-        context: grpc.ServicerContext,
+        context: grpc.ServicerContext,  # noqa: ARG002
     ) -> pb2.RunDbProbeResponse:
-        from tolokaforge.core.grading.db_probes import _fetch_probe_rows
+        """Run one read-only probe query and signal the two failure cases apart.
+
+        A transport/connection failure (the DB could not be reached) crosses as
+        ``unreachable=True`` so the client raises ``SubstrateUnreachableError``
+        (trial ungradeable); a query failure (the DB answered and rejected the
+        query) crosses as ``unreachable=False`` with ``error`` set so the client
+        raises a non-unreachable error the grader folds to a FAIL line. The
+        classification is the same :func:`is_db_transport_error` the in-process
+        lane uses, so both lanes book identical outcomes. The two cases ride the
+        response rather than a gRPC status code so the client reconstructs them
+        distinctly instead of collapsing both into one transport error.
+        """
+        from tolokaforge.core.grading.db_probes import _fetch_probe_rows, is_db_transport_error
 
         try:
             rows = self._runner._run_async(_fetch_probe_rows(request.dsn, request.query))
         except Exception as exc:
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(f"RunDbProbe failed: {type(exc).__name__}: {exc}")
-            return pb2.RunDbProbeResponse()
+            detail = f"RunDbProbe failed: {type(exc).__name__}: {exc}"
+            return pb2.RunDbProbeResponse(
+                unreachable=is_db_transport_error(exc),
+                error=detail,
+            )
         return pb2.RunDbProbeResponse(rows_json=json.dumps(rows, default=str))
 
     # ------------------------------------------------------------------

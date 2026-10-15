@@ -487,9 +487,19 @@ def test_db_probe_fails_and_reports_actual_value():
     assert "WRONG" in (reasons or "")
 
 
-def test_db_probe_connection_error_fails_loud():
+def test_db_probe_query_failure_fails_loud():
+    """A genuine query failure (the substrate reached the DB and the query was
+    rejected) reaches the backend as a non-unreachable exception —
+    :class:`DbProbeQueryError` — and folds to a per-probe FAIL line scoring 0.0.
+    Connection failures no longer reach the backend as themselves: the substrate
+    converts them to :class:`SubstrateUnreachableError` first (see the propagation
+    test below), so only query failures are folded here."""
+    from tolokaforge.core.grading.db_probes import DbProbeQueryError
+
     backend = DbProbesStateCheckBackend()
-    substrate = _StubProbeSubstrate(raises=ConnectionError("could not connect to app-db:5432"))
+    substrate = _StubProbeSubstrate(
+        raises=DbProbeQueryError('relation "corrective_actions" does not exist')
+    )
     probes = [
         {
             "name": "ca_exists",
@@ -503,7 +513,7 @@ def test_db_probe_connection_error_fails_loud():
     assert score == 0.0
     assert "FAIL: probe 'ca_exists'" in (reasons or "")
     assert "could not query postgres" in (reasons or "")
-    assert "ConnectionError" in (reasons or "")
+    assert "DbProbeQueryError" in (reasons or "")
 
 
 def test_db_probe_substrate_unreachable_propagates_not_laundered_to_fail():

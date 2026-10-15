@@ -247,7 +247,7 @@ def test_offline_dispatch_refuses_db_probes_rather_than_scoring_zero() -> None:
     )
     substrate = _OfflineV11Substrate(task_description=_minimal_task_description())
 
-    with pytest.raises(GraderKindRefusedError, match="cannot execute db_probes offline"):
+    with pytest.raises(GraderKindRefusedError, match="cannot serve db_probes offline"):
         CompositeGraderKind().evaluate(
             substrate=substrate,  # type: ignore[arg-type]
             task_config=task_config,

@@ -145,13 +145,16 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str | None, sourc
             "([dim]task-driven, resolved at orchestrator boot[/dim])"
         )
         console.print(
-            "[cyan]  → PerTrialRuntimeBackend if any task requires per-trial "
-            "isolation, else SharedStackRuntimeBackend[/cyan]"
+            "[cyan]  → SharedStackRuntimeBackend; per-trial mode when a task "
+            "requires per-trial isolation, shared mode otherwise[/cyan]"
         )
         return
+    # The composed auto path builds a SharedStackRuntimeBackend for both the
+    # ``shared`` and ``per_trial`` overrides — the difference is the backend's
+    # per-trial *mode*, not a distinct class. Name what is actually instantiated.
     backend_class = {
         "shared": "SharedStackRuntimeBackend",
-        "per_trial": "PerTrialRuntimeBackend",
+        "per_trial": "SharedStackRuntimeBackend (per-trial mode)",
     }.get(runtime_choice, runtime_choice)
     isolation_line = {
         "shared": (

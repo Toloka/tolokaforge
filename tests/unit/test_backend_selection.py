@@ -291,7 +291,8 @@ class TestConstructRuntimeBackend:
         """``"per_trial"`` on a pack where no task declares an
         ``environment_manifest`` cannot be satisfied — there is no per-trial
         environment to provision — so it fails loud instead of silently
-        degrading to the shared engine stack."""
+        degrading to the shared engine stack. The refusal is a PRE-FLIGHT check
+        (run before any auto-start), not inside ``_construct_runtime_backend``."""
         tasks = [_task_stub("t1")]
         task_descs = {"t1": make_task_description(task_id="t1", environment_manifest=None)}
         with warnings.catch_warnings():
@@ -299,11 +300,7 @@ class TestConstructRuntimeBackend:
             orch = _make_orchestrator(tasks, task_descs, run_config_kwargs={"runtime": "per_trial"})
 
         with pytest.raises(RuntimeError, match="per_trial.*environment_manifest"):
-            orch._construct_runtime_backend(
-                runner_address="sentinel:50051",
-                env_manifest=None,
-                run_id="test-run",
-            )
+            orch._preflight_validate_runtime_override()
 
     def test_shared_override_without_manifest_still_builds_backend(self) -> None:
         """The ``per_trial`` guard must not fire for ``shared`` — a manifest-less

@@ -303,3 +303,76 @@ def test_auto_start_failure_destroys_the_stack(
         orch.run()
 
     assert stack.destroyed is True
+
+
+# ---------------------------------------------------------------------------
+# run() closes the runtime backend on every exit path (no leaked gRPC channel)
+# ---------------------------------------------------------------------------
+
+
+class _CloseCountingBackend(InMemoryRuntimeBackend):
+    """Counts close() calls so the test can assert exactly-once on success and
+    at-least-once on a mid-run failure."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+
+class _CloseCountingHealthRaisingBackend(_CloseCountingBackend):
+    """Connects cleanly, then raises mid-run at the health probe — the window a
+    leaked runtime backend would otherwise escape through."""
+
+    def health_check(self) -> bool:
+        raise RuntimeError("health boom")
+
+
+class TestRunClosesRuntimeBackend:
+    def test_success_path_closes_exactly_once(self, tmp_path: Path) -> None:
+        backend = _CloseCountingBackend()
+        orch = _build_orchestrator(tmp_path=tmp_path, runtime_backend=backend)
+
+        orch.run()
+
+        assert backend.close_calls == 1
+
+    def test_mid_run_failure_still_closes(self, tmp_path: Path) -> None:
+        backend = _CloseCountingHealthRaisingBackend()
+        orch = _build_orchestrator(tmp_path=tmp_path, runtime_backend=backend)
+
+        with pytest.raises(RuntimeError, match="health boom"):
+            orch.run()
+
+        assert backend.close_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# per_trial-without-manifest is refused PRE-FLIGHT, before any auto-start
+# ---------------------------------------------------------------------------
+
+
+def test_per_trial_without_manifest_refuses_before_auto_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--runtime per_trial`` on a pack where no task declares an
+    environment_manifest fails fast — before the Docker stack is ever brought
+    up. The stack factories raise if reached, so the test proves no bring-up."""
+    orch = _build_orchestrator(
+        tmp_path=tmp_path,
+        runtime_backend=InMemoryRuntimeBackend(),
+        auto_start_services=True,
+    )
+    orch.config.orchestrator.runtime = "per_trial"
+
+    def _never(**kwargs: Any) -> Any:
+        raise AssertionError("auto-start must not run: pre-flight should refuse first")
+
+    monkeypatch.setattr("tolokaforge.docker.stacks.core_stack", _never)
+    monkeypatch.setattr("tolokaforge.docker.stacks.full_stack", _never)
+
+    with pytest.raises(RuntimeError, match="per_trial.*requires at least one task"):
+        orch.run()

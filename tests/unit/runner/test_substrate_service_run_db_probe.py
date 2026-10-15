@@ -19,6 +19,7 @@ import grpc
 import pytest
 
 from tolokaforge.core.grading import db_probes as db_probes_module
+from tolokaforge.core.grading.db_probes import DbProbeQueryError
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.substrate_client import GrpcSubstrateClient
 from tolokaforge.runner import (
@@ -91,9 +92,13 @@ def test_empty_result_set_returns_empty_list(
     assert rows == []
 
 
-def test_servicer_exception_becomes_substrate_unreachable(
+def test_unreachable_db_becomes_substrate_unreachable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A transport failure over the wire reconstructs as SubstrateUnreachableError
+    (trial ungradeable) — the detached half of the taxonomy. ConnectionError is
+    an OSError, which the servicer classifies as unreachable."""
+
     async def failing_fetch(dsn: str, query: str) -> list[dict[str, object]]:  # noqa: ARG001
         raise ConnectionError("could not connect to app-db:5432")
 
@@ -105,6 +110,30 @@ def test_servicer_exception_becomes_substrate_unreachable(
             client = GrpcSubstrateClient(channel, trial_id="unused")
             with pytest.raises(SubstrateUnreachableError):
                 client.run_db_probe("postgresql://x", "SELECT ...")
+    finally:
+        _stop(runner, server)
+
+
+def test_query_failure_becomes_db_probe_query_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A query failure over the wire reconstructs as DbProbeQueryError — NOT
+    SubstrateUnreachableError — so the backend folds it to a FAIL line and the
+    trial stays gradeable. A non-OSError exception is classified query-failure."""
+
+    async def failing_fetch(dsn: str, query: str) -> list[dict[str, object]]:  # noqa: ARG001
+        raise RuntimeError('relation "corrective_actions" does not exist')
+
+    monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", failing_fetch)
+
+    runner, server, port = _running_servicer()
+    try:
+        with grpc.insecure_channel(f"localhost:{port}") as channel:
+            client = GrpcSubstrateClient(channel, trial_id="unused")
+            with pytest.raises(DbProbeQueryError) as excinfo:
+                client.run_db_probe("postgresql://x", "SELECT ...")
+            assert not isinstance(excinfo.value, SubstrateUnreachableError)
+            assert "does not exist" in str(excinfo.value)
     finally:
         _stop(runner, server)
 

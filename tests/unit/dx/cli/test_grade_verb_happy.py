@@ -25,7 +25,12 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from tests.unit.dx.cli.conftest import _FixedScoreKind, _RefusingTestKind, canned_grade
+from tests.unit.dx.cli.conftest import (
+    _FixedScoreKind,
+    _NoVerdictKind,
+    _RefusingTestKind,
+    canned_grade,
+)
 from tolokaforge.core.models.grade import Grade
 from tolokaforge.dx.cli.main import cli
 
@@ -77,6 +82,42 @@ def test_grade_verb_writes_grade_json_from_fixture_kind(
     grade_path = out_dir / "grade.json"
     assert grade_path.exists()
     assert _read_grade(grade_path) == canned_grade()
+
+
+def test_grade_verb_no_verdict_writes_defined_zero_grade(
+    runner: CliRunner,
+    tmp_path: Path,
+    stored_bundle: tuple[str, Path],
+    register_grader_kind: Callable[[str, type], None],
+) -> None:
+    """A kind returning None is a first-class no-verdict outcome, not an error.
+    The offline lane books it as a defined zero-score grade and exits 0 — the
+    same semantics the live runner lane uses — rather than exiting 1."""
+    uri, store_root = stored_bundle
+    register_grader_kind(_NoVerdictKind.NAME, _NoVerdictKind)
+    out_dir = tmp_path / "out"
+
+    result = runner.invoke(
+        cli,
+        [
+            "grade",
+            uri,
+            "--grader-kind",
+            _NoVerdictKind.NAME,
+            "--store-config",
+            str(_store_yaml(store_root, tmp_path)),
+            "--out",
+            str(out_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, (result.stderr, result.stdout)
+    grade_path = out_dir / "grade.json"
+    assert grade_path.exists()
+    grade = _read_grade(grade_path)
+    assert grade.binary_pass is False
+    assert grade.score == 0.0
+    assert "no verdict" in (grade.reasons if isinstance(grade.reasons, str) else "")
 
 
 def test_grade_verb_reports_refusal_and_exits_one(

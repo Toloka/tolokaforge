@@ -621,8 +621,14 @@ class TrialContextRuntime:
         task_description: TaskDescription,
         default_timeout: float = 30.0,
         judge_model_config: ModelConfig | None = None,
+        run_id: str = "",
     ):
         self.trial_id = trial_id
+        # Carried from the TrialSpec so per-trial compose container names can be
+        # scoped by run — two concurrent runs of the same task share a trial_id
+        # and would otherwise collide on container names / reuse one stack. Empty
+        # keeps the historical trial-only name.
+        self.run_id = run_id
         self.task_description = task_description
         self.agent_tools: dict[str, Callable] = {}
         self.user_tools: dict[str, Callable] = {}
@@ -1222,6 +1228,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             task_description=task_description,
             default_timeout=request.default_tool_timeout_s or DEFAULT_TOOL_TIMEOUT_S,
             judge_model_config=trial_spec.judge_model_config,
+            run_id=trial_spec.run_id,
         )
 
         # A task that provisions no database (e.g. an adapter grading via
@@ -1331,6 +1338,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 search_tool_name=search_config.tool_name,
                 search_index=search_index,
                 artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
+                run_id=trial_context.run_id,
             )
 
             # Set domain on DB proxy so search_policy tools can resolve
@@ -1382,6 +1390,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_id=trial_id,
             artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
             work_dir=AGENT_WORK_DIR,
+            run_id=trial_context.run_id,
         )
         for tool in (*trial_context.agent_tools.values(), *trial_context.user_tools.values()):
             if getattr(tool, "has_lifecycle", False):
@@ -2151,9 +2160,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         container = getattr(exec_tool, "container_name", None)
         try:
             if container is None:
-                # No resolvable sibling container (a non-compose executor): run
-                # through the tool's own exec seam, which already stages stdio
-                # and preserves partial output under bash.
+                # No resolvable sibling container (a non-compose executor). This
+                # is reachable only for ``service=None`` — the agent's own
+                # container: ``exec_tool_for_service`` resolves a NAMED service
+                # exclusively through a started compose wrapper (whose
+                # ``container_name`` is set) and otherwise returns a
+                # ``service_reason`` refused above. The agent's own exec seam runs
+                # under bash, matching ``shell == "bash"`` here; assert the
+                # invariant so a future named-service non-compose executor cannot
+                # silently mis-shell through this fallback.
+                assert service is None, (
+                    f"container-None exec fallback reached for named service {service!r}; "
+                    "a named service must resolve to a started compose container"
+                )
+                # Runs through the tool's own exec seam, which already stages
+                # stdio and preserves partial output under bash.
                 return exec_tool.exec_in_env_with_exit_code(command, timeout_s)
             # Reuse the shared docker-exec seam (EPIPE-safe staged stdio) rather
             # than a raw subprocess, selecting the shell for this service.
@@ -2279,10 +2300,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             src_proc = _run(
                 ["docker", "cp", f"{src_container}:{path}", "-"], stdout=subprocess.PIPE
             )
-            dst_proc = _run(
-                ["docker", "cp", "-", f"{dst_container}:{parent}"], stdin=src_proc.stdout
-            )
+            # ``dst_proc`` is built INSIDE the try whose finally kills both: if
+            # the second ``Popen`` raises (OSError/FileNotFoundError before any
+            # wait is reached) the already-started ``src_proc`` is still killed
+            # and reaped rather than orphaned. It stays None until built so the
+            # finally skips it when it never started.
+            dst_proc: subprocess.Popen | None = None
             try:
+                dst_proc = _run(
+                    ["docker", "cp", "-", f"{dst_container}:{parent}"], stdin=src_proc.stdout
+                )
                 if src_proc.stdout is not None:
                     src_proc.stdout.close()  # let src see SIGPIPE if dst exits early
                 dst_rc = dst_proc.wait(timeout=_MATERIALISE_PATH_TIMEOUT_S)
@@ -2290,8 +2317,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             finally:
                 # A stalled daemon (the case the timeout exists for) leaves a child
                 # hung; Popen does not reap on GC, so kill anything still running.
+                # ``dst_proc`` is None when its Popen construction raised — only
+                # ``src_proc`` is reaped then.
                 for proc in (src_proc, dst_proc):
-                    if proc.poll() is None:
+                    if proc is not None and proc.poll() is None:
                         proc.kill()
                         proc.wait()
             if src_rc != 0 or dst_rc != 0:

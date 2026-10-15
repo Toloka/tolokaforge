@@ -1,4 +1,4 @@
-"""Grade bundle format v1.0 — reader, producer, and manifest schema.
+"""Grade bundle format v1.1 — reader, producer, and manifest schema.
 
 A grade bundle is a manifest-first, part-addressable, content-addressable
 directory carrying everything a grader needs to score one trial without a
@@ -11,22 +11,31 @@ this module ships the Python reader + producer both sides use.
 Layout::
 
     <bundle_dir>/
-      manifest.json           # schema v1.0 — written LAST, canonical bytes
+      manifest.json           # schema v1.1 — written LAST, canonical bytes
       initial_state.json      # required
       final_state.json        # required
       final_state_stable.json # required
       trajectory.json         # required
       grading_config.json     # required
       filesystem.tar          # required — USTAR, no PAX extensions
+      task_description.json   # optional (v1.1) — enables offline recompute
+      judge_model_config.json # optional (v1.1) — enables offline llm_judge
       checks/                 # optional subtree
         manifest.json         # per-file digests inside checks/
         <rel-path>            # each file digested by checks/manifest.json
       kb/                     # optional subtree — same shape as checks/
 
-Manifest schema v1.0::
+The two v1.1 JSON parts are written only when the producer is handed them
+(``serialize_grade_bundle``'s keyword-only ``task_description`` /
+``judge_model_config``); a v1.0-shape caller omits both and the bytes are
+identical to what the v1.0 producer wrote. They feed the offline
+``CompositeGraderKind.evaluate`` recompute path via
+``SnapshotGradingSubstrate.task_description()`` / ``judge_model_config()``.
+
+Manifest schema v1.1::
 
     {
-      "schema_version": "1.0",
+      "schema_version": "1.1",
       "trial_id": "<opaque str>",
       "parts": {
         "<rel path>": {"sha256": "<hex>", "size": <int>},

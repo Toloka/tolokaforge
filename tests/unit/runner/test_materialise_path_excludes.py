@@ -280,6 +280,55 @@ def test_docker_cp_transport_failure_books_trial_ungradeable(
         )
 
 
+def test_dst_popen_failure_reaps_started_src_proc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If the first ``docker cp`` (src) starts but the second (dst) ``Popen``
+    construction raises, the already-running src child must be killed and reaped,
+    not orphaned. Locks the partial-start cleanup: the failure still surfaces as
+    an ungradeable, and the src proc saw kill()+wait()."""
+    _install_fake_subprocess(monkeypatch)  # probe PRESENT, rm/mkdir succeed
+
+    class _TrackedSrcProc:
+        def __init__(self) -> None:
+            self.stdout = MagicMock()
+            self.killed = False
+            self.waited = False
+
+        def poll(self) -> int | None:
+            # Still running until killed, so the finally kill-branch fires.
+            return 0 if self.killed else None
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002 — scripted
+            self.waited = True
+            return 0
+
+    src_proc = _TrackedSrcProc()
+    calls = {"n": 0}
+
+    def popen_src_then_raise(argv: list[str], **_: object) -> object:  # noqa: ARG001 — scripted
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return src_proc
+        raise OSError("dst docker cp could not spawn")
+
+    monkeypatch.setattr(service_module.subprocess, "Popen", popen_src_then_raise)
+    svc = _service_with_started_tool()
+
+    with pytest.raises(SubstrateUnreachableError, match="materialising"):
+        svc._materialise_path(
+            src_service=None,
+            dst_service="verifier",
+            path="/app/output",
+            exclude=(),
+            trial_id="t-1",
+        )
+
+    assert calls["n"] == 2, "the dst Popen must have been attempted"
+    assert src_proc.killed and src_proc.waited, "the started src proc must be killed and reaped"
+
+
 def test_programming_bug_in_materialise_propagates_not_masked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -311,6 +360,35 @@ def test_unstarted_env_tool_surfaces_as_ungradeable(monkeypatch: pytest.MonkeyPa
     with pytest.raises(SubstrateUnreachableError, match="has not started"):
         svc._materialise_path(
             src_service=None,
+            dst_service="verifier",
+            path="/app/output",
+            exclude=(),
+            trial_id="t-1",
+        )
+
+
+def test_non_compose_env_tool_surfaces_clear_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cross-container copy hard-requires a compose-backed executor. A trial whose
+    env tool is NOT compose-backed fails with a CLEAR, actionable
+    SubstrateUnreachableError naming the requirement — not a bare RuntimeError or
+    AttributeError from reaching for a sibling resolver the tool does not have."""
+    _install_fake_subprocess(monkeypatch)
+    svc = _StubRunnerServiceImpl()
+
+    class _NonComposeExecTool:
+        """Satisfies SupportsEnvExec but is not a DockerComposeExecToolWrapper."""
+
+        def exec_in_env(self, command: str, timeout_s: float) -> str:  # noqa: ARG002
+            return ""
+
+        def exec_in_env_with_exit_code(self, command: str, timeout_s: float):  # noqa: ARG002
+            return (0, "")
+
+    svc.trials["t-1"] = SimpleNamespace(agent_tools={"bash": _NonComposeExecTool()})
+
+    with pytest.raises(SubstrateUnreachableError, match="compose-backed"):
+        svc._materialise_path(
+            src_service="main",
             dst_service="verifier",
             path="/app/output",
             exclude=(),

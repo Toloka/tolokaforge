@@ -1477,6 +1477,28 @@ class Orchestrator:
                 return True
         return False
 
+    def _preflight_validate_runtime_override(self) -> None:
+        """Refuse an impossible ``orchestrator.runtime`` override before auto-start.
+
+        Per-trial isolation is materialised from each task's declared
+        ``environment_manifest`` (the composer provisions a trial-scoped
+        substrate from it). With no manifest anywhere in the pack there is no
+        per-trial environment to provision, so ``runtime='per_trial'`` cannot be
+        honoured. Fail loud here — a pre-flight run before the service auto-start
+        — so the operator does not pay for a full Docker stack bring-up only to
+        have the backend refuse once it is up and have the stack torn straight
+        back down.
+        """
+        override = self.config.orchestrator.runtime
+        if override == "per_trial" and not self._any_task_declares_environment_manifest():
+            raise RuntimeError(
+                "orchestrator.runtime='per_trial' requires at least one task to declare "
+                "an environment_manifest describing the per-trial substrate, but none of "
+                "the tasks in this run declare one, so per-trial isolation cannot be "
+                "provisioned. Remove the override to run on the shared engine stack, or "
+                "add an environment_manifest to the task(s)."
+            )
+
     def _coerce_plan_shape_for_override(self, override: str | None) -> None:
         """Rewrite every task's resolved plan ``stack_scope`` to match the
         operator's ``orchestrator.runtime`` coercion knob.
@@ -1675,21 +1697,10 @@ class Orchestrator:
             runtime_choice = override
             source = f"override:{override}"
 
-        # Per-trial isolation is materialised from each task's declared
-        # ``environment_manifest`` (the composer provisions a trial-scoped
-        # substrate from it). With no manifest anywhere in the pack there is
-        # no per-trial environment to provision, so the override cannot be
-        # honoured — fail loud instead of silently degrading to the shared
-        # engine stack.
-        if override == "per_trial" and not self._any_task_declares_environment_manifest():
-            raise RuntimeError(
-                "orchestrator.runtime='per_trial' requires at least one task to declare "
-                "an environment_manifest describing the per-trial substrate, but none of "
-                "the tasks in this run declare one, so per-trial isolation cannot be "
-                "provisioned. Remove the override to run on the shared engine stack, or "
-                "add an environment_manifest to the task(s)."
-            )
-
+        # The per_trial-without-manifest refusal is a PRE-FLIGHT check
+        # (:meth:`_preflight_validate_runtime_override`) run before any auto-start,
+        # so the operator fails fast without a Docker stack bring-up. It is not
+        # repeated here.
         factory = load_runtime_backend(runtime_choice)
         adapter_type = (
             self.config.evaluation.harness_adapter.type
@@ -3146,6 +3157,12 @@ class Orchestrator:
         # declarations fail loud before we touch docker.
         run_env_manifest = self._extract_run_env_manifest()
 
+        # Fail fast on an impossible runtime override (e.g. --runtime per_trial on
+        # a pack where no task declares a manifest) BEFORE any Docker auto-start,
+        # so the operator is not charged a full stack bring-up for a run that
+        # cannot be honoured.
+        self._preflight_validate_runtime_override()
+
         # Auto-start services via EngineStack if configured
         service_stack = None
         if self.config.orchestrator.auto_start_services:
@@ -3367,13 +3384,17 @@ class Orchestrator:
         # close). The rest of the sequential teardown lives inside the try
         # body — a mid-run exception still surfaces to the caller after
         # cleanup.
+        #
+        # Bound to None before the try so the finally can close it on every exit
+        # path — a mid-run exception between connect and the normal return must
+        # not leak the backend's gRPC channel.
+        runtime_backend: RuntimeBackend | None = None
         try:
             # Resolve the runtime backend: injected for tests / alternate
             # backends, default :class:`SharedStackRuntimeBackend` otherwise.
             if runner_address is None:
                 runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
-            runtime_backend: RuntimeBackend
             if self._injected_runtime_backend is not None:
                 runtime_backend = self._injected_runtime_backend
             else:
@@ -3706,15 +3727,11 @@ class Orchestrator:
                     total_cost_usd=round(total_cost_usd, 6),
                 )
 
-            # Cleanup runtime backend if used; SharedStackRuntimeBackend
-            # logs its own "Shared-stack runtime closed" line, no dup needed.
-            if runtime_backend:
-                runtime_backend.close()
-
-            # TypeSense teardown and EngineStack destroy run in the ``finally``
-            # below (``_teardown_engine_services``), which stops TypeSense
-            # before destroying the stack and fires on every exit path — not
-            # only this success path.
+            # Runtime-backend close now runs in the ``finally`` below, so a
+            # mid-run exception cannot leak its gRPC channel. TypeSense teardown
+            # and EngineStack destroy run there too (``_teardown_engine_services``,
+            # which stops TypeSense before destroying the stack), on every exit
+            # path — not only this success path.
 
             # Publish completeness and generate reports before stamping the
             # run as completed, so ``run_state.json``'s completion gates are
@@ -3745,6 +3762,17 @@ class Orchestrator:
             # export thread is a daemon and would otherwise die with the last batch unsent.
             self._finish_tracing(output_dir)
             self._close_trial_graders()
+            # Close the runtime backend's client channel before tearing down the
+            # engine containers it talks to. Runs on every exit path (success and
+            # mid-run failure) so the gRPC channel never leaks; guarded so a close
+            # failure does not mask the engine-stack teardown below, and skipped
+            # when connect never produced a backend. close() is itself safe to
+            # call once here (the success-path close was removed).
+            if runtime_backend is not None:
+                try:
+                    runtime_backend.close()
+                except Exception as e:  # noqa: BLE001 — teardown must not raise past caller
+                    self.logger.warning("Failed to close runtime backend", error=str(e))
             # Tear down the auto-started engine services last so a failure
             # anywhere above still releases the fixed-name EngineStack
             # containers and ``runner-net`` instead of leaking them.
@@ -3861,6 +3889,7 @@ class Orchestrator:
         # not the EXECUTOR_ADDRESS a worker reads from its own env. Fail loud
         # rather than silently connect to a stale/wrong address.
         run_env_manifest = self._extract_run_env_manifest()
+        self._preflight_validate_runtime_override()
         if run_env_manifest is not None and self._injected_runtime_backend is None:
             raise RuntimeError(
                 "Distributed worker mode does not currently support runs with "

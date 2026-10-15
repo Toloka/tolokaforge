@@ -127,17 +127,20 @@ class DbProbesStateCheckBackend:
     :func:`~tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_state_checks`.
 
     A probe passes iff every ``expect`` assertion passes (JSONPath score
-    1.0); the component score is the fraction of passing probes. A genuine
-    per-probe query failure — asyncpg connection error, a bad query, a row
-    the substrate could read but could not shape — is caught and reported as
-    a ``FAIL`` line naming the exception, matching the shipped fail-loud
-    contract locked by
-    ``tests/unit/test_runner_jsonpath_grading.py::test_db_probe_connection_error_fails_loud``.
-    A :class:`~tolokaforge.core.grading.substrate.SubstrateUnreachableError`
-    is the exception: it means the substrate cannot reach its state source at
-    all (the offline snapshot substrate refuses ``db_probe`` this way), so it
-    propagates rather than being laundered into a ``FAIL`` line that scores
-    0.0 — the trial is booked ungradeable instead.
+    1.0); the component score is the fraction of passing probes.
+
+    The backend routes on one distinction, consistent across every substrate:
+    a :class:`~tolokaforge.core.grading.substrate.SubstrateUnreachableError`
+    means the DB could not be reached at all — the substrate raises it for a
+    transport/connection failure (connection refused, DSN down) and the offline
+    snapshot substrate raises it because it has no live DB. The backend
+    re-raises it so the trial is booked *ungradeable* rather than laundered into
+    a ``FAIL`` line that scores a real 0.0. Every other per-probe exception is a
+    genuine *query* failure — a bad query, a missing table, a row the substrate
+    read but could not shape — and folds to a ``FAIL`` line naming the
+    exception (the probe scores 0.0, the trial stays gradeable). The substrate's
+    ``db_probe`` makes this split before the exception reaches here, so the two
+    outcomes are identical on the in-process, detached, and offline lanes.
     Empty probe list returns the ``(None, None)`` sentinel every backend
     ships for "nothing to score".
     """
