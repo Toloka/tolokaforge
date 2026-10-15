@@ -7,7 +7,7 @@ import shutil
 import socket
 import tempfile
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -43,7 +43,8 @@ from tolokaforge.core.compose_materialisation import (
     run_needs_docker_cli,
 )
 from tolokaforge.core.conductor import ConductorFactory
-from tolokaforge.core.dispatch.adapter import DispatchAdapter
+from tolokaforge.core.dispatch.adapter import ControllableDispatchAdapter, DispatchAdapter
+from tolokaforge.core.dispatch.control import JobHandle
 from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
     write_engine_run_state,
@@ -3481,6 +3482,11 @@ class Orchestrator:
         # rest of the existing sequential teardown lives inside the try
         # body — a mid-run exception still surfaces to the caller after the
         # units are closed.
+        #
+        # ``active_futures`` lives out here, not in the worker-pool block below,
+        # so the dispatch cancel-on-stop hook in ``finally`` can read whatever
+        # leases are still in flight on an abrupt exit.
+        active_futures: dict[Any, AttemptLease] = {}
         try:
             executor_healthy = (
                 runtime_backend.health_check() if runtime_backend is not None else True
@@ -3546,7 +3552,6 @@ class Orchestrator:
 
             # Run tasks with parallel workers using the durable queue.
             with ThreadPoolExecutor(max_workers=self.config.effective_workers) as executor:
-                active_futures: dict[Any, AttemptLease] = {}
 
                 def submit_one() -> bool:
                     if budget_exhausted:
@@ -3820,6 +3825,10 @@ class Orchestrator:
             # and the dispatch adapter. SharedStackRuntimeBackend logs its own
             # "Shared-stack runtime closed" line, no dup needed; the local dispatch
             # adapter's and spawning registry's close() are idempotent.
+            if self._is_dispatch_run() and isinstance(
+                dispatch_adapter, ControllableDispatchAdapter
+            ):
+                self._cancel_active_dispatch_jobs(dispatch_adapter, active_futures.values())
             if runtime_backend is not None:
                 runtime_backend.close()
             if dispatch_adapter is not None:
@@ -3848,6 +3857,27 @@ class Orchestrator:
             self.logger.warning("Live tracing export incomplete", **summary)
         else:
             self.logger.info("Live tracing export complete", **summary)
+
+    def _cancel_active_dispatch_jobs(
+        self, adapter: ControllableDispatchAdapter, leases: Iterable[AttemptLease]
+    ) -> None:
+        """Ask the dispatch backend to cancel every still-in-flight job.
+
+        Fired as the run stops (budget-exhausted drain, ``KeyboardInterrupt`` or
+        an explicit stop) so a backend that can stop a job does not keep it
+        running past the orchestrator. Each cancel is isolated: one failure logs
+        and the rest still run.
+        """
+        for lease in leases:
+            try:
+                adapter.cancel(JobHandle(trial_id=f"{lease.task_id}:{lease.trial_index}"))
+            except Exception as exc:  # noqa: BLE001 — one job's cancel must not stop the others
+                self.logger.warning(
+                    "Cancelling the dispatched job failed; continuing",
+                    task_id=lease.task_id,
+                    trial_index=lease.trial_index,
+                    error=str(exc),
+                )
 
     def _close_trial_units(self) -> None:
         """Release every trial execution unit built during this orchestrator's
