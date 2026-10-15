@@ -34,6 +34,8 @@ def test_list_builtins_covers_every_consumer_today():
         "list_dir",
         # session-lifetime persistent shell (#566)
         "bash_session",
+        # its batching sibling: an array of commands against the same session
+        "bash_session_batch",
         # str-replace editor (#567)
         "str_replace_editor",
         # agent completion signal

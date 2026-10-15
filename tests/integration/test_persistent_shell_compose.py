@@ -207,3 +207,40 @@ async def test_wrapper_tells_the_agent_about_resets_and_exits(running_container)
         assert (await wrapper.execute({"command": "echo back"})).strip() == "back"
     finally:
         wrapper.stop()
+
+
+async def test_wrapper_batches_commands_against_one_compose_session(running_container):
+    """``bash_session_batch`` over the real daemon: state carries within a call
+    and into the next, and a shell exit mid-array does not stop the rest."""
+    schema = ToolSchema(
+        name="bash_session_batch",
+        description="x",
+        parameters={
+            "type": "object",
+            "properties": {
+                "note": {"type": "string"},
+                "commands": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
+            },
+        },
+        tool_config={"service": _SERVICE, "compose_project_prefix": _PREFIX},
+    )
+    wrapper = PersistentShellToolWrapper(schema)
+    wrapper.start(ToolLifecycleContext(trial_id=_TRIAL_ID))
+    try:
+        assert wrapper.own_budget_s == 1200.0
+        out = await wrapper.execute(
+            {
+                "note": "n",
+                "commands": ["mkdir -p /tmp/batch", "cd /tmp/batch", "export TOKEN=xyz", "pwd"],
+            }
+        )
+        assert out.endswith("$ pwd\n/tmp/batch\n")
+        # The next call inherits both the cwd and the export.
+        assert "/tmp/batch" in await wrapper.execute({"note": "n", "commands": ["pwd"]})
+        assert "xyz" in await wrapper.execute({"note": "n", "commands": ["echo $TOKEN"]})
+
+        exited = await wrapper.execute({"note": "n", "commands": ["exit 3", "echo survived"]})
+        assert "shell exited with exit code 3" in exited
+        assert "survived" in exited
+    finally:
+        wrapper.stop()

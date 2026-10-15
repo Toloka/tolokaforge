@@ -205,7 +205,9 @@ def _tasks_need_playwright(tasks: list[Any]) -> bool:
 # + socket bind-mount treatment (see ``_run_needs_docker_cli`` and the
 # ``mount_docker_socket`` seam threaded through
 # :class:`tolokaforge.core.plugin_registry.RuntimeBackendBuildContext`).
-_COMPOSE_VARIANT_TOOL_NAMES: frozenset[str] = frozenset({"bash_session", "str_replace_editor"})
+_COMPOSE_VARIANT_TOOL_NAMES: frozenset[str] = frozenset(
+    {"bash_session", "bash_session_batch", "str_replace_editor"}
+)
 
 
 def _tasks_use_compose_variant_tools(tasks: list[Any]) -> bool:

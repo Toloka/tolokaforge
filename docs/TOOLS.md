@@ -8,6 +8,7 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
 - `mobile`: Mobile app interaction tool (tap/type/scroll/app switching).
 - `bash`: Allowlisted shell execution.
 - `bash_session`: Persistent bash shell; cwd, environment, and functions persist across calls.
+- `bash_session_batch`: The same persistent shell, taking an array of commands per call.
 - `str_replace_editor`: View, create, and edit files with `view`/`create`/`str_replace`/`insert`.
 - `read_file`: Read from `/env/fs/agent-visible`.
 - `write_file`: Write to `/env/fs/agent-visible`.
@@ -178,7 +179,45 @@ compose file does not need to (and should not) supply the socket bind.
 
 **When to use.** Prefer `bash_session` for multi-step workflows that need a
 persistent cwd, environment, or shell functions across turns. Use the legacy
-per-call [`bash`](#built-in-tools) for one-shot allowlisted commands.
+per-call [`bash`](#built-in-tools) for one-shot allowlisted commands. Where a
+turn costs more than a command does, prefer `bash_session_batch`.
+
+### `bash_session_batch`
+
+`bash_session` driven by an array of commands rather than one, so a turn can
+carry every command the agent has already decided on.
+
+**Input schema**
+
+- `note` (string, required): the agent's per-turn note. Nothing executes it; it
+  is recorded with the other arguments in `tool_log.yaml`.
+- `commands` (array of string, required): the commands to run in order, at most
+  10 per call.
+- `restart` (boolean): discard session state before the array runs.
+
+**Session semantics.** One held shell serves the whole array and every later
+call, so cwd, environment, functions and anything sourced carry from each
+command to the next and on into the following call. This is the only difference
+from `bash_batch`, whose calls take the same shape and discard shell state
+between commands.
+
+**Failures do not halt the array.** A command that fails carries its
+`[exit code: <n>]`; one that times out carries its timeout note; one that ends
+the shell carries the session-reset note and the next command runs in a
+reopened shell — each exactly as the same command would read on its own call.
+Only a shell that will not reopen stops the array, and the commands it did not
+reach are named unrun.
+
+**Timeout.** `tool_config.timeout_s` (default 120 s) is the per-command
+ceiling, and the call's band is that ceiling times the array size the schema
+declares — the budget those commands would have had one call at a time. A
+command at the tail runs on whatever is left of the band and its timeout note
+names the budget that actually applied. Once the band is spent the remaining
+commands are reported unrun rather than silently dropped.
+
+**Output.** Each command's output is returned as a `$ <command>` block,
+middle-truncated at 16384 characters per command as `bash_session` does, with
+the blocks joined by a blank line.
 
 ### `str_replace_editor`
 

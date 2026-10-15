@@ -120,6 +120,7 @@ Engine-loop mode gives the agent one shell, and `agent_tool` picks which:
 | `bash` (default) | `bash` | One `docker exec` per call. Working directory, exported variables and shell state are discarded after every command. |
 | `bash_session` | `bash_session` | One `docker exec` bash session held for the trial. Working directory, environment and shell functions persist across calls; `restart: true` resets them. |
 | `bash_batch` | `bash_batch` | An array of up to 10 commands per call, each its own `docker exec`, run in order. State is discarded between commands exactly as under `bash`; the array changes how many run per turn. A failing command does not stop the ones after it. Each command gets the same per-command budget `bash` applies, and the call stops once the whole band is spent — commands it did not reach are named in the output. The call also carries a required `note` string, the agent's per-turn note; nothing executes it, and it is recorded with the other arguments in `tool_log.yaml`. |
+| `bash_session_batch` | `bash_session_batch` | `bash_batch`'s call shape against `bash_session`'s held session: an array of up to 10 commands per call, run in order, with working directory, environment, shell functions and anything sourced persisting from one command to the next *and* into the following call. A command that fails, times out or ends the shell does not stop the ones after it — the result says what happened and the next command runs in a reopened shell. `restart: true` resets the session before the array runs. Required `note`, per-command budget and spent-band reporting are `bash_batch`'s. |
 
 ```yaml
   harness_adapter:
@@ -129,11 +130,16 @@ Engine-loop mode gives the agent one shell, and `agent_tool` picks which:
       agent_tool: "bash_session"
 ```
 
-Both tools exec into the same per-trial agent container and grade identically
-— the task's verifier reads container state, not the transcript.
-`bash_session` requires engine-loop mode: a coding-harness CLI runs the whole
-trial inside a single tool call, so there is no sequence of calls for a session
-to persist across, and the adapter refuses the combination at construction.
+All four tools exec into the same per-trial agent container and grade
+identically — the task's verifier reads container state, not the transcript.
+Every value other than `bash` requires engine-loop mode: a coding-harness CLI
+runs the whole trial inside a single tool call, so there is neither a sequence
+of calls for a session to persist across nor a turn for an array to batch, and
+the adapter refuses the combination at construction.
+
+`bash_batch` and `bash_session_batch` present the same call shape and differ
+only in whether shell state survives, so a run that swaps one for the other
+measures statefulness alone.
 
 ### Letting the agent stop — `agent_completion_tool`
 

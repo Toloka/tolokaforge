@@ -89,10 +89,14 @@ AGENT_TOOL_BASH_SESSION = "bash_session"
 AGENT_TOOL_BASH_BATCH = "bash_batch"
 """An array of commands per call, each its own ``docker exec``: no state survives."""
 
+AGENT_TOOL_BASH_SESSION_BATCH = "bash_session_batch"
+"""An array of commands per call against one held session: state survives every one."""
+
 AGENT_TOOLS: tuple[str, ...] = (
     AGENT_TOOL_BASH,
     AGENT_TOOL_BASH_SESSION,
     AGENT_TOOL_BASH_BATCH,
+    AGENT_TOOL_BASH_SESSION_BATCH,
 )
 """Values ``adapter_params.agent_tool`` accepts, default first."""
 
@@ -580,8 +584,8 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             block = {"enabled": [AGENT_TOOL_BASH_BATCH]}
         else:
             block = {
-                "enabled": [AGENT_TOOL_BASH_SESSION],
-                AGENT_TOOL_BASH_SESSION: self._persistent_shell_tool_config(task_id),
+                "enabled": [self.agent_tool],
+                self.agent_tool: self._persistent_shell_tool_config(task_id),
             }
         if self.agent_completion_tool:
             block["enabled"] = [*block["enabled"], SUBMIT_TOOL_NAME]
@@ -622,13 +626,14 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     def agent_shell_tool_schema(self, task_id: str) -> ToolSchema:
         """This run's shell tool, as the runner reconstructs it.
 
-        ``bash`` carries a ``docker_compose_exec`` :class:`ToolSource`, which
-        the runner's factory routes to its compose-exec wrapper. ``bash_session``
-        carries no source at all: the factory dispatches a sourceless tool by
-        name through the builtin registry, where the name resolves to the
-        persistent shell. Its advertised parameters come from the registered
-        tool class rather than a copy, so the schema the model sees cannot
-        drift from the one the wrapper implements.
+        ``bash`` and ``bash_batch`` carry a ``docker_compose_exec``
+        :class:`ToolSource`, which the runner's factory routes to its
+        compose-exec wrapper. The two session tools carry no source at all: the
+        factory dispatches a sourceless tool by name through the builtin
+        registry, where the name resolves to the persistent shell. Their
+        advertised parameters come from the registered tool class rather than a
+        copy, so the schema the model sees cannot drift from the one the
+        wrapper implements.
         """
         if self.agent_tool == AGENT_TOOL_BASH_BATCH:
             return ToolSchema(
@@ -653,15 +658,22 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 )
             )
         tool_config = self._persistent_shell_tool_config(task_id)
-        function = builtin_registry.get_class(AGENT_TOOL_BASH_SESSION)(**tool_config).get_schema()[
+        function = builtin_registry.get_class(self.agent_tool)(**tool_config).get_schema()[
             "function"
         ]
+        parameters = function["parameters"]
+        # ``timeout_s`` is the band one call gets. The batching session tool
+        # declares a ``commands`` array, so its band is the per-command ceiling
+        # times however many commands that array holds — the same arithmetic
+        # the batching one-shot tool's declaration uses.
+        max_items = ((parameters.get("properties") or {}).get("commands") or {}).get("maxItems")
+        timeout_s = tool_config["timeout_s"] * (max_items if isinstance(max_items, int) else 1)
         return ToolSchema(
-            name=AGENT_TOOL_BASH_SESSION,
+            name=self.agent_tool,
             description=function["description"],
-            parameters=function["parameters"],
+            parameters=parameters,
             category="compute",
-            timeout_s=tool_config["timeout_s"],
+            timeout_s=timeout_s,
             tool_config=tool_config,
         )
 

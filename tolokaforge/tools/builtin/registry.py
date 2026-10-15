@@ -102,6 +102,10 @@ _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
         BuiltinToolEntry("tolokaforge.tools.persistent_shell", "PersistentShellTool"),
         Dispatch.PERSISTENT_SHELL,
     ),
+    "bash_session_batch": (
+        BuiltinToolEntry("tolokaforge.tools.persistent_shell", "PersistentShellBatchTool"),
+        Dispatch.PERSISTENT_SHELL,
+    ),
     "str_replace_editor": (
         BuiltinToolEntry("tolokaforge.tools.str_replace_editor", "StrReplaceEditorTool"),
         Dispatch.EDITOR,

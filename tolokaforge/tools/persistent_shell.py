@@ -50,6 +50,12 @@ from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResul
 _DEFAULT_TIMEOUT_S = 120.0
 _OPEN_TIMEOUT_S = 15.0
 
+# How many commands one ``bash_session_batch`` call may carry. Mirrors
+# ``tolokaforge_coding_harnesses.adapter_support.MAX_BATCH_COMMANDS``: the two
+# tools are compared against each other, so a call of one must be able to hold
+# what a call of the other holds.
+MAX_SESSION_BATCH_COMMANDS = 10
+
 # Middle-truncation budget for a single command's output.
 _MAX_OUTPUT_CHARS = 16384
 _HEAD_CHARS = 8192
@@ -683,5 +689,101 @@ class PersistentShellTool(Tool):
     def execute(self, **kwargs: Any) -> ToolResult:
         raise NotImplementedError(
             "PersistentShellTool is a schema provider; execution is handled by "
+            "PersistentShellToolWrapper on the runner."
+        )
+
+
+class PersistentShellBatchTool(Tool):
+    """Schema provider for the ``bash_session_batch`` tool.
+
+    The batching sibling of :class:`PersistentShellTool`, and the stateful
+    sibling of ``bash_batch``. One call carries an array of up to
+    :data:`MAX_SESSION_BATCH_COMMANDS` commands which run in order against the
+    trial's single held shell, so cwd, environment, functions and anything
+    sourced carry from one command to the next and on into the following call.
+
+    The parameter shape — a required ``note`` ahead of a required ``commands``
+    array — is ``bash_batch``'s, so the two tools differ in statefulness and
+    nothing else. Execution is handled by the runner-side wrapper, not here.
+
+    ``__init__`` accepts and ignores the wrapper's ``tool_config`` keys for the
+    same reason :class:`PersistentShellTool` does: the adapter builds the
+    schema provider as ``cls(**tool_config)``.
+    """
+
+    def __init__(
+        self,
+        service: str | None = None,
+        timeout_s: float | None = None,
+        compose_project_prefix: str | None = None,
+        **_: object,
+    ) -> None:
+        super().__init__(
+            name="bash_session_batch",
+            description=(
+                "Run bash commands inside the task container, in order. All "
+                "commands share one persistent shell: the working directory, "
+                "exported environment variables, shell functions and anything "
+                "you `source` persist from one command to the next and across "
+                "calls, as do files, installed packages and running services. "
+                "A command that fails does not stop the ones after it, and "
+                "every command's output comes back labelled in one result. "
+                "Default to several commands per call: running one at a time "
+                "when more were already decided wastes a turn — editing a file "
+                "and then running its tests is one call, and so is a batch of "
+                "independent reads. Start a new call only when the next "
+                "command truly depends on reading this one's output."
+            ),
+            policy=ToolPolicy(timeout_s=_DEFAULT_TIMEOUT_S, category=ToolCategory.COMPUTE),
+        )
+
+    def get_schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "note": {
+                            "type": "string",
+                            "description": (
+                                "A sentence or two: what the last output actually "
+                                "showed, what is still left, and what you expect "
+                                "these commands to produce."
+                            ),
+                        },
+                        "commands": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "maxItems": MAX_SESSION_BATCH_COMMANDS,
+                            "description": (
+                                "Shell commands to run in order, at most "
+                                f"{MAX_SESSION_BATCH_COMMANDS} per call. Prefer to send "
+                                "several here at once; start a new call only when "
+                                "the next command depends on reading this call's "
+                                "output."
+                            ),
+                        },
+                        "restart": {
+                            "type": "boolean",
+                            "description": (
+                                "Discard all session state — working directory, "
+                                "environment variables and shell functions — before "
+                                "these commands run."
+                            ),
+                        },
+                    },
+                    "required": ["note", "commands"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+    def execute(self, **kwargs: Any) -> ToolResult:
+        raise NotImplementedError(
+            "PersistentShellBatchTool is a schema provider; execution is handled by "
             "PersistentShellToolWrapper on the runner."
         )

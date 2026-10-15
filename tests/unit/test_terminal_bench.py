@@ -3121,6 +3121,72 @@ class TestTerminalBenchAgentToolSelection:
             == f"tbench_echo-hello_0_{schema.tool_config['service']}"
         )
 
+    # -- bash_session_batch --------------------------------------------------
+
+    def test_bash_session_batch_enables_the_batching_persistent_shell(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path, agent_tool="bash_session_batch")
+
+        block = adapter.get_task("echo-hello").tools.agent
+        schema = adapter.to_task_description("echo-hello").agent_tools[0]
+
+        assert block["enabled"] == ["bash_session_batch"]
+        assert block["bash_session_batch"] == schema.tool_config
+        assert schema.name == "bash_session_batch"
+        assert schema.source is None
+        assert set(schema.parameters["properties"]) == {"note", "commands", "restart"}
+        assert schema.parameters["required"] == ["note", "commands"]
+        # Per-command ceiling stays the session default; the declared band is
+        # that ceiling times the array the schema was sized for.
+        assert schema.tool_config["timeout_s"] == 120.0
+        assert schema.timeout_s == 1200.0
+
+    def test_bash_session_batch_builds_the_persistent_shell_wrapper(self, fixture_dir, tmp_path):
+        from tolokaforge.runner.tool_factory import PersistentShellToolWrapper
+
+        adapter = self._adapter(fixture_dir, tmp_path, agent_tool="bash_session_batch")
+        schema = adapter.to_task_description("echo-hello").agent_tools[0]
+
+        factory = ToolFactory(db_client=MagicMock(), trial_id="echo-hello:0")
+        wrapper = factory._create_wrapper(schema)
+
+        assert isinstance(wrapper, PersistentShellToolWrapper)
+        assert wrapper.declared_batch_size == 10
+        assert wrapper.own_budget_s == 1200.0
+        assert wrapper.effective_timeout_s == 1205.0
+
+    def test_bash_session_batch_differs_from_bash_batch_only_in_state(self, fixture_dir, tmp_path):
+        """The experiment's lock: the two batching tools must present the same
+        call shape, so a run that swaps one for the other changes statefulness
+        and nothing else the model can see."""
+        batch = self._adapter(fixture_dir, tmp_path, agent_tool="bash_batch")
+        session_batch = self._adapter(fixture_dir, tmp_path, agent_tool="bash_session_batch")
+
+        a = batch.to_task_description("echo-hello").agent_tools[0]
+        b = session_batch.to_task_description("echo-hello").agent_tools[0]
+
+        assert a.parameters["required"] == b.parameters["required"]
+        for key in ("note", "commands"):
+            assert a.parameters["properties"][key] == b.parameters["properties"][key]
+        assert a.timeout_s == b.timeout_s
+        sentences_a = a.description.split(". ")
+        sentences_b = b.description.split(". ")
+        assert len(sentences_a) == len(sentences_b)
+        differing = [i for i in range(len(sentences_a)) if sentences_a[i] != sentences_b[i]]
+        assert differing == [1]
+        assert "persist from one command to the next" in sentences_b[1]
+
+    def test_bash_session_batch_rejected_under_a_coding_harness(self, fixture_dir, tmp_path):
+        with pytest.raises(
+            ValueError, match=r"agent_tool 'bash_session_batch' requires agent_harness"
+        ):
+            self._adapter(
+                fixture_dir,
+                tmp_path,
+                agent_tool="bash_session_batch",
+                agent_harness="claude-code",
+                agent_model="m",
+            )
+
     def test_grading_is_unchanged_by_the_tool_selection(self, fixture_dir, tmp_path):
         """``test_execution`` reads the verifier's reward out of the container;
         it never looks at which tool the agent was given."""
@@ -3137,7 +3203,11 @@ class TestTerminalBenchAgentToolSelection:
 
     def test_unknown_agent_tool_rejected_at_construction(self, fixture_dir, tmp_path):
         with pytest.raises(
-            ValueError, match=r"agent_tool 'tmux'.*\['bash', 'bash_session', 'bash_batch'\]"
+            ValueError,
+            match=(
+                r"agent_tool 'tmux'.*"
+                r"\['bash', 'bash_session', 'bash_batch', 'bash_session_batch'\]"
+            ),
         ):
             self._adapter(fixture_dir, tmp_path, agent_tool="tmux")
 

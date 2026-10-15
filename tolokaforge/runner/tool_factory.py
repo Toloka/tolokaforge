@@ -261,6 +261,21 @@ class ToolWrapper(ABC):
         return None
 
     @property
+    def declared_batch_size(self) -> int:
+        """How many commands this tool's declared schema sizes one call for.
+
+        A schema whose ``commands`` array names ``maxItems`` was sized for a
+        batch of that many; one that names none was not sized for a batch at
+        all, and answers 1. Wrappers that batch read the number here and apply
+        it in whichever direction their budget is declared.
+        """
+        properties = (self.tool_schema.parameters or {}).get("properties") or {}
+        max_items = (properties.get("commands") or {}).get("maxItems")
+        if not isinstance(max_items, int) or max_items < 1:
+            return 1
+        return max_items
+
+    @property
     def effective_timeout_s(self) -> float:
         """The band the runner's backstop applies to a call on this tool.
 
@@ -1519,6 +1534,37 @@ def _docker_exec_plan(container: str, command: str, user: str | None = None) -> 
     )
 
 
+def _validate_batch_commands(tool_name: str, commands: Any) -> list[str]:
+    """Return *commands* as a list of strings, or raise naming what was wrong."""
+    if not isinstance(commands, list) or not all(isinstance(c, str) for c in commands):
+        # Raised, not returned: a returned string is a successful call to the
+        # recorder, and a malformed argument is a failed one.
+        raise ToolExecutionError(
+            tool_name,
+            "`commands` must be an array of strings, one shell command per "
+            f"element — got {type(commands).__name__}. Nothing was run. Re-send the "
+            'call with a JSON array, e.g. {"commands": ["ls -la", "cat f.txt"]}.',
+        )
+    return commands
+
+
+def _batch_section(command: str, output: str) -> str:
+    """One command's labelled block inside a batched result."""
+    return f"$ {command}\n{output}"
+
+
+def _unrun_batch_sections(commands: list[str], index: int, note: str) -> list[str]:
+    """Sections naming every command from *index* on as not run.
+
+    The first carries *note* saying why; the rest are bare, so the agent sees
+    which commands it still owes without reading the same reason N times.
+    """
+    return [
+        _batch_section(commands[index], note),
+        *(_batch_section(later, "[not run]") for later in commands[index + 1 :]),
+    ]
+
+
 class DockerComposeExecToolWrapper(ToolWrapper):
     """Execute a command inside an already-running compose service via ``docker exec``.
 
@@ -1568,15 +1614,7 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         if commands is None:
             command = arguments.get("command", "")
             return await loop.run_in_executor(None, self.exec_in_env, command, self.own_budget_s)
-        if not isinstance(commands, list) or not all(isinstance(c, str) for c in commands):
-            # Raised, not returned: a returned string is a successful call to the
-            # recorder, and a malformed argument is a failed one.
-            raise ToolExecutionError(
-                self.name,
-                "`commands` must be an array of strings, one shell command per "
-                f"element — got {type(commands).__name__}. Nothing was run. Re-send the "
-                'call with a JSON array, e.g. {"commands": ["ls -la", "cat f.txt"]}.',
-            )
+        commands = _validate_batch_commands(self.name, commands)
         return await loop.run_in_executor(
             None, self._exec_batch_in_env, commands, self.own_budget_s
         )
@@ -1587,17 +1625,13 @@ class DockerComposeExecToolWrapper(ToolWrapper):
 
         A batch exists to replace N sequential single-command calls, so each of
         its commands gets what one of those calls would have got. The declared
-        ``timeout_s`` bands the whole array, and the schema's ``maxItems`` says
-        how many commands that band was sized for — their ratio is the per-
-        command ceiling. A schema that names no ``maxItems`` has not been sized
-        for a batch, so the whole budget goes to each command and the running
-        total still stops the array.
+        ``timeout_s`` bands the whole array, and
+        :attr:`~ToolWrapper.declared_batch_size` says how many commands that
+        band was sized for — their ratio is the per-command ceiling. A schema
+        that names no ``maxItems`` answers 1 there, so the whole budget goes to
+        each command and the running total still stops the array.
         """
-        properties = (self.tool_schema.parameters or {}).get("properties") or {}
-        max_items = (properties.get("commands") or {}).get("maxItems")
-        if not isinstance(max_items, int) or max_items < 1:
-            return self.own_budget_s
-        return self.own_budget_s / max_items
+        return self.own_budget_s / self.declared_batch_size
 
     def exec_in_env(self, command: str, timeout_s: float) -> str:
         """Run ``command`` in the trial container and return its output.
@@ -1627,11 +1661,14 @@ class DockerComposeExecToolWrapper(ToolWrapper):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 unrun = len(commands) - index
-                sections.append(
-                    f"$ {command}\n[not run — the {timeout_s:g}s budget for this "
-                    f"call was spent; {unrun} command(s) remain]"
+                sections.extend(
+                    _unrun_batch_sections(
+                        commands,
+                        index,
+                        f"[not run — the {timeout_s:g}s budget for this "
+                        f"call was spent; {unrun} command(s) remain]",
+                    )
                 )
-                sections.extend(f"$ {later}\n[not run]" for later in commands[index + 1 :])
                 break
             plan = self._exec_plan(command)
             output = _run_argv_preserving_partial_output(
@@ -1639,7 +1676,7 @@ class DockerComposeExecToolWrapper(ToolWrapper):
                 min(per_command_s, remaining),
                 partial_output_argv=plan.partial_output_argv,
             )
-            sections.append(f"$ {command}\n{output}")
+            sections.append(_batch_section(command, output))
         return "\n\n".join(sections)
 
     def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
@@ -1668,12 +1705,19 @@ class DockerComposeExecToolWrapper(ToolWrapper):
 
 
 class PersistentShellToolWrapper(ToolWrapper):
-    """Runner-side executor for the session-lifetime ``bash_session`` tool.
+    """Runner-side executor for the session-lifetime shell tools.
+
+    Serves both ``bash_session`` and ``bash_session_batch``, branching on
+    whether the call carries a ``commands`` array — the same way
+    :class:`DockerComposeExecToolWrapper` serves ``bash`` and ``bash_batch``.
+    A batch runs its commands in order against the one held session, so it
+    behaves exactly as that many sequential single-command calls would.
 
     Holds one bash session for the trial: ``start()`` opens it (seeding the
     working directory from :class:`ToolLifecycleContext`), ``execute()`` runs
     commands or restarts the shell, and ``stop()`` tears it down. State (cwd,
-    environment, functions) persists across ``execute()`` calls.
+    environment, functions) persists across commands and across ``execute()``
+    calls.
 
     A command that ends the shell itself (``exit``, ``set -e`` and a failure,
     ``exec``) closes the session; the result says so, and the next command
@@ -1716,7 +1760,14 @@ class PersistentShellToolWrapper(ToolWrapper):
 
     @property
     def own_budget_s(self) -> float:
-        return self._timeout_s
+        """The band one call gets: the per-command ceiling times the batch size.
+
+        ``bash_session`` declares no ``commands`` array, so its batch size is 1
+        and the band is the per-command ceiling unchanged. A batch of N gets
+        what those N commands would have got one call at a time, matching
+        ``bash_batch``'s declared band.
+        """
+        return self._timeout_s * self.declared_batch_size
 
     def start(self, ctx: "ToolLifecycleContext") -> None:
         self._trial_id = ctx.trial_id
@@ -1736,18 +1787,76 @@ class PersistentShellToolWrapper(ToolWrapper):
     async def execute(self, arguments: dict[str, Any]) -> str:
         if self._session is None:
             raise ToolExecutionError(self.name, "bash session not started")
-        if arguments.get("restart"):
-            return await self._restart()
-        command = arguments.get("command")
-        if command is None:
-            raise ToolExecutionError(
-                self.name, "bash_session requires either 'command' or 'restart'"
-            )
+        commands = arguments.get("commands")
+        if commands is None:
+            if arguments.get("restart"):
+                return await self._restart()
+            command = arguments.get("command")
+            if command is None:
+                raise ToolExecutionError(
+                    self.name, "bash_session requires either 'command' or 'restart'"
+                )
+            loop = asyncio.get_event_loop()
+            if not self._session.is_open:
+                await loop.run_in_executor(None, self._session.open, self._cwd)
+            result = await loop.run_in_executor(None, self._session.run, command, self._timeout_s)
+            return self._format_result(result)
+
+        commands = _validate_batch_commands(self.name, commands)
+        # Restart first so one call can both discard a poisoned shell and use
+        # the clean one, rather than spending a turn on each.
+        sections = [await self._restart()] if arguments.get("restart") else []
         loop = asyncio.get_event_loop()
-        if not self._session.is_open:
-            await loop.run_in_executor(None, self._session.open, self._cwd)
-        result = await loop.run_in_executor(None, self._session.run, command, self._timeout_s)
-        return self._format_result(result)
+        body = await loop.run_in_executor(None, self._run_batch, commands, self.own_budget_s)
+        sections.append(body)
+        return "\n\n".join(sections)
+
+    def _run_batch(self, commands: list[str], timeout_s: float) -> str:
+        """Run *commands* in order against the held session, labelling each.
+
+        The deadline spans the whole array and each command is additionally
+        bounded by the per-command ceiling, so a batch can overrun its band by
+        at most one command — the same tail a single call already has.
+
+        A command that ends or resets the shell does not stop the ones after
+        it: the result says what happened and the next command opens a fresh
+        shell, exactly as the next single-command call would. A shell that will
+        not reopen can run nothing, so the remainder is reported unrun.
+        """
+        if not commands:
+            return ""
+        assert self._session is not None
+        deadline = time.monotonic() + timeout_s
+        sections: list[str] = []
+        for index, command in enumerate(commands):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                unrun = len(commands) - index
+                sections.extend(
+                    _unrun_batch_sections(
+                        commands,
+                        index,
+                        f"[not run — the {timeout_s:g}s budget for this "
+                        f"call was spent; {unrun} command(s) remain]",
+                    )
+                )
+                break
+            if not self._session.is_open:
+                try:
+                    self._session.open(self._cwd)
+                except Exception as exc:  # noqa: BLE001 - reported to the agent
+                    sections.extend(
+                        _unrun_batch_sections(
+                            commands,
+                            index,
+                            f"[not run — the shell could not be reopened: {exc}]",
+                        )
+                    )
+                    break
+            budget = min(self._timeout_s, remaining)
+            result = self._session.run(command, budget)
+            sections.append(_batch_section(command, self._format_result(result, budget)))
+        return "\n\n".join(sections)
 
     def exec_in_env(self, command: str, timeout_s: float) -> str:
         """Run ``command`` in the trial's environment and return its output.
@@ -1824,17 +1933,21 @@ class PersistentShellToolWrapper(ToolWrapper):
         "directory, environment variables and shell functions are gone"
     )
 
-    def _format_result(self, result: CommandResult) -> str:
+    def _format_result(self, result: CommandResult, timeout_s: float | None = None) -> str:
+        # A command at the tail of a batch runs on what is left of the call's
+        # band rather than the full per-command ceiling, so the note has to
+        # name the budget that actually applied to it.
+        applied_s = self._timeout_s if timeout_s is None else timeout_s
         if result.shell_exited:
             code = "" if result.exit_code is None else f" with exit code {result.exit_code}"
             return f"{result.output}\n[the shell exited{code}. {self._SESSION_RESET_NOTE}]"
         if result.timed_out:
             if result.session_reset:
                 return (
-                    f"{result.output}\n[timed out after {self._timeout_s:g}s. "
+                    f"{result.output}\n[timed out after {applied_s:g}s. "
                     f"{self._SESSION_RESET_NOTE}; the command may still be running]"
                 )
-            return f"{result.output}\n[timed out after {self._timeout_s:g}s; command terminated]"
+            return f"{result.output}\n[timed out after {applied_s:g}s; command terminated]"
         if result.exit_code not in (0, None):
             return f"{result.output}\n[exit code: {result.exit_code}]"
         return result.output
