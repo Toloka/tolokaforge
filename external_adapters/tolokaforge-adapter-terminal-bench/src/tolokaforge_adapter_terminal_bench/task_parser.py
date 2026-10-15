@@ -4,11 +4,65 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import tomllib
 import yaml
+
+
+class TaskShape(Enum):
+    """Where a terminal-bench task runs its verifier.
+
+    The axis that actually changed across terminal-bench versions is verifier
+    placement, not the version number, so the adapter dispatches on this rather
+    than on a release label. A new shape slots in as one more member plus a rule
+    in :func:`detect_shape`; call sites branch on the member they care about.
+
+    * ``SINGLE_CONTAINER`` — Terminal-Bench 2.1 and earlier: the suite runs inside
+      the agent's own container, reading its reward from a shared log path.
+    * ``SEPARATE_VERIFIER`` — Terminal-Bench 3.0 and 4.0: the suite runs in a
+      dedicated verifier container built from ``tests/Dockerfile``, into which the
+      task's declared ``artifacts`` are re-materialised from the agent container
+      first. Separate-verifier mode was introduced at 3.0; 4.0 is the same format
+      with task resources recalibrated, so both load through this one shape.
+    """
+
+    SINGLE_CONTAINER = "single_container"
+    SEPARATE_VERIFIER = "separate_verifier"
+
+
+def detect_shape(
+    *, environment_mode: str | None, artifacts: list[Any], has_tests_dockerfile: bool
+) -> TaskShape:
+    """The task's shape, from the three independent separate-verifier markers.
+
+    Any one of a shipped ``tests/Dockerfile``, ``[verifier].environment_mode``
+    set to ``"separate"``, or top-level ``artifacts`` means the suite runs in its
+    own container; a task carrying none of them is the single-container shape. The
+    markers are OR-ed, not required together, because a real converted task may
+    carry only a subset. The mode is matched on the value ``"separate"``, not on
+    presence — ``environment_mode = "shared"`` is the single-container mode and
+    must not be read as a separate-verifier marker.
+    """
+    if has_tests_dockerfile or environment_mode == "separate" or bool(artifacts):
+        return TaskShape.SEPARATE_VERIFIER
+    return TaskShape.SINGLE_CONTAINER
+
+
+@dataclass(frozen=True)
+class TerminalBenchArtifact:
+    """A path the separate verifier reads out of the agent's container.
+
+    Declared top-level in a v4 ``task.toml``. ``source`` is the absolute path of
+    a state root in the agent container; ``exclude`` lists glob patterns the task
+    does not want carried across (caches, regenerable build output). For the
+    single-container 2.1 shape this list is empty.
+    """
+
+    source: str
+    exclude: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -38,6 +92,24 @@ class TerminalBenchTask:
     """
     cpus: float = 2
     memory_mb: int = 4096
+    environment_mode: str | None = None
+    """How the task runs its verifier: ``"separate"`` for a task whose tests run
+    in their own container, ``None`` for the single-container shape whose tests
+    run in the agent's container. Read from ``[verifier].environment_mode``.
+    """
+    artifacts: list[TerminalBenchArtifact] = field(default_factory=list)
+    """State roots the separate verifier re-materialises from the agent container.
+
+    Empty for the single-container shape, which has no container boundary to
+    carry files across.
+    """
+    has_tests_dockerfile: bool = False
+    """Whether the task ships ``tests/Dockerfile``, i.e. a self-contained verifier
+    image. One of the three markers that identify the separate-verifier shape."""
+    shape: TaskShape = TaskShape.SINGLE_CONTAINER
+    """Where this task runs its verifier; see :class:`TaskShape`. Derived from the
+    three markers at discovery, so call sites dispatch on one field rather than
+    re-deriving the rule. Defaults to the single-container shape."""
     harness_skills_dir: str | None = None
     """Task-relative directory of skills the pack ships for a coding-harness
     CLI, as ``task.yaml`` declared it, or ``None`` when it declares none.
@@ -48,6 +120,15 @@ class TerminalBenchTask:
     — one more image layer under the shipped default. The bundle rides with the
     task rather than with the operator's home directory, so what the agent could
     read is versioned alongside the tests it is scored against."""
+
+    @property
+    def is_v4(self) -> bool:
+        """Whether this task runs its tests in a separate verifier container.
+
+        A convenience over :attr:`shape` for the common separate-verifier check;
+        the suite runs in its own container rather than the agent's.
+        """
+        return self.shape is TaskShape.SEPARATE_VERIFIER
 
 
 def _load_task_yaml(task_dir: Path) -> dict[str, Any]:
@@ -138,6 +219,51 @@ def _parse_verifier_timeout(task_id: str, data: Mapping[str, Any]) -> float | No
     return float(declared)
 
 
+def _parse_artifacts(task_id: str, toml_data: Mapping[str, Any]) -> list[TerminalBenchArtifact]:
+    """State roots the separate verifier re-materialises, from top-level ``artifacts``.
+
+    Each entry is either a bare string path or a table with a ``source`` key and
+    an optional ``exclude`` list. ``artifacts`` is deliberately read from the top
+    level, not from ``[verifier]``: a nested table is dropped on the wire, so a
+    task that put it there would silently lose its re-materialisation set.
+    """
+    declared = toml_data.get("artifacts")
+    if declared is None:
+        return []
+    if not isinstance(declared, list):
+        raise ValueError(
+            f"terminal-bench task {task_id!r}: top-level artifacts must be a list; "
+            f"got {declared!r}."
+        )
+    parsed: list[TerminalBenchArtifact] = []
+    for entry in declared:
+        if isinstance(entry, str):
+            parsed.append(TerminalBenchArtifact(source=entry))
+            continue
+        if isinstance(entry, Mapping):
+            source = entry.get("source")
+            if not isinstance(source, str) or not source.strip():
+                raise ValueError(
+                    f"terminal-bench task {task_id!r}: each artifact table needs a "
+                    f"non-blank 'source'; got {entry!r}."
+                )
+            exclude_raw = entry.get("exclude", [])
+            if not isinstance(exclude_raw, list) or not all(
+                isinstance(x, str) for x in exclude_raw
+            ):
+                raise ValueError(
+                    f"terminal-bench task {task_id!r}: artifact 'exclude' for {source!r} "
+                    f"must be a list of strings; got {exclude_raw!r}."
+                )
+            parsed.append(TerminalBenchArtifact(source=source, exclude=list(exclude_raw)))
+            continue
+        raise ValueError(
+            f"terminal-bench task {task_id!r}: each artifact must be a path string or a "
+            f"table with a 'source' key; got {entry!r}."
+        )
+    return parsed
+
+
 def _find_compose(task_dir: Path) -> Path | None:
     """The task's compose file, or ``None`` when it declares one container.
 
@@ -201,6 +327,31 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
         verifier = toml_data.get("verifier", {})
         environment = toml_data.get("environment", {})
 
+        environment_mode = verifier.get("environment_mode")
+        if environment_mode is not None and not isinstance(environment_mode, str):
+            raise ValueError(
+                f"terminal-bench task {task_id!r}: verifier.environment_mode must be a "
+                f"string; got {environment_mode!r}."
+            )
+
+        artifacts = _parse_artifacts(task_id, toml_data)
+        has_tests_dockerfile = (task_dir / "tests" / "Dockerfile").is_file()
+        shape = detect_shape(
+            environment_mode=environment_mode,
+            artifacts=artifacts,
+            has_tests_dockerfile=has_tests_dockerfile,
+        )
+        if shape is TaskShape.SEPARATE_VERIFIER and not has_tests_dockerfile:
+            # The verifier container is built from ``tests/Dockerfile``; a task that
+            # declares the separate-verifier shape (via artifacts or environment_mode)
+            # without shipping it cannot be run. Fail here with the reason rather than
+            # letting the per-trial compose build die on a missing Dockerfile.
+            raise ValueError(
+                f"terminal-bench task {task_id!r}: declares the separate-verifier shape "
+                "(top-level artifacts or verifier.environment_mode='separate') but ships no "
+                "tests/Dockerfile to build its verifier container from."
+            )
+
         tasks[task_id] = TerminalBenchTask(
             task_id=task_id,
             task_dir=task_dir,
@@ -212,6 +363,10 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
             verifier_timeout_sec=_parse_verifier_timeout(task_id, verifier),
             cpus=environment.get("cpus", 2),
             memory_mb=environment.get("memory_mb", 4096),
+            environment_mode=environment_mode,
+            artifacts=artifacts,
+            has_tests_dockerfile=has_tests_dockerfile,
+            shape=shape,
             harness_skills_dir=_parse_harness_skills_dir(task_id, task_dir, yaml_data),
         )
 

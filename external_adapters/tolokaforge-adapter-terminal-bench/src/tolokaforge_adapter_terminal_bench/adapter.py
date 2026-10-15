@@ -459,6 +459,14 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     expected_image_ref=env.agent_image,
                 )
             )
+            if env.verifier_service is not None and env.verifier_image is not None:
+                builds.append(
+                    ComposeImageBuild(
+                        compose_file=env.compose_file,
+                        service=env.verifier_service,
+                        expected_image_ref=env.verifier_image,
+                    )
+                )
         return DockerStackRequirements(image_builds=builds)
 
     # -- task loading ---------------------------------------------------------
@@ -722,6 +730,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         self._ensure_discovered()
         meta = self._tasks[task_id]
         manifest = resolve_environment_patch(None, self._environment_patch(task_id))
+        env = self._environment(task_id)
 
         return TaskDescription(
             task_id=task_id,
@@ -748,7 +757,15 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 # ``script_exec_error``, which refuses the trial as
                 # ungradeable rather than scoring the agent for tests that
                 # never ran.
-                **self.emit_test_execution_grading(self._verifier_budget_sec(meta))
+                **self.emit_test_execution_grading(
+                    self._verifier_budget_sec(meta),
+                    service=env.verifier_service,
+                    artifacts=(
+                        [{"source": a.source, "exclude": a.exclude} for a in meta.artifacts]
+                        if meta.is_v4
+                        else None
+                    ),
+                )
             ),
             metadata=self._metadata(meta),
         )

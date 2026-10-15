@@ -21,7 +21,10 @@ import copy
 import inspect
 import json
 import logging
+import os
+import shlex
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -138,7 +141,7 @@ from tolokaforge.runner.db_client import (
 from tolokaforge.runner.db_client import (
     ValidationError as DBValidationError,
 )
-from tolokaforge.runner.env_exec import first_env_exec_tool
+from tolokaforge.runner.env_exec import exec_tool_for_service, first_env_exec_tool
 from tolokaforge.runner.grading import (
     compute_state_diff,
     grade_to_runner_wire,
@@ -192,6 +195,7 @@ from tolokaforge.runner.search_plane import (
 )
 from tolokaforge.runner.tool_factory import (
     INVALID_ARGUMENTS_CATEGORY,
+    DockerComposeExecToolWrapper,
     MCPServerToolWrapper,
     SearchToolWrapper,
     ToolCallOutcome,
@@ -211,6 +215,11 @@ SERVICE_VERSION = "1.0.0"
 
 # Session working root handed to lifecycle tools as ``ToolLifecycleContext.work_dir``.
 AGENT_WORK_DIR = "/work"
+
+# Wall-clock ceiling for one cross-container artifact copy step (empty / cp / prune).
+# A whole-directory ``docker cp`` of a trial's state root, not a single file, so the
+# bound is generous; it exists to stop a hung daemon call from stalling grading.
+_MATERIALISE_PATH_TIMEOUT_S = 600.0
 
 # Head start the inner ``asyncio.wait_for`` gets over the outer future deadline in
 # ``ExecuteTool``. Both enforce the same tool budget, so on an equal deadline the
@@ -1982,6 +1991,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             final_state_stable_factory=_get_stable_state,
             filesystem_state_factory=_get_filesystem_state,
             run_test_suite_impl=partial(self._run_test_suite_via_agent_tools, trial_id=trial_id),
+            materialise_path_impl=partial(self._materialise_path, trial_id=trial_id),
         )
 
     def _run_test_suite_via_agent_tools(
@@ -1992,8 +2002,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         reward_read_timeout_s: float,
         *,
         trial_id: str,
+        service: str | None = None,
     ) -> RunTestSuiteResult:
-        """Run ``bash <script_path>`` inside the trial's env container.
+        """Run ``bash <script_path>`` inside a trial container.
 
         The four exec parameters ride positionally so the substrate wrapper's
         kwargs-only delegation lands them on this signature cleanly; ``trial_id``
@@ -2001,6 +2012,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         ``partial(m, trial_id=<id>)`` at construction (see
         :meth:`_build_grading_substrate`) without colliding with a positional
         value for the same argument.
+
+        ``service`` of ``None`` runs the suite in the agent's own container.
+        A service name runs it in that sibling container of the per-trial
+        stack instead — the separate-verifier shape, where the suite lives in
+        a container the agent never worked in.
 
         Two first-class outcomes ride the result rather than raising:
         ``tool_absent`` (no exec-capable lifecycle tool in the trial's
@@ -2038,8 +2054,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 script_exec_error="",
             )
 
+        exec_tool, service_reason = exec_tool_for_service(bash_tool, service)
+        if service_reason is not None:
+            return RunTestSuiteResult(
+                exit_code=0,
+                reward_bytes=b"",
+                stdout="",
+                tool_absent=True,
+                tool_absent_reason=service_reason,
+                script_exec_error="",
+            )
+        assert exec_tool is not None  # service_reason is None ⇒ a tool was resolved
+
         try:
-            exit_code, stdout = bash_tool.exec_in_env_with_exit_code(
+            exit_code, stdout = exec_tool.exec_in_env_with_exit_code(
                 f"cd $(dirname {script_path}) && bash {script_path} 2>&1",
                 timeout_s,
             )
@@ -2054,7 +2082,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
 
         try:
-            _rc, reward_str = bash_tool.exec_in_env_with_exit_code(
+            _rc, reward_str = exec_tool.exec_in_env_with_exit_code(
                 f"cat {reward_path} 2>/dev/null || echo 0.0",
                 reward_read_timeout_s,
             )
@@ -2079,6 +2107,180 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             tool_absent_reason="",
             script_exec_error="",
         )
+
+    def _materialise_path(
+        self,
+        *,
+        src_service: str | None,
+        dst_service: str,
+        path: str,
+        exclude: Collection[str] = (),
+        trial_id: str,
+    ) -> None:
+        """Copy *path* from one trial container into another, emptying it first.
+
+        Resolves both containers from the trial's compose-exec tool (its project
+        prefix and trial id name every service in the per-trial stack), then:
+        removes *path* in the destination, recreates its parent, and streams the
+        source's *path* across with ``docker cp`` (which tars through the daemon,
+        so neither container needs ``tar``). ``src_service`` of ``None`` means
+        the agent's own service. Any *exclude* glob is pruned from the
+        destination afterwards.
+
+        Raises :class:`SubstrateUnreachableError` when the containers cannot be
+        resolved or a copy step fails — grading then books the trial as
+        ungradeable rather than scoring it on a half-materialised tree.
+        """
+        trial_context = self.trials.get(trial_id)
+        if trial_context is None:
+            raise SubstrateUnreachableError(f"Trial {trial_id!r} not registered")
+        bash_tool = first_env_exec_tool(trial_context.agent_tools.values())
+        if not isinstance(bash_tool, DockerComposeExecToolWrapper):
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: artifact re-materialisation needs a compose-backed "
+                "env tool to resolve sibling containers; none was registered."
+            )
+        if bash_tool.container_name is None:
+            # The wrapper resolves sibling containers off its started state; before
+            # start() ``for_service`` raises, which would escape MaterialisePath as an
+            # unhandled gRPC error. Convert it to the ungradeable path other
+            # unresolved-container cases below take.
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: the compose env tool has not started, so its "
+                "sibling containers cannot be resolved for materialisation."
+            )
+        src_tool = bash_tool if src_service is None else bash_tool.for_service(src_service)
+        dst_tool = bash_tool.for_service(dst_service)
+        src_container = src_tool.container_name
+        dst_container = dst_tool.container_name
+        if src_container is None or dst_container is None:
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: compose containers are not resolved "
+                "(the per-trial stack is not up), so a path cannot be materialised."
+            )
+
+        parent = os.path.dirname(path.rstrip("/")) or "/"
+
+        def _run(argv: list[str], *, stdin: int | None = None, stdout: int | None = None):
+            return subprocess.Popen(argv, stdin=stdin, stdout=stdout)
+
+        try:
+            # Probe the source before touching the destination. A declared artifact
+            # the agent never produced is not an error: the verifier simply runs
+            # without it and the tests fail. Probing first means a failed probe (an
+            # unreachable source container) raises before the destination is wiped,
+            # so the verifier's baked tree is not destroyed on a copy that never ran.
+            probe = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    src_container,
+                    "sh",
+                    "-c",
+                    f"test -e {shlex.quote(path)} && echo __TF_PRESENT__ || echo __TF_ABSENT__",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=_MATERIALISE_PATH_TIMEOUT_S,
+            )
+            source_absent = "__TF_ABSENT__" in probe.stdout
+            if not source_absent and "__TF_PRESENT__" not in probe.stdout:
+                raise SubstrateUnreachableError(
+                    f"Trial {trial_id!r}: could not probe {path!r} in {src_service or 'agent'!r} "
+                    f"(rc={probe.returncode}, stderr={probe.stderr.strip()!r})."
+                )
+            # Empty the destination path and ensure its parent exists. Done only
+            # after a successful probe so an absent source still leaves the
+            # destination empty (reward 0) while an unreachable one never destroys it.
+            subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    dst_container,
+                    "sh",
+                    "-c",
+                    f"rm -rf {shlex.quote(path)} && mkdir -p {shlex.quote(parent)}",
+                ],
+                check=True,
+                timeout=_MATERIALISE_PATH_TIMEOUT_S,
+            )
+            if source_absent:
+                logger.info(
+                    "RunnerServiceImpl._materialise_path: trial %r source %r absent in "
+                    "%r; verifier runs without it.",
+                    trial_id,
+                    path,
+                    src_service or "agent",
+                )
+                return
+            # Stream path from src to dst: `docker cp src:path -` emits a tar whose
+            # top member is the basename; `docker cp - dst:parent` extracts it under
+            # parent. docker cp tars through the daemon, so neither container needs tar.
+            src_proc = _run(
+                ["docker", "cp", f"{src_container}:{path}", "-"], stdout=subprocess.PIPE
+            )
+            dst_proc = _run(
+                ["docker", "cp", "-", f"{dst_container}:{parent}"], stdin=src_proc.stdout
+            )
+            try:
+                if src_proc.stdout is not None:
+                    src_proc.stdout.close()  # let src see SIGPIPE if dst exits early
+                dst_rc = dst_proc.wait(timeout=_MATERIALISE_PATH_TIMEOUT_S)
+                src_rc = src_proc.wait(timeout=_MATERIALISE_PATH_TIMEOUT_S)
+            finally:
+                # A stalled daemon (the case the timeout exists for) leaves a child
+                # hung; Popen does not reap on GC, so kill anything still running.
+                for proc in (src_proc, dst_proc):
+                    if proc.poll() is None:
+                        proc.kill()
+                        proc.wait()
+            if src_rc != 0 or dst_rc != 0:
+                raise SubstrateUnreachableError(
+                    f"Trial {trial_id!r}: docker cp of {path!r} from {src_service or 'agent'!r} "
+                    f"to {dst_service!r} failed (src rc={src_rc}, dst rc={dst_rc})."
+                )
+            # Prune excludes in the destination. A bare name (no separator) matches
+            # at every depth via ``find -name``, so a nested ``__pycache__`` /
+            # ``*.pyc`` is removed too, not just a top-level one. A glob that carries
+            # a separator (e.g. ``build/*.o``) is a path-relative pattern, matched
+            # against each entry's path under *path* via ``find -path`` so it takes
+            # effect at all — ``-name`` would test only the basename and never match.
+            base = path.rstrip("/")
+            for glob in exclude:
+                if "/" in glob:
+                    match = ["-path", f"{base}/{glob}"]
+                else:
+                    match = ["-name", glob]
+                pruned = subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        dst_container,
+                        "sh",
+                        "-c",
+                        "find {} {} -prune -exec rm -rf {{}} +".format(
+                            shlex.quote(path),
+                            " ".join(shlex.quote(part) for part in match),
+                        ),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=_MATERIALISE_PATH_TIMEOUT_S,
+                )
+                if pruned.returncode != 0:
+                    # A failed prune leaves files the task declared excluded in the
+                    # verifier's tree, so it would grade against them. Book the trial
+                    # ungradeable rather than scoring a knowingly-wrong tree.
+                    raise SubstrateUnreachableError(
+                        f"Trial {trial_id!r}: pruning exclude {glob!r} under {path!r} in "
+                        f"{dst_service!r} failed (rc={pruned.returncode}): "
+                        f"{pruned.stderr.strip()}"
+                    )
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: materialising {path!r} from {src_service or 'agent'!r} "
+                f"to {dst_service!r} failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
     async def _dispatch_via_grader_kind(
         self,

@@ -1,0 +1,23 @@
+# Minimal synthetic Terminal-Bench 4.0 task used only as an adapter e2e fixture.
+# Separate-verifier shape: tests run in their own container, built from
+# tests/Dockerfile, with /app/answer.txt re-materialised from the agent.
+artifacts = ["/app/answer.txt"]
+
+[task]
+name = "v4-echo"
+description = "Write 42 to /app/answer.txt."
+
+[metadata]
+difficulty = "easy"
+tags = ["fixture"]
+
+[verifier]
+environment_mode = "separate"
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 300.0
+
+[environment]
+cpus = 1
+memory_mb = 1024

@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from typing import Any, Protocol, runtime_checkable
 
-__all__ = ["SupportsEnvExec", "first_env_exec_tool"]
+__all__ = ["SupportsEnvExec", "exec_tool_for_service", "first_env_exec_tool"]
 
 
 @runtime_checkable
@@ -56,3 +56,40 @@ def first_env_exec_tool(tools: Collection[Any]) -> SupportsEnvExec | None:
         if isinstance(tool, SupportsEnvExec):
             return tool
     return None
+
+
+def exec_tool_for_service(
+    bash_tool: SupportsEnvExec, service: str | None
+) -> tuple[SupportsEnvExec | None, str | None]:
+    """Resolve the exec tool for *service*, or the agent's own tool when ``None``.
+
+    ``service`` of ``None`` returns *bash_tool* unchanged — the suite runs in the
+    agent's container. A service name returns a sibling exec tool for that
+    container of the per-trial compose stack, which only a compose-backed
+    executor can provide. Returns ``(tool, None)`` on success or
+    ``(None, reason)`` when a sibling cannot be resolved, so both the in-process
+    and detached grading paths refuse a separate-verifier run the same way.
+    """
+    if service is None:
+        return bash_tool, None
+    # Imported here rather than at module scope: this module is the narrow exec
+    # capability seam, and tool_factory depends on the broader runner stack.
+    from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
+
+    if not isinstance(bash_tool, DockerComposeExecToolWrapper):
+        return None, (
+            f"test-execution grading asked to run in service {service!r} but this "
+            "trial's env tool is not a compose-backed executor, so a sibling "
+            "container cannot be resolved. A separate verifier requires a "
+            "docker-compose runtime."
+        )
+    if bash_tool.container_name is None:
+        # ``for_service`` resolves siblings off the started wrapper's state and
+        # raises before start(). Reporting it as an absent tool keeps the caller on
+        # its clean ungradeable path instead of letting the RuntimeError escape.
+        return None, (
+            f"test-execution grading asked to run in service {service!r} but the "
+            "trial's compose env tool has not started, so its sibling container "
+            "cannot be resolved."
+        )
+    return bash_tool.for_service(service), None

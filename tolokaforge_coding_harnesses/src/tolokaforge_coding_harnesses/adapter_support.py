@@ -351,7 +351,11 @@ class CodingHarnessAdapterMixin:
         }
 
     def emit_test_execution_grading(
-        self, verifier_timeout_sec: float | None = None
+        self,
+        verifier_timeout_sec: float | None = None,
+        *,
+        service: str | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Payload the adapter passes to :class:`~tolokaforge.runner.models.RunnerGradingConfig`.
 
@@ -367,6 +371,12 @@ class CodingHarnessAdapterMixin:
         own 300s default stands when the task declares nothing. A suite killed
         before it finishes writes no reward and scores zero, so a task asking
         for more time than the default is asking not to be failed by the clock.
+
+        *service* and *artifacts* cover the separate-verifier shape: the suite
+        runs in ``service``'s container rather than the agent's, and each
+        ``artifacts`` entry (``{"source": ..., "exclude": [...]}``) is
+        re-materialised from the agent container into it first. Both omitted
+        leaves the single-container behaviour untouched.
         """
         payload: dict[str, Any] = {
             "combine_method": "weighted",
@@ -374,8 +384,15 @@ class CodingHarnessAdapterMixin:
             "pass_threshold": 0.5,
             "grading_method": "test_execution",
         }
+        config: dict[str, Any] = {}
         if verifier_timeout_sec is not None:
-            payload["grading_method_config"] = {"timeout_s": verifier_timeout_sec}
+            config["timeout_s"] = verifier_timeout_sec
+        if service is not None:
+            config["service"] = service
+        if artifacts:
+            config["artifacts"] = artifacts
+        if config:
+            payload["grading_method_config"] = config
         return payload
 
     def preferred_grader_kind(self) -> str:
