@@ -248,7 +248,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     f"{prompt_file!r} does not exist (resolved to "
                     f"{prompt_path.resolve()})"
                 )
-            self._agent_system_prompt = prompt_path.read_text()
+            self._agent_system_prompt = prompt_path.read_text(encoding="utf-8")
             if not self._agent_system_prompt.strip():
                 raise ValueError(
                     f"terminal-bench adapter: agent_system_prompt_file "
@@ -294,6 +294,15 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         self.agent_harness: str = validate_harness(
             params.get("agent_harness", ENGINE_LOOP), self.harnesses
         )
+        # The override only drives the engine loop's system prompt; a coding-harness
+        # CLI brings its own, so a run that set it there would look configured and
+        # change nothing. Refuse it rather than silently ignore it.
+        if self._agent_system_prompt is not None and self.agent_harness != ENGINE_LOOP:
+            raise ValueError(
+                f"terminal-bench adapter: agent_system_prompt_file is only read under "
+                f"agent_harness {ENGINE_LOOP!r}; agent_harness {self.agent_harness!r} runs a "
+                "coding-harness CLI that supplies its own prompt. Omit the key for that harness."
+            )
         # Empty under the engine loop, which never reads it: the run config's
         # model reaches litellm through the engine's own LLM layer there.
         self.agent_model: str = params.get("agent_model") or ""
