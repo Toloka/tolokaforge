@@ -8,8 +8,9 @@ coverage is routed through the named preset that owns it:
   variant). Carries the generic ``gemini`` policy trio verbatim plus
   ``default_max_turns: 90``. Exact-match globs only.
 * ``gemini_35_flash_recursive`` / ``gemini_36_flash_recursive`` /
-  ``gemini_37_flash_recursive`` — Flash-lineage overlays for the
-  recursive-schema fix. Exact-match globs only.
+  ``gemini_37_flash_recursive`` / ``gemini_38_flash_recursive`` —
+  Flash-lineage overlays for the recursive-schema fix. Exact-match globs
+  only; a point release or ``-lite`` variant stays on the generic preset.
 * ``gemini`` — the generic fallback that captures every other Gemini
   identifier (family globs).
 
@@ -59,6 +60,33 @@ def test_gemini_models_route_to_gemini_preset(model: str) -> None:
         "first-match-wins by moving the ``gemini:`` block earlier in "
         "model_presets.yaml."
     )
+
+
+_GEMINI_FLASH_RECURSIVE_MODELS = (
+    ("google/gemini-3.5-flash", "gemini_35_flash_recursive"),
+    ("google/gemini-3.6-flash", "gemini_36_flash_recursive"),
+    ("google/gemini-3.7-flash", "gemini_37_flash_recursive"),
+    ("google/gemini-3.8-flash", "gemini_38_flash_recursive"),
+    ("openrouter/google/gemini-3.8-flash", "gemini_38_flash_recursive"),
+)
+
+
+@pytest.mark.parametrize(("model", "expected"), _GEMINI_FLASH_RECURSIVE_MODELS)
+def test_flash_lineage_routes_to_its_recursive_overlay(model: str, expected: str) -> None:
+    """Each Flash release under the recursive-schema fix resolves to its own
+    overlay (``gemini_recursive`` + ``scalar_array_dict_map``), declared
+    BEFORE the generic ``gemini`` block."""
+    name = resolve_effective_preset(model, "openrouter")
+    assert name == expected, f"{model!r} should resolve to {expected!r}, not {name!r}"
+
+
+@pytest.mark.parametrize(
+    "model", ["google/gemini-3.8-flash-lite", "google/gemini-3.8-flash-preview"]
+)
+def test_unmeasured_flash_variants_stay_on_the_generic_preset(model: str) -> None:
+    """The overlay globs carry no trailing ``*``: a variant nobody probed is
+    not silently claimed by the overlay."""
+    assert resolve_effective_preset(model, "openrouter") == "gemini"
 
 
 @pytest.mark.parametrize("model", _GEMINI_31_PRO_PREVIEW_MODELS)

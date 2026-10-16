@@ -412,7 +412,14 @@ xAI / Qwen-strict tool-schema validators:
 3. **Typed dict-map → array** — `{type:object, additionalProperties:{schema}}`
    becomes `{type:array, items:{type:object, properties:{key, …value_props}}}`
    so GPT-5 / xAI-Grok / Qwen-strict has structural type info to anchor on.
-   `ArrayDictMapResponse` reverses this on the model's emitted arguments.
+   A scalar-valued map (`Dict[str, str]`, `Dict[str, int]`) has no
+   properties to lift, so its value rides under a synthetic `value` field:
+   items are `{key, value}` (`carry_scalar_dict_map_value`, default `True`).
+   An *untyped* map — `additionalProperties: {}`, what Pydantic emits for
+   `Dict[str, JsonValue]` — is not pivoted at all: it collapses to
+   `additionalProperties: true`, the free-form marker every provider accepts.
+   `ArrayDictMapResponse` reverses the pivot on the model's emitted
+   arguments, driven by the tool's original schema, at every depth.
 4. **RE2-incompatible `pattern` strip** — the *only* metadata-strip the
    sanitiser still performs, and it is **value-conditional**: a `pattern`
    value is removed only when it contains a lookaround (`(?!`, `(?=`,
@@ -2483,6 +2490,7 @@ class ResponsePolicy(Protocol):
         arguments: dict[str, Any],
         *,
         param_types: Mapping[str, str] | None = None,
+        param_schema: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 ```
 
@@ -2500,7 +2508,28 @@ Implementations:
   `equipment: ''` bug class).
 * `ArrayDictMapResponse` — composes `JsonCoerceResponse` plus the reverse
   pivot of `StrictSchema`'s dict-map → array conversion. Used by
-  `openai_gpt5` and `xai_grok` presets.
+  `openai_gpt5`, `openai_gpt6`, `xai_grok`, `gemini` and the other
+  `strict`-lineage presets. With `param_schema` the pivot is
+  [`reverse_dict_map_arrays`](../tolokaforge/core/llm/response_policy.py):
+  it walks the arguments and the tool's **original** schema together and
+  fires wherever that schema declares `additionalProperties: {schema}` —
+  root parameters, fields of nested objects (`arguments.path`), array
+  items, `Optional[...]` branches, the values of other dict-maps — and
+  nowhere else, so a `list[Model]` whose model has a field named `key` is
+  never mistaken for a map. "Dict-map" is the sanitiser's own definition
+  ([`typed_dict_map_value_schema`](../tolokaforge/core/llm/schema_sanitizer.py)),
+  so a node that also declares `properties` reverses too. `allOf` branches
+  all apply; an `anyOf` / `oneOf` picks the branch whose discriminator
+  (`const`) agrees with the value, then the one sharing the most property
+  names, then the first whose JSON type fits. A `str` where the schema
+  declares an object or array is JSON-decoded (the nested counterpart of
+  `coerce_json_strings`). The scalar carriage (`[{key, value}]`) unwraps to
+  the bare value; the `{k: {"value": v}}` wrapper some models emit natively
+  unwraps only when `v` fits the value schema, so a genuine inner map on a
+  `Dict[str, Dict[str, str]]` stays one. A bare `{key, value}` on a scalar
+  map is read as a single pivoted item only when `value` fits the value
+  schema. Without `param_schema` the historical root-level shape heuristic
+  applies.
 * `MinimaxM3TagRecoveryResponse` — composite for the MiniMax-M3 `tags`
   corruption (`minimax` preset, registry name `minimax_m3_tags`), shipped
   by [`tolokaforge-models`](../tolokaforge_models/src/tolokaforge_models/policies/minimax.py).
@@ -2527,6 +2556,14 @@ an argument whose root-level shape is wrong (empty string for an array,
 JSON-encoded array of `{key,…}` objects for a dict-map), the response
 policy recovers the correct native shape before the tool implementation
 sees it.
+
+`param_schema` is the called tool's **original** `parameters` JSON Schema
+(pre-sanitiser, `$defs` included). The client passes it on every
+`parse_arguments` invocation whose policy declares the keyword (checked
+once per policy class via `inspect.signature`), so a policy written against
+the two-argument contract — an older `tolokaforge-models` wheel, an
+out-of-tree plugin — keeps working and simply falls back to its root-level
+heuristics.
 
 ## `assistant_text_policy`
 
@@ -2846,7 +2883,7 @@ shadow:
 |---|---|---|---|
 | `KEY_FIELD` | `ClassVar[str]` | `"key"` | Name of the synthetic key field on dict-map → array conversion. |
 | `VALUE_FIELD` | `ClassVar[str]` | `"value"` | Name of the synthetic scalar-value field (only emitted when `carry_scalar_dict_map_value` is `True`). |
-| `carry_scalar_dict_map_value` | `ClassVar[bool]` | `False` | Emit a synthetic `value` field for scalar-valued dict-maps (pair with `ScalarArrayDictMapResponse` on the response side). |
+| `carry_scalar_dict_map_value` | `ClassVar[bool]` | `True` | Emit a synthetic `value` field for scalar-valued dict-maps so `Dict[str, str]` items are `{key, value}`, not a value-less `{key}`. `ArrayDictMapResponse` reverses it by the original schema. Override to `False` only with a response policy that expects the value-less shape. |
 | `flatten_oneof_discriminator` | `ClassVar[bool]` | `False` | Flatten `oneOf` discriminated unions into a single object schema — Gemini needs this because its tool spec is a JSON-Schema subset that does not document `oneOf` / `discriminator`. |
 | `strip_parameters_root_description` | `ClassVar[bool]` | `True` | Strip Pydantic's class-docstring artefact at the parameters root (redundant with `function.description` for strict validators). Gemini sets `False` — evidence shows the strip hurts on some flat tool schemas. |
 | `strip_re2_incompatible_patterns` | `ClassVar[bool]` | `True` | Remove `pattern` values containing lookarounds / backreferences (OpenAI / xAI / Qwen-strict raise 500 on these). Gemini appears to pass RE2-incompatible patterns through unchanged and overrides to `False`. |
