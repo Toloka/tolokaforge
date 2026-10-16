@@ -47,7 +47,7 @@ import json
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
-from tolokaforge.core.llm.schema_sanitizer import StrictSchema, is_free_form_schema
+from tolokaforge.core.llm.schema_sanitizer import StrictSchema, typed_dict_map_value_schema
 
 __all__ = [
     "ResponsePolicy",
@@ -392,6 +392,7 @@ _JSON_TYPE_BY_PY: tuple[tuple[type, str], ...] = (
     (str, "string"),
     (list, "array"),
     (dict, "object"),
+    (type(None), "null"),
 )
 
 
@@ -413,20 +414,29 @@ def reverse_dict_map_arrays(
 
     Rules, per schema node:
 
-    * ``additionalProperties: {schema}`` (typed dict-map):
+    * ``additionalProperties: {schema}`` (typed dict-map — the same
+      definition the sanitiser pivots by, :func:`typed_dict_map_value_schema`,
+      so a node that also declares ``properties`` reverses too):
 
       - a list whose items all carry *key_field* becomes a dict keyed by it;
         each item minus the key is the entry. When the value schema declares
         no property of its own named *value_field* and the remaining item is
-        exactly ``{value_field: X}``, the entry is the bare ``X`` — this is the
-        scalar carriage (``Dict[str, str]`` → ``[{key, value}]``) coming back,
-        and also the ``{k: {"value": v}}`` wrapper some models emit natively.
-      - a dict is the native map shape: kept as a map, with the same scalar
-        unwrap applied to each entry; an empty list is an empty map.
+        exactly ``{value_field: X}``, the entry is the bare ``X`` — the scalar
+        carriage (``Dict[str, str]`` → ``[{key, value}]``) coming back.
+      - a dict is the native map shape: kept as a map. An entry that is
+        exactly ``{value_field: X}`` is unwrapped to ``X`` **only when** ``X``
+        is something the value schema can hold — ``{k: {"value": "v"}}`` on
+        a ``Dict[str, str]`` is the wrapper some models emit natively, while
+        ``{host: {"value": "token"}}`` on a ``Dict[str, Dict[str, str]]`` is
+        a genuine inner map and stays one. An empty list is an empty map.
       - a single flat item (``{key, …}`` with every other field declared by
-        the value schema, or exactly ``{key, value}`` for a scalar map)
-        becomes a one-entry map — some models emit one item instead of a
-        one-item array.
+        the value schema, or exactly ``{key, value}`` for a scalar map with
+        ``value`` holding what the value schema declares) becomes a one-entry
+        map — some models emit one item instead of a one-item array.
+        ``{"key": "abc"}`` alone, or ``{"key": "k", "value": "x"}`` on a
+        ``Dict[str, int]``, is a native map. For a ``Dict[str, str]`` the
+        shape ``{"key": …, "value": …}`` is inherently ambiguous and is read
+        as the item the wire schema asked for.
       - every entry is then walked against the value schema, so a dict-map
         nested in a dict-map value reverses too.
 
@@ -435,9 +445,17 @@ def reverse_dict_map_arrays(
     * ``properties``: each declared field is walked against its schema;
       undeclared fields pass through.
     * ``items``: each element is walked against the item schema.
-    * ``anyOf`` / ``oneOf``: the first branch whose type fits the value is
-      taken (a dict-map branch fits both the pivoted list and a dict); with no
-      fitting branch the value passes through.
+    * ``allOf``: every branch applies — the value is walked through each in
+      turn, then against the node's own keywords.
+    * ``anyOf`` / ``oneOf``: the branch that best matches the value is taken:
+      a property with a ``const`` (a Pydantic discriminator) must agree with
+      the value, then the branch sharing the most property names with the
+      value wins, then the first branch whose JSON type fits. A dict-map
+      branch fits the pivoted list and any dict. With no fitting branch the
+      value passes through.
+    * A ``str`` where the schema declares an object or array (and not a
+      string) is JSON-decoded when it parses to a container — the nested
+      counterpart of :func:`coerce_json_strings`, which only sees the root.
 
     Nothing else is changed: a value the schema does not describe is
     returned as emitted.
@@ -480,32 +498,40 @@ class _DictMapReverser:
             seen += 1
         return schema
 
-    def dict_map_value_schema(self, schema: Mapping[str, Any]) -> Any | None:
-        """The value schema when *schema* is a typed dict-map, else ``None``."""
-        if "properties" in schema:
-            return None
-        value_schema = schema.get("additionalProperties")
-        if not isinstance(value_schema, Mapping):
-            return None
-        if is_free_form_schema(self.resolve(value_schema)):
-            return None
-        return value_schema
+    def dict_map_value_schema(self, schema: Any) -> Any | None:
+        """The value schema when *schema* is a typed dict-map, else ``None``
+        — the sanitiser's own definition, so both directions agree."""
+        return typed_dict_map_value_schema(schema, resolve=self.resolve)
 
     def declared_properties(self, schema: Any, depth: int = 0) -> set[str]:
-        """Property names the value type declares (union branches included).
-        Bounded by *depth* because this recursion follows the schema alone —
-        a recursive union would otherwise never bottom out."""
+        """Property names the value type declares (union / ``allOf`` branches
+        included). Bounded by *depth* because this recursion follows the
+        schema alone — a recursive union would otherwise never bottom out."""
         resolved = self.resolve(schema)
         if not isinstance(resolved, Mapping) or depth > 8:
             return set()
         props = resolved.get("properties")
         names: set[str] = set(props.keys()) if isinstance(props, Mapping) else set()
-        for branch_key in ("anyOf", "oneOf"):
+        for branch_key in ("anyOf", "oneOf", "allOf"):
             branches = resolved.get(branch_key)
             if isinstance(branches, list):
                 for branch in branches:
                     names |= self.declared_properties(branch, depth + 1)
         return names
+
+    def declared_type(self, schema: Mapping[str, Any]) -> str | list[str] | None:
+        """The JSON type a node declares, inferred from shape keywords when
+        ``type`` is absent."""
+        declared = schema.get("type")
+        if isinstance(declared, str) or (
+            isinstance(declared, list) and all(isinstance(t, str) for t in declared)
+        ):
+            return declared
+        if "properties" in schema or "additionalProperties" in schema:
+            return "object"
+        if "items" in schema or "prefixItems" in schema:
+            return "array"
+        return None
 
     # -- walk --------------------------------------------------------------
 
@@ -521,6 +547,17 @@ class _DictMapReverser:
             if isinstance(branches, list):
                 branch = self.pick_branch(value, branches)
                 return value if branch is None else self.walk(value, branch, depth + 1)
+
+        all_of = schema.get("allOf")
+        if isinstance(all_of, list):
+            # Every branch applies (the sanitiser pivots inside each one), so
+            # the value goes through each in turn before the node's own
+            # keywords — ``{"allOf": [{"$ref": …}], "description": …}`` is the
+            # Pydantic-v1 / OpenAPI-3.0 way to attach a description to a ref.
+            for branch in all_of:
+                value = self.walk(value, branch, depth + 1)
+
+        value = self.decode_container(value, schema)
 
         value_schema = self.dict_map_value_schema(schema)
         if value_schema is not None:
@@ -540,39 +577,104 @@ class _DictMapReverser:
 
         return value
 
+    def decode_container(self, value: Any, schema: Mapping[str, Any]) -> Any:
+        """JSON-decode a stringified container where the schema declares an
+        object or array and never a string. The nested counterpart of
+        :func:`coerce_json_strings`: a ``str`` that does not parse, or parses
+        to a scalar, is left as emitted."""
+        if not isinstance(value, str):
+            return value
+        declared = self.declared_type(schema)
+        types = set(declared) if isinstance(declared, list) else {declared}
+        if "string" in types or not (types & {"object", "array"}):
+            return value
+        stripped = value.lstrip()
+        if not stripped or stripped[0] not in "[{":
+            return value
+        try:
+            decoded = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return value
+        return decoded if isinstance(decoded, (list, dict)) else value
+
     def pick_branch(self, value: Any, branches: list[Any]) -> Any | None:
         candidates = [
             b for b in branches if isinstance(b, Mapping) and self.resolve(b).get("type") != "null"
         ]
         if len(candidates) == 1:
             return candidates[0]
+        best: Any | None = None
+        best_score: int | None = None
         for branch in candidates:
-            resolved = self.resolve(branch)
-            if not isinstance(resolved, Mapping):
+            score = self.branch_score(self.resolve(branch), value)
+            if score is None:
                 continue
-            if self.dict_map_value_schema(resolved) is not None and (
-                isinstance(value, dict) or self.is_key_item_list(value)
-            ):
-                return branch
-            if self.branch_fits(resolved, value):
-                return branch
-        return None
+            if best_score is None or score > best_score:
+                best, best_score = branch, score
+        return best
+
+    def branch_score(self, schema: Any, value: Any) -> int | None:
+        """``None`` when the branch cannot hold *value*; otherwise how
+        specifically it matches. A discriminator (a property with ``const``)
+        that agrees outranks shared property names, which outrank a bare JSON
+        type fit; a discriminator that disagrees rules the branch out."""
+        if not isinstance(schema, Mapping):
+            return None
+        value_schema = self.dict_map_value_schema(schema)
+        if value_schema is not None:
+            if self.is_key_item_list(value):
+                return 1
+            if isinstance(value, dict):
+                flat = self._key in value and self.is_flat_item(
+                    value, self.declared_properties(value_schema), value_schema
+                )
+                return 1 if flat else 0
+            return None
+        if not self.branch_fits(schema, value):
+            return None
+        props = schema.get("properties")
+        if not isinstance(value, dict) or not isinstance(props, Mapping):
+            return 0
+        score = 0
+        for name, prop_schema in props.items():
+            if name not in value:
+                continue
+            prop = self.resolve(prop_schema)
+            if isinstance(prop, Mapping) and "const" in prop:
+                if prop["const"] != value[name]:
+                    return None
+                score += 1000
+            else:
+                score += 1
+        return score
 
     def branch_fits(self, schema: Mapping[str, Any], value: Any) -> bool:
-        declared = schema.get("type")
+        declared = self.declared_type(schema)
         if declared is None:
-            if "properties" in schema or "additionalProperties" in schema:
-                declared = "object"
-            elif "items" in schema or "prefixItems" in schema:
-                declared = "array"
-            else:
-                return False
+            return False
         if isinstance(declared, list):
             return any(self.branch_fits({**schema, "type": t}, value) for t in declared)
         for py_type, json_type in _JSON_TYPE_BY_PY:
             if isinstance(value, py_type):
                 return declared == json_type or (declared == "number" and json_type == "integer")
         return False
+
+    def fits(self, value: Any, schema: Any) -> bool:
+        """Can *schema* hold *value*? A schema that declares no type at all
+        holds anything; a dict-map holds a dict or the pivoted list; a union
+        holds what any branch holds."""
+        resolved = self.resolve(schema)
+        if not isinstance(resolved, Mapping):
+            return True
+        for branch_key in ("anyOf", "oneOf"):
+            branches = resolved.get(branch_key)
+            if isinstance(branches, list):
+                return any(self.fits(value, b) for b in branches)
+        if self.dict_map_value_schema(resolved) is not None:
+            return isinstance(value, dict) or self.is_key_item_list(value)
+        if self.declared_type(resolved) is None:
+            return True
+        return self.branch_fits(resolved, value)
 
     def is_key_item_list(self, value: Any) -> bool:
         return (
@@ -585,11 +687,17 @@ class _DictMapReverser:
         declared = self.declared_properties(value_schema)
         scalar_carried = self._value not in declared
 
-        def entry_of(item: dict[str, Any]) -> Any:
-            # ``{value: X}`` is the scalar carriage (or a model's native
-            # wrapper) only when the value type has no ``value`` of its own.
+        def entry_of(item: dict[str, Any], *, from_wire: bool) -> Any:
+            # ``{value: X}`` is the scalar carriage only when the value type
+            # has no ``value`` of its own. Coming off the wire shape the
+            # carriage is what the schema asked for, so it is unwrapped as
+            # is; in the native map shape it is unwrapped only when ``X`` fits
+            # the value schema — otherwise it is a genuine one-entry object
+            # (``{host: {"value": "token"}}`` on a map of maps).
             if scalar_carried and set(item.keys()) == {self._value}:
-                return item[self._value]
+                inner = item[self._value]
+                if from_wire or self.fits(inner, value_schema):
+                    return inner
             return item
 
         if isinstance(value, list) and not value:
@@ -602,30 +710,43 @@ class _DictMapReverser:
             for item in value:
                 item_copy = dict(item)
                 key = str(item_copy.pop(self._key))
-                pivoted[key] = self.walk(entry_of(item_copy), value_schema, depth + 1)
+                pivoted[key] = self.walk(
+                    entry_of(item_copy, from_wire=True), value_schema, depth + 1
+                )
             return pivoted
 
         if isinstance(value, dict):
-            if self._key in value and self.is_flat_item(value, declared):
+            if self._key in value and self.is_flat_item(value, declared, value_schema):
                 # One item emitted bare instead of as a one-item array.
                 item_copy = dict(value)
                 key = str(item_copy.pop(self._key))
-                return {key: self.walk(entry_of(item_copy), value_schema, depth + 1)}
+                return {
+                    key: self.walk(entry_of(item_copy, from_wire=True), value_schema, depth + 1)
+                }
             # Native map shape — the shape the tool wants. Walk the entries so
             # a wrapped scalar or a nested dict-map inside a value reverses.
             return {
                 str(k): self.walk(
-                    entry_of(v) if isinstance(v, dict) else v, value_schema, depth + 1
+                    entry_of(v, from_wire=False) if isinstance(v, dict) else v,
+                    value_schema,
+                    depth + 1,
                 )
                 for k, v in value.items()
             }
 
         return value
 
-    def is_flat_item(self, value: dict[str, Any], declared: set[str]) -> bool:
+    def is_flat_item(self, value: dict[str, Any], declared: set[str], value_schema: Any) -> bool:
+        """Is *value* one pivoted item emitted bare rather than a native map?
+        With a typed value model every other field must be one it declares;
+        with a scalar map the item is exactly ``{key, value}`` **and** the
+        value holds what the value schema declares. ``{"key": "AIza…",
+        "value": "42"}`` on a ``Dict[str, int]`` is therefore a two-entry
+        map; on a ``Dict[str, str]`` the shape is ambiguous and is read as
+        the item the wire schema asked for."""
         if not isinstance(value.get(self._key), str):
             return False
         others = set(value.keys()) - {self._key}
         if declared:
             return others <= declared
-        return others == {self._value}
+        return others == {self._value} and self.fits(value[self._value], value_schema)

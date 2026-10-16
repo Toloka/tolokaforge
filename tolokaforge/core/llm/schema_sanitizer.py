@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable, Mapping
 from enum import Enum
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
@@ -216,6 +217,34 @@ def is_free_form_schema(schema: Any) -> bool:
     return isinstance(schema, dict) and not (_SHAPE_KEYWORDS & schema.keys())
 
 
+def typed_dict_map_value_schema(
+    schema: Any, *, resolve: Callable[[Any], Any] | None = None
+) -> Any | None:
+    """The value schema when *schema* is a **typed dict-map** node, else
+    ``None``.
+
+    This is the one definition of "dict-map" shared by the sanitiser (which
+    pivots such a node to an array) and the response policy's reverse pivot
+    (which undoes it): ``additionalProperties`` carrying a schema that is not
+    free-form. Whether the node *also* declares ``properties`` is irrelevant —
+    the sanitiser lifts a typed ``additionalProperties`` to an array in both
+    cases and drops the ``properties`` — so the reverser must agree, or such a
+    node is pivoted on the wire and never reversed.
+
+    *resolve* follows ``$ref`` before the free-form check, for a caller whose
+    schema still carries ``$defs`` (the sanitiser inlines them first).
+    """
+    if not isinstance(schema, Mapping):
+        return None
+    value_schema = schema.get("additionalProperties")
+    if not isinstance(value_schema, Mapping):
+        return None
+    resolved = resolve(value_schema) if resolve is not None else value_schema
+    if is_free_form_schema(resolved):
+        return None
+    return value_schema
+
+
 class StrictSchema:
     """Position-aware sanitiser for OpenAI / xAI / Qwen function-calling.
 
@@ -251,10 +280,12 @@ class StrictSchema:
       per-tool ``$ref`` resolution (e.g. cycle-tolerant inlining).
     * :attr:`KEY_FIELD` — name of the synthetic key field on dict-map → array
       conversion.
-    * :attr:`VALUE_FIELD` — name of the synthetic scalar-value field (only
-      emitted when :attr:`carry_scalar_dict_map_value` is ``True``).
-    * :attr:`carry_scalar_dict_map_value` — pair with a scalar-aware response
-      policy to preserve scalar dict-map values.
+    * :attr:`VALUE_FIELD` — name of the synthetic scalar-value field a
+      scalar-valued dict-map's items carry (``[{key, value}]``).
+    * :attr:`carry_scalar_dict_map_value` — ``True`` by default;
+      ``ArrayDictMapResponse`` reverses the carriage by the original schema.
+      Override to ``False`` only with a response policy that expects the
+      value-less ``[{key}]`` shape.
     * :attr:`flatten_oneof_discriminator` — flatten Pydantic discriminated
       unions into a single object schema (Gemini path).
     * :attr:`strip_parameters_root_description` — strip Pydantic's class
@@ -497,7 +528,9 @@ class StrictSchema:
             return collapsed
 
         result: dict[str, Any] = {}
-        dict_map_value_schema: dict[str, Any] | None = None
+        # One definition of "typed dict-map" for both directions of the pivot
+        # — see :func:`typed_dict_map_value_schema`.
+        dict_map_value_schema: dict[str, Any] | None = typed_dict_map_value_schema(schema)
 
         for key, value in schema.items():
             if key in _PROPERTY_MAP_KEYS:
@@ -521,20 +554,19 @@ class StrictSchema:
                 # Three flavours, all preserved by default. Only the
                 # *typed* ``{schema}`` flavour triggers the dict-map → array
                 # pivot.
-                if isinstance(value, dict):
-                    if is_free_form_schema(value):
-                        # ``{}`` (Pydantic ``Dict[str, JsonValue]`` after
-                        # ``$ref`` inlining) admits any value — there is
-                        # nothing to lift onto an items object, and a
-                        # type-less synthetic ``value`` property is not a
-                        # schema every provider accepts. Collapse to the
-                        # ``true`` marker, which they all do.
-                        result[key] = True
-                        continue
-                    dict_map_value_schema = value
+                if dict_map_value_schema is not None:
                     # Don't carry the original ``additionalProperties: {schema}``
                     # into ``result`` — it will be replaced by the array pivot
                     # below. Skip the assignment.
+                    continue
+                if isinstance(value, dict):
+                    # ``{}`` (Pydantic ``Dict[str, JsonValue]`` after
+                    # ``$ref`` inlining) admits any value — there is
+                    # nothing to lift onto an items object, and a
+                    # type-less synthetic ``value`` property is not a
+                    # schema every provider accepts. Collapse to the
+                    # ``true`` marker, which they all do.
+                    result[key] = True
                     continue
                 # ``True`` (free-form-object marker) and ``False``
                 # (no-extras marker) survive untouched. Both are accepted
@@ -774,10 +806,10 @@ class StrictSchema:
         # no ``properties`` to lift, so without a synthetic ``value`` field the
         # items object is just ``{key}`` and the map value is dropped on the
         # wire — the model then invents a ``{"value": N}`` wrapper or emits a
-        # native dict, both of which fail the scalar-map contract. When the
-        # subclass opts in, carry the scalar schema under ``VALUE_FIELD`` so the
-        # value has a declared home; :class:`ScalarArrayDictMapResponse`
-        # reverses ``{key, value}`` back to the bare scalar.
+        # native dict, both of which fail the scalar-map contract. Carry the
+        # scalar schema under ``VALUE_FIELD`` (the default) so the value has a
+        # declared home; ``ArrayDictMapResponse`` reverses ``{key, value}`` back
+        # to the bare scalar by the original schema.
         carried_value = self.carry_scalar_dict_map_value and not value_props and sanitised_value
         if carried_value:
             items_props[self.VALUE_FIELD] = dict(sanitised_value)

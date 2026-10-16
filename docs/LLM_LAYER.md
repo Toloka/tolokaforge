@@ -2516,10 +2516,20 @@ Implementations:
   root parameters, fields of nested objects (`arguments.path`), array
   items, `Optional[...]` branches, the values of other dict-maps — and
   nowhere else, so a `list[Model]` whose model has a field named `key` is
-  never mistaken for a map. The scalar carriage (`[{key, value}]`) and the
-  `{k: {"value": v}}` wrapper some models emit natively both unwrap to the
-  bare value. Without `param_schema` the historical root-level shape
-  heuristic applies.
+  never mistaken for a map. "Dict-map" is the sanitiser's own definition
+  ([`typed_dict_map_value_schema`](../tolokaforge/core/llm/schema_sanitizer.py)),
+  so a node that also declares `properties` reverses too. `allOf` branches
+  all apply; an `anyOf` / `oneOf` picks the branch whose discriminator
+  (`const`) agrees with the value, then the one sharing the most property
+  names, then the first whose JSON type fits. A `str` where the schema
+  declares an object or array is JSON-decoded (the nested counterpart of
+  `coerce_json_strings`). The scalar carriage (`[{key, value}]`) unwraps to
+  the bare value; the `{k: {"value": v}}` wrapper some models emit natively
+  unwraps only when `v` fits the value schema, so a genuine inner map on a
+  `Dict[str, Dict[str, str]]` stays one. A bare `{key, value}` on a scalar
+  map is read as a single pivoted item only when `value` fits the value
+  schema. Without `param_schema` the historical root-level shape heuristic
+  applies.
 * `MinimaxM3TagRecoveryResponse` — composite for the MiniMax-M3 `tags`
   corruption (`minimax` preset, registry name `minimax_m3_tags`), shipped
   by [`tolokaforge-models`](../tolokaforge_models/src/tolokaforge_models/policies/minimax.py).

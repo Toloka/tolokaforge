@@ -214,21 +214,26 @@ class ScalarArrayDictMapResponse(ArrayDictMapResponse):
     ``{"value": …}`` entry is unwrapped, so a multi-field value object is left
     intact.
 
-    **Nested dict-maps.** The inherited pivot fires only at the root; a dict-map
-    *nested inside an object* param (``order.lines`` where ``order`` is an
-    object and ``lines`` is the ``Dict[str, T]``) is converted to the array
-    shape on the wire like any other dict-map, but the root-only pivot never
-    reaches it — the model then emits ``order.lines`` as the value-less array
-    and the tool rejects it (observed on ``google/gemini-3.5-flash``
-    ``dict_map__nested_in_object``, 0/15). This subclass recurses one level into
-    each ``object`` param and pivots any nested list whose items *all* carry the
-    synthetic ``key`` field back to a dict (and applies the same scalar-``value``
-    unwrap). The recursion is bounded to ``object`` params and keyed on the
-    ``key``-field item signature — the same schema-loss shape the sanitiser
-    produces — so it is a no-op on a genuine ``list[X]`` whose items don't carry
-    ``key``. Its exact reach across domains is data-bound (which nested fields
-    are dict-maps lives in the domain tool schemas, not the probe), so this arm
-    is flagged for a human domain-scope check before merge.
+    **Nested dict-maps, without ``param_schema``.** On the older contract the
+    inherited pivot fires only at the root; a dict-map *nested inside an
+    object* param (``order.lines`` where ``order`` is an object and ``lines``
+    is the ``Dict[str, T]``) is converted to the array shape on the wire like
+    any other dict-map, but the root-only pivot never reaches it — the model
+    then emits ``order.lines`` as the value-less array and the tool rejects it
+    (observed on ``google/gemini-3.5-flash`` ``dict_map__nested_in_object``,
+    0/15). The fallback recurses one level into each ``object`` param and
+    pivots any nested list whose items *all* carry the synthetic ``key`` field
+    back to a dict (and applies the same scalar-``value`` unwrap). Bounded to
+    the ``key``-field item signature, so a genuine ``list[X]`` whose items
+    don't carry ``key`` is untouched.
+
+    **Compatibility window.** The fallback (and the restated
+    ``carry_scalar_dict_map_value`` on :class:`GeminiRecursiveSchema`) exists
+    only for an engine older than the one that passes ``param_schema``; it is
+    a second, less capable reverse pivot and is meant to go. Once
+    :data:`tolokaforge_models.minimum_engine_version` rises past that engine
+    release, collapse this class to a registry alias of
+    :class:`ArrayDictMapResponse` and drop the override.
     """
 
     def parse_arguments(

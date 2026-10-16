@@ -21,7 +21,7 @@ wherever the schema declares a dict-map and nowhere else.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -365,6 +365,159 @@ class TestReverseDictMapArrays:
         }
         emitted = {"body": {"k": [{"key": "looks-pivoted"}]}}
         assert reverse_dict_map_arrays(emitted, schema) == emitted
+
+    def test_dict_map_behind_all_of_reverses(self) -> None:
+        """``{"allOf": [{"$ref": …}], "description": …}`` is how Pydantic v1 /
+        OpenAPI 3.0 / hand-written MCP schemas attach a description to a ref.
+        The sanitiser pivots inside ``allOf``; the reverser must follow."""
+        schema = {
+            "$defs": {
+                "Args": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "object", "additionalProperties": {"type": "string"}}
+                    },
+                }
+            },
+            "type": "object",
+            "properties": {
+                "arguments": {"allOf": [{"$ref": "#/$defs/Args"}], "description": "Args."}
+            },
+        }
+        wire = StrictSchema().sanitize(
+            [{"type": "function", "function": {"name": "t", "parameters": schema}}]
+        )
+        wire_args = wire[0]["function"]["parameters"]["properties"]["arguments"]
+        assert wire_args["allOf"][0]["properties"]["path"]["type"] == "array"
+        emitted = {"arguments": {"path": [{"key": "issueId", "value": "PROJ-1"}]}}
+        assert reverse_dict_map_arrays(emitted, schema) == {
+            "arguments": {"path": {"issueId": "PROJ-1"}}
+        }
+
+    def test_discriminated_union_picks_the_variant_that_declares_the_map(self) -> None:
+        """``Union[Plain, WithMap]``: the first object branch fits any dict,
+        but the value is a ``WithMap`` — its discriminator says so and the
+        ``lines`` map lives only there."""
+
+        class _Plain(BaseModel):
+            kind: Literal["plain"]
+            note: str = ""
+
+        class _WithMap(BaseModel):
+            kind: Literal["with_map"]
+            lines: dict[str, _Line]
+
+        class _Call(BaseModel):
+            order: _Plain | _WithMap = Field(discriminator="kind")
+
+        schema = TypeAdapter(_Call).json_schema()
+        emitted = {"order": {"kind": "with_map", "lines": [{"key": "SKU-1", "qty": 2}]}}
+        assert reverse_dict_map_arrays(emitted, schema) == {
+            "order": {"kind": "with_map", "lines": {"SKU-1": {"qty": 2}}}
+        }
+        plain = {"order": {"kind": "plain", "note": "n"}}
+        assert reverse_dict_map_arrays(plain, schema) == plain
+
+    def test_undiscriminated_union_picks_the_branch_sharing_the_most_fields(self) -> None:
+        class _Plain(BaseModel):
+            note: str = ""
+
+        class _WithMap(BaseModel):
+            lines: dict[str, _Line]
+            note: str = ""
+
+        class _Call(BaseModel):
+            order: _Plain | _WithMap
+
+        schema = TypeAdapter(_Call).json_schema()
+        emitted = {"order": {"note": "n", "lines": [{"key": "SKU-1", "qty": 2}]}}
+        assert reverse_dict_map_arrays(emitted, schema) == {
+            "order": {"note": "n", "lines": {"SKU-1": {"qty": 2}}}
+        }
+
+    def test_node_with_properties_and_typed_additional_properties_round_trips(self) -> None:
+        """The sanitiser pivots *any* typed ``additionalProperties`` (dropping
+        the ``properties``), so the reverser must treat the node as a map too
+        — one definition of dict-map on both sides."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "counts": {
+                    "type": "object",
+                    "properties": {"total": {"type": "integer"}},
+                    "additionalProperties": {"type": "integer"},
+                }
+            },
+        }
+        wire = StrictSchema().sanitize(
+            [{"type": "function", "function": {"name": "t", "parameters": schema}}]
+        )
+        counts_wire = wire[0]["function"]["parameters"]["properties"]["counts"]
+        assert counts_wire["type"] == "array"
+        emitted = {"counts": [{"key": "total", "value": 3}, {"key": "a", "value": 1}]}
+        assert reverse_dict_map_arrays(emitted, schema) == {"counts": {"total": 3, "a": 1}}
+
+    def test_flat_item_on_a_scalar_map_requires_the_value_to_fit(self) -> None:
+        """``{"key": "AIza…", "value": "42"}`` on a ``Dict[str, int]`` is a
+        two-entry map (an API-key parameter plus a ``value`` filter), not one
+        pivoted item; ``{"key": "a", "value": 5}`` is the item."""
+
+        class _Call(BaseModel):
+            query: dict[str, int]
+
+        schema = TypeAdapter(_Call).json_schema()
+        native = {"query": {"key": "AIza", "value": "42"}}
+        assert reverse_dict_map_arrays(native, schema) == native
+        assert reverse_dict_map_arrays({"query": {"key": "a", "value": 5}}, schema) == {
+            "query": {"a": 5}
+        }
+
+    def test_map_of_maps_native_inner_value_entry_is_not_unwrapped(self) -> None:
+        """``{host: {"value": "token"}}`` on a ``Dict[str, Dict[str, str]]``
+        is a genuine inner map — ``"token"`` cannot be the inner map — while
+        the wire shape (inner map carried under ``value``) still reverses."""
+
+        class _Call(BaseModel):
+            headers_by_host: dict[str, dict[str, str]]
+
+        schema = TypeAdapter(_Call).json_schema()
+        native = {"headers_by_host": {"api.example.com": {"value": "token"}}}
+        assert reverse_dict_map_arrays(native, schema) == native
+        wire = {
+            "headers_by_host": [
+                {"key": "api.example.com", "value": [{"key": "Authorization", "value": "t"}]}
+            ]
+        }
+        assert reverse_dict_map_arrays(wire, schema) == {
+            "headers_by_host": {"api.example.com": {"Authorization": "t"}}
+        }
+
+    def test_stringified_nested_map_is_decoded_and_reversed(self) -> None:
+        """``coerce_json_strings`` only sees the root; one level down the walk
+        has the schema and decodes a stringified container itself. A
+        ``string`` field that happens to hold JSON text is never decoded."""
+
+        class _Args(BaseModel):
+            path: dict[str, str]
+            raw: str = ""
+
+        class _Call(BaseModel):
+            arguments: _Args
+
+        schema = TypeAdapter(_Call).json_schema()
+        emitted = {
+            "arguments": {
+                "path": json.dumps([{"key": "issueId", "value": "PROJ-1"}]),
+                "raw": '{"not": "decoded"}',
+            }
+        }
+        assert reverse_dict_map_arrays(emitted, schema) == {
+            "arguments": {"path": {"issueId": "PROJ-1"}, "raw": '{"not": "decoded"}'}
+        }
+        stringified_object = {"arguments": json.dumps({"path": {"a": "b"}, "raw": "x"})}
+        assert reverse_dict_map_arrays(stringified_object, schema) == {
+            "arguments": {"path": {"a": "b"}, "raw": "x"}
+        }
 
 
 class TestArrayDictMapResponseWithoutSchemaKeepsTheRootHeuristic:
