@@ -55,8 +55,16 @@ What :class:`StrictSchema` actually rewrites (everything else passes through):
   collapsing to ``number`` keeps the type info while shedding the regex.
 * ``additionalProperties: {schema}`` (typed dict-map) on an object property
   is converted to ``type:array`` with explicit ``items.properties`` so
-  GPT-5 / Grok / Qwen-strict has structural type info to anchor on.
-  ``ArrayDictMapResponse`` reverses this on the model's emitted arguments.
+  GPT-5 / Grok / Qwen-strict has structural type info to anchor on. A
+  scalar-valued map (``Dict[str, str]``, ``Dict[str, int]``) carries its
+  value under a synthetic ``value`` field, so the items are ``{key, value}``
+  rather than a value-less ``{key}``. ``ArrayDictMapResponse`` reverses
+  this on the model's emitted arguments, at every depth of the schema.
+* ``additionalProperties: {}`` (an *untyped* map — Pydantic's
+  ``Dict[str, JsonValue]`` / ``Dict[str, Any]`` compile to an empty value
+  schema) is NOT pivoted: it becomes ``additionalProperties: true``, the
+  free-form-object marker every provider accepts. An empty schema admits
+  any value, so there is nothing to lift onto an items object.
 * RE2-incompatible ``pattern`` values (lookarounds ``(?!``/``(?=``/``(?<!``/
   ``(?<=`` and backreferences ``\\1``..``\\9``) are stripped — this is the
   only key-strip the sanitiser still does, and it's *value-conditional*, not
@@ -79,6 +87,7 @@ __all__ = [
     "PassthroughSchema",
     "StrictSchema",
     "SchemaInvariantError",
+    "is_free_form_schema",
 ]
 
 
@@ -170,6 +179,42 @@ _PROPERTY_MAP_KEYS: frozenset[str] = frozenset(
 _SCHEMA_LIST_KEYS: frozenset[str] = frozenset({"anyOf", "oneOf", "allOf", "prefixItems"})
 _SCHEMA_VALUED_KEYS: frozenset[str] = frozenset({"items", "not", "if", "then", "else", "contains"})
 
+# Keywords that constrain a value's shape. A schema carrying none of them
+# admits any JSON value — it is ``{}`` modulo annotations (``title``,
+# ``description``, ``default``, ``examples``).
+_SHAPE_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "type",
+        "properties",
+        "patternProperties",
+        "additionalProperties",
+        "items",
+        "prefixItems",
+        "anyOf",
+        "oneOf",
+        "allOf",
+        "not",
+        "enum",
+        "const",
+        "$ref",
+        "format",
+        "pattern",
+    }
+)
+
+
+def is_free_form_schema(schema: Any) -> bool:
+    """True when *schema* is a dict that constrains nothing — ``{}`` or
+    annotations only.
+
+    Pydantic compiles ``Dict[str, JsonValue]`` to ``additionalProperties:
+    {"$ref": "#/$defs/JsonValue"}`` with ``JsonValue: {}``, and
+    ``Dict[str, Any]`` to ``additionalProperties: true``. Both admit any
+    value; the sanitiser treats them alike (free-form object, no array
+    pivot) and the response policy's reverse pivot skips them.
+    """
+    return isinstance(schema, dict) and not (_SHAPE_KEYWORDS & schema.keys())
+
 
 class StrictSchema:
     """Position-aware sanitiser for OpenAI / xAI / Qwen function-calling.
@@ -235,12 +280,15 @@ class StrictSchema:
     #: ``properties`` to lift onto the synthetic items object) gets a synthetic
     #: ``value`` field carrying that scalar schema, so the array items are
     #: ``{key, value}`` rather than the value-less ``{key}`` that drops the
-    #: value entirely. The default ``False`` keeps the historical value-less
-    #: shape for every existing route (the value-typed dict-maps those routes
-    #: carry lift their own ``properties`` and are unaffected either way).
-    #: Subclasses that pair this with a scalar-aware response policy override
-    #: to ``True``. Reversed by :class:`ScalarArrayDictMapResponse`.
-    carry_scalar_dict_map_value: ClassVar[bool] = False
+    #: value entirely. Defaults to ``True``: the value-less shape lost every
+    #: ``Dict[str, str]`` argument on the ``strict`` and ``gemini`` routes
+    #: (observed live on ``openai/gpt-6.1-sol`` and ``google/gemini-3.8-flash``
+    #: — HTTP ``path`` / ``query`` maps arrived as ``{key}`` only, every call
+    #: failed). Value-typed dict-maps lift their own ``properties`` and are
+    #: unaffected either way. Reversed by :class:`ArrayDictMapResponse`
+    #: (schema-driven) — a subclass may override to ``False`` only together
+    #: with a response policy that expects the value-less shape.
+    carry_scalar_dict_map_value: ClassVar[bool] = True
 
     _MAX_REF_DEPTH = 16
 
@@ -471,8 +519,18 @@ class StrictSchema:
 
             elif key == "additionalProperties":
                 # Three flavours, all preserved by default. Only the
-                # ``{schema}`` flavour triggers the dict-map → array pivot.
+                # *typed* ``{schema}`` flavour triggers the dict-map → array
+                # pivot.
                 if isinstance(value, dict):
+                    if is_free_form_schema(value):
+                        # ``{}`` (Pydantic ``Dict[str, JsonValue]`` after
+                        # ``$ref`` inlining) admits any value — there is
+                        # nothing to lift onto an items object, and a
+                        # type-less synthetic ``value`` property is not a
+                        # schema every provider accepts. Collapse to the
+                        # ``true`` marker, which they all do.
+                        result[key] = True
+                        continue
                     dict_map_value_schema = value
                     # Don't carry the original ``additionalProperties: {schema}``
                     # into ``result`` — it will be replaced by the array pivot
@@ -720,7 +778,8 @@ class StrictSchema:
         # subclass opts in, carry the scalar schema under ``VALUE_FIELD`` so the
         # value has a declared home; :class:`ScalarArrayDictMapResponse`
         # reverses ``{key, value}`` back to the bare scalar.
-        if self.carry_scalar_dict_map_value and not value_props and sanitised_value:
+        carried_value = self.carry_scalar_dict_map_value and not value_props and sanitised_value
+        if carried_value:
             items_props[self.VALUE_FIELD] = dict(sanitised_value)
             items_props[self.VALUE_FIELD].setdefault("description", "The map value.")
             items_required.append(self.VALUE_FIELD)
@@ -741,10 +800,11 @@ class StrictSchema:
         # Enrich description so the model knows the wire shape
         existing_desc = result.get("description", "")
         if existing_desc:
+            shape_hint = f"each with a '{self.KEY_FIELD}' field as the identifier"
+            if carried_value:
+                shape_hint += f" and a '{self.VALUE_FIELD}' field holding the mapped value"
             result["description"] = (
-                f"{existing_desc} "
-                f"Provide as a JSON array of objects, each with a '{self.KEY_FIELD}' "
-                f"field as the identifier."
+                f"{existing_desc} Provide as a JSON array of objects, {shape_hint}."
             )
 
         return result

@@ -8,10 +8,13 @@ Three classes ship in this module:
   strip disabled).
 * :class:`GeminiRecursiveSchema` — Gemini sanitiser tolerating cyclic
   ``$ref`` by substituting a permissive open-object schema at the point
-  of re-entry, plus scalar dict-map value carriage.
-* :class:`ScalarArrayDictMapResponse` — response policy that pairs with
-  :class:`GeminiRecursiveSchema`'s scalar dict-map carriage by unwrapping
-  the synthetic ``value`` field on the model's emitted arguments.
+  of re-entry (scalar dict-map value carriage is the ``StrictSchema``
+  default since the engine's schema-driven reverse pivot landed).
+* :class:`ScalarArrayDictMapResponse` — response policy kept for the
+  ``scalar_array_dict_map`` registry name: with the engine's ``param_schema``
+  it is exactly ``ArrayDictMapResponse``; without it (an older engine) it
+  still unwraps the synthetic ``value`` field and pivots one level into
+  object params by shape.
 
 Registered with the engine via the ``tolokaforge.policies`` entry-point
 group (see :mod:`tolokaforge.core.model_data.load_policy_registrations`).
@@ -105,8 +108,10 @@ class GeminiRecursiveSchema(GeminiSchema):
     resolved on the current path is pruned.
     """
 
-    #: Pair the recursive-ref tolerance with scalar dict-map value carriage —
-    #: both are Gemini-observed schema-loss surfaces on the same route.
+    #: Scalar dict-map value carriage — a Gemini-observed schema-loss surface
+    #: on the same route as the recursive-ref crash. Now the ``StrictSchema``
+    #: default; restated here so the route's contract does not depend on the
+    #: engine's default, and so an older engine (pre-default) still carries.
     carry_scalar_dict_map_value = True
 
     @classmethod
@@ -196,6 +201,13 @@ class ScalarArrayDictMapResponse(ArrayDictMapResponse):
     post-pivot shape, so both the array path and the native-wrapper path
     converge here.
 
+    **With ``param_schema``** (every engine that passes the tool's original
+    schema) the inherited :class:`ArrayDictMapResponse` already does all of
+    this — scalar unwrap and nested reversal at every depth, driven by where
+    the schema declares a dict-map rather than by value shape — so this class
+    returns the base result untouched. The shape heuristics below are the
+    fallback for an engine on the older two-argument contract.
+
     Scoped to ``dict_map`` params (via ``param_types``) so a genuine
     object-valued map that happens to carry a field literally named ``value``
     is never touched — and even within a dict-map, only a *single-key*
@@ -224,7 +236,15 @@ class ScalarArrayDictMapResponse(ArrayDictMapResponse):
         arguments: dict[str, Any],
         *,
         param_types: Mapping[str, str] | None = None,
+        param_schema: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if param_schema is not None:
+            # Schema-driven path: the base reverses every dict-map by the
+            # original schema, scalar unwrap included. The shape heuristics
+            # below would only risk re-touching an already-correct value.
+            return super().parse_arguments(
+                arguments, param_types=param_types, param_schema=param_schema
+            )
         result = super().parse_arguments(arguments, param_types=param_types)
         if not param_types:
             return result
