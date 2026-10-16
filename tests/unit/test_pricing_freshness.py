@@ -15,7 +15,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from tolokaforge.core.pricing import pricing_table_metadata
-from tolokaforge.core.pricing_freshness import compare_against_source, live_prices
+from tolokaforge.core.pricing_freshness import (
+    compare_against_source,
+    live_endpoint_prices,
+    live_prices,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -143,3 +147,115 @@ class TestFailingToAskIsNotAnAnswer:
         )
 
         assert live_prices("https://example.invalid/models") is None
+
+
+class TestAPinnedRunIsCheckedAgainstTheRouteItCanBeBilledAt:
+    """A source publishes one price per model: its cheapest route.
+
+    A config pinning ``openrouter.provider_order`` with fallbacks off cannot be
+    billed at that price unless the pinned provider is the cheapest one, so
+    checking the table against it refuses correct tables. Observed on a GLM-5.3
+    cost study pinned to ``z-ai``: the table matched that provider's published
+    rate to the cent and the run was refused against a reseller charging a
+    seventeenth of it.
+    """
+
+    def test_the_pinned_route_agreeing_is_agreement(self) -> None:
+        from tolokaforge.core.pricing import MODEL_PRICING
+
+        model = next(iter(MODEL_PRICING))
+        ours = MODEL_PRICING[model]
+        cheapest = {rate: value / 17 for rate, value in ours.items()}
+
+        assert compare_against_source([model], {model: cheapest})
+        assert not compare_against_source([model], {model: cheapest}, {model: [dict(ours)]})
+
+    def test_agreeing_with_either_permitted_route_is_agreement(self) -> None:
+        from tolokaforge.core.pricing import MODEL_PRICING
+
+        model = next(iter(MODEL_PRICING))
+        ours = MODEL_PRICING[model]
+        other = {rate: value * 3 for rate, value in ours.items()}
+
+        drifts = compare_against_source([model], {model: other}, {model: [dict(other), dict(ours)]})
+
+        assert not drifts
+
+    def test_a_table_no_permitted_route_charges_is_still_refused(self) -> None:
+        from tolokaforge.core.pricing import MODEL_PRICING
+
+        model = next(iter(MODEL_PRICING))
+        ours = MODEL_PRICING[model]
+        route_a = {rate: value * 3 for rate, value in ours.items()}
+        route_b = {rate: value * 5 for rate, value in ours.items()}
+
+        drifts = compare_against_source([model], {model: route_a}, {model: [route_a, route_b]})
+
+        assert drifts
+        # Reported against the nearest permitted rate, not the furthest.
+        nearest = {d.rate: d.theirs for d in drifts}
+        for rate, value in route_a.items():
+            if rate in nearest:
+                assert nearest[rate] == pytest.approx(value)
+
+
+class TestReadingOneProvidersEndpointPrices:
+    @staticmethod
+    def _serve(monkeypatch, payload, seen=None):
+        class _Response:
+            def read(self):
+                return json.dumps(payload).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def _urlopen(url, *a, **k):
+            if seen is not None:
+                seen.append(url)
+            return _Response()
+
+        monkeypatch.setattr("tolokaforge.core.pricing_freshness.urllib_request.urlopen", _urlopen)
+
+    _ENDPOINTS = {
+        "data": {
+            "endpoints": [
+                {"provider_name": "Relace", "pricing": {"prompt": "0.0000000608"}},
+                {"provider_name": "Z.AI", "pricing": {"prompt": "0.0000014"}},
+            ]
+        }
+    }
+
+    def test_only_the_pinned_providers_rates_come_back(self, monkeypatch) -> None:
+        seen: list[str] = []
+        self._serve(monkeypatch, self._ENDPOINTS, seen)
+
+        rates = live_endpoint_prices("https://example.invalid/models", "z-ai/glm-5.3", ["z-ai"])
+
+        assert rates == [{"input": pytest.approx(1.4)}]
+        assert seen == ["https://example.invalid/models/z-ai/glm-5.3/endpoints"]
+
+    def test_a_provider_the_source_does_not_list_is_not_checked(self, monkeypatch) -> None:
+        self._serve(monkeypatch, self._ENDPOINTS)
+
+        assert (
+            live_endpoint_prices("https://example.invalid/models", "z-ai/glm-5.3", ["Nebius"])
+            is None
+        )
+
+    def test_an_unreachable_source_is_not_checked(self, monkeypatch) -> None:
+        def _boom(*a, **k):
+            raise OSError("down")
+
+        monkeypatch.setattr("tolokaforge.core.pricing_freshness.urllib_request.urlopen", _boom)
+
+        assert live_endpoint_prices("https://example.invalid/models", "m", ["Z.AI"]) is None
+
+    def test_the_provider_key_ignores_case_and_punctuation(self) -> None:
+        from tolokaforge.core.pricing_freshness import _provider_key
+
+        assert _provider_key("z-ai") == _provider_key("Z.AI") == "zai"
+        assert _provider_key("SiliconFlow") == _provider_key("siliconflow")
+        assert _provider_key("Together") != _provider_key("DeepInfra")
