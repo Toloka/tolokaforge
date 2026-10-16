@@ -50,6 +50,15 @@ from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResul
 _DEFAULT_TIMEOUT_S = 120.0
 _OPEN_TIMEOUT_S = 15.0
 
+# How long a session may keep trying to open before the trial is abandoned.
+# A trial's shell is opened while its container is still settling, so the first
+# `docker exec` can land before the container accepts one and fail in
+# milliseconds. Retrying for a bounded window costs a trial nothing when the
+# shell opens first time and saves one that was merely early.
+_OPEN_DEADLINE_S = 90.0
+_OPEN_RETRY_BACKOFF_S = 1.0
+_OPEN_RETRY_MAX_BACKOFF_S = 8.0
+
 # How many commands one ``bash_session_batch`` call may carry. Mirrors
 # ``tolokaforge_coding_harnesses.adapter_support.MAX_BATCH_COMMANDS``: the two
 # tools are compared against each other, so a call of one must be able to hold
@@ -171,6 +180,8 @@ class _PtyBashSession:
         self._master_fd: int | None = None
         self._cwd: str | None = None
         self._ready = False
+        # Why the last open attempt failed, for the error a lost trial reports.
+        self._open_failure: str | None = None
 
     @property
     def pid(self) -> int:
@@ -186,17 +197,34 @@ class _PtyBashSession:
         if self._proc is not None:
             raise RuntimeError("bash session is already open")
         self._cwd = cwd
-        # Opening is one sentinel round-trip under a fixed budget, and on a
-        # loaded host the spawn alone can eat it — a container that has just
-        # come up, or a `docker exec` queued behind an image build. A failed
-        # round-trip leaves nothing to salvage, so the only recovery is a
-        # fresh shell; one retry turns a startup that was merely slow into a
-        # working session instead of a trial lost before it ran a command.
-        for _attempt in range(2):
+        # Two different failures look the same from here, and both are
+        # transient at trial start: the shell can answer too slowly (a spawn
+        # queued behind an image build eats the round-trip budget), or it can
+        # die instantly (`docker exec` against a container that is up but not
+        # yet accepting execs). The second fails in milliseconds, so retrying
+        # without a pause just burns attempts against the same unready
+        # container — the wait between tries is what makes the retry work.
+        #
+        # A failed round-trip leaves nothing to salvage, so each attempt gets a
+        # fresh shell. Attempts are bounded by a deadline rather than a count:
+        # the question is how long the container is given to accept a shell,
+        # not how many times we ask.
+        deadline = time.monotonic() + _OPEN_DEADLINE_S
+        backoff = _OPEN_RETRY_BACKOFF_S
+        attempts = 0
+        while True:
+            attempts += 1
             if self._open_shell(cwd):
                 return
             self.close()
-        raise RuntimeError("bash session failed to become ready")
+            reason = self._open_failure or "no sentinel and no exit"
+            if time.monotonic() + backoff >= deadline:
+                raise RuntimeError(
+                    f"bash session failed to become ready after {attempts} "
+                    f"attempt(s) over {_OPEN_DEADLINE_S:g}s ({reason})"
+                )
+            time.sleep(backoff)
+            backoff = min(backoff * 2, _OPEN_RETRY_MAX_BACKOFF_S)
 
     def run(self, command: str, timeout_s: float) -> CommandResult:
         if self._master_fd is None:
@@ -238,14 +266,22 @@ class _PtyBashSession:
         """Spawn the shell, confirm it answers a sentinel, seed its cwd.
 
         Returns whether the shell became ready; a pipe that closes before the
-        first sentinel round-trip leaves the session closed.
+        first sentinel round-trip leaves the session closed. On failure
+        :attr:`_open_failure` names which of the two happened, so a trial that
+        never got a shell says whether it was too slow or dead on arrival.
         """
+        self._open_failure = None
         self._spawn(cwd)
         # Bracketed paste is readline's and only exists in an interactive
         # shell; off, the pty carries the relayed command output alone.
         self._write("set -m; PS1=''; PS2=''; bind 'set enable-bracketed-paste off' 2>/dev/null\n")
         ready = self.run(":", timeout_s=_OPEN_TIMEOUT_S)
-        if ready.timed_out or ready.shell_exited:
+        if ready.timed_out:
+            self._open_failure = f"no sentinel within {_OPEN_TIMEOUT_S:g}s"
+            return False
+        if ready.shell_exited:
+            code = "" if ready.exit_code is None else f" with exit code {ready.exit_code}"
+            self._open_failure = f"the shell exited{code} before answering"
             return False
         self._ready = True
         self._seed_cwd(cwd)

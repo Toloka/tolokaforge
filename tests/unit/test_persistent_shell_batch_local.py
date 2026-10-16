@@ -169,42 +169,70 @@ def test_declared_batch_size_sets_the_call_band(tmp_path):
     assert PersistentShellToolWrapper(bare).declared_batch_size == 1
 
 
-def test_a_slow_first_open_is_retried_rather_than_losing_the_trial(tmp_path, monkeypatch):
-    """One failed readiness round-trip must not cost the whole trial.
+def test_a_container_not_yet_accepting_a_shell_is_retried(tmp_path, monkeypatch):
+    """A trial whose session never opens is a `provision_error`: zero turns,
+    zero cost, nothing measured.
 
-    A trial whose session never opens is a `provision_error`: zero turns, zero
-    cost, nothing measured. Opening is one sentinel round-trip under a fixed
-    budget, so a loaded host can lose it to a slow spawn alone.
+    The container is still settling when its shell is opened, so the first
+    `docker exec` can be refused in milliseconds. Retrying must survive that.
     """
-    from tolokaforge.tools.persistent_shell import LocalBashSession
+    from tolokaforge.tools import persistent_shell as mod
 
-    session = LocalBashSession()
+    monkeypatch.setattr(mod, "_OPEN_RETRY_BACKOFF_S", 0.01)
+    session = mod.LocalBashSession()
     calls: list[int] = []
     real_open_shell = session._open_shell
 
     def flaky(cwd):
         calls.append(1)
-        if len(calls) == 1:
+        if len(calls) < 3:
+            session._open_failure = "the shell exited with exit code 126 before answering"
             return False
         return real_open_shell(cwd)
 
     monkeypatch.setattr(session, "_open_shell", flaky)
     try:
         session.open(str(tmp_path))
-        assert len(calls) == 2
+        assert len(calls) == 3
         assert session.is_open
         assert session.run("echo alive", 5).output.strip() == "alive"
     finally:
         session.close()
 
 
-def test_an_open_that_never_becomes_ready_still_fails_loud(tmp_path, monkeypatch):
-    from tolokaforge.tools.persistent_shell import LocalBashSession
+def test_retries_pause_between_attempts(tmp_path, monkeypatch):
+    """Without a wait, retrying just burns attempts against the same unready
+    container — the pause is the part that works."""
+    from tolokaforge.tools import persistent_shell as mod
 
-    session = LocalBashSession()
+    monkeypatch.setattr(mod, "_OPEN_RETRY_BACKOFF_S", 0.05)
+    monkeypatch.setattr(mod, "_OPEN_DEADLINE_S", 1.0)
+    slept: list[float] = []
+    monkeypatch.setattr(mod.time, "sleep", lambda s: slept.append(s))
+
+    session = mod.LocalBashSession()
     monkeypatch.setattr(session, "_open_shell", lambda cwd: False)
+    with pytest.raises(RuntimeError):
+        session.open(str(tmp_path))
+
+    assert slept, "retried without ever waiting for the container"
+    assert slept == sorted(slept), "backoff must not shrink between attempts"
+
+
+def test_an_open_that_never_becomes_ready_fails_loud_and_says_why(tmp_path, monkeypatch):
+    from tolokaforge.tools import persistent_shell as mod
+
+    monkeypatch.setattr(mod, "_OPEN_DEADLINE_S", 0.2)
+    monkeypatch.setattr(mod, "_OPEN_RETRY_BACKOFF_S", 0.01)
+    session = mod.LocalBashSession()
+
+    def dead(cwd):
+        session._open_failure = "the shell exited with exit code 126 before answering"
+        return False
+
+    monkeypatch.setattr(session, "_open_shell", dead)
     try:
-        with pytest.raises(RuntimeError, match="failed to become ready"):
+        with pytest.raises(RuntimeError, match="exit code 126 before answering"):
             session.open(str(tmp_path))
     finally:
         session.close()
