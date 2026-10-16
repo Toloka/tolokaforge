@@ -9,6 +9,11 @@ execution — the `prepare` / `worker` / `status` batch flow.
 > subprocess CLI — see [STANDALONE_RUNNER.md](STANDALONE_RUNNER.md). This guide
 > is the different tool for the different job of running a whole batch.
 
+> **Want to run that whole batch from a container** on a clean machine with
+> only Docker + credentials — no checkout, no Python toolchain — see
+> [ORCHESTRATOR_IMAGE.md](ORCHESTRATOR_IMAGE.md). It packages this `run` flow
+> as a standalone image with a one-command job template.
+
 ## Execution Modes
 
 Tolokaforge supports two queue backends:

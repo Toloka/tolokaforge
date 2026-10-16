@@ -56,8 +56,8 @@ jobs:
             fi
           fi
 
-          base_images="runner db-service rag-service mock-web grader"
-          base_rows='{"image":"runner","dockerfile":"tolokaforge/docker/dockerfiles/runner.Dockerfile","needs_wheel":true},{"image":"rag-service","dockerfile":"tolokaforge/docker/dockerfiles/rag.Dockerfile","needs_wheel":true},{"image":"db-service","dockerfile":"tolokaforge/docker/dockerfiles/db_service.Dockerfile","needs_wheel":false},{"image":"mock-web","dockerfile":"tolokaforge/docker/dockerfiles/mock_web.Dockerfile","needs_wheel":false},{"image":"grader","dockerfile":"tolokaforge/docker/dockerfiles/grader.Dockerfile","needs_wheel":true}'
+          base_images="runner db-service rag-service mock-web grader orchestrator"
+          base_rows='{"image":"runner","dockerfile":"tolokaforge/docker/dockerfiles/runner.Dockerfile","needs_wheel":true},{"image":"rag-service","dockerfile":"tolokaforge/docker/dockerfiles/rag.Dockerfile","needs_wheel":true},{"image":"db-service","dockerfile":"tolokaforge/docker/dockerfiles/db_service.Dockerfile","needs_wheel":false},{"image":"mock-web","dockerfile":"tolokaforge/docker/dockerfiles/mock_web.Dockerfile","needs_wheel":false},{"image":"grader","dockerfile":"tolokaforge/docker/dockerfiles/grader.Dockerfile","needs_wheel":true},{"image":"orchestrator","dockerfile":"tolokaforge/docker/dockerfiles/orchestrator.Dockerfile","needs_wheel":true,"extras":"dx"}'
 
           echo "scaleout_matrix={\"include\":[${base_rows}]}" >> "$GITHUB_OUTPUT"
           echo "standalone=${include_standalone}" >> "$GITHUB_OUTPUT"
@@ -190,6 +190,7 @@ jobs:
           build-args: |
             PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
             ${{ matrix.needs_wheel && format('WHEEL_FILENAME={0}', env.WHEEL_FILENAME) || '' }}
+            ${{ matrix.extras && format('EXTRAS={0}', matrix.extras) || '' }}
 
       - name: Mint Docker Hub OIDC token
         id: docker_oidc
@@ -225,6 +226,7 @@ jobs:
           build-args: |
             PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
             ${{ matrix.needs_wheel && format('WHEEL_FILENAME={0}', env.WHEEL_FILENAME) || '' }}
+            ${{ matrix.extras && format('EXTRAS={0}', matrix.extras) || '' }}
 
   # The all-in-one standalone image publishes MULTI-ARCH (linux/amd64 +
   # linux/arm64), unlike the five amd64-only scale-out images above. It is built
