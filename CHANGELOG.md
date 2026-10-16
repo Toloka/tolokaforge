@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.32.0 (2026-10-16)
+
+### Fix
+
+- two preflight failures that lose trials and refuse valid runs (#1907)
+- **llm**: carry scalar dict-map values and reverse the array pivot at every depth (#1905)
+
 ## v0.31.2 (2026-10-15)
 
 ### Fix
