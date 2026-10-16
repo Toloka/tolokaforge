@@ -38,7 +38,7 @@ from tolokaforge.core.llm.response_policy import (
     ArrayDictMapResponse,
     reverse_dict_map_arrays,
 )
-from tolokaforge.core.llm.schema_sanitizer import StrictSchema, is_free_form_schema
+from tolokaforge.core.llm.schema_sanitizer import StrictSchema
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
 
 pytestmark = pytest.mark.unit
@@ -186,75 +186,6 @@ def test_native_dict_emission_passes_through_and_value_wrapper_unwraps(model: st
         param_schema=tool["function"]["parameters"],
     )
     assert recovered == _NATIVE_ARGS
-
-
-# ---------------------------------------------------------------------------
-# Sanitiser: scalar carriage by default, untyped maps left free-form.
-# ---------------------------------------------------------------------------
-
-
-class TestStrictSchemaScalarDictMapCarriage:
-    def test_scalar_map_carries_value_by_default(self) -> None:
-        class _Call(BaseModel):
-            path: dict[str, str] = Field(description="Path params.")
-
-        wire = StrictSchema().sanitize([_tool(_Call)])[0]["function"]["parameters"]
-        path = wire["properties"]["path"]
-        assert path["type"] == "array"
-        items = path["items"]
-        assert items["properties"]["key"]["type"] == "string"
-        assert items["properties"]["value"]["type"] == "string"
-        assert set(items["required"]) == {"key", "value"}
-        assert "'value' field" in path["description"], path["description"]
-
-    def test_int_map_value_keeps_its_scalar_schema(self) -> None:
-        class _Call(BaseModel):
-            counts: dict[str, int] = Field(ge=0)
-
-        wire = StrictSchema().sanitize([_tool(_Call)])[0]["function"]["parameters"]
-        value = wire["properties"]["counts"]["items"]["properties"]["value"]
-        assert value["type"] == "integer"
-        assert value["description"] == "The map value."
-
-    def test_untyped_map_becomes_free_form_object_not_array(self) -> None:
-        """``Dict[str, JsonValue]`` compiles to ``additionalProperties: {}``
-        (an empty ``$ref`` target). There is nothing to lift onto an items
-        object, so the map stays an object with the ``true`` marker."""
-
-        class _Call(BaseModel):
-            query: dict[str, JsonValue] = Field(description="Query params.")
-
-        wire = StrictSchema().sanitize([_tool(_Call)])[0]["function"]["parameters"]
-        query = wire["properties"]["query"]
-        assert query["type"] == "object"
-        assert query["additionalProperties"] is True
-        assert "items" not in query
-        assert "$defs" not in wire
-
-    def test_object_valued_map_still_lifts_properties_without_value(self) -> None:
-        class _Call(BaseModel):
-            lines: dict[str, _Line]
-
-        wire = StrictSchema().sanitize([_tool(_Call)])[0]["function"]["parameters"]
-        items = wire["properties"]["lines"]["items"]["properties"]
-        assert set(items) == {"key", "qty", "attrs"}
-        # The nested scalar map inside the value type carries its value too.
-        assert set(items["attrs"]["items"]["properties"]) == {"key", "value"}
-
-    @pytest.mark.parametrize(
-        ("schema", "free"),
-        [
-            ({}, True),
-            ({"title": "JsonValue", "description": "any"}, True),
-            ({"type": "string"}, False),
-            ({"$ref": "#/$defs/X"}, False),
-            ({"anyOf": [{"type": "string"}]}, False),
-            ({"additionalProperties": True}, False),
-            ("not a dict", False),
-        ],
-    )
-    def test_is_free_form_schema(self, schema: Any, free: bool) -> None:
-        assert is_free_form_schema(schema) is free
 
 
 # ---------------------------------------------------------------------------

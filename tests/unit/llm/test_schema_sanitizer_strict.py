@@ -34,11 +34,12 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, Field, JsonValue, TypeAdapter
 
 from tolokaforge.core.llm.schema_sanitizer import (
     SchemaCapability,
     StrictSchema,
+    is_free_form_schema,
 )
 
 pytestmark = pytest.mark.unit
@@ -323,3 +324,84 @@ class TestStrictSchemaCapabilitySet:
     def test_still_excludes_dict_map_typed(self) -> None:
         caps = StrictSchema().supported_capabilities()
         assert SchemaCapability.DICT_MAP_TYPED not in caps
+
+
+# ---------------------------------------------------------------------------
+# Dict-map pivot: scalar values carried by default, untyped maps left
+# free-form. Round trip through the response policy lives in
+# :file:`test_dict_map_round_trip.py`.
+# ---------------------------------------------------------------------------
+
+
+class _MapLine(BaseModel):
+    qty: int
+    attrs: dict[str, int] = Field(default_factory=dict)
+
+
+def _wire(model: type[BaseModel]) -> dict[str, Any]:
+    tool = _build_tool(model, name="call_api", desc="Call an HTTP API.")
+    return StrictSchema().sanitize([tool])[0]["function"]["parameters"]
+
+
+class TestStrictSchemaScalarDictMapCarriage:
+    def test_scalar_map_carries_value_by_default(self) -> None:
+        class _Call(BaseModel):
+            path: dict[str, str] = Field(description="Path params.")
+
+        wire = _wire(_Call)
+        path = wire["properties"]["path"]
+        assert path["type"] == "array"
+        items = path["items"]
+        assert items["properties"]["key"]["type"] == "string"
+        assert items["properties"]["value"]["type"] == "string"
+        assert set(items["required"]) == {"key", "value"}
+        assert "'value' field" in path["description"], path["description"]
+
+    def test_int_map_value_keeps_its_scalar_schema(self) -> None:
+        class _Call(BaseModel):
+            counts: dict[str, int] = Field(ge=0)
+
+        wire = _wire(_Call)
+        value = wire["properties"]["counts"]["items"]["properties"]["value"]
+        assert value["type"] == "integer"
+        assert value["description"] == "The map value."
+
+    def test_untyped_map_becomes_free_form_object_not_array(self) -> None:
+        """``Dict[str, JsonValue]`` compiles to ``additionalProperties: {}``
+        (an empty ``$ref`` target). There is nothing to lift onto an items
+        object, so the map stays an object with the ``true`` marker."""
+
+        class _Call(BaseModel):
+            query: dict[str, JsonValue] = Field(description="Query params.")
+
+        wire = _wire(_Call)
+        query = wire["properties"]["query"]
+        assert query["type"] == "object"
+        assert query["additionalProperties"] is True
+        assert "items" not in query
+        assert "$defs" not in wire
+
+    def test_object_valued_map_still_lifts_properties_without_value(self) -> None:
+        class _Call(BaseModel):
+            lines: dict[str, _MapLine]
+
+        wire = _wire(_Call)
+        items = wire["properties"]["lines"]["items"]["properties"]
+        assert set(items) == {"key", "qty", "attrs"}
+        # The nested scalar map inside the value type carries its value too.
+        assert set(items["attrs"]["items"]["properties"]) == {"key", "value"}
+
+    @pytest.mark.parametrize(
+        ("schema", "free"),
+        [
+            ({}, True),
+            ({"title": "JsonValue", "description": "any"}, True),
+            ({"type": "string"}, False),
+            ({"$ref": "#/$defs/X"}, False),
+            ({"anyOf": [{"type": "string"}]}, False),
+            ({"additionalProperties": True}, False),
+            ("not a dict", False),
+        ],
+    )
+    def test_is_free_form_schema(self, schema: Any, free: bool) -> None:
+        assert is_free_form_schema(schema) is free
