@@ -83,6 +83,22 @@ class TimeoutConfig(BaseModel):
     turn_s: int = 60
     episode_s: int = 1800
 
+    agent_episode_s: int | None = Field(default=None, gt=0)
+    """Operator override for the agent tool's budget, in seconds. ``None``
+    (the default) leaves the task-derived value untouched — every agent tool
+    keeps the ``timeout_s`` its adapter assigned (for a vendor-CLI harness, the
+    task's ``[agent] timeout_sec``), so an unset override reproduces today's
+    behaviour exactly. A value supersedes that per-tool ``timeout_s`` on every
+    agent tool, which is the per-command budget the engine loop enforces and,
+    for a coding-harness trial, the single-exec episode budget the runner (and
+    its in-container watchdog) kills at. Adapter-agnostic: the override applies
+    wherever a trial's agent tool declares a timeout, not to any one adapter.
+    Lower it to run a short-capped smoke without editing the task. The
+    ``episode_s`` floor still governs a harness trial — a value above the
+    effective episode budget is refused the same as a task-declared one, so
+    raise ``episode_s`` (and any task ``trial_seconds``) alongside an override
+    that lengthens the budget."""
+
 
 class RuntimeConnectConfig(BaseModel):
     """Runner-service health-check budget on connect.

@@ -174,6 +174,7 @@ class TestCompanionDataclassFields:
         assert [f.name for f in dataclasses.fields(WriteComposeEnv)] == [
             "trial_id",
             "stack_inputs",
+            "run_id",
         ]
 
     def test_materialise_context_fields(self) -> None:

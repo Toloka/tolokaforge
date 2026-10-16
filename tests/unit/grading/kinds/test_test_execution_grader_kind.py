@@ -34,6 +34,7 @@ from pydantic import ValidationError
 from tolokaforge.core.grading.kinds import (
     GraderKindRefusedError,
     TestExecutionGraderKind,
+    TestExecutionKindConfig,
 )
 from tolokaforge.core.grading.substrate import RunTestSuiteResult
 from tolokaforge.runner.models import RunnerGradingConfig
@@ -44,9 +45,24 @@ pytestmark = pytest.mark.unit
 class _ScriptedSubstrate:
     """Records the ``run_test_suite`` kwargs; returns a scripted result."""
 
-    def __init__(self, result: RunTestSuiteResult) -> None:
+    def __init__(self, result: RunTestSuiteResult, exec_result: tuple[int, str] = (0, "")) -> None:
         self._result = result
+        self._exec_result = exec_result
         self.calls: list[dict[str, Any]] = []
+        self.materialise_calls: list[dict[str, Any]] = []
+        self.exec_calls: list[dict[str, Any]] = []
+        self.events: list[str] = []
+
+    def exec_in_service(
+        self,
+        *,
+        service: str | None,
+        command: str,
+        timeout_s: float,
+    ) -> tuple[int, str]:
+        self.exec_calls.append({"service": service, "command": command, "timeout_s": timeout_s})
+        self.events.append(f"collect:{service}")
+        return self._exec_result
 
     def run_test_suite(
         self,
@@ -55,6 +71,7 @@ class _ScriptedSubstrate:
         reward_path: str,
         timeout_s: float,
         reward_read_timeout_s: float,
+        service: str | None = None,
     ) -> RunTestSuiteResult:
         self.calls.append(
             {
@@ -62,9 +79,29 @@ class _ScriptedSubstrate:
                 "reward_path": reward_path,
                 "timeout_s": timeout_s,
                 "reward_read_timeout_s": reward_read_timeout_s,
+                "service": service,
             }
         )
+        self.events.append("run")
         return self._result
+
+    def materialise_path(
+        self,
+        *,
+        src_service: str | None,
+        dst_service: str,
+        path: str,
+        exclude: Any = (),
+    ) -> None:
+        self.materialise_calls.append(
+            {
+                "src_service": src_service,
+                "dst_service": dst_service,
+                "path": path,
+                "exclude": list(exclude),
+            }
+        )
+        self.events.append(f"materialise:{path}")
 
 
 def _result(
@@ -240,6 +277,7 @@ def test_kind_config_overrides_reach_substrate_and_extra_keys_are_refused() -> N
         "reward_path": "/custom/reward.txt",
         "timeout_s": 60.0,
         "reward_read_timeout_s": 5.0,
+        "service": None,
     }
 
     with pytest.raises(ValidationError):
@@ -254,6 +292,7 @@ def test_kind_config_defaults_map_to_standard_verifier_paths() -> None:
         "reward_path": "/logs/verifier/reward.txt",
         "timeout_s": 300.0,
         "reward_read_timeout_s": 10.0,
+        "service": None,
     }
 
 
@@ -272,3 +311,99 @@ def test_stdout_truncated_at_configured_char_cap() -> None:
     tail = grade.reasons[idx:]
     assert len(tail) == 65_536
     assert tail == big[:65_536]
+
+
+def test_service_and_artifacts_parse_into_config() -> None:
+    cfg = TestExecutionKindConfig(
+        service="verifier",
+        artifacts=[
+            {"source": "/app/cracker.py"},
+            {"source": "/srv/data", "exclude": ["__pycache__", "*.pyc"]},
+        ],
+    )
+    assert cfg.service == "verifier"
+    assert [a.source for a in cfg.artifacts] == ["/app/cracker.py", "/srv/data"]
+    assert cfg.artifacts[1].exclude == ["__pycache__", "*.pyc"]
+
+
+def test_artifacts_without_service_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        TestExecutionKindConfig(artifacts=[{"source": "/app/cracker.py"}])
+
+
+def test_artifact_spec_forbids_unknown_keys() -> None:
+    with pytest.raises(ValidationError):
+        TestExecutionKindConfig(service="verifier", artifacts=[{"src": "/app"}])
+
+
+def test_separate_verifier_orchestration_materialises_then_runs_in_service() -> None:
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1\n"))
+    grade = _evaluate(
+        substrate,
+        kind_config={
+            "service": "verifier",
+            "artifacts": [
+                {"source": "/app/cracker.py"},
+                {"source": "/app/requirements.txt", "exclude": ["*.pyc"]},
+            ],
+        },
+    )
+    # Every declared artifact is re-materialised into the verifier first, from the
+    # agent (src None), then the suite runs in the verifier's container.
+    assert [c["path"] for c in substrate.materialise_calls] == [
+        "/app/cracker.py",
+        "/app/requirements.txt",
+    ]
+    assert all(c["src_service"] is None for c in substrate.materialise_calls)
+    assert all(c["dst_service"] == "verifier" for c in substrate.materialise_calls)
+    assert substrate.materialise_calls[1]["exclude"] == ["*.pyc"]
+    assert substrate.calls[-1]["service"] == "verifier"
+    assert grade is not None and grade.binary_pass is True
+
+
+def test_collect_runs_before_materialise_before_run() -> None:
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1\n"))
+    _evaluate(
+        substrate,
+        kind_config={
+            "service": "verifier",
+            "collect": [{"service": "postgres", "command": "pg_dumpall > /tmp/d"}],
+            "artifacts": [{"source": "/tmp/d", "src_service": "postgres"}],
+        },
+    )
+    assert substrate.events == ["collect:postgres", "materialise:/tmp/d", "run"]
+    assert substrate.exec_calls[0]["service"] == "postgres"
+    assert substrate.materialise_calls[0]["src_service"] == "postgres"
+    assert substrate.calls[-1]["service"] == "verifier"
+
+
+def test_collect_without_service_runs_in_agent() -> None:
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1\n"))
+    _evaluate(
+        substrate,
+        kind_config={
+            "service": "verifier",
+            "collect": [{"command": "find /etc -name '*.conf' > /tmp/p"}],
+            "artifacts": [{"source": "/tmp/p"}],
+        },
+    )
+    assert substrate.exec_calls[0]["service"] is None
+    assert substrate.materialise_calls[0]["src_service"] is None
+
+
+def test_nonzero_collect_is_refused() -> None:
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1\n"), exec_result=(1, "boom"))
+    with pytest.raises(GraderKindRefusedError):
+        _evaluate(
+            substrate,
+            kind_config={
+                "service": "verifier",
+                "collect": [{"service": "postgres", "command": "pg_dumpall > /tmp/d"}],
+            },
+        )
+    assert substrate.materialise_calls == []  # never reached materialise after a failed collect
+
+
+def test_collect_requires_a_verifier_service() -> None:
+    with pytest.raises(ValidationError):
+        TestExecutionKindConfig(collect=[{"command": "snapshot"}])

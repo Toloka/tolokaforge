@@ -17,7 +17,7 @@ files inside the slim image. See :mod:`tolokaforge.core._runner_subset`.
 from __future__ import annotations
 
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -178,12 +178,42 @@ class LiveRunnerCallbackGradingSubstrate:
         reward_path: str,
         timeout_s: float,
         reward_read_timeout_s: float,
+        service: str | None = None,
     ) -> RunTestSuiteResult:
         return self._client.run_test_suite(
             script_path=script_path,
             reward_path=reward_path,
             timeout_s=timeout_s,
             reward_read_timeout_s=reward_read_timeout_s,
+            service=service,
+        )
+
+    def materialise_path(
+        self,
+        *,
+        src_service: str | None,
+        dst_service: str,
+        path: str,
+        exclude: Sequence[str] = (),
+    ) -> None:
+        self._client.materialise_path(
+            src_service=src_service,
+            dst_service=dst_service,
+            path=path,
+            exclude=exclude,
+        )
+
+    def exec_in_service(
+        self,
+        *,
+        service: str | None,
+        command: str,
+        timeout_s: float,
+    ) -> tuple[int, str]:
+        return self._client.exec_in_service(
+            service=service,
+            command=command,
+            timeout_s=timeout_s,
         )
 
     def trajectory(self) -> Mapping[str, Any] | None:

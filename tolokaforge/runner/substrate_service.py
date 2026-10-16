@@ -44,7 +44,6 @@ from tolokaforge.runner.db_client import (
 from tolokaforge.runner.db_client import (
     TrialNotFoundError as DBTrialNotFoundError,
 )
-from tolokaforge.runner.env_exec import first_env_exec_tool
 from tolokaforge.runner.models import StableStateResponse, StateResponse, provisions_database
 
 if TYPE_CHECKING:
@@ -52,6 +51,11 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# Shared by RunTestSuite and ExecInService: the fallback wall-clock cap when a
+# request passes 0.0, and the byte cap on returned output.
+_DEFAULT_SCRIPT_TIMEOUT_S = 300.0
+_STDOUT_WIRE_CAP_BYTES = 65_536
 
 
 class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
@@ -269,16 +273,30 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
     def RunDbProbe(  # noqa: N802
         self,
         request: pb2.RunDbProbeRequest,
-        context: grpc.ServicerContext,
+        context: grpc.ServicerContext,  # noqa: ARG002
     ) -> pb2.RunDbProbeResponse:
-        from tolokaforge.core.grading.db_probes import _fetch_probe_rows
+        """Run one read-only probe query and signal the two failure cases apart.
+
+        A transport/connection failure (the DB could not be reached) crosses as
+        ``unreachable=True`` so the client raises ``SubstrateUnreachableError``
+        (trial ungradeable); a query failure (the DB answered and rejected the
+        query) crosses as ``unreachable=False`` with ``error`` set so the client
+        raises a non-unreachable error the grader folds to a FAIL line. The
+        classification is the same :func:`is_db_transport_error` the in-process
+        lane uses, so both lanes book identical outcomes. The two cases ride the
+        response rather than a gRPC status code so the client reconstructs them
+        distinctly instead of collapsing both into one transport error.
+        """
+        from tolokaforge.core.grading.db_probes import _fetch_probe_rows, is_db_transport_error
 
         try:
             rows = self._runner._run_async(_fetch_probe_rows(request.dsn, request.query))
         except Exception as exc:
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(f"RunDbProbe failed: {type(exc).__name__}: {exc}")
-            return pb2.RunDbProbeResponse()
+            detail = f"RunDbProbe failed: {type(exc).__name__}: {exc}"
+            return pb2.RunDbProbeResponse(
+                unreachable=is_db_transport_error(exc),
+                error=detail,
+            )
         return pb2.RunDbProbeResponse(rows_json=json.dumps(rows, default=str))
 
     # ------------------------------------------------------------------
@@ -292,46 +310,26 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
     ) -> pb2.RunTestSuiteResponse:
         """Execute a pack-declared verifier inside the trial's env container.
 
-        Two first-class outcomes ride the response rather than the gRPC
-        status: ``tool_absent`` (the trial completed but the adapter shipped
-        no exec-capable lifecycle tool — a pack-authoring issue) and
-        ``script_exec_error`` (the exec call raised, e.g. subprocess timeout —
-        the trial completed but the verifier crashed). Neither is an RPC
-        failure: the caller renders both as observable grade outcomes.
+        Delegates to :meth:`RunnerServiceImpl._run_test_suite_via_agent_tools`
+        — the same helper the in-process grading substrate uses — so the
+        detached (wire) lane and the in-process lane share one implementation
+        of the run-suite + ``cat {reward_path} 2>/dev/null || echo 0.0`` reward
+        fallback. An unregistered trial answers gRPC ``NOT_FOUND`` (an RPC
+        error — the wire contract). Every other outcome rides the response via
+        the helper's :class:`RunTestSuiteResult`, which mirrors
+        ``RunTestSuiteResponse`` field-for-field: ``tool_absent`` (no
+        exec-capable lifecycle tool) and ``script_exec_error`` (the exec call
+        raised) are first-class flags, not RPC failures.
 
-        The reward file is read via ``cat {reward_path} 2>/dev/null || echo
-        0.0`` so an absent file yields ``b"0.0\\n"``. A raised exception
-        inside the reward-cat call is treated the same way (falls back to
-        ``b"0.0\\n"``) — a resilience upgrade over the pre-move runner-side
-        path, which would have propagated the exception through the async
-        bridge; observable only when the reward-cat call itself raises,
-        which the pre-move ``|| echo 0.0`` shell fallback made rare.
-
-        ``stdout`` is wire-capped at 65_536 bytes; the caller further
+        ``stdout`` is wire-capped at 65_536 bytes here; the caller further
         truncates for the grade's reasons string.
         """
-        _DEFAULT_SCRIPT_TIMEOUT_S = 300.0
         _DEFAULT_REWARD_READ_TIMEOUT_S = 10.0
-        _STDOUT_WIRE_CAP_BYTES = 65_536
 
-        trial_context = self._runner.trials.get(request.trial_id)
-        if trial_context is None:
+        if request.trial_id not in self._runner.trials:
             context.set_code(grpc.StatusCode.NOT_FOUND)
             context.set_details(f"Trial '{request.trial_id}' not registered")
             return pb2.RunTestSuiteResponse()
-
-        bash_tool = first_env_exec_tool(trial_context.agent_tools.values())
-        if bash_tool is None:
-            error_msg = (
-                "test-execution grading was requested (grading_method='test_execution') "
-                "but no exec-capable env tool was found in this trial. Include a "
-                "tool satisfying SupportsEnvExec in TaskDescription.agent_tools so "
-                "the runner can execute the test suite inside the trial environment."
-            )
-            return pb2.RunTestSuiteResponse(
-                tool_absent=True,
-                tool_absent_reason=error_msg,
-            )
 
         script_timeout = request.timeout_s if request.timeout_s > 0.0 else _DEFAULT_SCRIPT_TIMEOUT_S
         reward_read_timeout = (
@@ -340,41 +338,72 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
             else _DEFAULT_REWARD_READ_TIMEOUT_S
         )
 
-        try:
-            exit_code, stdout = bash_tool.exec_in_env_with_exit_code(
-                f"cd $(dirname {request.script_path}) && bash {request.script_path} 2>&1",
-                script_timeout,
-            )
-        except Exception as exc:
-            return pb2.RunTestSuiteResponse(
-                exit_code=-1,
-                reward_bytes=b"",
-                stdout="",
-                script_exec_error=str(exc),
-            )
-
-        try:
-            _rc, reward_str = bash_tool.exec_in_env_with_exit_code(
-                f"cat {request.reward_path} 2>/dev/null || echo 0.0",
-                reward_read_timeout,
-            )
-            reward_bytes = reward_str.encode()
-        except Exception as exc:  # noqa: BLE001
-            # Reward-cat is a diagnostic read; the fallback bytes match the shell
-            # ``|| echo 0.0`` path so the kind renders the same "0.0" reward.
-            logger.warning(
-                "SubstrateService.RunTestSuite: reward-cat raised for trial %r: "
-                "%s: %s; falling back to b'0.0\\n'",
-                request.trial_id,
-                type(exc).__name__,
-                exc,
-            )
-            reward_bytes = b"0.0\n"
-
+        result = self._runner._run_test_suite_via_agent_tools(
+            request.script_path,
+            request.reward_path,
+            script_timeout,
+            reward_read_timeout,
+            trial_id=request.trial_id,
+            service=request.service or None,
+        )
         return pb2.RunTestSuiteResponse(
+            exit_code=result.exit_code,
+            reward_bytes=result.reward_bytes,
+            stdout=result.stdout[:_STDOUT_WIRE_CAP_BYTES],
+            tool_absent=result.tool_absent,
+            tool_absent_reason=result.tool_absent_reason,
+            script_exec_error=result.script_exec_error,
+        )
+
+    def MaterialisePath(  # noqa: N802
+        self,
+        request: pb2.MaterialisePathRequest,
+        context: grpc.ServicerContext,  # noqa: ARG002
+    ) -> pb2.MaterialisePathResponse:
+        """Re-create a path in one trial container from another (empty-then-copy).
+
+        Delegates to the runner's cross-container copy helper. A source that the
+        agent never produced is not an error — the destination is left empty and
+        ``ok`` is True; an unreachable container surfaces as ``ok=False`` with the
+        reason, which the client raises as :class:`SubstrateUnreachableError`.
+        """
+        try:
+            self._runner._materialise_path(
+                src_service=request.src_service or None,
+                dst_service=request.dst_service,
+                path=request.path,
+                exclude=list(request.exclude),
+                trial_id=request.trial_id,
+            )
+        except SubstrateUnreachableError as exc:
+            return pb2.MaterialisePathResponse(ok=False, error=str(exc))
+        return pb2.MaterialisePathResponse(ok=True)
+
+    def ExecInService(  # noqa: N802
+        self,
+        request: pb2.ExecInServiceRequest,
+        context: grpc.ServicerContext,  # noqa: ARG002
+    ) -> pb2.ExecInServiceResponse:
+        """Run a shell command in a named trial service container.
+
+        Delegates to the runner's exec helper. A non-zero command exit rides in
+        ``exit_code`` (not an error); an unreachable container or a raised exec
+        sets ``error``, which the client raises as
+        :class:`SubstrateUnreachableError`.
+        """
+        timeout_s = request.timeout_s if request.timeout_s > 0.0 else _DEFAULT_SCRIPT_TIMEOUT_S
+        try:
+            exit_code, output = self._runner._exec_in_service(
+                service=request.service or None,
+                command=request.command,
+                timeout_s=timeout_s,
+                trial_id=request.trial_id,
+            )
+        except SubstrateUnreachableError as exc:
+            return pb2.ExecInServiceResponse(error=str(exc))
+        return pb2.ExecInServiceResponse(
             exit_code=exit_code,
-            reward_bytes=reward_bytes,
-            stdout=stdout[:_STDOUT_WIRE_CAP_BYTES],
+            output=output[:_STDOUT_WIRE_CAP_BYTES],
         )
 
     # ------------------------------------------------------------------

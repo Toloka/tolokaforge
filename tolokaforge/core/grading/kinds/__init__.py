@@ -15,11 +15,15 @@ shapes coexist. See ``docs/GRADER_SERVICE.md`` § Extension points.
 from tolokaforge.core.grading.kinds._protocol import GraderKind, GraderKindRefusedError
 from tolokaforge.core.grading.kinds.composite import CompositeGraderKind
 from tolokaforge.core.grading.kinds.test_execution import (
+    ArtifactSpec,
+    CollectSpec,
     TestExecutionGraderKind,
     TestExecutionKindConfig,
 )
 
 __all__ = [
+    "ArtifactSpec",
+    "CollectSpec",
     "CompositeGraderKind",
     "GraderKind",
     "GraderKindRefusedError",

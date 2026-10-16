@@ -633,10 +633,10 @@ class TestComposeEnvFile:
         assert "TASK_AUTHORED=preserved" in env_content
         assert "IMAGE_TAG=v1.2.3" in env_content
         assert "PORT=5432" in env_content
-        assert "TOLOKAFORGE_TRIAL_SLUG=task-1_0" in env_content
+        assert "TOLOKAFORGE_TRIAL_SLUG=run_task-1_0" in env_content
         # Reserved block last: no task/manifest line may appear below it.
         lines = [line for line in env_content.splitlines() if line]
-        assert lines[-1] == "TOLOKAFORGE_TRIAL_SLUG=task-1_0"
+        assert lines[-1] == "TOLOKAFORGE_TRIAL_SLUG=run_task-1_0"
 
     def test_empty_stack_inputs_still_writes_reserved_block(
         self, backend: PerTrialRuntimeBackend
@@ -645,7 +645,7 @@ class TestComposeEnvFile:
         handle = backend.provision(spec)
         stack = _stack_handle(handle)
         env_content = (stack.temp_dir / ".env").read_text()
-        assert "TOLOKAFORGE_TRIAL_SLUG=task-1_0" in env_content
+        assert "TOLOKAFORGE_TRIAL_SLUG=run_task-1_0" in env_content
 
     def test_reserved_prefix_key_raises_before_compose_up(
         self, backend: PerTrialRuntimeBackend
@@ -713,7 +713,7 @@ class TestComposeEnvFile:
         lines = [line for line in (stack.temp_dir / ".env").read_text().splitlines() if line]
         assert "TBENCH_PROVIDER_ANTHROPIC_API_KEY=sk-canon" in lines
         assert "TBENCH_PROVIDER_ANTHROPIC_BASE_URL=https://proxy.example" in lines
-        assert lines[-1] == "TOLOKAFORGE_TRIAL_SLUG=echo-hello_0"
+        assert lines[-1] == "TOLOKAFORGE_TRIAL_SLUG=run_echo-hello_0"
 
 
 # ---------------------------------------------------------------------------

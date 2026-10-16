@@ -65,7 +65,7 @@ import io
 import json
 import tarfile
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -234,14 +234,22 @@ class GradingSubstrate(Protocol):
         reward_path: str,
         timeout_s: float,
         reward_read_timeout_s: float,
+        service: str | None = None,
     ) -> RunTestSuiteResult:
         """Execute the pack-declared verifier and return its outcome.
 
-        Runs ``bash <script_path>`` inside the trial's env container from
-        the script's directory, then reads ``<reward_path>`` (with shell
-        fallback ``|| echo 0.0`` so an absent file yields ``b"0.0\\n"``).
-        The caller passes both timeouts (script + reward-cat) explicitly;
-        no defaults live on the substrate.
+        Runs ``bash <script_path>`` inside a trial container from the script's
+        directory, then reads ``<reward_path>`` (with shell fallback
+        ``|| echo 0.0`` so an absent file yields ``b"0.0\\n"``). The caller
+        passes both timeouts (script + reward-cat) explicitly; no defaults live
+        on the substrate.
+
+        *service* selects which of the trial's compose services the suite runs
+        in. ``None`` runs it in the agent's own container — the single-container
+        shape where the suite sits beside the agent's work. A service name runs
+        it in that container instead, for the shape whose verifier is a separate
+        container the agent never touched; the caller stages whatever that
+        container needs via :meth:`materialise_path` first.
 
         Two first-class outcomes ride in the result rather than raising:
         ``tool_absent`` (no exec-capable lifecycle tool in the trial's
@@ -250,12 +258,59 @@ class GradingSubstrate(Protocol):
         subprocess timeout — the trial completed but the verifier crashed).
         Both are distinct from :class:`SubstrateUnreachableError`, which
         this method raises only when the substrate itself is unreachable
-        (e.g. snapshot substrate — bundle format v1.0 carries no test
+        (e.g. snapshot substrate — bundle format v1.1 carries no test
         suite; grader-side gRPC transport failure).
 
         ``exit_code`` is informational: callers do NOT gate on it. A
         rc≠0 script that wrote a valid reward file is scored by the
         reward.
+        """
+        ...
+
+    def materialise_path(
+        self,
+        *,
+        src_service: str | None,
+        dst_service: str,
+        path: str,
+        exclude: Sequence[str] = (),
+    ) -> None:
+        """Re-create *path* inside *dst_service*'s container from *src_service*'s.
+
+        Empties *path* in the destination container, then copies *path* (a file
+        or a whole directory tree) from the source container into it, skipping
+        any entry matching an *exclude* glob. ``src_service`` of ``None`` means
+        the trial's agent container.
+
+        This is the primitive the separate-verifier shape builds on: the agent
+        worked in one container and the verifier runs in another, so the files
+        the verifier is scored against have to be carried across first. Empty-
+        then-copy, so the destination holds exactly the source's current tree
+        and nothing the image baked in or a prior step left behind.
+
+        Raises :class:`SubstrateUnreachableError` when the substrate cannot
+        reach the containers (e.g. a snapshot substrate, which has none).
+        """
+        ...
+
+    def exec_in_service(
+        self,
+        *,
+        service: str | None,
+        command: str,
+        timeout_s: float,
+    ) -> tuple[int, str]:
+        """Run a shell *command* in *service*'s container, returning (exit_code, output).
+
+        A general exec into any of the trial's compose services, separate from
+        :meth:`run_test_suite` (which also reads a reward file). The
+        separate-verifier shape uses it to run a task-defined pre-grade step —
+        e.g. snapshotting a database sidecar to a file that a later
+        :meth:`materialise_path` carries into the verifier. The caller decides
+        what a non-zero exit means.
+
+        Raises :class:`SubstrateUnreachableError` when the substrate cannot reach
+        the container (e.g. a snapshot substrate, which has none).
         """
         ...
 
@@ -373,6 +428,8 @@ class InProcessGradingSubstrate:
         final_state_stable_factory: Callable[[], dict[str, Any]] | None = None,
         filesystem_state_factory: Callable[[], dict[str, str] | None] | None = None,
         run_test_suite_impl: Callable[..., RunTestSuiteResult] | None = None,
+        materialise_path_impl: Callable[..., None] | None = None,
+        exec_in_service_impl: Callable[..., tuple[int, str]] | None = None,
     ) -> None:
         if final_state is not None and final_state_factory is not None:
             raise ValueError(
@@ -388,6 +445,8 @@ class InProcessGradingSubstrate:
         self._final_state_stable_factory = final_state_stable_factory
         self._filesystem_state_factory = filesystem_state_factory
         self._run_test_suite_impl = run_test_suite_impl
+        self._materialise_path_impl = materialise_path_impl
+        self._exec_in_service_impl = exec_in_service_impl
         self._final_state_stable_cache: dict[str, Any] | Any = _MISSING
         self._filesystem_state_cache: dict[str, str] | None | Any = _MISSING
         self._closed = False
@@ -437,9 +496,25 @@ class InProcessGradingSubstrate:
         return self._filesystem_state_cache
 
     def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:
-        from tolokaforge.core.grading.db_probes import _fetch_probe_rows
+        from tolokaforge.core.grading.db_probes import (
+            DbProbeQueryError,
+            _fetch_probe_rows,
+            is_db_transport_error,
+        )
 
-        rows = asyncio.run(_fetch_probe_rows(dsn, query))
+        try:
+            rows = asyncio.run(_fetch_probe_rows(dsn, query))
+        except Exception as exc:
+            # A DB that cannot be reached is ungradeable; a query that the DB
+            # answered and rejected is a per-probe FAIL. Split the two so the
+            # in-process lane books each the same way the detached (gRPC) and
+            # offline lanes do.
+            if is_db_transport_error(exc):
+                raise SubstrateUnreachableError(
+                    f"db_probe could not reach postgres (dsn={dsn!r}): "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            raise DbProbeQueryError(f"{type(exc).__name__}: {exc}") from exc
         return json.loads(json.dumps(rows, default=str))
 
     def run_test_suite(
@@ -449,6 +524,7 @@ class InProcessGradingSubstrate:
         reward_path: str,
         timeout_s: float,
         reward_read_timeout_s: float,
+        service: str | None = None,
     ) -> RunTestSuiteResult:
         # The impl callback is invoked with keyword arguments only. Callers
         # bind trial-scoped state (e.g. ``trial_id``) via
@@ -466,6 +542,47 @@ class InProcessGradingSubstrate:
             reward_path=reward_path,
             timeout_s=timeout_s,
             reward_read_timeout_s=reward_read_timeout_s,
+            service=service,
+        )
+
+    def materialise_path(
+        self,
+        *,
+        src_service: str | None,
+        dst_service: str,
+        path: str,
+        exclude: Sequence[str] = (),
+    ) -> None:
+        if self._materialise_path_impl is None:
+            raise SubstrateUnreachableError(
+                "InProcessGradingSubstrate.materialise_path() called but "
+                "'materialise_path_impl' was not supplied at construction — "
+                "separate-verifier grading requires a cross-container copy callback."
+            )
+        self._materialise_path_impl(
+            src_service=src_service,
+            dst_service=dst_service,
+            path=path,
+            exclude=tuple(exclude),
+        )
+
+    def exec_in_service(
+        self,
+        *,
+        service: str | None,
+        command: str,
+        timeout_s: float,
+    ) -> tuple[int, str]:
+        if self._exec_in_service_impl is None:
+            raise SubstrateUnreachableError(
+                "InProcessGradingSubstrate.exec_in_service() called but "
+                "'exec_in_service_impl' was not supplied at construction — "
+                "separate-verifier grading requires an exec-capable callback."
+            )
+        return self._exec_in_service_impl(
+            service=service,
+            command=command,
+            timeout_s=timeout_s,
         )
 
     def trajectory(self) -> Mapping[str, Any] | None:
@@ -670,11 +787,39 @@ class SnapshotGradingSubstrate:
         reward_path: str,  # noqa: ARG002
         timeout_s: float,  # noqa: ARG002
         reward_read_timeout_s: float,  # noqa: ARG002
+        service: str | None = None,  # noqa: ARG002
     ) -> RunTestSuiteResult:
         raise SubstrateUnreachableError(
             f"SnapshotGradingSubstrate cannot run a test suite offline "
-            f"(script_path={script_path!r}) — bundle format v1.0 carries no "
+            f"(script_path={script_path!r}) — bundle format v1.1 carries no "
             f"test-suite hook. Pack requires live_callback for grading."
+        )
+
+    def materialise_path(
+        self,
+        *,
+        src_service: str | None,  # noqa: ARG002
+        dst_service: str,
+        path: str,
+        exclude: Sequence[str] = (),  # noqa: ARG002
+    ) -> None:
+        raise SubstrateUnreachableError(
+            f"SnapshotGradingSubstrate cannot materialise a path offline "
+            f"(dst_service={dst_service!r}, path={path!r}) — bundle format v1.1 "
+            f"carries no live containers. Pack requires live_callback for grading."
+        )
+
+    def exec_in_service(
+        self,
+        *,
+        service: str | None,
+        command: str,  # noqa: ARG002
+        timeout_s: float,  # noqa: ARG002
+    ) -> tuple[int, str]:
+        raise SubstrateUnreachableError(
+            f"SnapshotGradingSubstrate cannot exec in a service offline "
+            f"(service={service!r}) — bundle format v1.1 carries no live "
+            f"containers. Pack requires live_callback for grading."
         )
 
     def trajectory(self) -> Mapping[str, Any] | None:

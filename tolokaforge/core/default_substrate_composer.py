@@ -280,6 +280,7 @@ class DefaultSubstrateComposer:
                 write_compose_env=WriteComposeEnv(
                     trial_id=spec.trial_id,
                     stack_inputs=decl.inputs,
+                    run_id=run_sub.run_id,
                 ),
                 events=run_sub.events,
                 component_id_prefix=f"trial/{spec.trial_id}",

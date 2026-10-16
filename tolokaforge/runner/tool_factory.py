@@ -30,6 +30,8 @@ import json
 import logging
 import os
 import re
+import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -81,16 +83,19 @@ from tolokaforge.tools.str_replace_editor import (
 logger = logging.getLogger(__name__)
 
 
-def _resolve_compose_container_name(trial_id: str, service: str, project_prefix: str) -> str:
+def _resolve_compose_container_name(
+    trial_id: str, service: str, project_prefix: str, run_id: str = ""
+) -> str:
     """Container name for *service* in the per-trial compose stack.
 
     Thin re-export of :func:`tolokaforge.runner.compose_naming.compose_container_name`
     that keeps the ``bash_session`` and ``str_replace_editor`` wrappers' local
     resolver-name stable; the shared implementation is what the compose lifecycle
     consumer on the host uses to name the project directory, so an exec targets
-    the same container the stack brought up.
+    the same container the stack brought up — scoped by ``run_id`` so concurrent
+    runs of the same task do not collide.
     """
-    return compose_container_name(trial_id, service, project_prefix)
+    return compose_container_name(trial_id, service, project_prefix, run_id)
 
 
 # =============================================================================
@@ -169,6 +174,10 @@ class ToolLifecycleContext:
     trial_id: str
     artifacts_dir: str | None = None
     work_dir: str | None = None
+    # Run id, carried so a compose-exec tool can scope its container name by run
+    # (two concurrent runs of the same task share a trial_id). Empty keeps the
+    # historical trial-only name.
+    run_id: str = ""
 
 
 #: The one failure category a substrate can declare (see ``ToolCallOutcome.category``).
@@ -1362,6 +1371,79 @@ def _decode_partial_output(buf: bytes | str | None) -> str:
     return buf
 
 
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the process group *proc* leads, or *proc* alone if that fails.
+
+    A process started with ``start_new_session=True`` is the leader of its own
+    group, so ``os.killpg(proc.pid, …)`` reaps it together with every helper it
+    forked. The fallback covers the group already being gone or the platform
+    refusing the group signal.
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        proc.kill()
+
+
+def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str:
+    """Return *command* guarded by an in-container wall-clock watchdog.
+
+    The wrapped script runs *command* in a process group of its own and
+    SIGKILLs that whole group ``kill_after_s`` seconds in, from inside the
+    container — so a wedged CLI is stopped whether or not it cooperates and
+    whether or not the host-side ``docker exec`` client is still attached. The
+    wrapped script exits with the command's own code, or ``137``
+    (``128 + SIGKILL``) when the watchdog fired.
+
+    The new process group is opened with ``setsid`` where it exists, and under
+    bash job control (``set -m``) where it does not — some minimal images ship
+    neither ``setsid`` nor ``ps``. Both paths need only ``kill`` and shell
+    builtins.
+
+    Only the coding-harness episode command is wrapped; the per-command execs
+    the engine loop issues run unwrapped, so a backgrounded service they start
+    keeps outliving its exec as before.
+    """
+    quoted = shlex.quote(command)
+    # busybox ``sleep`` takes a whole number of seconds and rejects the ``%g``
+    # scientific form (e.g. ``1e+06``), which would fire the kill at once, so
+    # the budget is rendered as a plain integer, floored at one second.
+    budget = max(1, int(kill_after_s))
+    return (
+        f"__tf_cmd={quoted}; "
+        "if command -v setsid >/dev/null 2>&1; then "
+        # ``setsid bash -c … &`` does not fork: the backgrounded bash is itself
+        # the new session/group leader, so ``$!`` is that leader's PID and
+        # ``kill -KILL -$__tf_cpid`` reaps the whole group. This holds only
+        # because the wrapper runs embedded as a nested, non-group-leader
+        # ``bash -c`` (via the staged-stdio script); run it as a top-level exec
+        # and ``setsid`` would fork, leaving ``$!`` pointing at the wrong PID
+        # and the group-kill silently missing the CLI. The timer is a setsid
+        # group of its own for the same reason: ``kill -KILL -$__tf_wd`` then
+        # reaps its ``sleep`` child along with it.
+        'setsid bash -c "$__tf_cmd" & __tf_cpid=$!; '
+        f'setsid bash -c "sleep {budget}; kill -KILL -$__tf_cpid 2>/dev/null" & __tf_wd=$!; '
+        "else "
+        # No ``setsid``: bash job control (``set -m``) puts each background job
+        # in its own process group, so the same negative-PID ``kill`` reaps the
+        # command group, and the timer group with its ``sleep`` child.
+        "set -m; "
+        'bash -c "$__tf_cmd" & __tf_cpid=$!; '
+        f"{{ sleep {budget}; kill -KILL -$__tf_cpid 2>/dev/null; }} & __tf_wd=$!; "
+        "fi; "
+        # Killing the timer by its group takes its ``sleep`` child with it, so a
+        # command that finishes before the budget leaves no stray timer running
+        # the rest of it. The wait and the timer reap are stderr-muted so the
+        # ``set -m`` branch's job-control ``Killed`` notices never land in the
+        # captured episode output; the command's own stderr has already streamed
+        # straight through the inherited descriptor by then.
+        "{ wait $__tf_cpid; __tf_rc=$?; } 2>/dev/null; "
+        "kill -KILL -$__tf_wd 2>/dev/null; "
+        "wait $__tf_wd 2>/dev/null; "
+        "exit $__tf_rc"
+    )
+
+
 def _run_argv_preserving_partial_output(
     argv: list[str], timeout_s: float, *, partial_output_argv: list[str] | None = None
 ) -> str:
@@ -1385,12 +1467,16 @@ def _run_argv_preserving_partial_output(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # Own session: the client and anything it forks share one process
+        # group, so the deadline branch can reap the group rather than leave
+        # a helper orphaned behind a killed leader.
+        start_new_session=True,
     )
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
         timed_out = False
     except subprocess.TimeoutExpired as exc:
-        proc.kill()
+        _kill_process_group(proc)
         # subprocess.TimeoutExpired.stdout/stderr carry the raw bytes the
         # child had buffered when the deadline hit, even under text=True —
         # Popen only decodes at the point of a clean communicate() return.
@@ -1469,23 +1555,42 @@ class _ExecPlan:
     partial_output_argv: list[str] | None = None
 
 
-# ``bash -c <script> tolokaforge-exec <out> <err> <command>``: the command runs
-# under its own bash with stdout/stderr on the two files and stdin from
-# /dev/null, then the files are relayed on the exec's streams and removed. The
-# command's exit code is the exec's. The command is the last positional so it
-# needs no quoting, whatever it contains.
-_STAGED_STDIO_SCRIPT = (
-    'bash -c "$3" >"$1" 2>"$2" </dev/null; rc=$?; cat "$1"; cat "$2" >&2; rm -f "$1" "$2"; exit $rc'
-)
+def _staged_stdio_script(shell: str) -> str:
+    """Staged-stdio wrapper script running the command under *shell*.
+
+    ``<shell> -c <script> tolokaforge-exec <out> <err> <command>``: the command
+    runs under its own *shell* with stdout/stderr on the two files and stdin from
+    /dev/null, then the files are relayed on the exec's streams and removed. The
+    command's exit code is the exec's. The command is the last positional so it
+    needs no quoting, whatever it contains. Every part but the inner
+    ``<shell> -c "$3"`` is POSIX-sh, so the script runs the same whether *shell*
+    is ``bash`` (the agent and test.sh containers) or ``sh`` (a minimal DB
+    sidecar that ships no bash).
+    """
+    return (
+        f'{shell} -c "$3" >"$1" 2>"$2" </dev/null; rc=$?; '
+        'cat "$1"; cat "$2" >&2; rm -f "$1" "$2"; exit $rc'
+    )
+
+
+# Default (bash) staging script; the agent and test.sh containers ship bash.
+_STAGED_STDIO_SCRIPT = _staged_stdio_script("bash")
 # Read-back for a command still running (or killed) after its exec's deadline:
 # relays the files as they stand; exit 3 once the command has removed them.
 _STAGED_STDIO_READ_SCRIPT = '[ -e "$1" ] || exit 3; cat "$1"; cat "$2" >&2'
 _STAGED_STDIO_READ_TIMEOUT_S = 10.0
 
 
-def _docker_exec_plan(container: str, command: str, user: str | None = None) -> _ExecPlan:
-    """``docker exec`` running *command* under bash inside *container*, with the
+def _docker_exec_plan(
+    container: str, command: str, user: str | None = None, shell: str = "bash"
+) -> _ExecPlan:
+    """``docker exec`` running *command* under *shell* inside *container*, with the
     command's stdio staged in files inside the container.
+
+    *shell* defaults to ``bash`` (the agent and test.sh containers ship it); a
+    collect hook aimed at a minimal DB sidecar passes ``sh`` so the exec lands in
+    a container that may carry no bash. The staged-stdio wrapper is POSIX-sh in
+    every part but the command's own ``<shell> -c``, so it holds either way.
 
     A process the command leaves behind — a service started with ``&`` —
     inherits the command's stdio. If that were the exec's own pipes, the
@@ -1506,9 +1611,16 @@ def _docker_exec_plan(container: str, command: str, user: str | None = None) -> 
     prefix = ["docker", "exec"]
     if user is not None:
         prefix.extend(["--user", user])
-    prefix.extend(["-i", container, "bash", "-c"])
+    prefix.extend(["-i", container, shell, "-c"])
     return _ExecPlan(
-        argv=[*prefix, _STAGED_STDIO_SCRIPT, "tolokaforge-exec", out_path, err_path, command],
+        argv=[
+            *prefix,
+            _staged_stdio_script(shell),
+            "tolokaforge-exec",
+            out_path,
+            err_path,
+            command,
+        ],
         partial_output_argv=[
             *prefix,
             _STAGED_STDIO_READ_SCRIPT,
@@ -1519,7 +1631,68 @@ def _docker_exec_plan(container: str, command: str, user: str | None = None) -> 
     )
 
 
-class DockerComposeExecToolWrapper(ToolWrapper):
+class _ComposeServiceResolutionMixin:
+    """Sibling-container resolution shared by the compose-backed exec wrappers.
+
+    Both exec wrappers that target a compose ``service`` — the dedicated
+    ``docker exec`` wrapper and the session-lifetime shell on its compose
+    backend — resolve per-trial container names the same way (run id + trial id
+    + project prefix, via
+    :func:`~tolokaforge.runner.compose_naming.compose_container_name`). This
+    mixin exposes that shared seam as
+    :class:`~tolokaforge.runner.env_exec.SupportsServiceResolution`: the name of
+    the tool's own container, and a sibling executor bound to another service of
+    the same per-trial compose stack. Grading accepts any implementer, so a
+    separate-verifier trial grades the same whichever wrapper the agent ran on.
+    """
+
+    tool_schema: ToolSchemaModel
+    _service: str | None
+    _trial_id: str | None
+    _project_prefix: str | None
+    _run_id: str
+
+    @property
+    def container_name(self) -> str | None:
+        """The container this tool execs into, or ``None`` when none is resolvable.
+
+        ``None`` means no per-trial container can be named yet: the tool has not
+        started (``_trial_id`` unset), or it is configured against a local
+        (non-compose) environment (``_service`` / ``_project_prefix`` unset),
+        which has no sibling-service containers.
+        """
+        if self._trial_id is None or self._service is None or not self._project_prefix:
+            return None
+        return compose_container_name(
+            self._trial_id, self._service, self._project_prefix, self._run_id
+        )
+
+    def for_service(self, service: str) -> "DockerComposeExecToolWrapper":
+        """A sibling exec wrapper bound to another service of the same trial stack.
+
+        The agent and a separate verifier are two services in one per-trial
+        compose project; grading that runs the suite in the verifier needs an
+        executor for that container. Reuses this started wrapper's resolved trial
+        id, run id and project prefix so both target the same stack. The sibling
+        is always a plain :class:`DockerComposeExecToolWrapper` — the verifier
+        runs as the container's default user, independent of any privilege-drop
+        on the agent's own session.
+        """
+        if self._trial_id is None or not self._project_prefix:
+            raise RuntimeError(
+                f"{type(self).__name__}.for_service() called before start(): no "
+                "trial is bound yet, so the sibling container cannot be resolved."
+            )
+        sibling = DockerComposeExecToolWrapper(self.tool_schema, service, self._project_prefix)
+        sibling._trial_id = self._trial_id
+        sibling._run_id = self._run_id
+        sibling._container = compose_container_name(
+            self._trial_id, service, self._project_prefix, self._run_id
+        )
+        return sibling
+
+
+class DockerComposeExecToolWrapper(_ComposeServiceResolutionMixin, ToolWrapper):
     """Execute a command inside an already-running compose service via ``docker exec``.
 
     The wrapper never brings a compose stack up or down: :class:`~tolokaforge.
@@ -1552,11 +1725,15 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         self._service = service
         self._project_prefix = compose_project_prefix
         self._trial_id: str | None = None
+        self._run_id: str = ""
         self._container: str | None = None
 
     def start(self, ctx: "ToolLifecycleContext") -> None:
         self._trial_id = ctx.trial_id
-        self._container = compose_container_name(ctx.trial_id, self._service, self._project_prefix)
+        self._run_id = ctx.run_id
+        self._container = compose_container_name(
+            ctx.trial_id, self._service, self._project_prefix, ctx.run_id
+        )
 
     @property
     def own_budget_s(self) -> float:
@@ -1667,7 +1844,7 @@ class DockerComposeExecToolWrapper(ToolWrapper):
 # =============================================================================
 
 
-class PersistentShellToolWrapper(ToolWrapper):
+class PersistentShellToolWrapper(_ComposeServiceResolutionMixin, ToolWrapper):
     """Runner-side executor for the session-lifetime ``bash_session`` tool.
 
     Holds one bash session for the trial: ``start()`` opens it (seeding the
@@ -1711,6 +1888,7 @@ class PersistentShellToolWrapper(ToolWrapper):
                 "prefix used to bring the stack up)",
             )
         self._trial_id: str | None = None
+        self._run_id: str = ""
         self._session: BashSession | None = None
         self._cwd: str | None = None
 
@@ -1720,6 +1898,7 @@ class PersistentShellToolWrapper(ToolWrapper):
 
     def start(self, ctx: "ToolLifecycleContext") -> None:
         self._trial_id = ctx.trial_id
+        self._run_id = ctx.run_id
         self._cwd = ctx.work_dir if ctx.work_dir and os.path.isdir(ctx.work_dir) else None
         session = self._new_session()
         session.open(self._cwd)
@@ -1792,7 +1971,7 @@ class PersistentShellToolWrapper(ToolWrapper):
                 "bash_session executed before start() — container name unresolved",
             )
         container = self._resolve_container_name(
-            self._trial_id, self._service, self._project_prefix
+            self._trial_id, self._service, self._project_prefix, self._run_id
         )
         return _docker_exec_plan(container, command, user=self._user)
 
@@ -1802,13 +1981,15 @@ class PersistentShellToolWrapper(ToolWrapper):
             return LocalBashSession()
         assert self._trial_id is not None and self._project_prefix is not None
         container = self._resolve_container_name(
-            self._trial_id, self._service, self._project_prefix
+            self._trial_id, self._service, self._project_prefix, self._run_id
         )
         return DockerComposeBashSession(container, user=self._user)
 
     @staticmethod
-    def _resolve_container_name(trial_id: str, service: str, project_prefix: str) -> str:
-        return _resolve_compose_container_name(trial_id, service, project_prefix)
+    def _resolve_container_name(
+        trial_id: str, service: str, project_prefix: str, run_id: str = ""
+    ) -> str:
+        return _resolve_compose_container_name(trial_id, service, project_prefix, run_id)
 
     async def _restart(self) -> str:
         assert self._session is not None
@@ -1864,7 +2045,7 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
     # start() the way the lifecycle-managed shell does.
     _DEFAULT_WORKING_ROOT = "/work"
 
-    def __init__(self, tool_schema: ToolSchemaModel, trial_id: str):
+    def __init__(self, tool_schema: ToolSchemaModel, trial_id: str, run_id: str = ""):
         super().__init__(tool_schema)
         tool_config = tool_schema.tool_config or {}
         self._service: str | None = tool_config.get("service")
@@ -1883,6 +2064,7 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
         # user and preserves prior behaviour.
         self._user: str | None = tool_config.get("user")
         self._trial_id = trial_id
+        self._run_id = run_id
         self._backend = self._new_backend()
 
     def _new_backend(self) -> EditorBackend:
@@ -1890,13 +2072,15 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
             return LocalFilesystemEditor(self._working_root)
         assert self._project_prefix is not None  # validated in __init__
         container = self._resolve_container_name(
-            self._trial_id, self._service, self._project_prefix
+            self._trial_id, self._service, self._project_prefix, self._run_id
         )
         return DockerComposeEditor(container, base_path=self._working_root, user=self._user)
 
     @staticmethod
-    def _resolve_container_name(trial_id: str, service: str, project_prefix: str) -> str:
-        return _resolve_compose_container_name(trial_id, service, project_prefix)
+    def _resolve_container_name(
+        trial_id: str, service: str, project_prefix: str, run_id: str = ""
+    ) -> str:
+        return _resolve_compose_container_name(trial_id, service, project_prefix, run_id)
 
     async def execute(self, arguments: dict[str, Any]) -> str:
         loop = asyncio.get_event_loop()
@@ -1990,6 +2174,7 @@ class ToolFactory:
         search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
         search_index: SearchIndex | None = None,
         artifacts_dir: str | None = None,
+        run_id: str = "",
     ):
         """
         Initialize the tool factory.
@@ -2021,6 +2206,10 @@ class ToolFactory:
         """
         self.db_client = db_client
         self.trial_id = trial_id
+        # Scopes the str_replace_editor compose container name by run (that
+        # wrapper is has_lifecycle=False and resolves its container at
+        # construction, so it cannot learn the run id from a lifecycle context).
+        self.run_id = run_id
         self.search_tool_name = search_tool_name
         self.search_index = search_index
         self.db_table_names = db_table_names or []
@@ -2115,7 +2304,9 @@ class ToolFactory:
             if dispatch is builtin_registry.Dispatch.PERSISTENT_SHELL:
                 return PersistentShellToolWrapper(schema)
             if dispatch is builtin_registry.Dispatch.EDITOR:
-                return StrReplaceEditorToolWrapper(schema, trial_id=self.trial_id)
+                return StrReplaceEditorToolWrapper(
+                    schema, trial_id=self.trial_id, run_id=self.run_id
+                )
             if dispatch is builtin_registry.Dispatch.JSON_DB:
                 return JsonDBToolWrapper(schema, self.db_client, self.trial_id)
             return BuiltinGenericToolWrapper(schema)

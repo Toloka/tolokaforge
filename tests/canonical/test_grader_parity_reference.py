@@ -45,6 +45,7 @@ from tests.utils.grader_parity_harness import (
     should_refresh_baselines,
     write_baseline,
 )
+from tolokaforge.core.trial_grader import GradingFailedError
 from tolokaforge.grader import grader_pb2
 from tolokaforge.runner.models import TraceChecksResult
 
@@ -556,33 +557,31 @@ def test_composite_pack_parity_snapshot(
         )
 
 
-def test_snapshot_rpc_db_probes_surfaces_substrate_unreachable_in_reasons(
+def test_snapshot_rpc_db_probes_refuses_rather_than_scoring_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The snapshot leg cannot serve ``state_checks.db_probes`` offline; the
-    :class:`SubstrateUnreachableError` lands in the Grade's ``reasons`` text.
+    """The snapshot leg cannot serve ``state_checks.db_probes`` offline; it
+    refuses cleanly rather than laundering the unreachable substrate to 0.0.
 
     Locks the documented bundle-format-v1.0 limit for db_probes.
     :meth:`SnapshotGradingSubstrate.db_probe` raises
     :class:`SubstrateUnreachableError`; the state-check backend
     (:class:`~tolokaforge.core.grading.default_state_check_backends.DbProbesStateCheckBackend`)
-    catches every ``substrate.db_probe`` exception per-probe and emits a
-    ``FAIL:`` reason line naming the exception, matching the fail-loud
-    contract shipped for db-probe connection errors. The Grade is
-    produced (not refused): ``components.state_checks == 0.0`` (every
-    probe failed) and ``reasons`` carries the "cannot serve db_probes
-    offline" fragment.
+    propagates that signal rather than swallowing it into a ``FAIL:`` line, so
+    the composite dispatch translates it to :class:`GradingFailedError` at
+    ``composite_dispatch.py`` with the "cannot serve db_probes offline"
+    fragment. The trial is booked ungradeable, not scored a real zero.
 
     Bundle format v1.1 that pre-materialises probe rows is deferred
-    under issue #1438; once it lands, this pack graduates from Lane B's
-    refusal-in-reasons contract to full byte-parity.
+    under issue #1438; once it lands, this pack graduates from the
+    refusal contract to full byte-parity.
     """
     pack = load_parity_pack(_STATE_CHECKS_DB_PROBES_ONLY_PACK_DIR)
-    grade = run_via_snapshot_rpc(pack, monkeypatch=monkeypatch)
-    projected = json.loads(serialise_grade(grade))
-    assert projected["components"]["state_checks"] == 0.0, projected["components"]
-    reasons = projected["reasons"]
-    assert _SNAPSHOT_DB_PROBES_REFUSAL_FRAGMENT in reasons, reasons
+    assert_snapshot_rpc_refuses(
+        pack,
+        monkeypatch=monkeypatch,
+        expected_error_fragment=_SNAPSHOT_DB_PROBES_REFUSAL_FRAGMENT,
+    )
 
 
 def test_snapshot_rpc_refuses_hash_and_all_four(
@@ -662,44 +661,34 @@ def test_regrade_parity_snapshot_replays(
         )
 
 
-def test_regrade_parity_snapshot_replays_db_probes_pack_are_idempotent(
+def test_regrade_parity_snapshot_replays_db_probes_pack_refuse_idempotently(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """Lane C substrate-unreachable companion: three replays against the
-    db-probes pack produce byte-identical Grades.
+    db-probes pack refuse identically.
 
     Bundle production is substrate-independent for non-``db_probes``
     reads, so the bundle materialises fine; each of three replays reaches
     :meth:`SnapshotGradingSubstrate.db_probe`, which raises
-    :class:`SubstrateUnreachableError` per probe and lands in every
-    replay's ``reasons`` text through the state-check backend's catch.
-    Locks that Lane B's substrate-unreachable-in-reasons contract is
-    idempotent across replays.
+    :class:`SubstrateUnreachableError` per probe. The state-check backend
+    propagates that signal and the composite translates it to
+    :class:`GradingFailedError`, so each replay refuses with the "cannot
+    serve db_probes offline" fragment rather than scoring a real zero.
+    Locks that the substrate-unreachable refusal is idempotent across
+    replays.
     """
     pack = load_parity_pack(_STATE_CHECKS_DB_PROBES_ONLY_PACK_DIR)
     bundle_dir = tmp_path / "regrade-bundle"
     produce_snapshot_bundle(pack, monkeypatch=monkeypatch, bundle_dir=bundle_dir)
-    serialised_replays: list[str] = []
     for _ in range(3):
-        grade = run_via_snapshot_rpc(
-            pack,
-            monkeypatch=monkeypatch,
-            bundle_dir_override=bundle_dir,
-        )
-        serialised_replays.append(serialise_grade(grade))
-    first_replay = serialised_replays[0]
-    for index, replay in enumerate(serialised_replays):
-        if replay != first_replay:
-            raise AssertionError(
-                _snapshot_baseline_divergence_message(
-                    leg=f"grader_rpc_snapshot db_probes replay #{index}",
-                    serialised=replay,
-                    baseline=first_replay,
-                )
+        with pytest.raises(GradingFailedError) as excinfo:
+            run_via_snapshot_rpc(
+                pack,
+                monkeypatch=monkeypatch,
+                bundle_dir_override=bundle_dir,
             )
-    projected = json.loads(first_replay)
-    assert _SNAPSHOT_DB_PROBES_REFUSAL_FRAGMENT in projected["reasons"], projected["reasons"]
+        assert _SNAPSHOT_DB_PROBES_REFUSAL_FRAGMENT in str(excinfo.value), str(excinfo.value)
 
 
 def _snapshot_baseline_divergence_message(
