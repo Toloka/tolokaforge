@@ -3410,7 +3410,7 @@ class Orchestrator:
                         "Failed to auto-start services: pull failed",
                         kind=e.kind,
                         image=e.full_tag,
-                        message=str(e),
+                        error=str(e),
                         retry_after=retry_after,
                     )
                 else:
