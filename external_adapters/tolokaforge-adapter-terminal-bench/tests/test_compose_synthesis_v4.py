@@ -6,6 +6,7 @@ from pathlib import Path
 
 import yaml
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+    _db_service_body,
     _namespace_volume_refs,
     materialise_task_environment,
 )
@@ -287,3 +288,19 @@ def test_namespace_volume_refs_short_syntax_named_volume() -> None:
     volume, and left alone otherwise."""
     out = _namespace_volume_refs(["pgdata:/data", "other:/x"], {"pgdata"})
     assert out == ["verifier_pgdata:/data", "other:/x"]
+
+
+def test_db_service_healthcheck_probes_with_urllib_not_curl() -> None:
+    """The ``tolokaforge-db-service`` image is a slim base with no ``curl``; it
+    probes ``/health`` with a stdlib ``urllib`` call. The synthesized
+    healthcheck must mirror that — a ``curl`` probe exits 127 and the engine
+    stack never becomes healthy, so ``docker compose up --wait`` times out and
+    every multi-container run fails to provision before any task runs."""
+    body = _db_service_body("tolokaforge-db-service:local")
+    test = body["healthcheck"]["test"]
+
+    assert test[0] == "CMD-SHELL"
+    probe = " ".join(test[1:])
+    assert "urllib.request.urlopen" in probe
+    assert "http://localhost:8000/health" in probe
+    assert "curl" not in probe
