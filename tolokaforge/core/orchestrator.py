@@ -1477,17 +1477,20 @@ class Orchestrator:
         self.logger.info("dispatch.adapter.selected", adapter=dispatch.adapter)
         return adapter
 
-    def _refuse_unsupported_remote_run(self) -> None:
-        """Fail loud on run shapes the ``grpc_node`` dispatch adapter cannot serve.
+    def _refuse_unsupported_dispatch_run(self) -> None:
+        """Fail loud on settings no dispatch node carries, whatever the adapter.
 
-        The adapter hands each whole trial to a leased node and starts no
-        local stack, so it refuses an explicit ``auto_start_services: true``,
-        task-declared stacks the node cannot host (see
-        :meth:`_refuse_manifests_the_node_cannot_host`), trial graders that dial
-        a static runner address (``grader_rpc`` / ``queue``), snapshot grade-bundle
-        production (the node grades in-process and produces no control-plane
-        bundle), and every run setting the node does not carry (see
-        :meth:`_refuse_settings_the_node_does_not_carry`).
+        Every dispatch adapter — the ``local`` thread/subprocess path and the
+        ``grpc_node`` path alike — hands each whole trial to a node that rebuilds
+        its run configuration from the trial inputs (:class:`NodeRunSettings`) and
+        runs it through ``run_trial_from_inputs``. A run-level setting those inputs
+        do not carry is silently dropped on any of them, so the orchestrator
+        refuses it up front, before any trial runs: an explicit
+        ``auto_start_services: true`` (no dispatch node starts a local stack),
+        trial graders that dial a static runner address (``grader_rpc`` /
+        ``queue``), snapshot grade-bundle production (the node grades in-process
+        and produces no control-plane bundle), and every run setting the node
+        does not carry (see :meth:`_refuse_settings_the_node_does_not_carry`).
         """
         orchestrator = self.config.orchestrator
         if (
@@ -1495,29 +1498,41 @@ class Orchestrator:
             and "auto_start_services" in orchestrator.model_fields_set
         ):
             raise ValueError(
-                "orchestrator.dispatch.adapter='grpc_node' leases nodes and starts no local "
+                "orchestrator.dispatch ships each whole trial to a node that starts no local "
                 "stack; it contradicts orchestrator.auto_start_services=true. Set "
                 "auto_start_services: false."
             )
-        self._refuse_manifests_the_node_cannot_host()
         grader_name = self.config.grader.name if self.config.grader else None
         if not grader_name and self.adapter is not None:
             grader_name = self.adapter.trial_grader_name
         if grader_name in ("grader_rpc", "queue"):
             raise ValueError(
-                f"orchestrator.dispatch.adapter='grpc_node' cannot use grader {grader_name!r}: "
-                "it dials a static runner address the node does not expose. Use "
-                "the 'runner_rpc' grader."
+                f"orchestrator.dispatch cannot use grader {grader_name!r}: it dials a static "
+                "runner address the node does not expose. Use the 'runner_rpc' grader."
             )
         grader = self.config.grader
         if grader is not None and grader.snapshot is not None and grader.snapshot.enabled:
             raise ValueError(
-                "orchestrator.dispatch.adapter='grpc_node' cannot honour "
-                "grader.snapshot.enabled=true: the node grades the trial in-process and "
-                "produces no control-plane grade bundle. Run under the shared or per_trial "
-                "substrate, or disable snapshot mode."
+                "orchestrator.dispatch cannot honour grader.snapshot.enabled=true: the node "
+                "grades the trial in-process and produces no control-plane grade bundle. Run "
+                "under the shared or per_trial substrate, or disable snapshot mode."
             )
         self._refuse_settings_the_node_does_not_carry()
+
+    def _refuse_unsupported_remote_run(self) -> None:
+        """Fail loud on run shapes the ``grpc_node`` dispatch adapter cannot serve.
+
+        Beyond the settings no dispatch node carries
+        (:meth:`_refuse_unsupported_dispatch_run`), the ``grpc_node`` adapter
+        ships each task pack to a remote node, so it also refuses task-declared
+        stacks that node cannot host (see
+        :meth:`_refuse_manifests_the_node_cannot_host`) — a constraint rooted in
+        what ships with and is hashed into the pack, which a local same-box run
+        does not share — and warns that a configured trace exporter sees only the
+        reduced bundle the node returns.
+        """
+        self._refuse_unsupported_dispatch_run()
+        self._refuse_manifests_the_node_cannot_host()
         self._warn_observability_the_node_does_not_carry()
 
     def _refuse_manifests_the_node_cannot_host(self) -> None:
@@ -1565,7 +1580,7 @@ class Orchestrator:
             _configured_harness(self.config) is not None
         ):
             unsupported.append(
-                "a non-native adapter or coding-harness mode (the grpc_node dispatch adapter "
+                "a non-native adapter or coding-harness mode (a dispatch node "
                 "runs only the native adapter without harness mode)"
             )
         if self.config.effective_max_requests_per_second is not None:
@@ -1587,12 +1602,12 @@ class Orchestrator:
         if orchestrator.effective_typesense() is not None:
             unsupported.append(
                 "the orchestrator.typesense search plane (it is a control-plane-local container "
-                "bridged onto the runner's Docker network; a remote node has no such bridge)"
+                "bridged onto the runner's Docker network; a dispatch node has no such bridge)"
             )
         if unsupported:
             raise ValueError(
-                "orchestrator.dispatch.adapter='grpc_node' runs each trial on a node that does "
-                f"not carry {', '.join(unsupported)}. Remove them, or run under the shared or "
+                "orchestrator.dispatch ships each whole trial to a node that does not carry "
+                f"{', '.join(unsupported)}. Remove them, or run under the shared or "
                 "per_trial substrate."
             )
 
@@ -3199,6 +3214,8 @@ class Orchestrator:
         self._coerce_plan_shape_for_override(self.config.orchestrator.runtime)
         if self._dispatches_via_grpc_node():
             self._refuse_unsupported_remote_run()
+        elif self._is_dispatch_run():
+            self._refuse_unsupported_dispatch_run()
 
         # Task-declared shared-stack manifest: if the run's tasks declare an
         # environment_manifest, extract the shared manifest here — mixed / divergent

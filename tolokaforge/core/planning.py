@@ -91,7 +91,7 @@ def plan_trials(
     """
     import os
 
-    from tolokaforge.core.models import GraderConfig
+    from tolokaforge.core.models import ComputeConfig, GraderConfig
     from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
     from tolokaforge.core.trial import (
         DEFAULT_TOOL_TIMEOUT_S,
@@ -100,7 +100,6 @@ def plan_trials(
         TrialSpec,
     )
     from tolokaforge.core.trial_node import build_single_task_adapter, compute_task_pack_hash
-    from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
 
     task_list = list(tasks) if tasks is not None else _load_tasks_from_config(run_config)
 
@@ -115,6 +114,9 @@ def plan_trials(
 
     grader_config = GraderConfig(name=grader) if grader is not None else run_config.grader
     run_settings = NodeRunSettings.from_config(run_config)
+    # Mirror the orchestrator's resolution: an unset ``compute`` block falls back
+    # to its default message bound.
+    grpc_max_message_mb = (run_config.compute or ComputeConfig()).grpc_max_message_mb
     probe = run_config.orchestrator.rate_limit_probe
     rate_limit_probe = probe if probe.enabled else None
     resolved_run_id = run_id or _resolve_run_id(run_config)
@@ -158,7 +160,7 @@ def plan_trials(
                 task=task,
                 trial_spec=spec,
                 grader_config=grader_config,
-                grpc_max_message_mb=DEFAULT_MAX_MESSAGE_MB,
+                grpc_max_message_mb=grpc_max_message_mb,
                 runtime=runtime,
                 conductor=conductor,
                 task_pack_dir=pack_dir,

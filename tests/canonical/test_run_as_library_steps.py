@@ -23,6 +23,7 @@ import pytest
 from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.models import (
+    ComputeConfig,
     EvaluationConfig,
     Grade,
     ModelConfig,
@@ -240,6 +241,22 @@ def test_plan_trials_carries_harness_shape_as_data(tmp_path: Path) -> None:
     assert first.runtime == "in_memory"
     assert first.trial_spec.agent_model_config.harness == config.models["agent"].harness
     assert [inp.trial_spec.trial_id for inp in planned] == ["demo:0", "demo:1"]
+
+
+def test_plan_trials_stamps_the_configs_grpc_message_bound(tmp_path: Path) -> None:
+    """A non-default compute.grpc_max_message_mb reaches every planned trial."""
+    task = _write_native_task(tmp_path / "pack", "demo")
+    config = RunConfig(
+        models={"agent": _AGENT, "user": _USER},
+        orchestrator=OrchestratorConfig(workers=1, repeats=2, auto_start_services=False),
+        evaluation=EvaluationConfig(output_dir=str(tmp_path / "results")),
+        compute=ComputeConfig(grpc_max_message_mb=123),
+    )
+
+    planned = plan_trials(config, tasks=[task], runtime="in_memory", conductor="in_memory")
+
+    assert planned
+    assert all(inp.grpc_max_message_mb == 123 for inp in planned)
 
 
 def test_delegated_task_folds_like_native(

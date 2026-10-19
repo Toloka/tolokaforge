@@ -88,17 +88,21 @@ class _LocalConfig(BaseModel):
 
 @dataclass
 class _ThreadJob:
-    """One in-process trial's table entry: its future and current state.
+    """One in-process trial's table entry: its current state and, while live, its future.
 
-    Only the small ``state`` is retained, never the trial's full ``TrialResult``.
-    The default synchronous flow consumes the live ``run_trial_node`` return, so
-    keeping each graded result (its trajectory, message history and tool log) for
-    the adapter's whole lifetime would pin an N-trial run's worth of memory for
-    nothing.
+    The table keeps only the small ``state`` for the adapter's lifetime. The
+    ``future`` is held while the trial is in flight — the pre-start cancel and
+    the result wait both need it — and dropped to ``None`` the moment the trial
+    reaches a terminal state. Dropping it releases the ``Future``, which holds
+    the graded ``TrialResult`` (its trajectory, message history and tool log) in
+    ``future._result``; retaining it would pin an N-trial run's worth of memory
+    for nothing, since the default synchronous flow already consumes the live
+    ``run_trial_node`` return. Memory is therefore O(trials in flight + one
+    ``JobState`` per trial), not O(all trials' full results).
     """
 
-    future: Future[TrialResult]
     state: JobState
+    future: Future[TrialResult] | None = None
 
 
 @dataclass
@@ -184,21 +188,28 @@ class LocalDispatchAdapter:
         # queued job apart from a running one.
         with self._jobs_lock:
             future = self._pool.submit(self._run_one, trial_id, payload)
-            self._jobs[trial_id] = _ThreadJob(future=future, state=JobState.PENDING)
+            self._jobs[trial_id] = _ThreadJob(state=JobState.PENDING, future=future)
         try:
             result = future.result()
         except BaseException:
             # Only a job still RUNNING becomes FAILED: a job cancelled before it
             # started keeps its CANCELLED state when its future reports back.
+            # Terminal either way — drop the future so its held result is freed.
             with self._jobs_lock:
                 job = self._jobs.get(trial_id)
-                if job is not None and job.state is JobState.RUNNING:
-                    job.state = JobState.FAILED
+                if job is not None:
+                    if job.state is JobState.RUNNING:
+                        job.state = JobState.FAILED
+                    job.future = None
             raise
+        # Terminal: keep only the COMPLETED state and drop the future. The result
+        # is returned live here, so retaining the future (and the TrialResult it
+        # holds) would pin memory for the adapter's whole lifetime.
         with self._jobs_lock:
             job = self._jobs.get(trial_id)
             if job is not None:
                 job.state = JobState.COMPLETED
+                job.future = None
         return result
 
     def _run_one(self, trial_id: str, payload: str) -> TrialResult:
@@ -275,7 +286,9 @@ class LocalDispatchAdapter:
             job = self._jobs.get(handle.trial_id)
             if job is None:
                 return
-            if job.future.cancel():
+            # A ``None`` future means the job already reached a terminal state;
+            # cancel is a no-op either way.
+            if job.future is not None and job.future.cancel():
                 job.state = JobState.CANCELLED
                 return
         logger.info(
