@@ -1500,6 +1500,9 @@ class Orchestrator:
         ``queue``), snapshot grade-bundle production (the node grades in-process
         and produces no control-plane bundle), and every run setting the node
         does not carry (see :meth:`_refuse_settings_the_node_does_not_carry`).
+        It also warns, rather than refuses, when a trace exporter is configured:
+        a dispatch node carries no live observer
+        (see :meth:`_warn_observability_the_node_does_not_carry`).
         """
         orchestrator = self.config.orchestrator
         if (
@@ -1527,6 +1530,7 @@ class Orchestrator:
                 "under the shared or per_trial substrate, or disable snapshot mode."
             )
         self._refuse_settings_the_node_does_not_carry()
+        self._warn_observability_the_node_does_not_carry()
 
     def _refuse_unsupported_remote_run(self) -> None:
         """Fail loud on run shapes the ``grpc_node`` dispatch adapter cannot serve.
@@ -1537,12 +1541,11 @@ class Orchestrator:
         stacks that node cannot host (see
         :meth:`_refuse_manifests_the_node_cannot_host`) — a constraint rooted in
         what ships with and is hashed into the pack, which a local same-box run
-        does not share — and warns that a configured trace exporter sees only the
-        reduced bundle the node returns.
+        does not share. The observability warning is shared with every dispatch
+        run and fires from :meth:`_refuse_unsupported_dispatch_run`.
         """
         self._refuse_unsupported_dispatch_run()
         self._refuse_manifests_the_node_cannot_host()
-        self._warn_observability_the_node_does_not_carry()
 
     def _refuse_manifests_the_node_cannot_host(self) -> None:
         """Refuse task-declared stacks a node cannot materialise for one trial.
@@ -1623,15 +1626,17 @@ class Orchestrator:
     def _warn_observability_the_node_does_not_carry(self) -> None:
         """Warn that a configured trace exporter sees only the reduced bundle.
 
-        The node runs the trial with no observer, so the control plane can attach
-        only what it writes from the returned trajectory.
+        Fires for every dispatch run — the ``local`` and ``grpc_node`` adapters
+        alike run each trial through a node with a ``NullTrialObserver``, so the
+        control plane can attach only what it writes from the returned
+        trajectory and no live spans reach the exporter.
         """
         observability = self.config.observability
         tracing = observability.tracing if observability is not None else None
         if tracing is not None and tracing.exporter != "none":
             self.logger.warning(
-                "observability.tracing is configured, but the grpc_node dispatch adapter runs "
-                "trials on nodes that emit no live traces; exporters see the reduced bundle only",
+                "observability.tracing is configured, but the dispatch adapter runs trials on "
+                "nodes that emit no live traces; exporters see the reduced bundle only",
                 exporter=tracing.exporter,
             )
 

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -242,3 +243,48 @@ def test_the_provision_error_stage_and_reason_follow_the_neutral_error(tmp_path:
 
     # A provision error keeps the node's stage; its reason carries no error_type prefix.
     assert result.trajectory.provision_stage == "await_ready"
+
+
+# ---- Observability under-warning: any dispatch run, not just grpc_node ------
+
+
+def _config_with_tracing(exporter: str, **orchestrator: object) -> RunConfig:
+    from tolokaforge.core.models.run_config import ObservabilityConfig, TracingConfig
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return RunConfig(
+            models={"agent": _AGENT, "user": _USER},
+            orchestrator=OrchestratorConfig(workers=1, repeats=1, **orchestrator),
+            evaluation=EvaluationConfig(output_dir="/tmp/unused"),
+            compute={"grpc_max_message_mb": 9},
+            observability=ObservabilityConfig(tracing=TracingConfig(exporter=exporter)),
+        )
+
+
+def test_a_local_dispatch_run_with_tracing_warns_the_node_carries_no_observer(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = _config_with_tracing("otlp", dispatch=DispatchConfig(adapter="local", config={}))
+    orch = Orchestrator(config)
+    assert orch._is_dispatch_run()
+    assert not orch._dispatches_via_grpc_node()
+
+    with caplog.at_level(logging.WARNING):
+        orch._refuse_unsupported_dispatch_run()
+
+    warnings_logged = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("no live traces" in message for message in warnings_logged)
+
+
+def test_a_local_dispatch_run_without_tracing_is_silent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = _config_with_tracing("none", dispatch=DispatchConfig(adapter="local", config={}))
+    orch = Orchestrator(config)
+
+    with caplog.at_level(logging.WARNING):
+        orch._refuse_unsupported_dispatch_run()
+
+    warnings_logged = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any("no live traces" in message for message in warnings_logged)

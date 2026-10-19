@@ -286,15 +286,25 @@ class LocalDispatchAdapter:
             job = self._jobs.get(handle.trial_id)
             if job is None:
                 return
-            # A ``None`` future means the job already reached a terminal state;
-            # cancel is a no-op either way.
             if job.future is not None and job.future.cancel():
                 job.state = JobState.CANCELLED
                 return
-        logger.info(
-            "Cancel of running in-process trial %s is a no-op; a thread cannot be force-killed",
-            handle.trial_id,
-        )
+            # A ``None`` future means the job already reached a terminal state
+            # (COMPLETED / FAILED / CANCELLED); a live future that would not
+            # cancel is a trial running right now on a pool thread.
+            already_terminal = job.future is None
+            state = job.state
+        if already_terminal:
+            logger.info(
+                "Cancel of in-process trial %s is a no-op; the trial already finished (%s)",
+                handle.trial_id,
+                state,
+            )
+        else:
+            logger.info(
+                "Cancel of running in-process trial %s is a no-op; a thread cannot be force-killed",
+                handle.trial_id,
+            )
 
     def _fetch_result_subprocess(self, trial_id: str) -> TrialResult:
         assert self.registry is not None  # built by the factory for subprocess mode
