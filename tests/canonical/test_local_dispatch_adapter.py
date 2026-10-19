@@ -10,6 +10,7 @@ what the ``grpc_node`` path yields for a real node.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -324,6 +325,27 @@ def test_thread_cancel_of_an_unstarted_job_marks_it_cancelled() -> None:
         occupier.join(timeout=10)
         queued.join(timeout=10)
         adapter.close()
+
+
+def test_thread_cancel_of_a_finished_job_does_not_claim_it_is_running(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A job that already reached a terminal state (COMPLETED, future dropped) is
+    # a no-op to cancel — and the log must say so without calling it "running".
+    adapter = _thread_adapter(lambda inputs: _result(inputs.trial_spec.trial_id))
+    try:
+        adapter.run_trial_node(_inputs("done:0"))
+        handle = JobHandle(trial_id="done:0")
+        assert adapter.status(handle).state is JobState.COMPLETED
+        with caplog.at_level(logging.INFO, logger="tolokaforge.core.dispatch.local"):
+            adapter.cancel(handle)
+    finally:
+        adapter.close()
+
+    noop = [r.getMessage() for r in caplog.records if "is a no-op" in r.getMessage()]
+    assert noop, "expected a logged no-op cancel for a terminal job"
+    assert all("running" not in message for message in noop)
+    assert any("already finished" in message for message in noop)
 
 
 def test_thread_fetch_result_is_unsupported_because_nothing_is_retained() -> None:

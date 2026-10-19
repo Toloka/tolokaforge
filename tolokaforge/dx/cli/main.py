@@ -87,6 +87,7 @@ from tolokaforge.core.project_loader import (
 )
 from tolokaforge.core.resume import RunStateManager, resolve_resume_run_directory
 from tolokaforge.core.run_queue import create_run_queue
+from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.dx._display import (
     DisplayMode,
     console,
@@ -1072,6 +1073,14 @@ def run(
 
             output_dir = orchestrator.run(run_id=run_id, output_dir=run_dir)
         success = True
+    except ProvisionError as exc:
+        # The run-level engine/runner stack failed to come up (e.g. the
+        # composer's ``docker compose up --wait`` failed). Surface it as a
+        # clean operator error — non-zero exit, no raw traceback — rather than
+        # letting the typed provisioning failure escape uncaught. Per-trial
+        # provisioning failures never reach here: they are recorded as
+        # infrastructure aborts inside the run.
+        raise click.ClickException(f"the engine/runner stack could not be started: {exc}") from exc
     finally:
         stopped_reason = _read_limit_hit_reason(output_dir if output_dir is not None else run_dir)
         print_run_end_banner(

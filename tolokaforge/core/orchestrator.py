@@ -1500,6 +1500,9 @@ class Orchestrator:
         ``queue``), snapshot grade-bundle production (the node grades in-process
         and produces no control-plane bundle), and every run setting the node
         does not carry (see :meth:`_refuse_settings_the_node_does_not_carry`).
+        It also warns, rather than refuses, when a trace exporter is configured:
+        a dispatch node carries no live observer
+        (see :meth:`_warn_observability_the_node_does_not_carry`).
         """
         orchestrator = self.config.orchestrator
         if (
@@ -1527,6 +1530,7 @@ class Orchestrator:
                 "under the shared or per_trial substrate, or disable snapshot mode."
             )
         self._refuse_settings_the_node_does_not_carry()
+        self._warn_observability_the_node_does_not_carry()
 
     def _refuse_unsupported_remote_run(self) -> None:
         """Fail loud on run shapes the ``grpc_node`` dispatch adapter cannot serve.
@@ -1537,12 +1541,11 @@ class Orchestrator:
         stacks that node cannot host (see
         :meth:`_refuse_manifests_the_node_cannot_host`) — a constraint rooted in
         what ships with and is hashed into the pack, which a local same-box run
-        does not share — and warns that a configured trace exporter sees only the
-        reduced bundle the node returns.
+        does not share. The observability warning is shared with every dispatch
+        run and fires from :meth:`_refuse_unsupported_dispatch_run`.
         """
         self._refuse_unsupported_dispatch_run()
         self._refuse_manifests_the_node_cannot_host()
-        self._warn_observability_the_node_does_not_carry()
 
     def _refuse_manifests_the_node_cannot_host(self) -> None:
         """Refuse task-declared stacks a node cannot materialise for one trial.
@@ -1623,15 +1626,17 @@ class Orchestrator:
     def _warn_observability_the_node_does_not_carry(self) -> None:
         """Warn that a configured trace exporter sees only the reduced bundle.
 
-        The node runs the trial with no observer, so the control plane can attach
-        only what it writes from the returned trajectory.
+        Fires for every dispatch run — the ``local`` and ``grpc_node`` adapters
+        alike run each trial through a node with a ``NullTrialObserver``, so the
+        control plane can attach only what it writes from the returned
+        trajectory and no live spans reach the exporter.
         """
         observability = self.config.observability
         tracing = observability.tracing if observability is not None else None
         if tracing is not None and tracing.exporter != "none":
             self.logger.warning(
-                "observability.tracing is configured, but the grpc_node dispatch adapter runs "
-                "trials on nodes that emit no live traces; exporters see the reduced bundle only",
+                "observability.tracing is configured, but the dispatch adapter runs trials on "
+                "nodes that emit no live traces; exporters see the reduced bundle only",
                 exporter=tracing.exporter,
             )
 
@@ -3541,80 +3546,88 @@ class Orchestrator:
         else:
             runner_address = None
 
-        # Resolve the runtime backend: injected for tests / alternate
-        # backends, default :class:`SharedStackRuntimeBackend` otherwise.
         if runner_address is None:
             runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
-        # Dispatch run: ship each whole trial to a dispatch adapter, which owns
-        # the substrate. No local substrate backend is constructed or auto-started.
-        dispatch_config = self._dispatch_config()
-        runtime_backend: RuntimeBackend | None = None
-        dispatch_adapter: DispatchAdapter | None = self._injected_dispatch_adapter
-        if dispatch_adapter is None and dispatch_config is not None:
-            dispatch_adapter = self._build_dispatch_adapter(dispatch_config)
-        if dispatch_adapter is not None:
-            self._events.phase_changed(phase="connecting_runtime")
-            dispatch_adapter.connect()
-            self.logger.info("Dispatch adapter connected")
-        else:
-            if self._injected_runtime_backend is not None:
-                runtime_backend = self._injected_runtime_backend
-            else:
-                runtime_backend = self._construct_runtime_backend(
-                    runner_address,
-                    env_manifest=run_env_manifest,
-                    run_id=run_id,
-                )
-            self._events.phase_changed(phase="connecting_runtime")
-            runtime_backend.connect()
-            self.logger.info("Runtime backend connected")
-            self._verify_isolation_compatibility(runtime_backend)
-            self._validate_snapshot_mode_compatibility(runtime_backend)
-
-        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
-
-        env_endpoints = _build_env_endpoints(runner_address)
-        # Any task-declared manifest hands endpoint resolution to the composer:
-        # the backend either materialises run-scope stacks at ``connect`` or
-        # ``provision_trial`` per trial. The default ``env_endpoints`` built
-        # from ``runner_address`` are phantom in that case, so logging them
-        # would misdirect log-based diagnosis.
-        if self._any_task_declares_environment_manifest():
-            self.logger.info(
-                "Trial-scoped service endpoints resolved by backend from task-declared stack"
-            )
-        elif self._is_dispatch_run():
-            self.logger.info(
-                "Trial-scoped service endpoints resolved by the dispatch adapter's node"
-            )
-        else:
-            self.logger.info(
-                "Resolved trial-scoped service endpoints",
-                db_url=env_endpoints.db_url,
-                rag_url=env_endpoints.rag_url,
-                runner_url=env_endpoints.runner_url,
-            )
-
-        trial_unit = self._build_trial_unit(
-            agent_client=agent_client,
-            runtime_backend=runtime_backend,
-            dispatch_adapter=dispatch_adapter,
-            output_dir=output_dir,
-            request_limiter=request_limiter,
-        )
-        # ``try/finally`` from here to the run's return guarantees the trial
-        # unit teardown (its grader's broker close + worker join, gRPC channel
-        # close) fires even when the trial loop or a mid-run cleanup raises. The
-        # rest of the existing sequential teardown lives inside the try
-        # body — a mid-run exception still surfaces to the caller after the
-        # units are closed.
+        # ``try/finally`` from here to the run's return guarantees teardown on
+        # every exit path. The ``finally`` closes the runtime backend / dispatch
+        # adapter, fires the trial-unit teardown (grader broker close + worker
+        # join, gRPC channel close), and tears down the auto-started EngineStack
+        # (and the TypeSense bridge) via ``_teardown_engine_services`` — so a
+        # failure while connecting the runtime backend or dispatch adapter,
+        # building the trial unit, or anywhere in the trial loop cannot leak the
+        # fixed-name ``tolokaforge-runner`` / ``tolokaforge-db-service``
+        # containers or ``runner-net``. A mid-run exception still surfaces to the
+        # caller after cleanup.
         #
-        # ``active_futures`` lives out here, not in the worker-pool block below,
-        # so the dispatch cancel-on-stop hook in ``finally`` can read whatever
-        # leases are still in flight on an abrupt exit.
+        # ``runtime_backend`` / ``dispatch_adapter`` are bound to None before the
+        # try so the finally can close them on every exit path — including a
+        # connect failure that raises before they are assigned. ``active_futures``
+        # lives out here too, so the dispatch cancel-on-stop hook can read
+        # whatever leases are still in flight on an abrupt exit.
+        runtime_backend: RuntimeBackend | None = None
+        dispatch_adapter: DispatchAdapter | None = None
         active_futures: dict[Any, AttemptLease] = {}
         try:
+            # Resolve the runtime backend: injected for tests / alternate
+            # backends, default :class:`SharedStackRuntimeBackend` otherwise.
+            # Dispatch run: ship each whole trial to a dispatch adapter, which
+            # owns the substrate. No local substrate backend is constructed or
+            # auto-started.
+            dispatch_config = self._dispatch_config()
+            dispatch_adapter = self._injected_dispatch_adapter
+            if dispatch_adapter is None and dispatch_config is not None:
+                dispatch_adapter = self._build_dispatch_adapter(dispatch_config)
+            if dispatch_adapter is not None:
+                self._events.phase_changed(phase="connecting_runtime")
+                dispatch_adapter.connect()
+                self.logger.info("Dispatch adapter connected")
+            else:
+                if self._injected_runtime_backend is not None:
+                    runtime_backend = self._injected_runtime_backend
+                else:
+                    runtime_backend = self._construct_runtime_backend(
+                        runner_address,
+                        env_manifest=run_env_manifest,
+                        run_id=run_id,
+                    )
+                self._events.phase_changed(phase="connecting_runtime")
+                runtime_backend.connect()
+                self.logger.info("Runtime backend connected")
+                self._verify_isolation_compatibility(runtime_backend)
+                self._validate_snapshot_mode_compatibility(runtime_backend)
+
+            from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
+
+            env_endpoints = _build_env_endpoints(runner_address)
+            # Any task-declared manifest hands endpoint resolution to the composer:
+            # the backend either materialises run-scope stacks at ``connect`` or
+            # ``provision_trial`` per trial. The default ``env_endpoints`` built
+            # from ``runner_address`` are phantom in that case, so logging them
+            # would misdirect log-based diagnosis.
+            if self._any_task_declares_environment_manifest():
+                self.logger.info(
+                    "Trial-scoped service endpoints resolved by backend from task-declared stack"
+                )
+            elif self._is_dispatch_run():
+                self.logger.info(
+                    "Trial-scoped service endpoints resolved by the dispatch adapter's node"
+                )
+            else:
+                self.logger.info(
+                    "Resolved trial-scoped service endpoints",
+                    db_url=env_endpoints.db_url,
+                    rag_url=env_endpoints.rag_url,
+                    runner_url=env_endpoints.runner_url,
+                )
+
+            trial_unit = self._build_trial_unit(
+                agent_client=agent_client,
+                runtime_backend=runtime_backend,
+                dispatch_adapter=dispatch_adapter,
+                output_dir=output_dir,
+                request_limiter=request_limiter,
+            )
             executor_healthy = (
                 runtime_backend.health_check() if runtime_backend is not None else True
             )
