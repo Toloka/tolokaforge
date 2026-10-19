@@ -297,3 +297,55 @@ class TestHarnessSpecValidation:
     def test_unknown_harness_is_refused_at_construction(self) -> None:
         with pytest.raises(ValueError):
             NativeAdapter(_params(agent_harness="not-a-harness"))
+
+
+class TestHarnessSynthesisStampsEveryService:
+    """The synthesis stamps a deterministic per-trial ``container_name`` on every
+    service, not just the agent. The runner-side resolver names a sibling as
+    ``{prefix}{slug}_{service}``; a service left on Compose's default name is
+    invisible to it, so a separate-verifier / sidecar artifact copy would target
+    a non-existent container and the grade would be ungradeable."""
+
+    def test_every_service_gets_a_deterministic_per_trial_container_name(self) -> None:
+        from tolokaforge.adapters.native_harness_synthesis import (
+            _TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER,
+            DB_SERVICE,
+            RUNNER_SERVICE,
+            _synthesise_compose,
+        )
+
+        adapter = NativeAdapter(
+            _params(
+                agent_harness="claude-code",
+                agent_model="openrouter/anthropic/claude-sonnet-4-6",
+            )
+        )
+        original = {
+            "services": {
+                "main": {"build": {"context": "."}},
+                # A task-declared sibling (e.g. a separate verifier) alongside the
+                # agent: today's shipped native pack ships only the main service,
+                # so this is defensive symmetry against the moment a pack declares
+                # one — but it is also a latent correctness fix, since such a
+                # sibling flows through from ``original_compose`` unchanged.
+                "verifier": {"image": "verifier:local"},
+            }
+        }
+        doc = _synthesise_compose(
+            original_compose=original,
+            agent_service="main",
+            base_service="main_base",
+            base_image="base:local",
+            layered_image="layered:local",
+            harness_spec=adapter.harness_spec,
+            runner_image="runner:local",
+            db_service_image="db:local",
+        )
+        services = doc["services"]
+        expected = {
+            name: f"{PROJECT_PREFIX}{_TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER}_{name}"
+            for name in ("main", "verifier", "main_base", RUNNER_SERVICE, DB_SERVICE)
+        }
+        assert {name: services[name]["container_name"] for name in expected} == expected
+        # No service is left on Compose's default ``<project>-<service>-1`` name.
+        assert all("container_name" in body for body in services.values())

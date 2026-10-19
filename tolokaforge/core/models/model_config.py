@@ -137,6 +137,13 @@ class ModelConfig(_RefusesUndeclaredKeys):
     # completions-only call omits ``parallel_tool_calls`` regardless of
     # what this field is set to.
     parallel_tool_calls: bool | None = None
+    # The longest tool name this model's provider accepts (Meta's API and
+    # Cohere refuse a name over 64 characters). A longer name is offered
+    # without its ``<task category>_`` prefix, then without further leading
+    # ``_``-segments until it fits, and the model's calls are mapped back
+    # before they are executed or recorded. ``None`` offers every name as is.
+    # Read from the agent's primary model. See docs/CONFIG.md.
+    tool_name_max_length: int | None = Field(default=None, ge=1)
     # Coding-harness selector. When set, the trial's LLM loop is replaced by a
     # single invocation of the named vendor CLI (``claude-code``, ``codex``,
     # ``gemini-cli``, ``kimi-code``, ``opencode``, ``grok-build`` — see the

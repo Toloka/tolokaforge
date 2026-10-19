@@ -34,6 +34,7 @@ exists at all — under real-container coverage.
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import subprocess
 import time
@@ -508,12 +509,23 @@ def test_the_proxy_taps_usage_and_the_trial_reads_it_out_of_the_container(
     assert usage.reasoning_tokens == EXPECTED_USAGE["reasoning_tokens"]
 
     # Two executions ran in the container, and only the first was the agent's.
-    assert executor.commands == [
-        _harness_command(),
-        f"cat -- {MIDDLEWARE_USAGE_LOG_CONTAINER_PATH}",
-    ]
+    # The episode exec is the agent command wrapped in the in-container
+    # wall-clock watchdog, so what reached the executor is not the raw command:
+    # the real command rides inside it verbatim (shell-quoted), with the
+    # process-group kill plumbing (``__tf_cmd=``, ``setsid``, ``kill -KILL``)
+    # wrapped around it. The read-back exec is the engine's own and stays exact.
+    assert len(executor.commands) == 2
+    episode = executor.commands[0]
+    assert shlex.quote(_harness_command()) in episode
+    assert "__tf_cmd=" in episode
+    assert "setsid" in episode
+    assert "kill -KILL" in episode
+    assert executor.commands[1] == f"cat -- {MIDDLEWARE_USAGE_LOG_CONTAINER_PATH}"
     assert trajectory.metrics.tool_calls == 1
     assert len(trajectory.tool_log) == 1
+    # The trajectory records the command the adapter built, not the watchdog
+    # plumbing: the wrapping is an execution detail, invisible to a reader.
+    assert trajectory.tool_log[0].arguments == {"command": _harness_command()}
 
     # Both requests did reach the upstream, provider pinning injected: the tap
     # is additive to what the middleware already existed to do.

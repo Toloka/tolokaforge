@@ -99,6 +99,21 @@ _TASK_STACK_ID = "task"
 _ENGINE_RUNNER_SERVICE = "runner"
 _ENGINE_DB_SERVICE = "db-service"
 _INJECTED_SERVICE_NAMES = (_ENGINE_RUNNER_SERVICE, _ENGINE_DB_SERVICE)
+_VERIFIER_SERVICE = "verifier"
+"""Trial-scope service injected for the separate-verifier shape: it builds the
+task's ``tests/Dockerfile`` and idles so the grader can exec the suite in it
+rather than in the agent's container. Not an engine service — it lives on the
+task stack alongside the agent."""
+_VERIFIER_SERVICE_PREFIX = "verifier_"
+"""Key prefix for the tier-3 verifier stack's services when they are merged into
+the trial compose (``main`` → ``verifier_main``, ``postgres`` → ``verifier_postgres``),
+so they never clash with the agent stack's own same-named services."""
+_VERIFIER_NETWORK = "tb4_verifier"
+"""Dedicated network the merged verifier stack lives on. Each verifier sidecar
+keeps an alias of its original name here, so the verifier main's hard-coded
+``psql -h postgres`` resolves to the verifier's own sidecar while the agent's
+same-named sidecar stays on the default network — isolation without editing the
+task's test script."""
 _TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER = "${TOLOKAFORGE_TRIAL_SLUG}"
 
 _HARNESS_STAGING_DIR = "_harness"
@@ -160,6 +175,17 @@ class MaterialisedEnvironment:
     The orchestrator must build this service before the agent service, whose
     Dockerfile is ``FROM`` the base image. ``None`` when there is a single
     image to build (or pull)."""
+
+    verifier_image: str | None = None
+    """Ref of the separate verifier image the orchestrator builds, or ``None`` for
+    the single-container shape. Paired with :attr:`verifier_service` so the
+    adapter can declare the verifier build."""
+
+    verifier_service: str | None = None
+    """Trial-scope service that builds and idles the task's separate verifier
+    image, or ``None`` for the single-container shape whose tests run in the
+    agent's container. When set, the grader execs the test suite here and
+    re-materialises the task's declared artifacts into it first."""
 
 
 def materialise_task_environment(
@@ -250,13 +276,15 @@ def materialise_task_environment(
         task_services = original["services"]
     agent_service = _resolve_agent_service(meta.task_id, task_services)
     base_service = f"{agent_service}{_HARNESS_BASE_SERVICE_SUFFIX}"
-    # The base service exists only under harness mode, so only harness mode can
-    # collide with a task that happens to declare that name.
-    _check_no_reserved_service_collisions(
-        meta.task_id,
-        task_services,
-        base_service if agent_harness != ENGINE_LOOP else None,
-    )
+    # The base service exists only under harness mode and the verifier service
+    # only for the separate-verifier shape, so each is reserved only when the
+    # adapter is actually about to inject it.
+    extra_reserved: list[str] = []
+    if agent_harness != ENGINE_LOOP:
+        extra_reserved.append(base_service)
+    if meta.is_v4:
+        extra_reserved.append(_VERIFIER_SERVICE)
+    _check_no_reserved_service_collisions(meta.task_id, task_services, extra_reserved)
 
     resolver = DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
     delivery = DEFAULT_SKILL_DELIVERY if skill_delivery is None else skill_delivery
@@ -354,6 +382,10 @@ def materialise_task_environment(
         base_build_service=base_build_service,
         base_image=_agent_image(meta.task_id, image_registry, image_tag),
         agent_image=task_doc["services"][agent_service]["image"],
+        verifier_service=_verifier_service_name(meta) if meta.is_v4 else None,
+        verifier_image=(
+            _verifier_image(meta.task_id, image_registry, image_tag) if meta.is_v4 else None
+        ),
     )
 
 
@@ -428,7 +460,7 @@ def _reroot_build_contexts(doc: dict[str, Any]) -> None:
                     build["context"] = moved
 
 
-def _agent_volumes(declared: Any) -> list[Any]:
+def _agent_volumes(declared: Any, *, include_tests_mount: bool = True) -> list[Any]:
     """The agent service's mounts: the task's own, plus ours for tests and logs.
 
     84 of the canonical compose files mount a named volume on the agent service
@@ -441,9 +473,17 @@ def _agent_volumes(declared: Any) -> list[Any]:
     Both are the harness's directories rather than the task's — the verifier
     reads its reward from under ``/logs`` and the suite it runs from ``/tests``
     — and two mounts on one target leave which of them wins up to compose.
+
+    *include_tests_mount* is ``False`` for the separate-verifier shape, where the
+    suite runs in its own container: the agent never sees ``/tests`` and only the
+    log mount is appended.
     """
-    ours = ["./tests:/tests", f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}"]
-    reserved = {"/tests", CONTAINER_LOGS_DIR}
+    ours: list[Any] = []
+    reserved = {CONTAINER_LOGS_DIR}
+    if include_tests_mount:
+        ours.append("./tests:/tests")
+        reserved.add("/tests")
+    ours.append(f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}")
     kept = [
         mount
         for mount in (declared or [])
@@ -552,9 +592,9 @@ def _resolve_agent_service(task_id: str, services: dict[str, Any]) -> str:
 
 
 def _check_no_reserved_service_collisions(
-    task_id: str, services: dict[str, Any], base_service: str | None
+    task_id: str, services: dict[str, Any], extra_reserved: Sequence[str] = ()
 ) -> None:
-    reserved_names = _INJECTED_SERVICE_NAMES + ((base_service,) if base_service else ())
+    reserved_names = _INJECTED_SERVICE_NAMES + tuple(extra_reserved)
     for reserved in reserved_names:
         if reserved in services:
             raise ValueError(
@@ -759,6 +799,29 @@ def _agent_image(task_id: str, image_registry: str | None, image_tag: str) -> st
     return f"tbench-{task_id}:{image_tag}"
 
 
+def _verifier_image(task_id: str, image_registry: str | None, image_tag: str) -> str:
+    """Ref of the task's separate verifier image, distinct from the agent's.
+
+    The verifier is a different image from the agent — built from ``tests/`` —
+    so it carries its own ref, and the orchestrator builds and reuses it on its
+    own key rather than colliding with the agent image.
+    """
+    if image_registry:
+        return f"{image_registry}/{task_id}-verifier:{image_tag}"
+    return f"tbench-{task_id}-verifier:{image_tag}"
+
+
+def _verifier_service_name(meta: TerminalBenchTask) -> str:
+    """The compose service the grader execs the verifier suite in.
+
+    For the single-container shape it's the injected ``verifier`` service; for
+    the tier-3 stack it's the namespaced verifier main.
+    """
+    if meta.has_tests_compose:
+        return f"{_VERIFIER_SERVICE_PREFIX}{AGENT_SERVICE_DEFAULT}"
+    return _VERIFIER_SERVICE
+
+
 def _layered_agent_image(
     base_image: str, agent_harness: str, harness_version: str, content_digest: str
 ) -> str:
@@ -853,19 +916,27 @@ def _build_synthesised_compose(
     if image_registry:
         agent_body.pop("build", None)
     agent_body["container_name"] = agent_container_name
-    agent_body["volumes"] = _agent_volumes(agent_body.get("volumes"))
-    agent_body["environment"] = _set_env_key(agent_body.get("environment"), "TEST_DIR", "/tests")
+    agent_body["volumes"] = _agent_volumes(
+        agent_body.get("volumes"), include_tests_mount=not meta.is_v4
+    )
+    agent_env = agent_body.get("environment")
+    if not meta.is_v4:
+        # TEST_DIR names the ``/tests`` mount the agent reads fixtures from. The
+        # separate-verifier shape drops that mount (``include_tests_mount`` above),
+        # so injecting TEST_DIR there would point the agent at a path that does not
+        # exist in its container.
+        agent_env = _set_env_key(agent_env, "TEST_DIR", "/tests")
     for key in sorted(provider_env_keys):
-        agent_body["environment"] = _set_env_key(
-            agent_body["environment"], key, f"${{{provider_env_input(key)}}}"
-        )
+        agent_env = _set_env_key(agent_env, key, f"${{{provider_env_input(key)}}}")
     if harness_spec is not None:
         # Static per-harness env — hardening flags the CLI reads at start-up
         # (``IS_SANDBOX=1`` for claude-code's root-user bypass, etc.). Written
         # into the compose ``environment:`` block so ``docker exec`` inherits
         # them. See :attr:`HarnessSpec.container_env`.
         for key, value in sorted(harness_spec.container_env.items()):
-            agent_body["environment"] = _set_env_key(agent_body["environment"], key, value)
+            agent_env = _set_env_key(agent_env, key, value)
+    if agent_env is not None:
+        agent_body["environment"] = agent_env
 
     base_build_service: str | None = None
     if harness_spec is not None:
@@ -876,6 +947,19 @@ def _build_synthesised_compose(
         if task_build is not None and not image_registry:
             services[base_service] = _harness_base_service_body(base_image, task_build)
             base_build_service = base_service
+
+    if meta.is_v4:
+        verifier_image = _verifier_image(meta.task_id, image_registry, image_tag)
+        if meta.has_tests_compose:
+            # tier-3: the verifier is a stack (its own DB sidecar(s) + a main),
+            # merged in namespaced + network-aliased so it never clashes with the
+            # agent stack's same-named services.
+            _merge_verifier_stack(task_doc, meta, verifier_image)
+        else:
+            # The verifier image is always built from the task's own ``tests/`` —
+            # there is no registry artifact for it — so it carries a ``build`` even
+            # when the agent image is pulled.
+            services[_VERIFIER_SERVICE] = _verifier_service_body(verifier_image)
 
     _stamp_trial_container_names(services)
 
@@ -909,6 +993,166 @@ def _stamp_trial_container_names(task_services: dict[str, Any]) -> None:
         if not isinstance(body, dict):
             continue
         body["container_name"] = _trial_scoped_container_name(name)
+
+
+def _verifier_service_body(verifier_image: str) -> dict[str, Any]:
+    """Trial-scope service that builds and idles the task's separate verifier image.
+
+    The separate-verifier shape ships ``tests/Dockerfile``, a self-contained
+    image that bakes the suite in under ``/tests``. The build context is the
+    staged ``tests/`` directory (which carries its own ``environment/`` replay
+    and ``.dockerignore``). A ``command`` keeps the container alive so the grader
+    can exec the suite in it and copy the task's declared artifacts across first;
+    the log mount is where that suite writes the reward the grader reads back.
+    """
+    return {
+        "build": {"context": "./tests", "dockerfile": "Dockerfile"},
+        "image": verifier_image,
+        "command": ["sh", "-c", "sleep infinity"],
+        "volumes": [f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}"],
+    }
+
+
+def _namespace_depends_on(depends_on: Any) -> Any:
+    """Rewrite a ``depends_on`` (dict or list) onto the verifier-namespaced keys."""
+    if isinstance(depends_on, Mapping):
+        return {f"{_VERIFIER_SERVICE_PREFIX}{k}": v for k, v in depends_on.items()}
+    if isinstance(depends_on, list):
+        return [f"{_VERIFIER_SERVICE_PREFIX}{name}" for name in depends_on]
+    return depends_on
+
+
+def _namespace_volume_refs(volumes: Any, named: set[str]) -> list[Any]:
+    """Rewrite a service's ``volumes`` so refs to *named* top-level volumes are prefixed.
+
+    Named-volume mounts whose source is in *named* get the ``verifier_`` prefix, to
+    match the namespaced top-level volume defs. Bind mounts (a path source) and
+    anonymous mounts are left alone, so only the task's own named volumes — e.g. a
+    postgres ``pgdata`` or the redis shared volume — are isolated from the agent
+    stack's same-named volumes.
+    """
+    out: list[Any] = []
+    for entry in volumes or []:
+        if isinstance(entry, str):
+            parts = entry.split(":")
+            if len(parts) >= 2 and parts[0] in named:
+                parts[0] = f"{_VERIFIER_SERVICE_PREFIX}{parts[0]}"
+                out.append(":".join(parts))
+            else:
+                out.append(entry)
+        elif isinstance(entry, Mapping):
+            new = dict(entry)
+            # A long mount whose ``source`` names a top-level volume is a volume
+            # ref even when ``type`` is omitted (compose infers it). Prefix those
+            # and explicit ``type: volume``; a bind mount's source is a host path,
+            # never a declared volume name, so it is left untouched.
+            if new.get("source") in named and new.get("type") in (None, "volume"):
+                new["source"] = f"{_VERIFIER_SERVICE_PREFIX}{new['source']}"
+            out.append(new)
+        else:
+            out.append(entry)
+    return out
+
+
+def _reroot_verifier_build(build: Any) -> Any:
+    """Reroot a verifier sidecar's ``build`` (string or table) onto the staged ``tests/``.
+
+    The sidecar's build context is relative to the task's ``tests/`` dir, which the
+    synthesised compose stages at ``./tests``. Handles the string form and the
+    ``{context: …}`` table, and the common relative shapes (``.``, ``./x``, bare
+    ``x``). Absolute contexts and anything already under ``./tests`` are left as-is.
+    """
+
+    def _reroot(ctx: str) -> str:
+        if ctx.startswith("/") or ctx == "./tests" or ctx.startswith("./tests/"):
+            return ctx
+        if ctx in (".", "./"):
+            return "./tests"
+        if ctx.startswith("./"):
+            return f"./tests/{ctx[2:]}"
+        if ctx.startswith("../"):
+            return ctx  # upward refs are rare + ambiguous under staging; leave them
+        return f"./tests/{ctx}"
+
+    if isinstance(build, str):
+        return _reroot(build)
+    if isinstance(build, Mapping) and isinstance(build.get("context"), str):
+        return {**build, "context": _reroot(build["context"])}
+    return build
+
+
+def _merge_verifier_stack(
+    task_doc: dict[str, Any], meta: TerminalBenchTask, verifier_image: str
+) -> None:
+    """Merge the task's ``tests/docker-compose.yaml`` in as the verifier stack.
+
+    The tier-3 verifier is a stack — a ``main`` (our verifier image) plus DB
+    sidecar(s) — not a lone container. Its services are merged into the trial
+    compose under a ``verifier_`` key prefix and placed on a dedicated network,
+    where each sidecar keeps an alias of its original name. So the verifier
+    main's hard-coded ``psql -h postgres`` reaches the verifier's own sidecar
+    while the agent stack's same-named sidecar stays on the default network — no
+    key collision, correct isolation, and the task's test script is untouched.
+
+    The verifier main is keyed by :func:`_verifier_service_name` (the one place
+    that name is derived, also used for the materialised environment).
+    """
+    compose_path = meta.task_dir / "tests" / "docker-compose.yaml"
+    loaded = yaml.safe_load(compose_path.read_text()) or {}
+    tests_services = loaded.get("services") or {}
+    main_name = AGENT_SERVICE_DEFAULT if AGENT_SERVICE_DEFAULT in tests_services else None
+    if main_name is None:
+        raise ValueError(
+            f"terminal-bench task {meta.task_id!r}: tests/docker-compose.yaml declares no "
+            f"{AGENT_SERVICE_DEFAULT!r} service to run the verifier suite in."
+        )
+
+    # Named top-level volumes the task declares: these collide with the agent
+    # stack's same-named volumes in one project, so both the defs and every
+    # service reference to them are namespaced.
+    top_volumes = loaded.get("volumes")
+    named_volumes = set(top_volumes) if isinstance(top_volumes, Mapping) else set()
+
+    services: dict[str, Any] = task_doc["services"]
+    verifier_main_key = _verifier_service_name(meta)
+    for name, body in tests_services.items():
+        if not isinstance(body, Mapping):
+            continue
+        new_body: dict[str, Any] = deepcopy(dict(body))
+        if "depends_on" in new_body:
+            new_body["depends_on"] = _namespace_depends_on(new_body["depends_on"])
+
+        if name == main_name:
+            # The verifier main: our built verifier image, idle, with the logs mount
+            # plus whatever shared volumes the task's main declared (e.g. redis),
+            # namespaced so they stay isolated from the agent stack.
+            merged = _verifier_service_body(verifier_image)
+            merged["volumes"] = list(merged["volumes"]) + _namespace_volume_refs(
+                new_body.get("volumes"), named_volumes
+            )
+            for key in ("environment", "depends_on", "working_dir"):
+                if key in new_body:
+                    merged[key] = new_body[key]
+            merged["networks"] = {_VERIFIER_NETWORK: {}}
+            services[verifier_main_key] = merged
+            continue
+
+        # A sidecar (stock image, pulled). Keep it verbatim, but reroot any build
+        # context onto the staged tests/ tree, namespace its named-volume refs, and
+        # give it an alias of its original name on the verifier network so the main
+        # reaches it by that name.
+        if "build" in new_body:
+            new_body["build"] = _reroot_verifier_build(new_body["build"])
+        if "volumes" in new_body:
+            new_body["volumes"] = _namespace_volume_refs(new_body["volumes"], named_volumes)
+        new_body["networks"] = {_VERIFIER_NETWORK: {"aliases": [name]}}
+        services[f"{_VERIFIER_SERVICE_PREFIX}{name}"] = new_body
+
+    task_doc.setdefault("networks", {})[_VERIFIER_NETWORK] = {}
+    if named_volumes:
+        task_doc.setdefault("volumes", {}).update(
+            {f"{_VERIFIER_SERVICE_PREFIX}{k}": deepcopy(v) for k, v in top_volumes.items()}
+        )
 
 
 def _engine_compose_doc(runner_image: str, db_service_image: str) -> dict[str, Any]:
@@ -1006,14 +1250,20 @@ def _runner_service_body(runner_image: str) -> dict[str, Any]:
 
 
 def _db_service_body(db_service_image: str) -> dict[str, Any]:
-    # The engine's ``tolokaforge-db-service`` image ships ``curl`` and no
-    # ``wget``; matches the image's own ``HEALTHCHECK`` while tightening the
-    # timings for per-trial provisioning.
+    # The engine's ``tolokaforge-db-service`` image is a slim base with no curl,
+    # and probes ``/health`` with a stdlib ``urllib`` call — the same shape as its
+    # own baked ``HEALTHCHECK`` and the mock_web/rag images. Mirror that here (a
+    # curl probe never passes: the binary is not in the image) while tightening
+    # the timings for per-trial provisioning.
     return {
         "image": db_service_image,
         "ports": ["8000"],
         "healthcheck": {
-            "test": ["CMD-SHELL", "curl -fs http://localhost:8000/health || exit 1"],
+            "test": [
+                "CMD-SHELL",
+                'python -c "import urllib.request; '
+                "urllib.request.urlopen('http://localhost:8000/health')\" || exit 1",
+            ],
             "interval": "2s",
             "timeout": "3s",
             "retries": 30,

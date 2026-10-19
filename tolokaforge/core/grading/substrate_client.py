@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -204,6 +205,15 @@ class GrpcSubstrateClient:
             response = self._stub.RunDbProbe(pb2.RunDbProbeRequest(dsn=dsn, query=query))
         except grpc.RpcError as err:
             raise SubstrateUnreachableError(str(err)) from err
+        # The servicer signals the two failure cases apart on the response, not
+        # via a status code: an unreachable DB marks the trial ungradeable; a
+        # query failure folds to a FAIL line. Reconstruct each distinctly.
+        if response.error:
+            if response.unreachable:
+                raise SubstrateUnreachableError(response.error)
+            from tolokaforge.core.grading.db_probes import DbProbeQueryError
+
+            raise DbProbeQueryError(response.error)
         decoded = json.loads(response.rows_json) if response.rows_json else []
         if not isinstance(decoded, list):
             raise SubstrateUnreachableError(
@@ -217,6 +227,7 @@ class GrpcSubstrateClient:
         reward_path: str,
         timeout_s: float,
         reward_read_timeout_s: float,
+        service: str | None = None,
     ) -> RunTestSuiteResult:
         try:
             response = self._stub.RunTestSuite(
@@ -226,6 +237,7 @@ class GrpcSubstrateClient:
                     reward_path=reward_path,
                     timeout_s=timeout_s,
                     reward_read_timeout_s=reward_read_timeout_s,
+                    service=service or "",
                 )
             )
         except grpc.RpcError as err:
@@ -238,6 +250,51 @@ class GrpcSubstrateClient:
             tool_absent_reason=response.tool_absent_reason,
             script_exec_error=response.script_exec_error,
         )
+
+    def materialise_path(
+        self,
+        *,
+        src_service: str | None,
+        dst_service: str,
+        path: str,
+        exclude: Sequence[str] = (),
+    ) -> None:
+        try:
+            response = self._stub.MaterialisePath(
+                pb2.MaterialisePathRequest(
+                    trial_id=self._trial_id,
+                    src_service=src_service or "",
+                    dst_service=dst_service,
+                    path=path,
+                    exclude=list(exclude),
+                )
+            )
+        except grpc.RpcError as err:
+            raise SubstrateUnreachableError(str(err)) from err
+        if not response.ok:
+            raise SubstrateUnreachableError(response.error)
+
+    def exec_in_service(
+        self,
+        *,
+        service: str | None,
+        command: str,
+        timeout_s: float,
+    ) -> tuple[int, str]:
+        try:
+            response = self._stub.ExecInService(
+                pb2.ExecInServiceRequest(
+                    trial_id=self._trial_id,
+                    service=service or "",
+                    command=command,
+                    timeout_s=timeout_s,
+                )
+            )
+        except grpc.RpcError as err:
+            raise SubstrateUnreachableError(str(err)) from err
+        if response.error:
+            raise SubstrateUnreachableError(response.error)
+        return response.exit_code, response.output
 
     def health_check(self) -> str:
         try:

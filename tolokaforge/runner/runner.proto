@@ -118,7 +118,8 @@ message ToolSchema {
   // Per-tool cap on the role=tool message content the engine loop appends.
   // The native adapter composes two inputs into the emitted value (min of
   // whichever are set): ToolPolicy.output_max_chars (the tool-declared bound)
-  // and the task-yaml override at tools.<actor>.<tool_name>.output_max_chars.
+  // and the task-yaml override at tools.<actor>.<tool_name>.output_max_chars
+  // (or the actor-wide tools.<actor>.output_max_chars where the tool names none).
   // The engine loop composes the result in turn with the per-model
   // ModelCapabilities.tool_output_max_chars as min(tool_cap, capability_cap):
   // the tighter set cap wins per call. Optional (proto3): a runner predating
@@ -693,6 +694,23 @@ service SubstrateService {
   // holds by construction.
   rpc RunTestSuite(RunTestSuiteRequest) returns (RunTestSuiteResponse);
 
+  // Re-create a path inside one trial container from another: empty it in the
+  // destination service's container, then copy it (file or directory tree)
+  // from the source service's container, skipping any exclude glob. Empty
+  // src_service means the agent's container. The primitive the separate-
+  // verifier shape uses to carry the agent's declared artifacts into the
+  // verifier before RunTestSuite runs there. An absent source is not an error
+  // (the destination is left empty); a container that cannot be reached is.
+  rpc MaterialisePath(MaterialisePathRequest) returns (MaterialisePathResponse);
+
+  // Run a shell command in a named trial service container and return its exit
+  // code + merged stdout/stderr. A general exec seam distinct from RunTestSuite
+  // (which also reads a reward). The separate-verifier shape uses it for a
+  // task-defined pre-grade step (e.g. snapshotting a DB sidecar to a file). A
+  // non-zero command exit rides in the response; only an unreachable container
+  // sets the gRPC status.
+  rpc ExecInService(ExecInServiceRequest) returns (ExecInServiceResponse);
+
   // Substrate liveness + capacity signal. Distinct from RunnerService.
   // HealthCheck (that endpoint reports RunnerService plumbing; this one
   // reports the substrate seam and its active-trial count).
@@ -844,8 +862,21 @@ message RunDbProbeResponse {
   // JSON array of objects; each object is one row. Column values encoded
   // via json.dumps(default=str) — asyncpg scalars (datetime, Decimal,
   // UUID, bytes) coerce to str. Empty JSON array ("[]") when the query
-  // matches no rows; the field is never absent.
+  // matches no rows; the field is never absent. Empty when the probe failed
+  // (see `error`).
   string rows_json = 1;
+
+  // Set when the probe failed. True means the probe DB was UNREACHABLE
+  // (connection refused, DSN down, driver connection error): the client maps
+  // it to SubstrateUnreachableError and the trial is ungradeable. False with a
+  // non-empty `error` means the DB answered and the QUERY failed (bad SQL,
+  // missing table): the client raises a non-unreachable error the grader folds
+  // to a FAIL line. False with an empty `error` is the success case above.
+  bool unreachable = 2;
+
+  // Human-readable failure detail, empty on success. Populated for both the
+  // unreachable and the query-failure cases; `unreachable` disambiguates which.
+  string error = 3;
 }
 
 // -----------------------------------------------------------------------------
@@ -866,6 +897,10 @@ message RunTestSuiteRequest {
   double timeout_s = 4;
   // Wall-clock cap on the reward-file read. 0.0 → default 10s.
   double reward_read_timeout_s = 5;
+  // Compose service whose container runs the suite. Empty → the agent's own
+  // container (the single-container shape). A name runs the suite in that
+  // sibling container — the separate-verifier shape.
+  string service = 6;
 }
 
 message RunTestSuiteResponse {
@@ -900,6 +935,46 @@ message RunTestSuiteResponse {
   // callers refuse the trial ("test.sh execution failed: {msg}") instead of
   // reporting a score for tests that never ran.
   string script_exec_error = 6;
+}
+
+message MaterialisePathRequest {
+  string trial_id = 1;
+  // Compose service to copy FROM. Empty → the trial's agent service.
+  string src_service = 2;
+  // Compose service to copy INTO.
+  string dst_service = 3;
+  // Absolute POSIX path (file or directory) re-created in the destination.
+  string path = 4;
+  // Glob patterns pruned from the copy (caches, regenerable build output).
+  repeated string exclude = 5;
+}
+
+message MaterialisePathResponse {
+  // True when the path was re-materialised (or the source was absent and the
+  // destination was left empty). False with ``error`` set when a container
+  // could not be reached or a copy step failed.
+  bool ok = 1;
+  string error = 2;
+}
+
+message ExecInServiceRequest {
+  string trial_id = 1;
+  // Compose service whose container runs the command.
+  string service = 2;
+  // Shell command line, run as ``sh -c`` inside the container.
+  string command = 3;
+  // Wall-clock cap on the command. 0.0 → the servicer's default.
+  double timeout_s = 4;
+}
+
+message ExecInServiceResponse {
+  // The command's exit code (informational — a non-zero exit is not an error).
+  int32 exit_code = 1;
+  // Merged stdout/stderr of the command, wire-capped by the servicer.
+  string output = 2;
+  // Set only when the container could not be reached / the exec itself raised;
+  // the client raises SubstrateUnreachableError. Empty on a normal run.
+  string error = 3;
 }
 
 // -----------------------------------------------------------------------------

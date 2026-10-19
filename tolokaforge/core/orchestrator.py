@@ -113,8 +113,16 @@ from tolokaforge.core.plugin_registry import (
     load_runtime_backend,
     load_user_simulator,
 )
-from tolokaforge.core.pricing import pricing_table_metadata, resolve_pricing
-from tolokaforge.core.pricing_freshness import compare_against_source, live_prices
+from tolokaforge.core.pricing import (
+    normalize_model_name,
+    pricing_table_metadata,
+    resolve_pricing,
+)
+from tolokaforge.core.pricing_freshness import (
+    compare_against_source,
+    live_endpoint_prices,
+    live_prices,
+)
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
@@ -1179,6 +1187,7 @@ class Orchestrator:
                 conductor_factory=self._conductor_factory,
                 grader_config=self.config.grader,
                 grpc_max_message_mb=self._grpc_max_message_mb(),
+                state_read_timeout_s=self._state_read_timeout_s(),
             )
         )
         self._trial_units_to_close.append(unit)
@@ -1626,6 +1635,28 @@ class Orchestrator:
                 exporter=tracing.exporter,
             )
 
+    def _preflight_validate_runtime_override(self) -> None:
+        """Refuse an impossible ``orchestrator.runtime`` override before auto-start.
+
+        Per-trial isolation is materialised from each task's declared
+        ``environment_manifest`` (the composer provisions a trial-scoped
+        substrate from it). With no manifest anywhere in the pack there is no
+        per-trial environment to provision, so ``runtime='per_trial'`` cannot be
+        honoured. Fail loud here — a pre-flight run before the service auto-start
+        — so the operator does not pay for a full Docker stack bring-up only to
+        have the backend refuse once it is up and have the stack torn straight
+        back down.
+        """
+        override = self.config.orchestrator.runtime
+        if override == "per_trial" and not self._any_task_declares_environment_manifest():
+            raise RuntimeError(
+                "orchestrator.runtime='per_trial' requires at least one task to declare "
+                "an environment_manifest describing the per-trial substrate, but none of "
+                "the tasks in this run declare one, so per-trial isolation cannot be "
+                "provisioned. Remove the override to run on the shared engine stack, or "
+                "add an environment_manifest to the task(s)."
+            )
+
     def _coerce_plan_shape_for_override(self, override: str | None) -> None:
         """Rewrite every task's resolved plan ``stack_scope`` to match the
         operator's ``orchestrator.runtime`` coercion knob.
@@ -1690,6 +1721,13 @@ class Orchestrator:
         declared.
         """
         return (self.config.compute or ComputeConfig()).grpc_max_message_mb
+
+    def _state_read_timeout_s(self) -> float:
+        """The runner's bound on one state holder read (``compute.state_read_timeout_s``).
+
+        The schema default applies when no ``compute`` block is declared.
+        """
+        return (self.config.compute or ComputeConfig()).state_read_timeout_s
 
     def _resolve_runtime_connect_budget(self) -> tuple[float, float]:
         """Resolve the runner health-check budget (env → YAML → default).
@@ -1759,6 +1797,32 @@ class Orchestrator:
             budget_s=timeout_s,
         )
 
+    def _teardown_engine_services(self, service_stack: Any) -> None:
+        """Best-effort teardown of the auto-started engine services.
+
+        Stops the TypeSense bridge first — it joins ``runner-net`` and must
+        leave before the network is removed — then destroys the EngineStack,
+        releasing the fixed-name ``tolokaforge-runner`` /
+        ``tolokaforge-db-service`` containers and ``runner-net``. Never
+        raises, so it is safe to call from a ``finally`` and from the
+        auto-start error path; a ``service_stack`` of ``None`` is a no-op.
+        Idempotent for TypeSense (the handle is cleared after one stop).
+        """
+        if self._typesense_server is not None:
+            try:
+                self._typesense_server.stop()
+                self.logger.info("TypeSense server stopped")
+            except Exception as e:
+                self.logger.warning(f"Failed to stop TypeSense server: {e}")
+            finally:
+                self._typesense_server = None
+        if service_stack is not None:
+            try:
+                service_stack.destroy()
+                self.logger.info("EngineStack destroyed")
+            except Exception as e:
+                self.logger.warning("Failed to destroy EngineStack", error=str(e))
+
     def _construct_runtime_backend(
         self,
         runner_address: str,
@@ -1798,6 +1862,10 @@ class Orchestrator:
             runtime_choice = override
             source = f"override:{override}"
 
+        # The per_trial-without-manifest refusal is a PRE-FLIGHT check
+        # (:meth:`_preflight_validate_runtime_override`) run before any auto-start,
+        # so the operator fails fast without a Docker stack bring-up. It is not
+        # repeated here.
         factory = load_runtime_backend(runtime_choice)
         adapter_type = (
             self.config.evaluation.harness_adapter.type
@@ -1835,6 +1903,7 @@ class Orchestrator:
                 connect_timeout_s=connect_timeout_s,
                 connect_retry_interval_s=connect_retry_interval_s,
                 grpc_max_message_mb=self._grpc_max_message_mb(),
+                state_read_timeout_s=self._state_read_timeout_s(),
             )
         )
         self.logger.info(
@@ -2821,7 +2890,9 @@ class Orchestrator:
                 source_url=metadata.source_url,
             )
             return
-        drifts = compare_against_source(configured, source)
+        drifts = compare_against_source(
+            configured, source, self._pinned_route_prices(metadata.source_url)
+        )
         if not drifts:
             self.logger.info("Pricing table agrees with its source", models=len(configured))
             return
@@ -2833,6 +2904,36 @@ class Orchestrator:
             "charges. Refresh with `uv run pricing-updater update`, or set "
             "TOLOKAFORGE_SKIP_PRICING_FRESHNESS=1 to run anyway."
         )
+
+    def _pinned_route_prices(self, source_url: str) -> dict[str, list[dict[str, float]]]:
+        """Rates of the only routes a provider-pinned model can be billed at.
+
+        A source publishes one price per model: its *cheapest* route. A config
+        pinning ``openrouter.provider_order`` with ``allow_fallbacks: false``
+        cannot be billed at that price unless the pinned provider happens to be
+        the cheapest, so checking the table against it asks a question the run
+        does not pose — and refuses correct tables. Observed on a GLM-5.3 cost
+        study pinned to ``z-ai``: the table matched that provider's published
+        rate exactly and the run was refused against a reseller charging a
+        seventeenth of it.
+
+        A model whose endpoints cannot be read is left out, so the caller falls
+        back to the model-level comparison rather than to no check at all.
+        """
+        pinned: dict[str, list[dict[str, float]]] = {}
+        for model in (self.config.models or {}).values():
+            routing = getattr(model, "openrouter", None)
+            if not model.name or routing is None:
+                continue
+            if routing.allow_fallbacks or not routing.provider_order:
+                continue
+            key = normalize_model_name(model.name)
+            if key in pinned:
+                continue
+            routes = live_endpoint_prices(source_url, key, routing.provider_order)
+            if routes:
+                pinned[key] = routes
+        return pinned
 
     def _warn_on_unreliable_pricing(self) -> None:
         """Warn per configured role whose model prices badly, before any trial runs.
@@ -3222,6 +3323,12 @@ class Orchestrator:
         # declarations fail loud before we touch docker.
         run_env_manifest = self._extract_run_env_manifest()
 
+        # Fail fast on an impossible runtime override (e.g. --runtime per_trial on
+        # a pack where no task declares a manifest) BEFORE any Docker auto-start,
+        # so the operator is not charged a full stack bring-up for a run that
+        # cannot be honoured.
+        self._preflight_validate_runtime_override()
+
         # Auto-start services via EngineStack if configured. A dispatch run ships
         # each whole trial to a node that owns its substrate and starts no local stack.
         service_stack = None
@@ -3328,6 +3435,7 @@ class Orchestrator:
                 # The runner container serves with the bound the engine's
                 # client channels use (``compute.grpc_max_message_mb``).
                 core_stack_kwargs["grpc_max_message_mb"] = self._grpc_max_message_mb()
+                core_stack_kwargs["state_read_timeout_s"] = self._state_read_timeout_s()
                 service_stack = stack_factory(config=docker_config, **core_stack_kwargs)
                 # Any task-declared manifest hands the substrate to the
                 # composer — the task-declared compose owns the runner +
@@ -3425,6 +3533,10 @@ class Orchestrator:
                     )
                 else:
                     self.logger.error("Failed to auto-start services", error=str(e))
+                # A partial start can leave the fixed-name containers and
+                # ``runner-net`` behind; tear them down before re-raising so
+                # the next run isn't blocked by a stale stack.
+                self._teardown_engine_services(service_stack)
                 raise
         else:
             runner_address = None
@@ -3836,23 +3948,11 @@ class Orchestrator:
                     total_cost_usd=round(total_cost_usd, 6),
                 )
 
-            # Stop TypeSense BEFORE destroying the EngineStack.
-            # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
-            # so it must be removed from that network before the stack can tear it down.
-            if self._typesense_server is not None:
-                try:
-                    self._typesense_server.stop()
-                    self.logger.info("TypeSense server stopped")
-                except Exception as e:
-                    self.logger.warning(f"Failed to stop TypeSense server: {e}")
-
-            # Cleanup EngineStack if auto-started
-            if service_stack is not None:
-                try:
-                    service_stack.destroy()
-                    self.logger.info("EngineStack destroyed")
-                except Exception as e:
-                    self.logger.warning("Failed to destroy EngineStack", error=str(e))
+            # Runtime-backend close now runs in the ``finally`` below, so a
+            # mid-run exception cannot leak its gRPC channel. TypeSense teardown
+            # and EngineStack destroy run there too (``_teardown_engine_services``,
+            # which stops TypeSense before destroying the stack), on every exit
+            # path — not only this success path.
 
             # Publish completeness and generate reports before stamping the
             # run as completed, so ``run_state.json``'s completion gates are
@@ -3894,6 +3994,12 @@ class Orchestrator:
             # export thread is a daemon and would otherwise die with the last batch unsent.
             self._finish_tracing(output_dir)
             self._close_trial_units()
+            # Tear down the auto-started engine services last so a failure
+            # anywhere above still releases the fixed-name EngineStack
+            # containers and ``runner-net`` instead of leaking them. Runs on
+            # every exit path (success and mid-run failure), not only the success
+            # path, so a mid-run exception cannot leak the stack.
+            self._teardown_engine_services(service_stack)
 
     def _finish_tracing(self, output_dir: Path) -> None:
         """Flush and close the run's trial observer; the export receipt lands in the run
@@ -4043,6 +4149,7 @@ class Orchestrator:
         # not the EXECUTOR_ADDRESS a worker reads from its own env. Fail loud
         # rather than silently connect to a stale/wrong address.
         run_env_manifest = self._extract_run_env_manifest()
+        self._preflight_validate_runtime_override()
         if run_env_manifest is not None and self._injected_runtime_backend is None:
             raise RuntimeError(
                 "Distributed worker mode does not currently support runs with "

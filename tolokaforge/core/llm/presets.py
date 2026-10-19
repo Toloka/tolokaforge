@@ -80,6 +80,7 @@ from tolokaforge.core.model_data import (
 )
 from tolokaforge.core.models.model_config import ModelConfig, OpenRouterConfig
 from tolokaforge.core.models.run_config import iter_model_configs
+from tolokaforge.core.tool_output_truncation import validated_output_max_chars
 from tolokaforge.core.unknown_keys import refuse_undeclared_keys
 
 __all__ = [
@@ -949,6 +950,8 @@ _RECOGNISED_OVERRIDE_KEYS: frozenset[str] = frozenset(
         # Observation window
         "observation_window",
         "observation_window_polling",
+        # Tool-output cap
+        "tool_output_max_chars",
         # Params policy
         "fixed_temperature",
         "supports_seed",
@@ -1011,6 +1014,9 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
 
     if "observation_window_polling" in overrides:
         cfg["observation_window_polling"] = overrides["observation_window_polling"]
+
+    if "tool_output_max_chars" in overrides:
+        cfg["tool_output_max_chars"] = overrides["tool_output_max_chars"]
 
     # dict_map_prompt_hints → prompt_policy
     if overrides.get("dict_map_prompt_hints"):
@@ -1218,8 +1224,10 @@ def build_capabilities(
         observation_window_polling=_validated_observation_window_polling(
             observation_window_polling, where
         ),
-        tool_output_max_chars=(
-            int(tool_output_max_chars) if tool_output_max_chars is not None else None
+        # ``None`` is a value, not an absence: it disables the per-model cap and
+        # is how a run config clears a preset's cap.
+        tool_output_max_chars=validated_output_max_chars(
+            tool_output_max_chars, "tool_output_max_chars", context=where
         ),
         default_max_turns=(int(default_max_turns) if default_max_turns is not None else None),
         default_agent_prompt_contract=(
@@ -1341,6 +1349,7 @@ def resolve_context_controls(capabilities: ModelCapabilities) -> dict[str, Any]:
             "reasoning_history":          "all" | "none" | "last",
             "observation_window":         int | None,
             "observation_window_polling": int,
+            "tool_output_max_chars":      int | None,
         }
 
     ``reasoning_history`` is the **effective** setting, not the requested one: a
@@ -1349,11 +1358,18 @@ def resolve_context_controls(capabilities: ModelCapabilities) -> dict[str, Any]:
     requested ``model_config.<role>.capabilities.reasoning_history`` sees when
     the two differ, which is the only record that a leg asking for less replay
     ran with more.
+
+    ``tool_output_max_chars`` is the per-model cap after a run config's override,
+    an explicit ``null`` included: a config can set or clear it, and it changes
+    what the agent's model reads, so two runs under different caps must not
+    record the same block. It bounds the agent's loop only, where the per-tool
+    caps a task declares compose with it; those belong to the task, not here.
     """
     return {
         "reasoning_history": effective_reasoning_history(capabilities),
         "observation_window": capabilities.observation_window,
         "observation_window_polling": capabilities.observation_window_polling,
+        "tool_output_max_chars": capabilities.tool_output_max_chars,
     }
 
 

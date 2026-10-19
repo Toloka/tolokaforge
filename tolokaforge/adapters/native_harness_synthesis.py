@@ -246,9 +246,6 @@ def _synthesise_compose(
 
     agent_body["image"] = layered_image
     agent_body["build"] = {"context": ".", "dockerfile": "harness.Dockerfile"}
-    agent_body["container_name"] = (
-        f"{PROJECT_PREFIX}{_TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER}_{agent_service}"
-    )
     # `depends_on: runner` on the agent service would loop — the runner
     # depends on db-service, and neither depends on the CLI target.
     agent_body_env = _set_env(agent_body.get("environment"), "TEST_DIR", "/tests")
@@ -290,6 +287,21 @@ def _synthesise_compose(
 
     services[RUNNER_SERVICE] = _runner_service_body(runner_image)
     services[DB_SERVICE] = _db_service_body(db_service_image)
+
+    # Stamp a deterministic per-trial container name on EVERY service, not just
+    # the agent. The runner-side resolver (``compose_container_name``) names a
+    # sibling as ``{prefix}{slug}_{service}``; any service left on Compose's
+    # default name (``<project>-<service>-1``) is invisible to it, so a
+    # separate-verifier / ``service=`` / sidecar artifact copy would target "no
+    # such container" and the grade would be ungradeable. Stamping all services
+    # keeps sibling resolution working the moment a task declares one, matching
+    # the terminal_bench adapter, whose task compose files carry the same
+    # ``container_name: {prefix}${TOLOKAFORGE_TRIAL_SLUG}_{service}`` on every
+    # service.
+    for service_name, service_body in services.items():
+        service_body["container_name"] = (
+            f"{PROJECT_PREFIX}{_TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER}_{service_name}"
+        )
     return doc
 
 
@@ -315,8 +327,15 @@ def _db_service_body(db_service_image: str) -> dict[str, Any]:
     return {
         "image": db_service_image,
         "ports": ["8000"],
+        # The db-service image is a slim base with no curl; it probes /health with
+        # a stdlib urllib call (its own baked HEALTHCHECK). Mirror that here — a
+        # curl probe never passes, so the stack never becomes healthy.
         "healthcheck": {
-            "test": ["CMD-SHELL", "curl -fs http://localhost:8000/health || exit 1"],
+            "test": [
+                "CMD-SHELL",
+                'python -c "import urllib.request; '
+                "urllib.request.urlopen('http://localhost:8000/health')\" || exit 1",
+            ],
             "interval": "2s",
             "timeout": "3s",
             "retries": 30,

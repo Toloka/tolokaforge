@@ -82,6 +82,28 @@ raises on the LIVE-callback lane. Lane B parity gate at
 inherits the same lock."""
 
 
+_DB_PROBES_REFUSAL_FRAGMENT: str = (
+    "snapshot substrate cannot serve db_probes offline — it has no live postgres "
+    "to query. Configure grader: runner_rpc for this task to grade db_probes "
+    "against the live runner, or regrade with a components config that carries a "
+    "pre-computed db_probe_score."
+)
+"""Up-front refusal for an offline recompute of a ``db_probes`` task.
+
+Carries the same ``cannot serve db_probes offline`` fragment the substrate-level
+refusal surfaces, so both offline lanes — this kinds-registry lane and
+:class:`~tolokaforge.grader.composite_dispatch.GraderCompositeDispatch` — emit
+one consistent message. The guard is kept (not removed in favour of the
+substrate refusal alone) because reaching that refusal through a full recompute
+would first rehydrate the trajectory, extract tool artifacts to disk, and run
+jsonpath grading — meaningful wasted work before the inevitable db_probe
+failure. The offline substrate's
+:meth:`~tolokaforge.core.grading.substrate.SnapshotGradingSubstrate.db_probe`
+would raise :class:`~tolokaforge.core.grading.substrate.SubstrateUnreachableError`
+with the identical fragment; refusing up front skips that wasted work and books
+the task ungradeable cleanly rather than scoring 0.0."""
+
+
 class CompositeGraderKind:
     """Reference composite grader kind — folds sub-component scores.
 
@@ -116,6 +138,14 @@ class CompositeGraderKind:
         components_dict: dict[str, Any] = dict((kind_config or {}).get("components") or {})
         if _any_active(components_dict):
             return self._fold_precomputed(components_dict, task_config)
+
+        # db_probes refusal — symmetric with the hash refusal above, but scoped
+        # to the offline recompute path: pre-computed components already carry a
+        # db_probe_score, so only a recompute would reach the substrate's
+        # db_probe accessor, which the snapshot substrate refuses. Refuse
+        # up-front rather than let the recompute launder that refusal to 0.0.
+        if state_checks_config is not None and getattr(state_checks_config, "db_probes", None):
+            raise GraderKindRefusedError(_DB_PROBES_REFUSAL_FRAGMENT)
 
         # No pre-computed components: either the caller wants full offline
         # recompute (v1.1 substrate exposes the runner-only inputs) or the

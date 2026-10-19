@@ -23,7 +23,7 @@ registry, and the ``snapshot_status`` field
 
 **Byte-parity commitment.** Live-grade vs CLI-regrade byte-parity holds
 only for kinds whose substrate reads all succeed offline against
-``SnapshotGradingSubstrate``. Bundle format v1.0 does not carry a
+``SnapshotGradingSubstrate``. Bundle format v1.1 does not carry a
 test-suite hook: ``test_execution`` refuses actionably via
 :class:`SubstrateUnreachableError`. ``composite`` needs pre-computed
 component scores (see ``docs/GRADER_SERVICE.md`` § Sub-component
@@ -32,10 +32,12 @@ plug-in seams) and today requires ``--grader-config components:{...}``.
 Exit codes:
 
 - ``0`` — every dispatched trial produced a grade (or, for ``grade``,
-  the single dispatch succeeded). Skips are non-error.
-- ``1`` — kind refused, substrate unreachable, kind returned no verdict,
-  grading failed, or (for ``grade``) ``--out`` was not empty. No
-  ``grade.json`` is written for the offending trial(s).
+  the single dispatch succeeded). A kind that returns no verdict is booked
+  as a defined zero-score grade (matching the live lane), not an error.
+  Skips are non-error.
+- ``1`` — kind refused, substrate unreachable, grading failed, or (for
+  ``grade``) ``--out`` was not empty. No ``grade.json`` is written for the
+  offending trial(s).
 - ``2`` — bad argument at CLI-parse time (unknown kind, malformed URI,
   store-name mismatch on the single-trial verb, malformed
   ``--store-config`` YAML).
@@ -74,7 +76,7 @@ from tolokaforge.core.grading.substrate import (
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Trajectory
-from tolokaforge.core.models.grade import Grade
+from tolokaforge.core.models.grade import Grade, GradeComponents
 from tolokaforge.core.models.run_config import BundleStoreBackend
 from tolokaforge.core.models.trajectory import SnapshotOutcome, SnapshotStatus
 from tolokaforge.core.plugin_registry import (
@@ -229,7 +231,19 @@ def _regrade_bundle(
             substrate.close()
 
     if grade is None:
-        raise click.ClickException(f"kind {kind_name} returned no verdict")
+        # A kind returning None is a first-class "no verdict" outcome, not an
+        # error (GraderKind contract: None == "opted out / not applicable"). The
+        # live runner lane (``_dispatch_via_grader_kind``) books it as a defined
+        # zero-score grade carrying the ``custom_checks=-1.0`` no-verdict sentinel.
+        # This offline lane produces the identical grade — same components sentinel
+        # and same reason wording — so a no-verdict means the same thing, byte for
+        # byte, on both lanes rather than exiting 1.
+        grade = Grade(
+            binary_pass=False,
+            score=0.0,
+            components=GradeComponents(custom_checks=-1.0),
+            reasons=f"grader-kind {kind_name!r} returned no verdict",
+        )
 
     target = out_dir / _GRADE_FILENAME
     target.write_text(grade.model_dump_json(indent=2, exclude_none=True), encoding="utf-8")

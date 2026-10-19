@@ -33,7 +33,7 @@ from typing import Any
 import pytest
 
 from tests.utils.runner_requests import register_request, trial_spec_json
-from tolokaforge.core.grading.substrate import RunTestSuiteResult
+from tolokaforge.core.grading.substrate import RunTestSuiteResult, SubstrateUnreachableError
 from tolokaforge.core.models import JudgeUsage
 from tolokaforge.core.trial_grader import GradingFailedError
 from tolokaforge.runner import runner_pb2 as pb2
@@ -101,6 +101,7 @@ def _script_run_test_suite(service: RunnerServiceImpl, result: RunTestSuiteResul
         reward_read_timeout_s: float,
         *,
         trial_id: str,
+        service: str | None = None,
     ) -> RunTestSuiteResult:  # noqa: ARG001
         return result
 
@@ -174,6 +175,39 @@ def test_script_exec_error_maps_to_success_false_with_the_refusal_as_error(
     assert response.error == (
         "test.sh execution failed: Command 'bash test.sh' timed out after 120.0 seconds"
     )
+    assert response.HasField("grade") is False
+
+
+def test_substrate_unreachable_maps_to_success_false_with_reason(
+    service: RunnerServiceImpl, mock_grpc_context: Any
+) -> None:
+    """A substrate that lost its state source mid-grade books the trial
+    ungradeable on the wire, not scored zero: the kind lets
+    :class:`SubstrateUnreachableError` escape and the dispatcher maps it to
+    ``success=False`` with the message as ``error`` — matching how the
+    detached and CLI lanes already translate it."""
+    trial_id = "substrate_unreachable:0"
+    _register_and_return_trial_id(service, mock_grpc_context, trial_id, _task("test_execution"))
+
+    message = "Trial 'substrate_unreachable:0': docker cp of '/out' failed (src rc=1, dst rc=0)."
+
+    def stub(
+        script_path: str,  # noqa: ARG001
+        reward_path: str,  # noqa: ARG001
+        timeout_s: float,  # noqa: ARG001
+        reward_read_timeout_s: float,  # noqa: ARG001
+        *,
+        trial_id: str,  # noqa: ARG001
+        service: str | None = None,  # noqa: ARG001
+    ) -> RunTestSuiteResult:
+        raise SubstrateUnreachableError(message)
+
+    service._run_test_suite_via_agent_tools = stub  # type: ignore[method-assign]
+
+    response = service.GradeTrial(pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context)
+
+    assert response.success is False
+    assert response.error == message
     assert response.HasField("grade") is False
 
 
@@ -279,6 +313,7 @@ def _capture_run_test_suite(service: RunnerServiceImpl, seen: dict[str, Any]) ->
         reward_read_timeout_s: float,
         *,
         trial_id: str,  # noqa: ARG001
+        service: str | None = None,  # noqa: ARG001
     ) -> RunTestSuiteResult:
         seen.update(
             script_path=script_path,

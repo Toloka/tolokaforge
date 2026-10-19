@@ -61,6 +61,7 @@ from tolokaforge.core.trial_executor import (
 )
 from tolokaforge.core.trial_grader import TrialGrader
 from tolokaforge.observability.observer import NullTrialObserver, TrialObserver
+from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 from tolokaforge.secrets import (
     CONTAINER_SECRETS_ENV_VAR,
     SecretManager,
@@ -125,6 +126,7 @@ class TrialExecutionContext:
     request_limiter: GlobalRateLimiter | None
     grader_config: GraderConfig | None
     grpc_max_message_mb: int
+    state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
     verbose: bool = False
     strict: bool = False
     dispatch_adapter: DispatchAdapter | None = None
@@ -228,6 +230,7 @@ def build_trial_execution_unit(ctx: TrialExecutionContext) -> TrialExecutionUnit
             grader_config=grader_config,
             runtime_backend=in_process_backend_shim,
             grpc_max_message_mb=ctx.grpc_max_message_mb,
+            state_read_timeout_s=ctx.state_read_timeout_s,
         )
     )
     try:

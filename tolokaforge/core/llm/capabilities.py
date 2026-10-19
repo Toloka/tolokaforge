@@ -259,6 +259,9 @@ class ModelCapabilities:
     of the cap. ``Message.content_blocks`` is unaffected: multimodal payloads
     are fixed-size per call and would break if partially clipped. ``None``
     (the default) leaves every tool message threaded through verbatim.
+    A preset names it, and a run config sets or clears it per model through
+    ``models.<role>.capabilities.tool_output_max_chars``; it applies to the
+    agent's loop.
     """
 
     default_max_turns: int | None = None

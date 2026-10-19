@@ -244,6 +244,29 @@ class ToolsConfig(BaseModel):
     agent: dict[str, Any] = Field(default_factory=lambda: {"enabled": []})
     user: dict[str, Any] = Field(default_factory=lambda: {"enabled": []})
 
+    @field_validator("user")
+    @classmethod
+    def _refuse_user_output_caps(cls, block: dict[str, Any]) -> dict[str, Any]:
+        """Reject ``output_max_chars`` anywhere in the user's block.
+
+        The cap bounds what the agent's model reads; the user simulator's tool
+        results are never cut. A cap declared here would load and do nothing, so
+        an author would believe a bound holds that does not.
+        """
+        paths = ["tools.user.output_max_chars"] if "output_max_chars" in block else []
+        paths += [
+            f"tools.user.{name}.output_max_chars"
+            for name, value in block.items()
+            if isinstance(value, dict) and "output_max_chars" in value
+        ]
+        if paths:
+            raise ValueError(
+                f"{', '.join(paths)}: output_max_chars caps the agent's tool results only — "
+                "the user simulator's tool results are not cut, so a cap in the user's "
+                "block would have no effect. Declare it under tools.agent, or drop it."
+            )
+        return block
+
 
 def _refuse_first_message(data: Any) -> Any:
     """Reject an opener declared on the user actor instead of on the task.

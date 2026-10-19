@@ -10,6 +10,7 @@ reasoning codec, cache) and delegates per-request adaptation to each policy.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -251,6 +252,60 @@ def _root_param_types_by_tool(
         if type_map:
             out[name] = type_map
     return out
+
+
+def _param_schemas_by_tool(
+    tools: list[dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """Build ``{tool_name: parameters_schema}`` from the **original** tools.
+
+    The response policy's reverse pivot
+    (:func:`~tolokaforge.core.llm.response_policy.reverse_dict_map_arrays`)
+    walks the model's arguments against the schema the tool actually
+    validates with — ``additionalProperties: {schema}`` marks every dict-map,
+    at any depth — not against the sanitised wire shape, where that
+    information has been rewritten into an array.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        func = tool.get("function")
+        if not isinstance(func, dict):
+            continue
+        name = func.get("name")
+        params = func.get("parameters")
+        if isinstance(name, str) and isinstance(params, dict):
+            out[name] = params
+    return out
+
+
+_ACCEPTS_PARAM_SCHEMA_BY_TYPE: dict[type, bool] = {}
+
+
+def _policy_accepts_param_schema(policy: Any) -> bool:
+    """Whether ``policy.parse_arguments`` takes the ``param_schema`` keyword.
+
+    ``param_schema`` joined the :class:`ResponsePolicy` contract after
+    ``param_types``; a policy shipped against the older two-argument
+    signature (an earlier ``tolokaforge-models`` wheel, an out-of-tree
+    plugin) must keep working, so the engine passes the keyword only to a
+    policy that declares it (or ``**kwargs``). Cached per policy class.
+    """
+    policy_type = type(policy)
+    cached = _ACCEPTS_PARAM_SCHEMA_BY_TYPE.get(policy_type)
+    if cached is not None:
+        return cached
+    try:
+        params = inspect.signature(policy.parse_arguments).parameters
+    except (TypeError, ValueError):
+        accepts = False
+    else:
+        accepts = "param_schema" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+    _ACCEPTS_PARAM_SCHEMA_BY_TYPE[policy_type] = accepts
+    return accepts
 
 
 def _resolve_declared_type(schema: dict[str, Any]) -> str | None:
@@ -1965,6 +2020,7 @@ class LLMClient:
             effective_system_prompt=effective_system_prompt,
             latency_s=latency,
             sanitized_tools=sanitized_tools,
+            tools=tools,
             role=role,
             reasoning_replay_dropped=reasoning_replay_dropped,
         )
@@ -2525,6 +2581,7 @@ class LLMClient:
         effective_system_prompt: str | None,
         latency_s: float,
         sanitized_tools: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
         role: LLMCallRole = "agent",
         reasoning_replay_dropped: bool = False,
     ) -> GenerationResult:
@@ -2535,10 +2592,12 @@ class LLMClient:
         * ``reasoning_codec.extract`` — lifts ``thinking_blocks`` / OpenAI
           reasoning into :class:`StructuredReasoning` (``None`` for
           non-reasoning models; zero inline attribute branching).
-        * ``response_policy.parse_arguments`` — reverses e.g. array-dict-map
-          wire shape back into typed ``Dict[str, T]``, and (when given the
-          post-sanitised tool schema) coerces empty strings back to empty
-          containers for declared array / object params.
+        * ``response_policy.parse_arguments`` — reverses the array-dict-map
+          wire shape back into typed ``Dict[str, T]`` (driven by the
+          **original** ``tools`` schema, so nested dict-maps reverse too),
+          and (when given the post-sanitised tool schema) coerces empty
+          strings back to empty containers for declared array / object
+          params.
         * :class:`UsageExtractor` — pulls full prompt / completion / reasoning
           / cache counters (see docs/LLM_LAYER.md § ``usage``).
         * :func:`extract_openrouter_generation_id` — lifts OpenRouter's
@@ -2580,6 +2639,13 @@ class LLMClient:
         # recovery for ``array`` / ``object`` params) can fire on every
         # tool-call argument set the model emits.
         param_types_by_tool = _root_param_types_by_tool(sanitized_tools)
+        # The original (pre-sanitiser) schema per tool drives the reverse
+        # dict-map pivot at every depth. Passed only to a policy that takes
+        # the keyword — see :func:`_policy_accepts_param_schema`.
+        response_policy = self.capabilities.response_policy
+        param_schemas_by_tool = (
+            _param_schemas_by_tool(tools) if _policy_accepts_param_schema(response_policy) else {}
+        )
 
         parser_errors_list: list[ParserError] = []
         if hasattr(message, "tool_calls") and message.tool_calls:
@@ -2596,10 +2662,12 @@ class LLMClient:
                             reason=parse_reason,
                         )
                     )
-                arguments = self.capabilities.response_policy.parse_arguments(
-                    arguments,
-                    param_types=param_types_by_tool.get(tc.function.name),
-                )
+                parse_kwargs: dict[str, Any] = {
+                    "param_types": param_types_by_tool.get(tc.function.name)
+                }
+                if param_schemas_by_tool:
+                    parse_kwargs["param_schema"] = param_schemas_by_tool.get(tc.function.name)
+                arguments = response_policy.parse_arguments(arguments, **parse_kwargs)
 
                 tool_calls.append(
                     ToolCall(

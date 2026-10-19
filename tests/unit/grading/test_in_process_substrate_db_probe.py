@@ -16,7 +16,11 @@ import datetime as _dt
 import pytest
 
 from tolokaforge.core.grading import db_probes as db_probes_module
-from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
+from tolokaforge.core.grading.db_probes import DbProbeQueryError
+from tolokaforge.core.grading.substrate import (
+    InProcessGradingSubstrate,
+    SubstrateUnreachableError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -49,3 +53,32 @@ def test_empty_result_set_returns_empty_list(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", fake_fetch)
 
     assert _make_substrate().db_probe("postgresql://x", "SELECT ...") == []
+
+
+def test_unreachable_db_raises_substrate_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transport/connection failure (ConnectionError is an OSError) marks the
+    trial ungradeable, not a scored 0.0 — the in-process half of the taxonomy."""
+
+    async def fake_fetch(dsn: str, query: str) -> list[dict[str, object]]:  # noqa: ARG001
+        raise ConnectionError("could not connect to app-db:5432")
+
+    monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", fake_fetch)
+
+    with pytest.raises(SubstrateUnreachableError):
+        _make_substrate().db_probe("postgresql://x", "SELECT ...")
+
+
+def test_query_failure_raises_db_probe_query_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A query failure (the DB answered and rejected the query) is NOT
+    unreachable; it raises DbProbeQueryError, which the backend folds to a FAIL
+    line scoring 0.0 for that probe — the trial stays gradeable."""
+
+    async def fake_fetch(dsn: str, query: str) -> list[dict[str, object]]:  # noqa: ARG001
+        raise RuntimeError('relation "corrective_actions" does not exist')
+
+    monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", fake_fetch)
+
+    with pytest.raises(DbProbeQueryError) as excinfo:
+        _make_substrate().db_probe("postgresql://x", "SELECT ...")
+    assert not isinstance(excinfo.value, SubstrateUnreachableError)
+    assert "does not exist" in str(excinfo.value)

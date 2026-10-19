@@ -153,6 +153,7 @@ committed "service is up" signal.
 | `TYPESENSE_HOST` | no | *(none — honest absence)* | Host the TypeSense server answers on, as reachable from this container. Present iff the run configured a TypeSense plane; unset means the runner falls back to the connection details its task descriptions carry. |
 | `TYPESENSE_PORT` | no | *(none — honest absence)* | Port paired with `TYPESENSE_HOST`. Set together with it — a container given one without the other is a half-configured stack, and the runner refuses rather than falling back. |
 | `TOLOKAFORGE_GRPC_MAX_MESSAGE_MB` | no | `50` | Largest gRPC message, in MiB, the runner sends or accepts (`4`–`2047`); set it to the driving engine's `compute.grpc_max_message_mb`. Any other value fails startup. See [RUNNER.md § gRPC message size](RUNNER.md#grpc-message-size). |
+| `TOLOKAFORGE_STATE_READ_TIMEOUT_S` | no | `20` | Seconds the runner waits for one read of a trial's live state from its MCP server or app world; set it to the driving engine's `compute.state_read_timeout_s`. Anything other than a positive, finite number fails startup. See [RUNNER.md § State read timeout](RUNNER.md#state-read-timeout). |
 
 The TypeSense API key is deliberately absent from this table: it arrives inside
 `TOLOKAFORGE_SECRETS_JSON` under `TYPESENSE_API_KEY`, like every other

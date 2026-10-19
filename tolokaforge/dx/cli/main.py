@@ -145,13 +145,16 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str | None, sourc
             "([dim]task-driven, resolved at orchestrator boot[/dim])"
         )
         console.print(
-            "[cyan]  → PerTrialRuntimeBackend if any task requires per-trial "
-            "isolation, else SharedStackRuntimeBackend[/cyan]"
+            "[cyan]  → SharedStackRuntimeBackend; per-trial mode when a task "
+            "requires per-trial isolation, shared mode otherwise[/cyan]"
         )
         return
+    # The composed auto path builds a SharedStackRuntimeBackend for both the
+    # ``shared`` and ``per_trial`` overrides — the difference is the backend's
+    # per-trial *mode*, not a distinct class. Name what is actually instantiated.
     backend_class = {
         "shared": "SharedStackRuntimeBackend",
-        "per_trial": "PerTrialRuntimeBackend",
+        "per_trial": "SharedStackRuntimeBackend (per-trial mode)",
         "remote": "GrpcNodeDispatchAdapter (deprecated alias for dispatch.adapter=grpc_node)",
     }.get(runtime_choice, runtime_choice)
     isolation_line = {
@@ -720,9 +723,11 @@ def _run_dry_run(
     default=None,
     help=(
         "Hard cap in USD on cumulative spend across all actor roles (agent + "
-        "user simulator + rubric judge). Stops enqueuing new trials on hit; "
-        "in-flight trials finish. Writes LIMIT_HIT.json under the run "
-        "directory. Overrides compute.max_budget_usd."
+        "user simulator + rubric judge). Checked between trials, not mid-trial: "
+        "stops enqueuing new trials on hit while in-flight trials finish, so the "
+        "final spend overshoots the cap by up to one trial's cost per worker. "
+        "Writes LIMIT_HIT.json under the run directory. Overrides "
+        "compute.max_budget_usd."
     ),
 )
 @click.option(

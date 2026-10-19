@@ -20,6 +20,7 @@ is exercised end-to-end without a Docker daemon or an LLM key.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -185,6 +186,9 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
         config = MagicMock()
         config.orchestrator.timeouts.episode_s = episode_s
+        # Real default: no run-level agent-budget override, so the task-derived
+        # tool timeout governs (a bare Mock would read as a truthy override).
+        config.orchestrator.timeouts.agent_episode_s = None
         config.orchestrator.max_turns = None
         # A real config value: the turn-loop branch validates the probe budget
         # against the episode budget, and a MagicMock reads as enabled.
@@ -234,7 +238,17 @@ class TestHarnessTrialBypassesTheTurnLoop:
         assert len(runtime.executed_tools) == 1
         call = runtime.executed_tools[0]
         assert call["tool_name"] == "bash"
-        assert call["arguments"] == {"command": _HARNESS_COMMAND}
+        # Only the command rides the wire — no per-call budget alongside it.
+        assert set(call["arguments"]) == {"command"}
+        # The command reaching the runtime is the adapter's CLI invocation
+        # wrapped in the in-container episode watchdog: the real command is
+        # embedded verbatim (shell-quoted), and the watchdog plumbing that
+        # SIGKILLs its process group at the deadline is wrapped around it.
+        executed = call["arguments"]["command"]
+        assert shlex.quote(_HARNESS_COMMAND) in executed
+        assert "__tf_cmd=" in executed
+        assert "setsid" in executed
+        assert "kill -KILL" in executed
         assert call["executor"] == "agent"
 
     def test_no_per_call_budget_rides_the_wire(self, harness_trial):

@@ -35,7 +35,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from tolokaforge.core.grading.kinds._protocol import GraderKindRefusedError
 from tolokaforge.core.models.grade import Grade
@@ -47,9 +47,44 @@ if TYPE_CHECKING:
     from tolokaforge.runner.models import RunnerGradingConfig
 
 __all__ = [
+    "ArtifactSpec",
+    "CollectSpec",
     "TestExecutionGraderKind",
     "TestExecutionKindConfig",
 ]
+
+
+class ArtifactSpec(BaseModel):
+    """One path the verifier reads, carried into the verifier container.
+
+    ``source`` is an absolute path; ``exclude`` lists glob patterns pruned from
+    the copy (caches, regenerable build output). ``src_service`` names the trial
+    service to copy FROM — ``None`` means the agent's own container. A named
+    service covers a path that lives in a sidecar (e.g. a database dump a collect
+    step wrote inside a postgres sidecar).
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source: str
+    exclude: list[str] = Field(default_factory=list)
+    src_service: str | None = None
+
+
+class CollectSpec(BaseModel):
+    """A command run in a trial service container before artifacts are collected.
+
+    The separate-verifier shape uses it to snapshot a stateful sidecar (a
+    database) to a file inside that sidecar, which a matching
+    :class:`ArtifactSpec` (``src_service`` = this ``service``) then carries into
+    the verifier. A non-zero exit fails grading as ungradeable, never a 0.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    command: str
+    service: str | None = None
+    timeout_s: float = Field(default=300.0, gt=0.0)
 
 
 class TestExecutionKindConfig(BaseModel):
@@ -60,6 +95,12 @@ class TestExecutionKindConfig(BaseModel):
     script timeout, 10s reward-cat timeout, 65536-char output truncation
     for the reasons string — the runner's wire cap on verifier stdout, so
     the grade keeps the whole traceback the runner shipped.
+
+    ``service`` and ``artifacts`` cover the separate-verifier shape: the suite
+    runs in ``service``'s container rather than the agent's, and each
+    ``artifacts`` path is re-materialised from the agent container into it
+    first. Both default to the single-container behaviour — no service, nothing
+    to carry across.
     """
 
     model_config = {"extra": "forbid"}
@@ -69,6 +110,18 @@ class TestExecutionKindConfig(BaseModel):
     timeout_s: float = Field(default=300.0, gt=0.0)
     reward_read_timeout_s: float = Field(default=10.0, gt=0.0)
     output_truncation_chars: int = Field(default=65_536, ge=0)
+    service: str | None = None
+    artifacts: list[ArtifactSpec] = Field(default_factory=list)
+    collect: list[CollectSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _artifacts_and_collect_need_a_service(self) -> TestExecutionKindConfig:
+        if (self.artifacts or self.collect) and self.service is None:
+            raise ValueError(
+                "artifacts and collect hooks belong to the separate-verifier shape, so "
+                "a 'service' (the verifier) must be set when either is non-empty."
+            )
+        return self
 
 
 class TestExecutionGraderKind:
@@ -87,11 +140,36 @@ class TestExecutionGraderKind:
         logger: StructuredLogger,  # noqa: ARG002
     ) -> Grade | None:
         cfg = TestExecutionKindConfig(**(dict(kind_config) if kind_config else {}))
+        for hook in cfg.collect:
+            # Snapshot a stateful sidecar to a file inside it (e.g. pg_dumpall),
+            # which the matching artifact below carries into the verifier. A
+            # non-zero exit means the snapshot never landed — ungradeable, not 0.
+            exit_code, output = substrate.exec_in_service(
+                service=hook.service,
+                command=hook.command,
+                timeout_s=hook.timeout_s,
+            )
+            if exit_code != 0:
+                raise GraderKindRefusedError(
+                    f"collect command in service {hook.service!r} exited {exit_code}: "
+                    f"{output[: cfg.output_truncation_chars]}"
+                )
+        for artifact in cfg.artifacts:
+            # The suite runs in a container the agent never touched, so the files
+            # it is scored against are carried across first (empty-then-copy),
+            # from the agent (src_service None) or a named sidecar.
+            substrate.materialise_path(
+                src_service=artifact.src_service,
+                dst_service=cfg.service,
+                path=artifact.source,
+                exclude=artifact.exclude,
+            )
         result = substrate.run_test_suite(
             script_path=cfg.script_path,
             reward_path=cfg.reward_path,
             timeout_s=cfg.timeout_s,
             reward_read_timeout_s=cfg.reward_read_timeout_s,
+            service=cfg.service,
         )
         if result.tool_absent:
             raise GraderKindRefusedError(result.tool_absent_reason)
