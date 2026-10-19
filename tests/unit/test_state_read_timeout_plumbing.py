@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from tests.canonical._docker_compose_stubs import InertDockerCompose
-from tolokaforge.core import orchestrator as orchestrator_module
+from tolokaforge.core import trial_node as trial_node_module
 from tolokaforge.core.compose_materialisation import inject_runner_limits_env_into_runner
 from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
 from tolokaforge.core.docker_compose_materialiser import (
@@ -376,16 +376,20 @@ class TestQueueGraderWait:
     def test_orchestrator_hands_the_bound_to_the_trial_grader(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The trial grader is loaded inside ``build_trial_execution_unit``, so
+        # the orchestrator hands the bound to the grader by threading
+        # ``compute.state_read_timeout_s`` through ``TrialExecutionContext`` into
+        # the ``TrialGraderContext`` the grader factory receives.
         contexts: list[TrialGraderContext] = []
 
         def load_trial_grader(_name: str):
             return lambda ctx: contexts.append(ctx) or MagicMock()
 
-        monkeypatch.setattr(orchestrator_module, "load_trial_grader", load_trial_grader)
+        monkeypatch.setattr(trial_node_module, "load_trial_grader", load_trial_grader)
         orch = _orchestrator(ComputeConfig(state_read_timeout_s=_CONFIGURED_S))
         orch._conductor_factory = lambda _ctx: MagicMock()
 
-        orch._build_conductor(
+        orch._build_trial_unit(
             agent_client=MagicMock(),
             runtime_backend=MagicMock(),
             output_dir=tmp_path,
