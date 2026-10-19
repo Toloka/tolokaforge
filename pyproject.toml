@@ -46,7 +46,15 @@ dependencies = [
     # outside openai.com (so Anthropic prompt caching survives a resolved LLM
     # gateway route), it has the native ``meta`` provider, and it is past the
     # 1.92.x line, which imports fastapi on the tool-call path.
-    "litellm>=1.93.0,<2.0.0",
+    # NB: capped at <1.98 — litellm 1.98 promoted ``boto3`` from a ``proxy``-extra
+    # dependency to an UNCONDITIONAL core dependency, which drags the ~32 MB AWS
+    # SDK into the slim runner image and pushes it past its size ceiling. We
+    # never touch Bedrock through boto3: the ``nova`` provider speaks the
+    # OpenAI-compatible dialect (``custom_llm_provider="openai"``), there is no
+    # native Bedrock route, and boto3 is a lazy import only behind the opt-in
+    # ``bundle-store-s3`` extra. Lift the cap once the runner image no longer
+    # needs to stay slim or litellm stops bundling boto3 by default.
+    "litellm>=1.93.0,<1.98",
     # Data validation and schemas
     "pydantic>=2.0.0",
     "pydantic[email]>=2.0.0",
