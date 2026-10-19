@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import BaseModel, Field, ValidationInfo, model_validator
 
@@ -24,6 +24,9 @@ from tolokaforge.core.models import (
     TimeoutConfig,
     Trajectory,
 )
+
+if TYPE_CHECKING:
+    from tolokaforge.core.models import RunConfig
 from tolokaforge.runner.models import (
     EnvironmentManifest,
     InitialStateKind,
@@ -179,6 +182,27 @@ class NodeRunSettings(BaseModel):
     capture_logs_on_success: bool = ComputeConfig.model_fields["capture_logs_on_success"].default
 
     model_config = {"extra": "forbid"}
+
+    @classmethod
+    def from_config(cls, run_config: RunConfig) -> NodeRunSettings:
+        """Project the run-level settings a node rebuilds its configuration from.
+
+        The single source of truth for both the orchestrator's remote-dispatch
+        path and the library planning surface: the ``orchestrator`` and
+        ``compute`` subset the conductor and the node's log capture read while
+        running one trial. An unset ``compute`` block falls back to its defaults.
+        """
+        orchestrator = run_config.orchestrator
+        compute = run_config.compute or ComputeConfig()
+        return cls(
+            timeouts=orchestrator.timeouts,
+            max_turns=orchestrator.max_turns,
+            max_trial_tokens=orchestrator.max_trial_tokens,
+            stuck_heuristics=orchestrator.stuck_heuristics,
+            agent_loop=orchestrator.agent_loop,
+            log_tail=compute.log_tail,
+            capture_logs_on_success=compute.capture_logs_on_success,
+        )
 
 
 class TrialNodeInputs(BaseModel):

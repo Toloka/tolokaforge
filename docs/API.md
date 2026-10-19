@@ -2,6 +2,97 @@
 
 Key classes and entry points for programmatic usage.
 
+## Driving a run as three composable steps
+
+`run_trial` runs one trial end-to-end. To drive a whole batch from your own
+orchestration layer — your own scheduler, your own distributed backend — and
+still get the report a single `tolokaforge run` writes, compose three steps:
+
+1. **`plan_trials(run_config)`** — expand the run into a flat list of
+   `TrialNodeInputs`, one per `(task, repeat)`. Each is a self-contained,
+   serializable description of one trial; no adapter, conductor or runtime
+   backend is resolved here, so you can ship the inputs to wherever the trial
+   will run.
+2. **`run_trial_from_inputs(inputs)`** — run one `TrialNodeInputs` to a
+   `TrialResult`. Your layer calls this itself, on whatever backend it owns,
+   in whatever order and concurrency it likes.
+3. **`aggregate_results(results, run_config=cfg, output_dir=out)`** — fold the
+   `TrialResult`s (or a run directory) into the four aggregate artifacts a full
+   run writes.
+
+```python
+from tolokaforge.runner import plan_trials, run_trial_from_inputs, aggregate_results
+
+planned = plan_trials(cfg)                       # list[TrialNodeInputs]
+results = [run_trial_from_inputs(i) for i in planned]  # your scheduler drives this
+report = aggregate_results(results, run_config=cfg, output_dir="results/my_run")
+print(report.aggregate["success_rate_micro"])
+```
+
+**Guarantee.** The four artifacts `aggregate_results` writes
+(`aggregate.json`, `per_task_metrics.json`, `metadata_slices.json`,
+`failure_attribution.json`) reproduce the report a single `tolokaforge run`
+writes, field for field, except the disk-only non-reproducible stamps
+(`tolokaforge_version`, `captured_service_logs`). It works the same for the
+native loop and for a delegated harness — the harness identity travels as data
+on each planned trial (`trial_spec.task.adapter_type`, the agent model's
+`harness`), not as a resolved object. `aggregate_results` renumbers
+`trial_index` per task, so independently produced single-trial results (each
+`trial_index=0`) count as the repeats they are.
+
+### plan_trials
+
+```python
+def plan_trials(
+    run_config: RunConfig,
+    tasks: Sequence[TaskConfig] | None = None,
+    *,
+    runtime: str = "auto",
+    grader: str | None = None,
+    conductor: str = "in_process",
+    run_id: str | None = None,
+) -> list[TrialNodeInputs]: ...
+```
+
+- **`run_config`** — supplies the role → model map (`models.agent` required),
+  the repeat count and shuffle flag, the run-level grader block, and the node
+  run settings. Tasks load through its declared adapter.
+- **`tasks`** — preloaded `TaskConfig`s to plan instead of loading from the
+  config; preloading gives exact control over the task set.
+- **`runtime` / `grader` / `conductor`** — carried as data on each trial.
+  `runtime="auto"` defers per-trial isolation to the task; `grader=None`
+  carries the run config's own grader block (which defers to the adapter
+  default when unset).
+
+### aggregate_results
+
+```python
+def aggregate_results(
+    results,                       # Iterable[TrialResult | Trajectory], or a run-dir Path
+    *,
+    run_config: RunConfig | None = None,
+    tasks: Sequence[TaskConfig] | None = None,
+    output_dir: Path | str | None = None,
+) -> RunReport: ...
+```
+
+- **`results`** — the trials to aggregate, as `TrialResult` / `Trajectory`
+  objects or a run directory whose `trials/<task_id>/<trial_index>/` bundles are
+  read back.
+- **`run_config` / `tasks`** — source the per-task metadata (benchmark type,
+  complexity, tags, expected failure modes) the slices group by. Omit both to
+  fold unclassified (or to read a run directory's per-trial `task.yaml`
+  snapshots).
+- **`output_dir`** — when given, the four JSONs are written here through the
+  same writer a full run uses.
+- **Returns** a `RunReport` (`per_task_metrics`, `aggregate`,
+  `metadata_slices`, `failure_attribution`).
+
+**Caveat.** The built-in remote dispatch adapter (`grpc_node`) still refuses
+coding-harness mode — a transport limit, not a surface limit. Driving a
+delegated harness through the three steps works on any backend you run
+`run_trial_from_inputs` on yourself.
+
 ## run_trial
 
 Run one trial in-process and get its `TrialResult` back, without

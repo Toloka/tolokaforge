@@ -54,10 +54,7 @@ from tolokaforge.core.engine_run_state import (
 from tolokaforge.core.env_var import parse_env_positive_float
 from tolokaforge.core.failure_attribution import (
     TrialOutcomeClass,
-    attribute_failure,
     classify_trial_outcome,
-    is_failed_trajectory,
-    summarize_failure_attributions,
 )
 from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.llm.presets import (
@@ -69,11 +66,6 @@ from tolokaforge.core.llm.presets import (
     unclaimed_route_families,
 )
 from tolokaforge.core.logging import get_logger
-from tolokaforge.core.metrics import (
-    calculate_aggregate_metrics,
-    calculate_latency_percentiles,
-    calculate_task_metrics,
-)
 from tolokaforge.core.model_data_fingerprint import compute_models_fingerprint
 from tolokaforge.core.models import (
     ComputeConfig,
@@ -96,14 +88,20 @@ from tolokaforge.core.models.run_config import (
     DispatchConfig,
     sets_user_temperature,
 )
-from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION, _engine_version
+from tolokaforge.core.output.aggregate_models import _engine_version
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import (
     FileArtifactWriter,
     TrialArtifactWriter,
     read_report_trajectory,
 )
+from tolokaforge.core.output.report import (
+    TaskReportMetadata,
+    build_run_report,
+    reasoning_transport_rollup,
+)
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
+from tolokaforge.core.planning import expand_trials
 from tolokaforge.core.plugin_registry import (
     RAG_SERVICE_STACK_SERVICE,
     DispatchAdapterBuildContext,
@@ -2154,13 +2152,11 @@ class Orchestrator:
         ``trial_started`` emission site can render a run-wide
         ``[N/M]`` prefix without recomputing.
         """
-        pending_trials: list[tuple[str, int]] = []
-        for task in tasks:
-            for trial_idx in range(repeats):
-                if skip_completed and skip_completed(task.task_id, trial_idx):
-                    continue
-                pending_trials.append((task.task_id, trial_idx))
-
+        pending_trials = [
+            (task_id, trial_idx)
+            for task_id, trial_idx in expand_trials(tasks, repeats)
+            if not (skip_completed and skip_completed(task_id, trial_idx))
+        ]
         if self.config.orchestrator.shuffle_trials:
             random.shuffle(pending_trials)
         self._total_index_by_key = {key: idx for idx, key in enumerate(pending_trials)}
@@ -4333,14 +4329,7 @@ class Orchestrator:
         billed for deliberation that arrived nowhere the engine looks, which is
         the one remaining way to lose it and needs a live probe to resolve.
         """
-        recovered = [t.metrics.reasoning_recovered_by_fallback for t in self.results]
-        unknown = [t.metrics.reasoning_channel_unknown for t in self.results]
-        return {
-            "recovered_by_fallback_calls": sum(recovered),
-            "recovered_by_fallback_trials": sum(1 for n in recovered if n),
-            "channel_unknown_calls": sum(unknown),
-            "channel_unknown_trials": sum(1 for n in unknown if n),
-        }
+        return reasoning_transport_rollup(self.results)
 
     def _warn_on_reasoning_transport(self, rollup: dict[str, int]) -> None:
         """Say once per run what the per-call logs said per model and upstream."""
@@ -4445,99 +4434,38 @@ class Orchestrator:
             self.logger.warning("No results to report")
             return
 
-        # Group trajectories by task
-        task_trajectories = {}
-        for traj in results:
-            if traj.task_id not in task_trajectories:
-                task_trajectories[traj.task_id] = []
-            task_trajectories[traj.task_id].append(traj)
-        task_by_id = {task.task_id: task for task in self.tasks}
-
-        # Calculate metrics per task
-        all_task_metrics = []
-        for task_id, trajectories in task_trajectories.items():
-            task_metrics = calculate_task_metrics(trajectories)
-            task_metrics["task_id"] = task_id
-            task_cfg = task_by_id.get(task_id)
-            if task_cfg is not None:
-                task_metrics["benchmark_type"] = task_cfg.category
-                task_metrics["complexity"] = task_cfg.metadata.complexity
-                task_metrics["expected_failure_modes"] = task_cfg.metadata.expected_failure_modes
-                task_metrics["tags"] = task_cfg.metadata.tags
-            all_task_metrics.append(task_metrics)
-
-        self._warn_on_degraded_coverage(all_task_metrics)
-
-        # Calculate aggregate metrics
-        aggregate = calculate_aggregate_metrics(all_task_metrics, weighted=True)
-        aggregate.update(
-            calculate_latency_percentiles([t.metrics.latency_total_s for t in results])
-        )
-
-        # Metadata-sliced aggregates
-        metadata_slices: dict[str, dict[str, Any]] = {
-            "by_benchmark_type": {},
-            "by_complexity": {},
-            "by_tag": {},
-            "by_expected_failure_mode": {},
+        tasks_metadata = {
+            task.task_id: TaskReportMetadata(
+                benchmark_type=task.category,
+                complexity=task.metadata.complexity,
+                expected_failure_modes=tuple(task.metadata.expected_failure_modes),
+                tags=tuple(task.metadata.tags),
+            )
+            for task in self.tasks
         }
-        groups_by_benchmark: dict[str, list[dict[str, Any]]] = {}
-        groups_by_complexity: dict[str, list[dict[str, Any]]] = {}
-        groups_by_tag: dict[str, list[dict[str, Any]]] = {}
-        groups_by_failure_mode: dict[str, list[dict[str, Any]]] = {}
 
-        for task_metrics in all_task_metrics:
-            benchmark_type = str(task_metrics.get("benchmark_type") or "unknown")
-            complexity = str(task_metrics.get("complexity") or "unspecified")
-            groups_by_benchmark.setdefault(benchmark_type, []).append(task_metrics)
-            groups_by_complexity.setdefault(complexity, []).append(task_metrics)
-
-            for tag in task_metrics.get("tags", []) or []:
-                groups_by_tag.setdefault(str(tag), []).append(task_metrics)
-            for failure_mode in task_metrics.get("expected_failure_modes", []) or []:
-                groups_by_failure_mode.setdefault(str(failure_mode), []).append(task_metrics)
-
-        for key, group in groups_by_benchmark.items():
-            metadata_slices["by_benchmark_type"][key] = calculate_aggregate_metrics(
-                group, weighted=True
-            )
-        for key, group in groups_by_complexity.items():
-            metadata_slices["by_complexity"][key] = calculate_aggregate_metrics(
-                group, weighted=True
-            )
-        for key, group in groups_by_tag.items():
-            metadata_slices["by_tag"][key] = calculate_aggregate_metrics(group, weighted=True)
-        for key, group in groups_by_failure_mode.items():
-            metadata_slices["by_expected_failure_mode"][key] = calculate_aggregate_metrics(
-                group, weighted=True
-            )
-
+        # The reasoning rollup counts over every attempt (``self.results``), not
+        # the deduped report set, so it is computed here and threaded in.
         reasoning_transport = self._reasoning_transport_rollup()
-        self._warn_on_reasoning_transport(reasoning_transport)
-        aggregate["reasoning_transport"] = reasoning_transport
+        report = build_run_report(results, tasks_metadata, reasoning_transport=reasoning_transport)
 
-        aggregate["schema_version"] = AGGREGATE_SCHEMA_VERSION
+        self._warn_on_degraded_coverage(report.per_task_metrics)
+        self._warn_on_reasoning_transport(reasoning_transport)
+
+        # The disk-only, non-reproducible fields the single-box run stamps on
+        # after the reproducible report is assembled.
+        aggregate = report.aggregate
         aggregate["tolokaforge_version"] = _engine_version()
         aggregate["captured_service_logs"] = collect_service_log_captures(output_dir).model_dump(
             by_alias=True, mode="json"
         )
 
-        # Deterministic failure attribution report
-        failure_attributions = [
-            attribute_failure(traj) for traj in results if is_failed_trajectory(traj)
-        ]
-        failure_summary = summarize_failure_attributions(failure_attributions)
-        failure_attribution_payload = {
-            "summary": failure_summary,
-            "failures": failure_attributions,
-        }
-
         self._run_aggregate_writer.write_run_aggregates(
             output_dir,
-            all_task_metrics,
+            report.per_task_metrics,
             aggregate,
-            metadata_slices,
-            failure_attribution_payload,
+            report.metadata_slices,
+            report.failure_attribution,
         )
 
         # Log summary. ``measured_trials`` and the aborts that reduced it ride
@@ -4567,8 +4495,8 @@ class Orchestrator:
             avg_turns=aggregate["avg_turns"],
             avg_tool_calls=aggregate["avg_tool_calls"],
             stuck_rate=aggregate["stuck_rate"],
-            failed_attempts=failure_summary.get("total_failed_attempts"),
-            deterministic_attribution_coverage=failure_summary.get(
+            failed_attempts=report.failure_attribution["summary"].get("total_failed_attempts"),
+            deterministic_attribution_coverage=report.failure_attribution["summary"].get(
                 "deterministic_attribution_coverage"
             ),
         )
