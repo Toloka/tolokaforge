@@ -19,16 +19,19 @@ own pending-trial build also calls.
 
 from __future__ import annotations
 
+import logging
 import random
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from tolokaforge.core.models import RunConfig, TaskConfig
+    from tolokaforge.core.models import RunConfig, TaskConfig, Trajectory
     from tolokaforge.core.output.report import RunReport
-    from tolokaforge.core.trial import TrialNodeInputs
+    from tolokaforge.core.trial import TrialNodeInputs, TrialResult
+
+logger = logging.getLogger(__name__)
 
 
 def expand_trials(
@@ -169,7 +172,7 @@ def plan_trials(
 
 
 def aggregate_results(
-    results: Any,
+    results: Iterable[TrialResult | Trajectory] | Path | str,
     *,
     run_config: RunConfig | None = None,
     tasks: Sequence[TaskConfig] | None = None,
@@ -371,7 +374,8 @@ def _task_metadata_from_snapshots(run_dir: Path, trajectories: list[Any]) -> dic
         try:
             with snapshot_path.open(encoding="utf-8") as stream:
                 snapshot = yaml.safe_load(stream) or {}
-        except Exception:
+        except (OSError, yaml.YAMLError) as exc:
+            logger.debug("skipping unreadable task snapshot %s: %s", snapshot_path, exc)
             continue
         task_metadata = snapshot.get("metadata") or {}
         metadata[task_id] = TaskReportMetadata(

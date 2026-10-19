@@ -115,6 +115,12 @@ def _load_json_files(run_dir: Path) -> dict[str, Any]:
     }
 
 
+def _trial_key(trial_id: str) -> tuple[str, int]:
+    """Split a planned ``trial_id`` (``"<task_id>:<trial_index>"``) into its key."""
+    task_id, trial_index = trial_id.rsplit(":", 1)
+    return task_id, int(trial_index)
+
+
 def test_three_steps_reproduce_the_run_report(tmp_path: Path) -> None:
     """plan → run → aggregate matches the orchestrator's own report assembly."""
     task = _write_native_task(tmp_path / "pack", "demo")
@@ -135,6 +141,17 @@ def test_three_steps_reproduce_the_run_report(tmp_path: Path) -> None:
     orch.tasks = [task]
     orch.results = [r.trajectory for r in results]
     orch._generate_reports(dir_a)
+
+    # Planning parity: the (task_id, trial_index) keys plan_trials expands must
+    # equal the orchestrator's own pending-trial build for this config — the
+    # library planning step enqueues exactly the trial set a full run would,
+    # not merely a set the two report-builders happen to agree on.
+    planned = plan_trials(
+        config, tasks=[task], runtime="in_memory", conductor="in_memory", grader="runner_rpc"
+    )
+    planned_keys = [_trial_key(inp.trial_spec.trial_id) for inp in planned]
+    orchestrator_keys = orch._build_pending_trials([task], config.orchestrator.repeats)
+    assert planned_keys == orchestrator_keys == [("demo", 0), ("demo", 1), ("demo", 2)]
 
     # Dir B — step 3 of the library pipeline over the same results.
     dir_b = tmp_path / "B"
