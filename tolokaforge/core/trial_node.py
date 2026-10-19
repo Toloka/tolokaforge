@@ -36,7 +36,6 @@ from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
-    ComputeConfig,
     EvaluationConfig,
     ModelConfig,
     OrchestratorConfig,
@@ -279,7 +278,6 @@ def _build_remote_trial_executor(
     the node rebuilds its configuration from travel in :class:`NodeRunSettings`.
     """
     orchestrator = ctx.config.orchestrator
-    compute = ctx.config.compute or ComputeConfig()
     return RemoteTrialExecutor(
         backend=dispatch_adapter,
         runtime=_NODE_RUNTIME,
@@ -289,15 +287,7 @@ def _build_remote_trial_executor(
         rate_limit_probe=(
             orchestrator.rate_limit_probe if orchestrator.rate_limit_probe.enabled else None
         ),
-        run_settings=NodeRunSettings(
-            timeouts=orchestrator.timeouts,
-            max_turns=orchestrator.max_turns,
-            max_trial_tokens=orchestrator.max_trial_tokens,
-            stuck_heuristics=orchestrator.stuck_heuristics,
-            agent_loop=orchestrator.agent_loop,
-            log_tail=compute.log_tail,
-            capture_logs_on_success=compute.capture_logs_on_success,
-        ),
+        run_settings=NodeRunSettings.from_config(ctx.config),
         logger=ctx.logger,
         output_dir=ctx.output_dir,
         artifact_writer=ctx.artifact_writer,

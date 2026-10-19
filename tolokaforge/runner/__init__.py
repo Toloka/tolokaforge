@@ -2,12 +2,19 @@
 Runner Package
 
 Hosts the runtime-independence library surface (:func:`run_trial`,
-:func:`run_trial_from_inputs`, :func:`load_task`) alongside the gRPC protocol
-definitions and service implementation used for Host ↔ Runner communication.
+:func:`plan_trials`, :func:`run_trial_from_inputs`, :func:`aggregate_results`,
+:func:`load_task`) alongside the gRPC protocol definitions and service
+implementation used for Host ↔ Runner communication.
+
+The three composable steps — :func:`plan_trials`, :func:`run_trial_from_inputs`,
+:func:`aggregate_results` — let an external orchestration layer drive a batch of
+trials itself and reproduce the report a single ``tolokaforge run`` writes.
 
 Components:
 - ``run_trial`` — single-trial library entry (ADR-0022 § Surface 2)
+- ``plan_trials`` — a run config → the serializable ``TrialNodeInputs`` per trial
 - ``run_trial_from_inputs`` — standalone trial entry over serialized inputs
+- ``aggregate_results`` — trial results → the four run-aggregate artifacts
 - ``load_task`` — ``task.yaml`` → validated ``TaskConfig`` loader
 - Protocol definitions (runner_pb2, runner_pb2_grpc)
 - DB Service client (db_client)
@@ -68,6 +75,24 @@ def __getattr__(name: str):
         obj = importlib.import_module("tolokaforge.core.trial_node").run_trial_from_inputs
         globals()[name] = obj
         return obj
+    if name == "plan_trials":
+        import importlib
+
+        obj = importlib.import_module("tolokaforge.core.planning").plan_trials
+        globals()[name] = obj
+        return obj
+    if name == "aggregate_results":
+        import importlib
+
+        obj = importlib.import_module("tolokaforge.core.planning").aggregate_results
+        globals()[name] = obj
+        return obj
+    if name == "RunReport":
+        import importlib
+
+        obj = importlib.import_module("tolokaforge.core.output.report").RunReport
+        globals()[name] = obj
+        return obj
     if name == "load_task":
         import importlib
 
@@ -80,7 +105,11 @@ def __getattr__(name: str):
 __all__ = [
     # Library entry (ADR-0022 § Surface 2)
     "run_trial",
+    # Composable run steps
+    "plan_trials",
     "run_trial_from_inputs",
+    "aggregate_results",
+    "RunReport",
     "load_task",
     # Request/Response messages
     "RegisterTrialRequest",
