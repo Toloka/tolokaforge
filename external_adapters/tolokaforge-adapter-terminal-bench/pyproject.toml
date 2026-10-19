@@ -4,13 +4,21 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge-adapter-terminal-bench"
-version = "0.1.0"
+version = "0.2.0"
 description = "Terminal-bench adapter plugin for tolokaforge"
 requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 dependencies = [
-    "tolokaforge",
-    "tolokaforge-coding-harnesses",
+    # Engine. Floored at 0.32.0: the adapter imports
+    # ``RunnerGradingConfig`` from ``tolokaforge.runner.models``, the name
+    # this release carries (earlier engines exposed ``GradingConfig`` there).
+    "tolokaforge>=0.32.0",
+    # The ``tolokaforge_coding_harnesses`` import package the adapter reads is
+    # bundled INTO the engine wheel (see tolokaforge's wheel ``packages`` list),
+    # not published as its own distribution, so ``tolokaforge`` above provides
+    # it. No ``tolokaforge-coding-harnesses`` Requires-Dist: that distribution
+    # does not exist on any index and listing it would make this wheel
+    # uninstallable.
     "pyyaml>=6.0.1",
     "jinja2>=3.1.0",
 ]
