@@ -207,6 +207,35 @@ def test_thread_status_runs_then_completes_but_the_result_is_not_retained() -> N
         adapter.close()
 
 
+def test_a_completed_thread_job_retains_no_future_or_result() -> None:
+    # A terminal job keeps only its small JobState; the Future (which holds the
+    # graded TrialResult in future._result) is dropped so an N-trial run does not
+    # pin every trajectory, message history and tool log for the adapter's life.
+    adapter = _thread_adapter(lambda inputs: _result(inputs.trial_spec.trial_id))
+    try:
+        adapter.run_trial_node(_inputs("t:0"))
+        job = adapter._jobs["t:0"]
+        assert job.state is JobState.COMPLETED
+        assert job.future is None
+    finally:
+        adapter.close()
+
+
+def test_a_failed_thread_job_retains_no_future() -> None:
+    def run(inputs: TrialNodeInputs) -> TrialResult:
+        raise RuntimeError("boom")
+
+    adapter = _thread_adapter(run)
+    try:
+        with pytest.raises(DispatchTransient):
+            adapter.run_trial_node(_inputs("t:0"))
+        job = adapter._jobs["t:0"]
+        assert job.state is JobState.FAILED
+        assert job.future is None
+    finally:
+        adapter.close()
+
+
 def test_thread_status_is_pending_while_queued_then_running_once_started() -> None:
     occupy_entered = threading.Event()
     occupy_release = threading.Event()

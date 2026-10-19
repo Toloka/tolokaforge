@@ -69,7 +69,6 @@ __all__ = [
     "ProvisioningTrialExecutor",
     "RemoteTrialExecutor",
     "TrialExecutor",
-    "TrialOwningBackend",  # deprecated one-release alias of DispatchAdapter
 ]
 
 
@@ -362,11 +361,6 @@ class ProvisioningTrialExecutor:
             task_id=task_id,
             trial_index=trial_idx,
         )
-
-
-#: Deprecated alias of :class:`~tolokaforge.core.dispatch.adapter.DispatchAdapter`,
-#: kept importable from here for one release.
-TrialOwningBackend = DispatchAdapter
 
 
 class RemoteTrialExecutor:

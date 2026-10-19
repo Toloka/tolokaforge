@@ -19,6 +19,7 @@ import pytest
 
 from tests.canonical._node_fakes import write_native_pack
 from tolokaforge.core.models import (
+    DispatchConfig,
     EvaluationConfig,
     GraderConfig,
     ModelConfig,
@@ -114,7 +115,7 @@ def test_the_settings_the_node_carries_are_not_refused(tmp_path: Path) -> None:
         ),
         (
             {"orchestrator": {"typesense": {"enabled": True}}},
-            "a remote node has no such bridge",
+            "a dispatch node has no such bridge",
         ),
     ],
     ids=["compute-throttle", "orchestrator-throttle", "typesense"],
@@ -287,3 +288,46 @@ def test_an_unconfigured_tracing_block_does_not_warn(
         orch._refuse_unsupported_remote_run()
 
     assert not any("emit no live traces" in record.getMessage() for record in caplog.records)
+
+
+def _local_dispatch_orchestrator(
+    tmp_path: Path, *, orchestrator: dict[str, Any] | None = None
+) -> Orchestrator:
+    """An orchestrator whose dispatch block selects the in-process ``local`` adapter."""
+    write_native_pack(tmp_path / "pack")
+    config = RunConfig(
+        models={"agent": _AGENT, "user": _USER},
+        orchestrator=OrchestratorConfig(
+            **{
+                "workers": 1,
+                "repeats": 1,
+                "dispatch": DispatchConfig(adapter="local", config={"mode": "thread"}),
+                **(orchestrator or {}),
+            }
+        ),
+        evaluation=EvaluationConfig(
+            output_dir=str(tmp_path / "out"), projects=[str(tmp_path / "pack")]
+        ),
+    )
+    orch = Orchestrator(config)
+    orch.load_tasks()
+    return orch
+
+
+def test_a_local_dispatch_run_routes_to_the_shared_dispatch_refusals(tmp_path: Path) -> None:
+    """The local adapter is a dispatch run but not grpc_node, so it is gated on
+    the shared refusals, not the grpc_node-only path."""
+    orch = _local_dispatch_orchestrator(tmp_path)
+    assert orch._is_dispatch_run() is True
+    assert orch._dispatches_via_grpc_node() is False
+
+
+def test_a_local_dispatch_run_refuses_a_setting_the_node_does_not_carry(tmp_path: Path) -> None:
+    """A local dispatch run drops the global throttle just as a remote node does,
+    so it is refused up front instead of being silently ignored."""
+    orch = _local_dispatch_orchestrator(tmp_path, orchestrator={"max_requests_per_second": 2.0})
+
+    with pytest.raises(ValueError, match="does not carry") as raised:
+        orch._refuse_unsupported_dispatch_run()
+
+    assert "max_requests_per_second" in str(raised.value)

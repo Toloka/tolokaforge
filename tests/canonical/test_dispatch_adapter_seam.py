@@ -1,4 +1,4 @@
-"""The dispatch-adapter seam: Protocol, deprecated alias, group, build context, errors."""
+"""The dispatch-adapter seam: Protocol, group, build context, errors."""
 
 from __future__ import annotations
 
@@ -22,13 +22,8 @@ from tolokaforge.core.plugin_registry import (
     load_dispatch_adapter,
 )
 from tolokaforge.core.run_queue import SqliteRunQueue
-from tolokaforge.core.trial_executor import TrialOwningBackend
 
 pytestmark = pytest.mark.canonical
-
-
-def test_trial_owning_backend_is_the_dispatch_adapter() -> None:
-    assert TrialOwningBackend is DispatchAdapter
 
 
 def test_grpc_node_adapter_satisfies_dispatch_adapter() -> None:

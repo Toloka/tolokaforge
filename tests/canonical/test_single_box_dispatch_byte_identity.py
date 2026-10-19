@@ -20,6 +20,7 @@ import pytest
 
 from tests.canonical._factories import make_env_endpoints, make_task_config, make_trial_spec
 from tolokaforge.core.conductor import ConductorContext
+from tolokaforge.core.dispatch.adapter import DispatchAdapter
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     EvaluationConfig,
@@ -37,7 +38,7 @@ from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.runtime import EnvHandle, InMemoryRuntimeBackend, ProvisionError
 from tolokaforge.core.trial import TrialResult, TrialSpec
-from tolokaforge.core.trial_executor import ProvisioningTrialExecutor, TrialOwningBackend
+from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 from tolokaforge.core.trial_node import TrialExecutionContext, build_trial_execution_unit
 
 pytestmark = pytest.mark.canonical
@@ -165,11 +166,11 @@ def test_no_single_box_backend_is_trial_owning_and_each_gets_the_provisioning_ex
     backend = orchestrator._construct_runtime_backend("executor:50051")
     unit, _, _ = _unit(tmp_path, backend)
 
-    assert not isinstance(backend, TrialOwningBackend)
+    assert not isinstance(backend, DispatchAdapter)
     assert isinstance(unit.executor, ProvisioningTrialExecutor)
     assert unit.executor.runtime_backend is backend
     assert unit.executor.conductor is unit.conductor
 
 
 def test_the_in_memory_test_backend_is_not_trial_owning() -> None:
-    assert not isinstance(InMemoryRuntimeBackend(), TrialOwningBackend)
+    assert not isinstance(InMemoryRuntimeBackend(), DispatchAdapter)
