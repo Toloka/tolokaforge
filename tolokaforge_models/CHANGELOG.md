@@ -6,6 +6,50 @@ its release cadence is orthogonal to the `tolokaforge` engine wheel's own
 `vX.Y.Z` tag axis. See
 [`docs/RELEASING.md`](https://github.com/Toloka/tolokaforge/blob/main/docs/RELEASING.md#pypi-package--tolokaforge-models-models-vxyz-automated).
 
+## models-v1.8.1 (2026-10-20)
+
+### BREAKING CHANGE
+
+- tolokaforge, tolokaforge-models, tolokaforge-langfuse,
+tolokaforge-coding-harnesses and tolokaforge-adapter-terminal-bench require
+Python >=3.12; on 3.10/3.11 a resolver keeps the last release that supports
+them. Install a 3.12 interpreter (uv python install 3.12) before upgrading.
+- ENGINE_PROTOCOL_VERSION is 5: an engine and a runner image on
+different sides of this change refuse each other at registration, for every
+pack — rebuild the image (make docker-build-core) with the engine.
+- tolokaforge, tolokaforge-models, tolokaforge-langfuse,
+tolokaforge-coding-harnesses and tolokaforge-adapter-terminal-bench require
+Python >=3.12; on 3.10/3.11 a resolver keeps the last release that supports
+them. Install a 3.12 interpreter (uv python install 3.12) before upgrading.
+
+### Feat
+
+- **llm**: tool_name_max_length — shorten only the tool names a provider would refuse [TECHDEL-688] (#1896)
+- **runner**: configurable state read timeout (compute.state_read_timeout_s) (#1894)
+- **loop**: tool-output cap as a run-config override and an actor-wide task default (#1893)
+- **loop**: context controls and cost instrumentation for agent trials (#1809)
+- **runner**: app worlds served over HTTP with runtime-minted credentials (ADR-0062) (#1842)
+- **tools**: mutates_state on the tool wire, declared by the tool's author (ADR-0061) (#1841)
+- **tools**: shared tool libraries reach the trial through tool_artifacts (ADR-0060) (#1840)
+- **docker**: add all-in-one tolokaforge-standalone image (#1765)
+- **langfuse**: name an agent transcript's model calls analyzer (#1826)
+- **langfuse**: post a write again when the receiver refused it without reading it (#1825)
+
+### Fix
+
+- two preflight failures that lose trials and refuse valid runs (#1907)
+- **llm**: carry scalar dict-map values and reverse the array pivot at every depth (#1905)
+- **ci**: promote images on patch releases (#1902)
+- **tools**: http_request reports a 4xx/5xx body as the call's error (#1836) (#1839)
+- **netpolicy**: carry a service's aliases onto the injected networks (#1835) (#1838)
+- **grading**: a lost MCP state is ungradeable, not graded from the stale mirror [TECHDEL-682] (#1832)
+- **standalone**: keep baked .pyc for fast rag boot; poll service readiness in smoke (#1862)
+- **ci**: drop type=gha build cache that reintroduced the base-pull 401 (#1861)
+- **ci**: build standalone multi-arch on native per-arch runners + build/size opts (#1858)
+- **runner**: refused tool arguments are safe feedback and stay invalid_arguments (#1843)
+- **runner**: ship core/tools_interface.py in the runner subset (#1834) (#1837)
+- **grpc**: one configurable message-size bound on every engine/runner/grader channel (#1844)
+
 ## models-v1.8.0 (2026-10-06)
 
 ## models-v1.7.0 (2026-10-05)

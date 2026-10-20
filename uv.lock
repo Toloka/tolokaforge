@@ -4106,7 +4106,7 @@ requires-dist = [
 
 [[package]]
 name = "tolokaforge-models"
-version = "1.8.0"
+version = "1.8.1"
 source = { editable = "tolokaforge_models" }
 
 [[package]]
