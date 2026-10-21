@@ -48,7 +48,7 @@ def _result(trial_id: str = "t:0") -> TrialResult:
     )
 
 
-def _inputs(trial_id: str = "t:0") -> TrialNodeInputs:
+def _inputs(trial_id: str = "t:0", *, attempt_id: int = 0) -> TrialNodeInputs:
     task_id = trial_id.rsplit(":", 1)[0]
     return TrialNodeInputs(
         task=TaskConfig(
@@ -58,7 +58,7 @@ def _inputs(trial_id: str = "t:0") -> TrialNodeInputs:
             description="d",
             initial_user_message="hi",
         ),
-        trial_spec=make_trial_spec(trial_id=trial_id, task_id=task_id),
+        trial_spec=make_trial_spec(trial_id=trial_id, task_id=task_id, attempt_id=attempt_id),
         grpc_max_message_mb=50,
         runtime="auto",
         conductor="in_process",
@@ -215,7 +215,7 @@ def test_a_completed_thread_job_retains_no_future_or_result() -> None:
     adapter = _thread_adapter(lambda inputs: _result(inputs.trial_spec.trial_id))
     try:
         adapter.run_trial_node(_inputs("t:0"))
-        job = adapter._jobs["t:0"]
+        job = adapter._jobs[JobHandle(trial_id="t:0").job_key]
         assert job.state is JobState.COMPLETED
         assert job.future is None
     finally:
@@ -230,7 +230,7 @@ def test_a_failed_thread_job_retains_no_future() -> None:
     try:
         with pytest.raises(DispatchTransient):
             adapter.run_trial_node(_inputs("t:0"))
-        job = adapter._jobs["t:0"]
+        job = adapter._jobs[JobHandle(trial_id="t:0").job_key]
         assert job.state is JobState.FAILED
         assert job.future is None
     finally:
@@ -283,6 +283,32 @@ def test_thread_status_is_failed_after_the_trial_raises() -> None:
         # retained" error; status still reports the terminal FAILED state.
         with pytest.raises(DispatchUnsupported, match="not retained"):
             adapter.fetch_result(handle)
+    finally:
+        adapter.close()
+
+
+def test_job_handles_differ_by_attempt_id() -> None:
+    # Two attempts of one trial share a trial_id but are distinct jobs: the
+    # handle carries the attempt and its per-attempt key tells them apart.
+    first = JobHandle(trial_id="t:0", attempt_id=0)
+    retry = JobHandle(trial_id="t:0", attempt_id=1)
+    assert first != retry
+    assert first.job_key != retry.job_key
+    assert first.job_key == ("t:0", 0)
+
+
+def test_two_attempts_of_one_trial_are_keyed_separately() -> None:
+    # The retry must not overwrite the first attempt's table entry: each attempt
+    # keeps its own terminal state, keyed by (trial_id, attempt_id).
+    adapter = _thread_adapter(lambda inputs: _result(inputs.trial_spec.trial_id))
+    try:
+        adapter.run_trial_node(_inputs("t:0", attempt_id=0))
+        adapter.run_trial_node(_inputs("t:0", attempt_id=1))
+        assert set(adapter._jobs) == {("t:0", 0), ("t:0", 1)}
+        assert adapter.status(JobHandle(trial_id="t:0", attempt_id=0)).state is JobState.COMPLETED
+        assert adapter.status(JobHandle(trial_id="t:0", attempt_id=1)).state is JobState.COMPLETED
+        # A handle naming an attempt that never ran is UNKNOWN, not another attempt's state.
+        assert adapter.status(JobHandle(trial_id="t:0", attempt_id=2)).state is JobState.UNKNOWN
     finally:
         adapter.close()
 

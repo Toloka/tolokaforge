@@ -133,7 +133,7 @@ class LocalDispatchAdapter:
     registry: SpawningNodeRegistry | None = None
     grpc_adapter: GrpcNodeDispatchAdapter | None = None
     _pool: ThreadPoolExecutor | None = field(default=None, init=False)
-    _jobs: dict[str, _ThreadJob] = field(default_factory=dict, init=False)
+    _jobs: dict[tuple[str, int], _ThreadJob] = field(default_factory=dict, init=False)
     _jobs_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     # ---- Run-level lifecycle ----
@@ -178,7 +178,12 @@ class LocalDispatchAdapter:
     def _run_on_thread(self, inputs: TrialNodeInputs) -> TrialResult:
         if self._pool is None:
             raise RuntimeError("LocalDispatchAdapter is not connected; call connect().")
-        trial_id = inputs.trial_spec.trial_id
+        # Key the job table per attempt, not per trial: two attempts of the same
+        # trial share a ``trial_id`` but are distinct jobs, so each keeps its own
+        # state rather than the retry overwriting the first attempt's entry.
+        job_key = JobHandle(
+            trial_id=inputs.trial_spec.trial_id, attempt_id=inputs.trial_spec.attempt_id
+        ).job_key
         # Round-trip the inputs through JSON so a threaded trial sees exactly the
         # serialized value a node would, not a shared in-memory object.
         payload = inputs.model_dump_json()
@@ -187,8 +192,8 @@ class LocalDispatchAdapter:
         # flips PENDING to RUNNING when it picks the job up, so status tells a
         # queued job apart from a running one.
         with self._jobs_lock:
-            future = self._pool.submit(self._run_one, trial_id, payload)
-            self._jobs[trial_id] = _ThreadJob(state=JobState.PENDING, future=future)
+            future = self._pool.submit(self._run_one, job_key, payload)
+            self._jobs[job_key] = _ThreadJob(state=JobState.PENDING, future=future)
         try:
             result = future.result()
         except BaseException:
@@ -196,7 +201,7 @@ class LocalDispatchAdapter:
             # started keeps its CANCELLED state when its future reports back.
             # Terminal either way — drop the future so its held result is freed.
             with self._jobs_lock:
-                job = self._jobs.get(trial_id)
+                job = self._jobs.get(job_key)
                 if job is not None:
                     if job.state is JobState.RUNNING:
                         job.state = JobState.FAILED
@@ -206,18 +211,18 @@ class LocalDispatchAdapter:
         # is returned live here, so retaining the future (and the TrialResult it
         # holds) would pin memory for the adapter's whole lifetime.
         with self._jobs_lock:
-            job = self._jobs.get(trial_id)
+            job = self._jobs.get(job_key)
             if job is not None:
                 job.state = JobState.COMPLETED
                 job.future = None
         return result
 
-    def _run_one(self, trial_id: str, payload: str) -> TrialResult:
+    def _run_one(self, job_key: tuple[str, int], payload: str) -> TrialResult:
         # A job only reaches here once a pool worker has picked it up: flip it to
         # RUNNING. Guard on PENDING so a pre-start cancel (which set CANCELLED) is
         # not clobbered.
         with self._jobs_lock:
-            job = self._jobs.get(trial_id)
+            job = self._jobs.get(job_key)
             if job is not None and job.state is JobState.PENDING:
                 job.state = JobState.RUNNING
         rebuilt = TrialNodeInputs.model_validate_json(payload)
@@ -246,11 +251,11 @@ class LocalDispatchAdapter:
         """Return the job's current state; an unknown id is ``JobState.UNKNOWN``."""
         if self.mode == "thread":
             with self._jobs_lock:
-                job = self._jobs.get(handle.trial_id)
+                job = self._jobs.get(handle.job_key)
             if job is None:
                 return JobStatus(
                     state=JobState.UNKNOWN,
-                    detail=f"no in-process job for {handle.trial_id}",
+                    detail=f"no in-process job for {handle.trial_id} attempt {handle.attempt_id}",
                 )
             return JobStatus(state=job.state)
         assert self.grpc_adapter is not None  # built by the factory for subprocess mode
@@ -283,7 +288,7 @@ class LocalDispatchAdapter:
 
     def _cancel_thread(self, handle: JobHandle) -> None:
         with self._jobs_lock:
-            job = self._jobs.get(handle.trial_id)
+            job = self._jobs.get(handle.job_key)
             if job is None:
                 return
             if job.future is not None and job.future.cancel():

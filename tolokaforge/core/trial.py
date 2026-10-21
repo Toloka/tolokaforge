@@ -228,6 +228,14 @@ class TrialNodeInputs(BaseModel):
     trial_spec: TrialSpec
     """The trial to run; its ``task`` projection and model configs drive the node."""
 
+    job_id: str | None = None
+    """A caller-supplied unique id for this job — the caller's own workflow or CI
+    run together with the trial it dispatched. Where ``trial_spec.trial_id``
+    (``"{task_id}:{trial_index}"``) repeats across runs, this names one dispatched
+    job, so a retry or resume of the same job is recognisable in the trial's output
+    path, logs and trace identity. Only the caller knows it; ``None`` keeps every
+    path, log and trace keyed as without it."""
+
     grader_config: GraderConfig | None = None
     """The run's ``grader`` block; ``None`` defers to the adapter's default grader."""
 
