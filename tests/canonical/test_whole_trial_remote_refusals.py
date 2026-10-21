@@ -220,14 +220,51 @@ def test_coding_harness_mode_is_refused(tmp_path: Path) -> None:
 
 def test_the_presets_overlay_is_refused_on_a_dispatch_run(tmp_path: Path) -> None:
     """``engine.presets_file`` is installed process-globally on the control plane
-    and is not carried to a node, so a dispatch run fails loud rather than running
-    the node without the overlay."""
+    and is not carried through the orchestrated dispatch input-builder, so a
+    dispatch run fails loud rather than running the node without the overlay.
+
+    The library route (:func:`plan_trials`) does carry the overlay content on
+    each :class:`TrialNodeInputs`; the two paths never both carry and refuse the
+    same setting — see
+    ``test_run_as_library_steps.test_plan_trials_carries_the_presets_overlay_content``.
+    """
     orch = _orchestrator(tmp_path, engine=EngineConfig(presets_file="overlay.yaml"))
 
     with pytest.raises(ValueError, match="engine.presets_file") as raised:
         orch._refuse_unsupported_remote_run()
 
     assert "is not carried to a node" in str(raised.value)
+
+
+def test_the_library_route_carries_the_overlay_the_dispatch_path_refuses(tmp_path: Path) -> None:
+    """Reconciliation: the ``engine.presets_file`` the orchestrated dispatch path
+    refuses is carried, by content, on every trial the library route plans — so
+    the overlay is never both carried and refused on the same path."""
+    from tolokaforge.adapters.native import NativeAdapter
+    from tolokaforge.core.llm.presets import _load_overlay_file
+    from tolokaforge.runner import plan_trials
+
+    pack = tmp_path / "pack"
+    write_native_pack(pack)
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text(
+        "presets:\n  carry_demo:\n    match: ['carry-demo/*']\n    content_policy: anthropic\n"
+    )
+    task = NativeAdapter({"base_dir": str(pack), "tasks_glob": "**/task.yaml"}).get_task("flat")
+
+    config = RunConfig(
+        models={"agent": _AGENT, "user": _USER},
+        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+        evaluation=EvaluationConfig(output_dir=str(tmp_path / "out")),
+        engine=EngineConfig(presets_file=str(overlay)),
+    )
+
+    planned = plan_trials(
+        config, tasks=[task], runtime="in_memory", conductor="in_memory", grader="runner_rpc"
+    )
+
+    assert planned
+    assert all(inp.model_presets_overlay == _load_overlay_file(str(overlay)) for inp in planned)
 
 
 _IN_PACK_STACK = {"stack": {"compose_file": "./environment.compose.yaml"}}
