@@ -128,8 +128,16 @@ trial's `TrialNodeInputs` and returns its graded `TrialResult`. Adapters registe
 under the `tolokaforge.dispatch_adapters` entry-point group and report failures
 with three transport-neutral errors (`tolokaforge/core/dispatch/errors.py`):
 `DispatchRefused` (a deterministic refusal the orchestrator does not retry),
-`DispatchProvisionError` (the sandbox could not come up — also not retried), and
-`DispatchTransient` (an infrastructure fault the orchestrator retries).
+`DispatchProvisionError` (a deterministic placement/start fault — bad compose,
+missing image, bad manifest — also not retried), and `DispatchTransient` (an
+infrastructure fault, including "no capacity now", that the orchestrator retries).
+
+On a dispatch run the orchestrator's trial-level retries
+(`orchestrator.max_attempt_retries` / `compute.max_attempt_retries`, default 0)
+are what re-run a trial after a `DispatchTransient` fault — they *are* the
+transient-retry path, not a second layer stacked on the adapter. A backend that
+performs its own trial-level retries should set `max_attempt_retries` to 0 so a
+failed trial is not executed twice.
 
 The `orchestrator.dispatch` block names the adapter and its options. When it is
 set, the orchestrator builds the adapter, runs the trial loop through
@@ -188,14 +196,20 @@ writes a reduced bundle (`trajectory.yaml`, `tool_log.yaml`, `metrics.yaml`,
 `grade.yaml`) from the returned trajectory. Each node serves one trial at a time,
 so the node count bounds trial concurrency.
 
-Run shapes `grpc_node` refuses at run start rather than degrading:
+Run shapes a dispatch run refuses at run start rather than degrading. Every
+dispatch adapter — the `local` thread/subprocess path and `grpc_node` alike —
+hands each whole trial to a node that rebuilds its run config from the trial
+inputs, so the settings and adapter refusals below apply to **every** dispatch
+adapter. Only the manifest-hosting refusal (first bullet) is `grpc_node`-specific:
+it alone ships the task pack to a remote node.
 
-- A task `environment_manifest` the node cannot host, named by task: more than one stack, a service with `isolation: reset` (reset-isolation seeds are not yet shipped to the node), or a compose file outside the task's own directory (project-level or shared compose does not ship with the pack). Run those under `shared` or `per_trial`. A single-stack, non-reset manifest whose compose file is in the task directory is accepted: the node rebases the compose path onto its task-pack mount and materialises the stack once for its trial (see [TRIAL_NODE_SERVICE.md](TRIAL_NODE_SERVICE.md)).
-- A non-native adapter or coding-harness mode (`models.agent.harness`): the adapter runs only the native adapter without harness mode.
+- (`grpc_node` only) A task `environment_manifest` the node cannot host, named by task: more than one stack, a service with `isolation: reset` (reset-isolation seeds are not yet shipped to the node), or a compose file outside the task's own directory (project-level or shared compose does not ship with the pack). Run those under `shared` or `per_trial`. A single-stack, non-reset manifest whose compose file is in the task directory is accepted: the node rebases the compose path onto its task-pack mount and materialises the stack once for its trial (see [TRIAL_NODE_SERVICE.md](TRIAL_NODE_SERVICE.md)).
+- An adapter that is not node-runnable (it does not implement `register_preloaded_task`), or coding-harness mode (`models.agent.harness`): a dispatch node runs the native loop without harness mode. A non-native adapter is accepted as long as it is node-runnable.
 - `grader_rpc` and `queue` graders (they need a static runner address); `runner_rpc` only.
 - `grader.snapshot.enabled`: the node grades in-process and produces no control-plane grade bundle.
 - `auto_start_services: true`: no local stack is started; set it to `false`.
-- Run settings the node does not carry, named in one error: `max_requests_per_second` (a run-level throttle is global across trials; a node runs one trial and cannot enforce a shared limit), the `orchestrator.typesense` search plane (a control-plane-local container bridged onto the runner's Docker network; a remote node has no such bridge), a custom `conductor_factory`, a custom `agent_client_factory` (set `models.agent.fallbacks` instead; the node carries it), and a fallback chain together with an enabled `orchestrator.rate_limit_probe`.
+- `engine.presets_file`: the model-presets overlay is installed process-globally on the control plane and is not carried to a node, so a node would run without it; set it on the node instead, or run under the `shared` or `per_trial` substrate.
+- Run settings the node does not carry, named in one error: `max_requests_per_second` (a run-level throttle is global across trials; a node runs one trial and cannot enforce a shared limit), the `orchestrator.typesense` search plane (a control-plane-local container bridged onto the runner's Docker network; a dispatch node has no such bridge), a custom `conductor_factory`, a custom `agent_client_factory` (set `models.agent.fallbacks` instead; the node carries it), and a fallback chain together with an enabled `orchestrator.rate_limit_probe`.
 - Carried to the node, so accepted at any value: `orchestrator.timeouts`, `max_turns`, `max_trial_tokens`, `stuck_heuristics`, `agent_loop` (the loop must be registered on the node), `compute.log_tail` / `compute.capture_logs_on_success`, and the agent's `fallbacks` chain.
 - Worker mode (`run_worker`): each process would build its own node registry.
 

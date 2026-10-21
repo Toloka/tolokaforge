@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-14
-- **Amended:** 2026-10-15
+- **Amended:** 2026-10-15, 2026-10-21
 - **Deciders:** @CiroGamboa
 - **Supersedes:** none
 - **Superseded by:** none
@@ -82,7 +82,9 @@ transport:
   `PROVISION_ERROR` result with a failure bundle.
 - `DispatchTransient` — an infrastructure fault; raised, and retried by the
   orchestrator.
-- `DispatchProvisionError` — the backend could not place or start the job.
+- `DispatchProvisionError` — a deterministic placement/start fault (bad compose,
+  missing image, bad manifest); non-retryable. A backend with no capacity *now*
+  raises `DispatchTransient` instead, so the job is retried.
 - `DispatchUnsupported` — the honest "this backend can't do that" refusal for a
   control operation it cannot serve. A `DispatchRefused` subclass, so it travels
   the existing non-retryable path unchanged.
@@ -144,6 +146,26 @@ Settled for now; revisit as the model matures:
   lease logic moves into `grpc_node`.
 - A job crosses a process boundary by value, so everything a scenario needs must
   travel in `TrialNodeInputs`; what it cannot carry stays refused.
+
+## Amendment (2026-10-21): the library-first backend inverts the seam
+
+Considered option 3 and the "external distributed backend" adapter block above
+assume the first out-of-core backend is reached **through** the `DispatchAdapter`
+seam — the orchestrator owns the run loop and hands each job to the adapter.
+
+For the library-first target the direction **inverts**. An external orchestrator
+owns the run loop and calls tolokaforge as a library via the three-step API
+(`plan_trials` → `run_trial_from_inputs` → `aggregate_results`, see
+[`docs/API.md`](../API.md)). Such a backend is **not** reached through the
+`DispatchAdapter` seam at all: there is no tolokaforge orchestrator above it to
+hold the seam. The two integration shapes stand side by side — pick by which side
+owns the run loop:
+
+- **Engine-owned run** — the tolokaforge orchestrator drives the batch and
+  dispatches whole trials. This is the `DispatchAdapter` route: `local`,
+  `grpc_node`, and any engine-driven external adapter.
+- **Library-route run** — an external orchestrator drives the batch and calls the
+  three-step API per trial. No `DispatchAdapter` is involved.
 
 ## References
 

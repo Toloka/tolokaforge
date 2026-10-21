@@ -20,6 +20,7 @@ import pytest
 from tests.canonical._node_fakes import write_native_pack
 from tolokaforge.core.models import (
     DispatchConfig,
+    EngineConfig,
     EvaluationConfig,
     GraderConfig,
     ModelConfig,
@@ -51,6 +52,7 @@ def _orchestrator(
     grader: GraderConfig | None = None,
     deps: OrchestratorDeps | None = None,
     environment_manifest: dict[str, Any] | None = None,
+    engine: EngineConfig | None = None,
 ) -> Orchestrator:
     write_native_pack(tmp_path / "pack", environment_manifest=environment_manifest)
     with warnings.catch_warnings():
@@ -72,6 +74,7 @@ def _orchestrator(
             compute=compute,
             observability=observability,
             grader=grader,
+            engine=engine,
         )
     orch = Orchestrator(config, deps=deps)
     orch.load_tasks()
@@ -177,20 +180,54 @@ def test_a_custom_agent_client_factory_is_refused(tmp_path: Path) -> None:
         orch._refuse_unsupported_remote_run()
 
 
-def test_a_non_native_task_is_refused(tmp_path: Path) -> None:
-    orch = _orchestrator(tmp_path)
-    orch.tasks = [task.model_copy(update={"adapter_type": "terminal_bench"}) for task in orch.tasks]
+class _NotNodeRunnable:
+    """An adapter stub that does not implement the node-runnable seam."""
 
-    with pytest.raises(ValueError, match="non-native adapter or coding-harness mode"):
-        orch._refuse_unsupported_remote_run()
+
+class _OutOfTreeNodeRunnable:
+    """An out-of-tree-style adapter that implements the node-runnable seam."""
+
+    def register_preloaded_task(self, task: Any, task_dir: Any) -> None:  # noqa: D401
+        return None
+
+
+def test_a_non_node_runnable_adapter_is_refused(tmp_path: Path) -> None:
+    """The refusal asks the adapter's capability, not its type: an adapter that
+    does not implement ``register_preloaded_task`` cannot be seeded on a node."""
+    orch = _orchestrator(tmp_path)
+    orch.adapter = _NotNodeRunnable()  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="non-node-runnable adapter"):
+        orch._refuse_settings_the_node_does_not_carry()
+
+
+def test_an_out_of_tree_node_runnable_adapter_is_not_refused(tmp_path: Path) -> None:
+    """An adapter that exposes ``register_preloaded_task`` is node-runnable even
+    though it is not the native adapter, so it is not refused for its type."""
+    orch = _orchestrator(tmp_path)
+    orch.adapter = _OutOfTreeNodeRunnable()  # type: ignore[assignment]
+
+    orch._refuse_settings_the_node_does_not_carry()
 
 
 def test_coding_harness_mode_is_refused(tmp_path: Path) -> None:
     orch = _orchestrator(tmp_path)
     orch.config.models["agent"] = _AGENT.model_copy(update={"harness": "claude-code"})
 
-    with pytest.raises(ValueError, match="non-native adapter or coding-harness mode"):
+    with pytest.raises(ValueError, match="coding-harness mode"):
         orch._refuse_unsupported_remote_run()
+
+
+def test_the_presets_overlay_is_refused_on_a_dispatch_run(tmp_path: Path) -> None:
+    """``engine.presets_file`` is installed process-globally on the control plane
+    and is not carried to a node, so a dispatch run fails loud rather than running
+    the node without the overlay."""
+    orch = _orchestrator(tmp_path, engine=EngineConfig(presets_file="overlay.yaml"))
+
+    with pytest.raises(ValueError, match="engine.presets_file") as raised:
+        orch._refuse_unsupported_remote_run()
+
+    assert "is not carried to a node" in str(raised.value)
 
 
 _IN_PACK_STACK = {"stack": {"compose_file": "./environment.compose.yaml"}}

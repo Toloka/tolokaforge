@@ -5,8 +5,8 @@ The adapter is the one the :class:`Orchestrator` builds from the
 node. The trial runs through the same execution unit the orchestrator builds, so
 the whole-trial seam is what is under test: ``RemoteTrialExecutor`` ->
 ``GrpcNodeDispatchAdapter.run_trial_node`` -> node client -> node -> graded
-result. A delegated (harness) trial is refused before any dispatch, since the
-grpc_node adapter carries only native trials.
+result. A coding-harness run is refused before any dispatch, since a dispatch
+node runs the native loop without harness mode.
 """
 
 from __future__ import annotations
@@ -128,9 +128,11 @@ def test_native_trial_dispatches_through_the_leased_node_to_a_graded_result(
     assert result.trajectory.grade is not None
 
 
-def test_a_delegated_trial_is_refused_rather_than_dispatched(
+def test_a_coding_harness_run_is_refused_rather_than_dispatched(
     test_data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A node-runnable delegated adapter (terminal_bench) is not refused for its
+    type, but a coding-harness run on it is — the node runs the native loop."""
     from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
@@ -143,7 +145,13 @@ def test_a_delegated_trial_is_refused_rather_than_dispatched(
     delegated = adapter.get_task("echo-hello")
     assert delegated.adapter_type == "terminal_bench"
     orchestrator, _ = _orchestrator(tmp_path)
+    orchestrator.adapter = adapter
     orchestrator.tasks = [delegated]
 
-    with pytest.raises(ValueError, match="non-native adapter or coding-harness mode"):
+    # The node-runnable terminal_bench adapter alone is not refused.
+    orchestrator._refuse_settings_the_node_does_not_carry()
+
+    # Configuring coding-harness mode on top is refused.
+    orchestrator.config.models["agent"] = _AGENT.model_copy(update={"harness": "claude-code"})
+    with pytest.raises(ValueError, match="coding-harness mode"):
         orchestrator._refuse_unsupported_remote_run()

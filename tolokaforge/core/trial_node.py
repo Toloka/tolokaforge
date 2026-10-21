@@ -307,7 +307,12 @@ def compute_task_pack_hash(pack_dir: Path) -> str:
     return compute_seed_digest(Path(pack_dir))
 
 
-def build_single_task_adapter(task: TaskConfig, task_dir: Path | None = None) -> BaseAdapter:
+def build_single_task_adapter(
+    task: TaskConfig,
+    task_dir: Path | None = None,
+    *,
+    adapter_params: dict[str, Any] | None = None,
+) -> BaseAdapter:
     """Build an adapter that resolves ``task.task_id`` to this pre-loaded config.
 
     *task_dir* is the directory holding the task's own files; it defaults to
@@ -315,8 +320,16 @@ def build_single_task_adapter(task: TaskConfig, task_dir: Path | None = None) ->
     task with no file assets resolves from. The adapter must implement
     :meth:`~tolokaforge.adapters.BaseAdapter.register_preloaded_task`, or this
     raises.
+
+    *adapter_params* carries the run's assembled adapter params (harness
+    selector, project ``default_environment``, TypeSense, …) so the preloaded
+    adapter describes the task exactly as a single-box run's adapter does. The
+    task discovery glob is always the preloaded sentinel — the task is seeded
+    directly, not discovered.
     """
-    adapter = get_adapter(task.adapter_type, {"tasks_glob": _PRELOADED_TASKS_GLOB})
+    params: dict[str, Any] = dict(adapter_params) if adapter_params else {}
+    params["tasks_glob"] = _PRELOADED_TASKS_GLOB
+    adapter = get_adapter(task.adapter_type, params)
     adapter.register_preloaded_task(task, task_dir or task.source_dir or Path())
     return adapter
 

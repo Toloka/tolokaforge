@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from tolokaforge.core.models import RunConfig, TaskConfig, Trajectory
+    from tolokaforge.core.models import ProjectConfig, RunConfig, TaskConfig, Trajectory
     from tolokaforge.core.output.report import RunReport
     from tolokaforge.core.trial import TrialNodeInputs, TrialResult
 
@@ -61,6 +61,7 @@ def plan_trials(
     grader: str | None = None,
     conductor: str = "in_process",
     run_id: str | None = None,
+    project: ProjectConfig | None = None,
 ) -> list[TrialNodeInputs]:
     """Plan a run's trials as a flat list of serializable :class:`TrialNodeInputs`.
 
@@ -81,6 +82,10 @@ def plan_trials(
         conductor: Registered conductor name carried as data.
         run_id: The run identifier stamped onto every trial. ``None`` derives a
             stable id from the run config's output directory.
+        project: The run's :class:`ProjectConfig`, when one applies. Its
+            ``task_defaults`` and ``default_environment`` layer into the adapter
+            params exactly as ``tolokaforge run`` applies them, so each planned
+            trial describes its task identically to a single-box run.
 
     Returns:
         One :class:`TrialNodeInputs` per ``(task, repeat)``, each ready to hand
@@ -91,6 +96,7 @@ def plan_trials(
     """
     import os
 
+    from tolokaforge.core.adapter_params import assemble_adapter_params
     from tolokaforge.core.models import ComputeConfig, GraderConfig
     from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
     from tolokaforge.core.trial import (
@@ -101,7 +107,8 @@ def plan_trials(
     )
     from tolokaforge.core.trial_node import build_single_task_adapter, compute_task_pack_hash
 
-    task_list = list(tasks) if tasks is not None else _load_tasks_from_config(run_config)
+    task_list = list(tasks) if tasks is not None else _load_tasks_from_config(run_config, project)
+    adapter_params = assemble_adapter_params(run_config, project=project)
 
     agent_config = run_config.models.get("agent")
     if agent_config is None:
@@ -134,7 +141,9 @@ def plan_trials(
     ):
         task = task_by_id[task_id]
         if task_id not in description_by_id:
-            description_by_id[task_id] = build_single_task_adapter(task).describe_task(task_id)
+            description_by_id[task_id] = build_single_task_adapter(
+                task, adapter_params=adapter_params
+            ).describe_task(task_id)
         task_desc = description_by_id[task_id]
 
         pack_dir = task.source_dir
@@ -222,31 +231,24 @@ def aggregate_results(
     return report
 
 
-def _load_tasks_from_config(run_config: RunConfig) -> list[TaskConfig]:
+def _load_tasks_from_config(
+    run_config: RunConfig,
+    project: ProjectConfig | None = None,
+) -> list[TaskConfig]:
     """Load the run's tasks through its declared adapter.
 
-    The library loader: it covers the adapter type, task glob and project packs
-    a ``RunConfig`` carries, plus the coding-harness selector on ``models.agent``.
-    Advanced single-box layering (TypeSense, project ``task_defaults``) is not
-    reproduced here — pass ``tasks=`` for exact control over the task set.
+    Resolves the same adapter params ``tolokaforge run`` does — adapter type and
+    params, task glob, project packs, the coding-harness selector on
+    ``models.agent``, TypeSense, and (when a *project* is given) its
+    ``task_defaults`` and ``default_environment`` — via
+    :func:`assemble_adapter_params`.
     """
     from tolokaforge.adapters import get_adapter
+    from tolokaforge.core.adapter_params import assemble_adapter_params
 
     adapter_config = run_config.evaluation.harness_adapter
-    if adapter_config is not None:
-        adapter_type = adapter_config.type
-        params = dict(adapter_config.params)
-    else:
-        adapter_type = "native"
-        params = {}
-
-    agent_config = run_config.models.get("agent")
-    if agent_config is not None and agent_config.harness is not None:
-        params.setdefault("agent_harness", agent_config.harness)
-        params.setdefault("agent_model", agent_config.name)
-
-    params["tasks_glob"] = run_config.evaluation.tasks_glob
-    params["task_packs"] = list(run_config.evaluation.projects)
+    adapter_type = adapter_config.type if adapter_config is not None else "native"
+    params = assemble_adapter_params(run_config, project=project)
 
     adapter = get_adapter(adapter_type, params)
     return [adapter.get_task(task_id) for task_id in adapter.get_task_ids()]

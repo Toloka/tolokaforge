@@ -10,9 +10,12 @@ still get the report a single `tolokaforge run` writes, compose three steps:
 
 1. **`plan_trials(run_config)`** — expand the run into a flat list of
    `TrialNodeInputs`, one per `(task, repeat)`. Each is a self-contained,
-   serializable description of one trial; no adapter, conductor or runtime
-   backend is resolved here, so you can ship the inputs to wherever the trial
-   will run.
+   serializable description of one trial you can ship to wherever it will run.
+   `plan_trials` **does** build and resolve an adapter per task — to describe
+   each task, and to load the tasks through the config's adapter when
+   `tasks=None` — so the adapter must be installed and node-runnable wherever
+   `plan_trials` runs. Only the conductor and runtime backend stay unresolved;
+   they travel as data on each trial.
 2. **`run_trial_from_inputs(inputs)`** — run one `TrialNodeInputs` to a
    `TrialResult`. Your layer calls this itself, on whatever backend it owns,
    in whatever order and concurrency it likes.
@@ -29,11 +32,15 @@ report = aggregate_results(results, run_config=cfg, output_dir="results/my_run")
 print(report.aggregate["success_rate_micro"])
 ```
 
-**Guarantee.** The four artifacts `aggregate_results` writes
+**Guarantee.** The guarantee is scoped to the four **aggregate** files, not the
+whole run directory. The four artifacts `aggregate_results` writes
 (`aggregate.json`, `per_task_metrics.json`, `metadata_slices.json`,
 `failure_attribution.json`) reproduce the report a single `tolokaforge run`
 writes, field for field, except the disk-only non-reproducible stamps
-(`tolokaforge_version`, `captured_service_logs`). It works the same for the
+(`tolokaforge_version`, `captured_service_logs`). It does **not** reproduce the
+rest of the run directory — notably `run_state.json` (the orchestrator's own
+queue/resume ledger) and the tracing/observability receipt — which are products
+of the orchestrated run, not of the aggregation step. It works the same for the
 native loop and for a delegated harness — the harness identity travels as data
 on each planned trial (`trial_spec.task.adapter_type`, the agent model's
 `harness`), not as a resolved object. `aggregate_results` renumbers
