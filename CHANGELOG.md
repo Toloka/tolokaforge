@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.33.0 (2026-10-21)
+
+### Fix
+
+- **deps**: exclude compromised litellm 1.107.0 (#1927)
+
 ## v0.32.0 (2026-10-16)
 
 ### Fix
