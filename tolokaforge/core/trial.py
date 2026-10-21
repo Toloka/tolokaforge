@@ -17,6 +17,7 @@ from tolokaforge.core.models import (
     ComputeConfig,
     GraderConfig,
     ModelConfig,
+    ObservabilityConfig,
     OrchestratorConfig,
     RateLimitProbeConfig,
     StuckHeuristics,
@@ -257,6 +258,13 @@ class TrialNodeInputs(BaseModel):
 
     run_settings: NodeRunSettings = Field(default_factory=NodeRunSettings)
     """Run-level limits, stuck detection, agent loop and log capture the node applies."""
+
+    observability: ObservabilityConfig | None = None
+    """The run's observability block, carried as data. When set, the node builds the live
+    trial observer and run identity from it, so a library trial emits spans and writes its
+    tracing receipt as a single-box run does; ``None`` runs the trial without tracing. No
+    credentials travel here — the ``tracing`` block names exporters, run tag and plugin
+    options only, and each receiver's credentials resolve from the node's own secret payload."""
 
     model_config = {"extra": "forbid"}
 

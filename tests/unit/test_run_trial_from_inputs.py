@@ -25,9 +25,11 @@ from tolokaforge.adapters.base import BaseAdapter
 from tolokaforge.core.models import (
     GraderConfig,
     ModelConfig,
+    ObservabilityConfig,
     RateLimitProbeConfig,
     StuckHeuristics,
     TimeoutConfig,
+    TracingConfig,
 )
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.plugin_registry import TrialGraderContext
@@ -200,6 +202,82 @@ class TestGraderRouting:
         assert ctx.runtime_backend is backend
         assert ctx.runner_address is None
         assert ctx.grpc_max_message_mb == 7
+
+
+class _RecordingObserver:
+    """A non-null observer that records its flush and hands back a fixed receipt."""
+
+    def __init__(self, receipt: Any) -> None:
+        self._receipt = receipt
+        self.finished = False
+
+    def trial_started(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def generation(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def tool_call(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def trial_finished(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def trial_persisted(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def run_finished(self) -> Any:
+        self.finished = True
+        return self._receipt
+
+
+class TestTrialTracing:
+    def test_observability_projection_builds_the_observer_and_writes_the_receipt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tolokaforge.observability.factory import (
+            TRACING_RECEIPT_FILE,
+            RunIdentity,
+        )
+        from tolokaforge.observability.observer import ExportReceipt
+
+        observer = _RecordingObserver(ExportReceipt(exporter="otlp", spans_exported=3))
+        captured: dict[str, Any] = {}
+
+        def fake_build(observability: Any, *, engine_run_id: str, output_dir: Any) -> Any:
+            captured["observability"] = observability
+            captured["engine_run_id"] = engine_run_id
+            captured["output_dir"] = output_dir
+            return observer, RunIdentity(run_id=engine_run_id)
+
+        monkeypatch.setattr(trial_node_mod, "build_trial_observer", fake_build)
+
+        observability = ObservabilityConfig(tracing=TracingConfig(exporter="otlp", run_tag="v1"))
+        out = tmp_path / "out"
+        out.mkdir()
+        run_trial_from_inputs(_inputs(observability=observability, output_dir=out))
+
+        assert captured["observability"] is observability
+        assert captured["engine_run_id"] == "run-1"
+        assert captured["output_dir"] == out
+        assert observer.finished is True
+        assert (out / TRACING_RECEIPT_FILE).exists()
+
+    def test_absent_projection_stays_null_and_writes_no_receipt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tolokaforge.observability.factory import TRACING_RECEIPT_FILE
+
+        def no_build(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("build_trial_observer must not be called without observability")
+
+        monkeypatch.setattr(trial_node_mod, "build_trial_observer", no_build)
+
+        out = tmp_path / "out"
+        out.mkdir()
+        run_trial_from_inputs(_inputs(output_dir=out))
+
+        assert not (out / TRACING_RECEIPT_FILE).exists()
 
 
 class TestSecretPayload:
