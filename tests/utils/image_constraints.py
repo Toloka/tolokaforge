@@ -61,6 +61,16 @@ def lock_registry_packages() -> list[Mapping[str, object]]:
     return [package for package in lock["package"] if "registry" in package["source"]]
 
 
+def lock_workspace_names() -> frozenset[str]:
+    """Normalized names of the ``uv.lock`` packages built from this tree rather than an index."""
+    lock = tomllib.loads(UV_LOCK_PATH.read_text())
+    return frozenset(
+        canonicalize_name(str(package["name"]))
+        for package in lock["package"]
+        if "registry" not in package["source"]
+    )
+
+
 def lock_registry_pins() -> frozenset[tuple[str, str]]:
     return frozenset(
         (canonicalize_name(str(package["name"])), str(package["version"]))

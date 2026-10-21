@@ -125,6 +125,30 @@ _RUNNER_SOURCE_CONTEXT_FILES: list[str] = [
     "tolokaforge_coding_harnesses/",
 ]
 
+#: The source trees the langfuse plugin and terminal-bench adapter wheels build from.
+#: The base wheel's ``force-include`` table names them, so every
+#: ``hatchling build --target wheel`` of the root pyproject needs them in context;
+#: the standalone Dockerfile also builds both wheels for the extras that require them.
+_ADAPTER_SOURCE_DIR = "external_adapters/tolokaforge-adapter-terminal-bench"
+_PLUGIN_SOURCE_CONTEXT_FILES: list[str] = [
+    "tolokaforge_langfuse/",
+    f"{_ADAPTER_SOURCE_DIR}/",
+]
+
+#: Build-context entries of the images that build the full base wheel in-container.
+_FULL_WHEEL_SOURCE_CONTEXT_FILES: list[str] = [
+    *_RUNNER_SOURCE_CONTEXT_FILES,
+    *_PLUGIN_SOURCE_CONTEXT_FILES,
+]
+
+#: The ``uv.lock`` pip-constraints export and the guard that checks an image
+#: environment against it. Every first-party Dockerfile installs under the first and
+#: runs the second; the full-source images carry both under the copied ``tolokaforge/``.
+_LOCKED_INSTALL_CONTEXT_FILES: list[str] = [
+    "tolokaforge/docker/image-constraints.txt",
+    "tolokaforge/docker/dockerfiles/locked_install_check.py",
+]
+
 #: Where the base wheel's ``force-include`` table lands the repo-root files
 #: above, relative to the installed ``tolokaforge`` package. Keys are the
 #: build-context names the Dockerfile ``COPY`` lines expect.
@@ -172,6 +196,7 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "context": ".",
         "context_files": [
             "tolokaforge/env/json_db_service/",
+            *_LOCKED_INSTALL_CONTEXT_FILES,
         ],
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
@@ -204,6 +229,7 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "context": ".",
         "context_files": [
             "tolokaforge/env/mock_web_service/",
+            *_LOCKED_INSTALL_CONTEXT_FILES,
         ],
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
@@ -216,7 +242,7 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "name": "tolokaforge-grader",
         "dockerfile": "tolokaforge/docker/dockerfiles/grader.Dockerfile",
         "context": ".",
-        "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
+        "context_files": _FULL_WHEEL_SOURCE_CONTEXT_FILES,
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
     # Trial node service. Its Dockerfile compiles the same full source set as
@@ -225,13 +251,14 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "name": "tolokaforge-trial-node",
         "dockerfile": "tolokaforge/docker/dockerfiles/trial_node.Dockerfile",
         "context": ".",
-        "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
+        "context_files": _FULL_WHEEL_SOURCE_CONTEXT_FILES,
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
     # All-in-one (single-image, multi-service) image — db-service, rag-service,
     # mock-web, and the runner in one container under supervisord. Its
     # Dockerfile compiles the same full source set as the grader (base +
-    # tolokaforge_models + tolokaforge_coding_harnesses wheels in-container),
+    # tolokaforge_models + tolokaforge_coding_harnesses wheels in-container, and
+    # the langfuse and terminal-bench adapter wheels for the extras that need them),
     # plus the env-service apps and supervisor config that already live under
     # the copied ``tolokaforge/`` tree — so it shares the runner/grader
     # packaged-copy mapping via ``_full_source_definition()``. See
@@ -240,7 +267,7 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "name": "tolokaforge-standalone",
         "dockerfile": "tolokaforge/docker/dockerfiles/standalone.Dockerfile",
         "context": ".",
-        "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
+        "context_files": _FULL_WHEEL_SOURCE_CONTEXT_FILES,
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
 }
@@ -271,10 +298,12 @@ def rag_service_context_files(wheel_path: str) -> list[str]:
       ``requirements.txt`` + ``app.py``),
     - the two workspace-sibling source trees (``tolokaforge_models``,
       ``tolokaforge_coding_harnesses``) that the ``sibling-wheel-builder``
-      stage compiles into wheels the base wheel depends on.
+      stage compiles into wheels the base wheel depends on,
+    - the ``uv.lock`` constraints export and the locked-install guard.
 
-    The wheel and ``tolokaforge/env/rag_service/`` survive a wheel install as
-    they are (an absolute path and a directory inside the installed package).
+    The wheel, ``tolokaforge/env/rag_service/`` and the two locked-install files
+    survive a wheel install as they are (an absolute path and paths inside the
+    installed package).
     The two sibling trees do not: on a wheel install ``repo_root()`` is
     ``site-packages`` and they live only under the packaged
     ``tolokaforge/_subset_build/`` copies, so they are remapped there — the
@@ -293,6 +322,7 @@ def rag_service_context_files(wheel_path: str) -> list[str]:
     return [
         wheel_path,
         "tolokaforge/env/rag_service/",
+        *_LOCKED_INSTALL_CONTEXT_FILES,
         *siblings,
     ]
 
@@ -380,8 +410,10 @@ def _packaged_full_source_entries(service: str) -> list[Any]:
     they share this mapping. Absolute entries are copied flat into the build
     dir, landing under exactly the basenames the ``COPY`` lines expect;
     ``.python-version`` is the one exception, shipped as ``_python_version.txt``
-    and remapped with an explicit destination. *service* names the image in the
-    fail-loud message.
+    and remapped with an explicit destination. The images in
+    :data:`_FULL_WHEEL_IMAGES` also get the langfuse and terminal-bench adapter
+    trees; the adapter lands under ``external_adapters/`` through an explicit
+    destination. *service* names the image in the fail-loud message.
     """
     packaged = packaged_subset_build_dir()
     pkg_dir = installed_package_dir()
@@ -395,6 +427,11 @@ def _packaged_full_source_entries(service: str) -> list[Any]:
         packaged / "tolokaforge_models",
         packaged / "tolokaforge_coding_harnesses",
     ]
+    if service in _FULL_WHEEL_IMAGES:
+        entries += [
+            packaged / "tolokaforge_langfuse",
+            (packaged / _ADAPTER_SOURCE_DIR, _ADAPTER_SOURCE_DIR),
+        ]
     _require_context_entries_exist(entries, service=service)
     return entries
 
@@ -424,6 +461,10 @@ def _packaged_sibling_entries() -> list[Path]:
 #: standalone build the full base wheel; standalone additionally COPYs env-service apps and
 #: the supervisor config, which already ride under the copied ``tolokaforge/``.
 _FULL_SOURCE_IMAGES: tuple[str, ...] = ("runner", "grader", "trial_node", "standalone")
+
+#: The full-source images that build the full base wheel, whose ``force-include``
+#: table names the langfuse and terminal-bench adapter trees.
+_FULL_WHEEL_IMAGES: tuple[str, ...] = ("grader", "trial_node", "standalone")
 
 
 def _full_source_definition(service: str) -> dict[str, Any]:
@@ -704,63 +745,53 @@ def assemble_build_context(
     ignore_build_artifacts = shutil.ignore_patterns(
         "*.egg-info", "dist", "build", "_subset_build", "_python_version.txt"
     )
-    # Paths may be relative (resolved against repo_root) or absolute
-    # (e.g. a wheel from the wheel-cache — copied flat into build_dir).
-    # An entry may also be a ``(source, destination)`` pair when the name the
-    # Dockerfile expects differs from the source basename — used by
-    # ``_full_source_definition()`` to land the packaged ``_python_version.txt``
-    # back under its repo-root dotfile name.
-    for entry in context_files:
-        if isinstance(entry, tuple):
-            src_spec, dest_rel = entry
-            src = Path(src_spec)
-            if not src.is_absolute():
-                src = repo_root / src
-            if not src.is_file():
-                shutil.rmtree(build_dir, ignore_errors=True)
-                raise FileNotFoundError(
-                    f"Declared context path not found: {src_spec} -> {dest_rel}"
-                )
-            dst = build_dir / dest_rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            continue
-        entry_path = Path(entry)
-        if entry_path.is_absolute():
-            # Absolute path: copy the file flat into the build dir root.
-            if entry_path.is_file():
-                shutil.copy2(entry_path, build_dir / entry_path.name)
-            elif entry_path.is_dir():
-                shutil.copytree(
-                    entry_path,
-                    build_dir / entry_path.name,
-                    dirs_exist_ok=True,
-                    ignore=ignore_build_artifacts,
-                )
-            else:
-                shutil.rmtree(build_dir, ignore_errors=True)
-                raise FileNotFoundError(f"Declared absolute context path not found: {entry}")
-        else:
-            # Relative path: resolve against repo_root (original behavior).
-            src = repo_root / entry
-            dst = build_dir / entry
-            if src.is_dir():
-                shutil.copytree(
-                    src,
-                    dst,
-                    dirs_exist_ok=True,
-                    ignore=ignore_build_artifacts,
-                )
-            elif src.is_file():
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
-            else:
-                shutil.rmtree(build_dir, ignore_errors=True)
-                raise FileNotFoundError(
-                    f"Declared context path not found: {entry} (resolved to {src})"
-                )
+    try:
+        for entry in context_files:
+            src, dst = _context_entry_paths(repo_root, build_dir, entry)
+            _copy_context_entry(src, dst, ignore_build_artifacts, entry=entry)
+    except FileNotFoundError:
+        shutil.rmtree(build_dir, ignore_errors=True)
+        raise
 
     return build_dir
+
+
+def _context_entry_paths(
+    repo_root: Path, build_dir: Path, entry: str | tuple[str, str]
+) -> tuple[Path, Path]:
+    """Source and destination of one ``context_files`` entry.
+
+    A relative path resolves against *repo_root* and keeps its relative location;
+    an absolute path (e.g. a wheel from the wheel cache) lands flat under its
+    basename; a ``(source, destination)`` pair lands at *destination*, for a name
+    the Dockerfile expects that differs from the source's (the packaged
+    ``_python_version.txt`` as ``.python-version``, the packaged adapter tree under
+    ``external_adapters/``).
+    """
+    if isinstance(entry, tuple):
+        src_spec, dest_rel = entry
+        src = Path(src_spec)
+        return (src if src.is_absolute() else repo_root / src), build_dir / dest_rel
+    entry_path = Path(entry)
+    if entry_path.is_absolute():
+        return entry_path, build_dir / entry_path.name
+    return repo_root / entry_path, build_dir / entry_path
+
+
+def _copy_context_entry(
+    src: Path,
+    dst: Path,
+    ignore: Callable[[str, list[str]], set[str]],
+    *,
+    entry: str | tuple[str, str],
+) -> None:
+    if src.is_dir():
+        shutil.copytree(src, dst, dirs_exist_ok=True, ignore=ignore)
+        return
+    if not src.is_file():
+        raise FileNotFoundError(f"Declared context path not found: {entry} (resolved to {src})")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
 
 
 def list_built_images(

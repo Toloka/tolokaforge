@@ -137,13 +137,35 @@ build` to skip pull entirely. A 429 in `auto` mode surfaces as a
 **Building on a wheel install.** `build` — and the `auto` fallback — work
 identically whether the engine is a source checkout or a `pip install`. On a
 wheel install `repo_root()` is `site-packages`, so an image whose Dockerfile
-compiles the workspace sources in-container (`runner`, `rag-service`, and the
-standalone `grader`) assembles its build context from the copies the base wheel
-force-includes under `tolokaforge/_subset_build/` — both workspace siblings'
-`pyproject.toml` + `src/` ride along there. All three resolve their sibling
-sources through the same packaged-copy mapping, so none depends on a repo
-checkout being present; a wheel missing those force-included inputs fails loud
-at build-context assembly, naming `_subset_build`.
+compiles the workspace sources in-container (`runner`, `rag-service`, `grader`,
+`trial_node` and `standalone`) assembles its build context from the copies the
+base wheel force-includes under `tolokaforge/_subset_build/` — both workspace
+siblings' `pyproject.toml` + `src/` ride along there, and so do the
+`tolokaforge_langfuse` and `external_adapters/tolokaforge-adapter-terminal-bench`
+trees that `grader`, `trial_node` and `standalone` need: the base wheel's
+force-include table names them, so its in-container build fails without them, and
+`standalone` builds the langfuse and adapter wheels from them for the extras that
+require them. Every image resolves these sources through the same packaged-copy
+mapping, so none depends on a repo checkout being present; a wheel missing those
+force-included inputs fails loud at build-context assembly, naming
+`_subset_build`.
+
+**Every first-party image installs at `uv.lock` versions.** Each Dockerfile stage
+that runs `pip install` copies `tolokaforge/docker/image-constraints.txt` (the
+lock's pip export, shipped in the base wheel) to
+`/opt/tolokaforge/image-constraints.txt` and points `PIP_CONSTRAINT` and
+`PIP_BUILD_CONSTRAINT` at it, so every third-party package and the build backend
+of any sdist pip builds resolve to the lock's version. Installs are wheel-only
+except the lock's Linux sdist-only packages (`--only-binary :all: --no-binary
+sly`, in that order). First-party distributions are wheels built in the image's
+own wheel-builder stage and installed by path, never from an index. After the
+last install into each environment the build runs
+`tolokaforge/docker/dockerfiles/locked_install_check.py`, which fails the build
+when an installed distribution is not at a version the lock pins for that
+platform, or a first-party one was not installed from a local file. rag-service
+and standalone install CPU torch from the PyTorch CPU index at the locked `+cpu`
+version. `tests/canonical/test_dockerfile_installs_are_locked.py` holds the
+Dockerfiles to this.
 
 The build-context spec for every first-party service — its Dockerfile, context,
 `context_files`, and `build_args` — has one source of truth: the builder's image
@@ -398,14 +420,13 @@ the engine first leaves you inside the one window this gate cannot close, and �
 any pack bearing `state_checks` or `transcript_rules` — inside a registration failure
 the JSON payload will raise anyway.
 
-**The image's own dependency resolution is a second, unversioned skew, and no gate sees it.**
-The image installs the wheel with **pip**, which resolves each declared range itself rather
-than reading `uv.lock`, so a range loose enough to admit two majors gives the container a
-different library than the host venv — with no protocol version to disagree about. The failure
-lands at run time inside the container: see
+**The image's dependencies are the lock's, so they skew only with the tree it was built from.**
+The image installs every third-party package at its `uv.lock` version (see § Building on a
+wheel install), so a runner built from a tree carries that tree's libraries. An image built
+from an older tree carries that tree's lock, with no protocol version to disagree about; the
+failure then lands at run time inside the container: see
 [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#every-tool-call-fails-mcp-server-closed-connection)
-§ Every Tool Call Fails. `make docker-build-core` is the fix, and an upper bound on the major
-is what keeps the resolution honest.
+§ Every Tool Call Fails. Rebuilding with `make docker-build-core` is the fix.
 
 That is what an engine upgrade needs: rebuild the image from the same tree
 (`make docker-build-core`) or pin an image tag that matches. The gate sits at

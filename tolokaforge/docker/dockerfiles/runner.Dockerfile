@@ -26,6 +26,15 @@
 #      extras selector is needed at install time.
 #   3. runtime — copies only the venv, so git/curl/perl and the
 #      pip/setuptools/wheel toolchain never reach the shipped image.
+#
+# Every stage that runs pip installs under ``image-constraints.txt``, the
+# ``uv.lock`` export: ``PIP_CONSTRAINT`` pins each third-party package and the
+# build backend of any sdist pip builds (pip < 25.3 applies it to isolated build
+# environments, ``PIP_BUILD_CONSTRAINT`` covers pip >= 25.3). Every install is
+# wheel-only except the lock's sdist-only packages (``--only-binary :all:
+# --no-binary sly``, in that order — pip applies them left to right), and
+# ``locked_install_check.py`` then fails the build if any installed distribution
+# is off the lock or a first-party one did not come from a local wheel.
 
 ARG PYTHON_VERSION=3.12
 
@@ -36,11 +45,16 @@ FROM python:${PYTHON_VERSION}-slim AS wheel-builder
 
 WORKDIR /src
 
+COPY tolokaforge/docker/image-constraints.txt tolokaforge/docker/dockerfiles/locked_install_check.py /opt/tolokaforge/
+ENV PIP_CONSTRAINT=/opt/tolokaforge/image-constraints.txt \
+    PIP_BUILD_CONSTRAINT=/opt/tolokaforge/image-constraints.txt
+
 # ``hatchling build --target custom`` runs the custom builder script directly
 # in the current interpreter — no build-isolation venv, no ``hatch`` env
-# machinery — so the layer is self-contained and reproducible. Version-bound
-# so the produced wheel metadata format is deterministic across builds.
-RUN pip install --no-cache-dir "hatchling>=1.24,<2.0"
+# machinery — so the layer is self-contained and reproducible.
+RUN pip install --no-cache-dir --only-binary :all: --no-binary sly "hatchling>=1.24,<2.0" \
+    && python /opt/tolokaforge/locked_install_check.py \
+        --constraints /opt/tolokaforge/image-constraints.txt --exempt pip
 
 # Source files needed by ``hatchling build --target custom``. Copy pyproject
 # and metadata files first (rarely change) so the layer that ADDs the
@@ -90,6 +104,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+COPY tolokaforge/docker/image-constraints.txt tolokaforge/docker/dockerfiles/locked_install_check.py /opt/tolokaforge/
+ENV PIP_CONSTRAINT=/opt/tolokaforge/image-constraints.txt \
+    PIP_BUILD_CONSTRAINT=/opt/tolokaforge/image-constraints.txt
+
 COPY --from=wheel-builder /src/dist/tolokaforge_runner_subset-*.whl /tmp/
 COPY --from=wheel-builder /src/tolokaforge_models/dist/tolokaforge_models-*.whl /tmp/
 COPY --from=wheel-builder /src/tolokaforge_coding_harnesses/dist/tolokaforge_coding_harnesses-*.whl /tmp/
@@ -105,10 +123,16 @@ COPY --from=wheel-builder /src/tolokaforge_coding_harnesses/dist/tolokaforge_cod
 # bytecode out of site-packages; PYTHONDONTWRITEBYTECODE in the runtime stage
 # keeps it that way.
 RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir --no-compile \
+    && /opt/venv/bin/pip install --no-cache-dir --no-compile --only-binary :all: --no-binary sly \
         /tmp/tolokaforge_models-*.whl \
         /tmp/tolokaforge_coding_harnesses-*.whl \
         /tmp/tolokaforge_runner_subset-*.whl \
+    && /opt/venv/bin/python /opt/tolokaforge/locked_install_check.py \
+        --constraints /opt/tolokaforge/image-constraints.txt \
+        --first-party tolokaforge-runner-subset \
+        --first-party tolokaforge-models \
+        --first-party tolokaforge-coding-harnesses \
+        --exempt pip \
     && rm -f /tmp/tolokaforge_runner_subset-*.whl \
               /tmp/tolokaforge_models-*.whl \
               /tmp/tolokaforge_coding_harnesses-*.whl
@@ -132,12 +156,23 @@ WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 
+COPY tolokaforge/docker/image-constraints.txt tolokaforge/docker/dockerfiles/locked_install_check.py /opt/tolokaforge/
+ENV PIP_CONSTRAINT=/opt/tolokaforge/image-constraints.txt \
+    PIP_BUILD_CONSTRAINT=/opt/tolokaforge/image-constraints.txt
+
 # Playwright for browser tool (opt-in via build arg). Auto-set by the
 # orchestrator when a task enables the browser/mobile tools. Runs before the
 # toolchain strip below because it uses pip.
 ARG INSTALL_PLAYWRIGHT=false
 RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
-    pip install playwright && playwright install --with-deps chromium; \
+    pip install --no-cache-dir --only-binary :all: --no-binary sly playwright \
+    && python /opt/tolokaforge/locked_install_check.py \
+        --constraints /opt/tolokaforge/image-constraints.txt \
+        --first-party tolokaforge-runner-subset \
+        --first-party tolokaforge-models \
+        --first-party tolokaforge-coding-harnesses \
+        --exempt pip \
+    && playwright install --with-deps chromium; \
     fi
 
 # Docker CLI + Compose plugin (opt-in via build arg). No Docker daemon — uses

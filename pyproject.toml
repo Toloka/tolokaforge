@@ -113,10 +113,10 @@ dependencies = [
     # which the recommended task authoring pattern (FastMCP server subprocess)
     # does.
     # Upper-bounded on the major: ``mcp.server.fastmcp``, the one module
-    # ``core/tools_interface.py`` imports, does not exist in 2.x. The runner
-    # image installs the wheel with pip and resolves this range itself rather
-    # than reading uv.lock, so an unbounded range there resolves a version whose
-    # every tool call fails inside the container while the host venv is fine.
+    # ``core/tools_interface.py`` imports, does not exist in 2.x. First-party
+    # images install the uv.lock version, but a plain ``pip install tolokaforge``
+    # resolves this range itself, and an unbounded range there resolves a version
+    # whose every tool call fails.
     "mcp>=1.0,<2",
     # The ``linear`` grading regex engine (RE2) behind
     # :mod:`tolokaforge.core.grading.regex_engine` (ADR-0055). The runner
@@ -493,6 +493,16 @@ packages = [
 # needs a packaged copy on a wheel install where the repo root is absent.
 "tolokaforge_coding_harnesses/pyproject.toml" = "tolokaforge/_subset_build/tolokaforge_coding_harnesses/pyproject.toml"
 "tolokaforge_coding_harnesses/src" = "tolokaforge/_subset_build/tolokaforge_coding_harnesses/src"
+# The standalone Dockerfile builds the langfuse plugin and the terminal-bench
+# adapter wheels in-container for the extras that require them, and every
+# target-wheel build of this pyproject (grader, trial_node, standalone) needs
+# these trees present because this table names them. Force-include is not
+# subject to ``[tool.hatch.build].exclude``, so ``external_adapters/**`` there
+# does not drop the adapter copy.
+"tolokaforge_langfuse/pyproject.toml" = "tolokaforge/_subset_build/tolokaforge_langfuse/pyproject.toml"
+"tolokaforge_langfuse/src" = "tolokaforge/_subset_build/tolokaforge_langfuse/src"
+"external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml" = "tolokaforge/_subset_build/external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml"
+"external_adapters/tolokaforge-adapter-terminal-bench/src" = "tolokaforge/_subset_build/external_adapters/tolokaforge-adapter-terminal-bench/src"
 
 [tool.hatch.build.targets.sdist]
 

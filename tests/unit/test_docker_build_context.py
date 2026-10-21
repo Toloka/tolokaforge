@@ -232,14 +232,16 @@ def test_expected_image_ref_matches_real_content_hash() -> None:
 
 def test_mock_web_context_scoped_to_service_files() -> None:
     """The real ``mock-web`` definition assembles an isolated context holding
-    only its service files, so its content-hash moves with mock-web's own
-    inputs and nothing else.
+    only its service files plus the ``uv.lock`` constraints export and the
+    locked-install guard, so its content-hash moves with mock-web's own inputs
+    and the lock, and nothing else.
 
     Drives the real ``IMAGE_DEFINITIONS['mock-web']`` (no stubbing) through
     ``_prepared_build_context``. Assertion (3) is load-bearing: if no repo-root
     file (e.g. ``pyproject.toml``) reaches the context, then only
-    ``tolokaforge/env/mock_web_service/**`` can move the content-hash — which is
-    what makes the hash stable against unrelated repo edits. No Docker daemon.
+    ``tolokaforge/env/mock_web_service/**`` and the two locked-install files can
+    move the content-hash — which is what makes the hash stable against
+    unrelated repo edits. No Docker daemon.
     """
     from tolokaforge.docker.builder import _prepared_build_context
 
@@ -252,10 +254,52 @@ def test_mock_web_context_scoped_to_service_files() -> None:
         #     yielded Dockerfile path resolves under the assembled context.
         assert (build_dir / "tolokaforge/env/mock_web_service/requirements.txt").exists()
         assert (build_dir / "tolokaforge/env/mock_web_service/app.py").exists()
+        for locked_install_file in _LOCKED_INSTALL_FILES:
+            assert (build_dir / locked_install_file).is_file()
         assert dockerfile.startswith(context)
         assert Path(dockerfile).exists()
         # (3) No repo-root file leaks into the context.
         assert not (build_dir / "pyproject.toml").exists()
+
+
+_LOCKED_INSTALL_FILES = (
+    "tolokaforge/docker/image-constraints.txt",
+    "tolokaforge/docker/dockerfiles/locked_install_check.py",
+)
+_PLUGIN_TREES = (
+    "tolokaforge_langfuse/pyproject.toml",
+    "tolokaforge_langfuse/src/tolokaforge_langfuse",
+    "external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml",
+    "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench",
+)
+
+
+@pytest.mark.usefixtures("_mock_wheel")
+@pytest.mark.parametrize("service", ["db-service", "mock-web", "rag-service"])
+def test_service_contexts_carry_the_locked_install_files(service: str) -> None:
+    """The env-service images install under the constraints export and run the guard,
+    so both files land at the paths their Dockerfiles ``COPY``."""
+    from tolokaforge.docker.builder import _prepared_build_context
+
+    with _prepared_build_context(service) as (_dockerfile, context, _name, _build_args):
+        for locked_install_file in _LOCKED_INSTALL_FILES:
+            assert (Path(context) / locked_install_file).is_file(), locked_install_file
+
+
+@pytest.mark.parametrize(
+    ("service", "builds_full_wheel"),
+    [("runner", False), ("grader", True), ("trial_node", True), ("standalone", True)],
+)
+def test_full_wheel_contexts_carry_the_plugin_source_trees(
+    service: str, builds_full_wheel: bool
+) -> None:
+    """The base wheel's force-include table names the langfuse and adapter trees, so
+    every image that builds it carries them; the runner's subset build does not."""
+    from tolokaforge.docker.builder import _prepared_build_context
+
+    with _prepared_build_context(service) as (_dockerfile, context, _name, _build_args):
+        present = {tree: (Path(context) / tree).exists() for tree in _PLUGIN_TREES}
+    assert present == dict.fromkeys(_PLUGIN_TREES, builds_full_wheel)
 
 
 def test_assembled_context_lives_under_docker_shared_tmpdir() -> None:
@@ -760,7 +804,7 @@ def test_build_and_prepare_builds_images_and_networks_without_starting_container
     stack.destroy(remove_networks=False)
 
 
-@pytest.mark.parametrize("service", ["runner", "grader", "standalone"])
+@pytest.mark.parametrize("service", ["runner", "grader", "trial_node", "standalone"])
 def test_full_source_image_context_resolves_from_installed_wheel(
     service: str, tmp_path: Path, monkeypatch
 ) -> None:
@@ -805,11 +849,14 @@ def test_full_source_image_context_resolves_from_installed_wheel(
                 f"{name} content mismatch — flat-copy of an absolute path landed "
                 "an empty or wrong-source file"
             )
+        builds_full_wheel = service != "runner"
+        present = {tree: (build_dir / tree).exists() for tree in _PLUGIN_TREES}
+        assert present == dict.fromkeys(_PLUGIN_TREES, builds_full_wheel)
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
 
 
-@pytest.mark.parametrize("service", ["runner", "grader", "standalone"])
+@pytest.mark.parametrize("service", ["runner", "grader", "trial_node", "standalone"])
 def test_full_source_image_context_fails_loud_when_wheel_lacks_packaged_inputs(
     service: str, tmp_path: Path, monkeypatch
 ) -> None:
@@ -900,11 +947,22 @@ def _simulate_wheel_install(
         for sib in ("tolokaforge_models", "tolokaforge_coding_harnesses"):
             (packaged / sib / "src" / sib).mkdir(parents=True)
             (packaged / sib / "pyproject.toml").write_text(f"# {sib} pyproject\n")
+        for tree, package in (
+            ("tolokaforge_langfuse", "tolokaforge_langfuse"),
+            (
+                "external_adapters/tolokaforge-adapter-terminal-bench",
+                "tolokaforge_adapter_terminal_bench",
+            ),
+        ):
+            (packaged / tree / "src" / package).mkdir(parents=True)
+            (packaged / tree / "pyproject.toml").write_text(f"# {tree} pyproject\n")
     if with_rag_service:
         (pkg / "env" / "rag_service").mkdir(parents=True)
         (pkg / "env" / "rag_service" / "app.py").write_text("")
     dockerfiles_dir = pkg / "docker" / "dockerfiles"
     dockerfiles_dir.mkdir(parents=True)
+    (pkg / "docker" / "image-constraints.txt").write_text("")
+    (dockerfiles_dir / "locked_install_check.py").write_text("")
     for df in dockerfiles:
         (dockerfiles_dir / df).write_text("FROM scratch\n")
     monkeypatch.setattr("tolokaforge.docker.builder.repo_root", lambda: site_packages)
@@ -949,6 +1007,7 @@ def test_rag_build_context_resolves_from_installed_wheel(tmp_path: Path, monkeyp
     try:
         for expected in (
             "tolokaforge/env/rag_service/app.py",
+            *_LOCKED_INSTALL_FILES,
             "tolokaforge_models/pyproject.toml",
             "tolokaforge_models/src/tolokaforge_models",
             "tolokaforge_coding_harnesses/pyproject.toml",

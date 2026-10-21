@@ -142,21 +142,21 @@ budget on failing tools and the trial grades `0.0` — a full-price run that mea
 Reproduced on `examples/native/native_shared_domain`: three trials, `tool_calls=5`, every
 call failed, `avg_score_micro=0.0`.
 
-**Cause: the image resolved its own `mcp` version.** The runner image installs the built
-wheel with **pip**, which resolves the declared dependency range itself rather than reading
-`uv.lock` — so a loose range picks up a version inside the container that the workspace venv
-never sees. `core/tools_interface.py` imports `mcp.server.fastmcp`, which `mcp` 2.x does not
-have (FastMCP moved), and the server subprocess dies at import. The host venv stays green
+**Cause: the image carries a different `mcp` than the workspace venv.** The runner image
+installs every third-party package at the `uv.lock` version of the tree it was built from, so
+an image built from another tree can hold an `mcp` the workspace venv never sees.
+`core/tools_interface.py` imports `mcp.server.fastmcp`, which `mcp` 2.x does not have
+(FastMCP moved), and the server subprocess dies at import. The host venv stays green
 throughout, which is what makes this hard to see: `uv run pytest` cannot reproduce it.
 
-**Fix.** Rebuild the image from the current tree, which now resolves the pinned range:
+**Fix.** Rebuild the image from the current tree, which installs the lock's `mcp`:
 
 ```bash
 make docker-build-core
 ```
 
 **Anyone holding an image built from an unpinned resolution must rebuild it**, whatever the
-tree they build from says today — the version is baked into the image. See #794.
+tree they build from says today — the version is baked into the image.
 
 ## Browser Tool Errors
 

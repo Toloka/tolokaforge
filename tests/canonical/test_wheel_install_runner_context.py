@@ -69,6 +69,14 @@ _EXPECTED_FORCE_INCLUDES: tuple[str, ...] = (
     # with no pyproject and the build dies.
     "tolokaforge/_subset_build/tolokaforge_models/pyproject.toml",
     "tolokaforge/_subset_build/tolokaforge_coding_harnesses/pyproject.toml",
+    # The base wheel's own force-include table names the langfuse and adapter
+    # trees, so the grader / trial_node / standalone target-wheel builds need
+    # them; standalone also builds both plugin wheels from them.
+    "tolokaforge/_subset_build/tolokaforge_langfuse/pyproject.toml",
+    "tolokaforge/_subset_build/tolokaforge_langfuse/src/tolokaforge_langfuse/__init__.py",
+    "tolokaforge/_subset_build/external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml",
+    "tolokaforge/_subset_build/external_adapters/tolokaforge-adapter-terminal-bench/src/"
+    "tolokaforge_adapter_terminal_bench/__init__.py",
 )
 
 # Every file the runner (and grader — same full source set) Dockerfile ``COPY``
@@ -86,10 +94,22 @@ _EXPECTED_CONTEXT_ENTRIES: tuple[str, ...] = (
     "tolokaforge_coding_harnesses/pyproject.toml",
 )
 
+# The grader (like trial_node and standalone) builds the full base wheel, whose
+# force-include table names these trees on top of the runner's source set.
+_EXPECTED_FULL_WHEEL_CONTEXT_ENTRIES: tuple[str, ...] = (
+    *_EXPECTED_CONTEXT_ENTRIES,
+    "tolokaforge_langfuse/pyproject.toml",
+    "tolokaforge_langfuse/src/tolokaforge_langfuse",
+    "external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml",
+    "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench",
+)
+
 # The rag-service build context does not compile the full engine; it copies the
 # resolved wheel, its own service dir, and only the two sibling trees.
 _EXPECTED_RAG_CONTEXT_ENTRIES: tuple[str, ...] = (
     "tolokaforge/env/rag_service",
+    "tolokaforge/docker/image-constraints.txt",
+    "tolokaforge/docker/dockerfiles/locked_install_check.py",
     "tolokaforge_models/pyproject.toml",
     "tolokaforge_coding_harnesses/pyproject.toml",
 )
@@ -235,6 +255,7 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
     # ``COPY`` lines expect.
     probe_prelude = (
         f"_EXPECTED_ENTRIES = {list(_EXPECTED_CONTEXT_ENTRIES)!r}\n"
+        f"_GRADER_EXPECTED_ENTRIES = {list(_EXPECTED_FULL_WHEEL_CONTEXT_ENTRIES)!r}\n"
         f"_RAG_EXPECTED_ENTRIES = {list(_EXPECTED_RAG_CONTEXT_ENTRIES)!r}\n"
         f"_PYPROJECT_MARKER = {'[tool.hatch.build.targets.custom]'!r}\n"
     )
@@ -297,13 +318,16 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         finally:
             shutil.rmtree(build_dir, ignore_errors=True)
 
-        # Grader shares the runner's full source set and has no stack, so its
-        # production path is get_image_definition("grader"); on a wheel install
-        # it must resolve to the packaged copies, not repo-relative paths.
+        # Grader shares the runner's full source set plus the plugin trees and has
+        # no stack, so its production path is get_image_definition("grader"); on a
+        # wheel install it must resolve to the packaged copies, not repo-relative
+        # paths.
         grader = get_image_definition("grader")
         grader_dir = assemble_build_context(root, grader["dockerfile"], grader["context_files"])
         try:
-            grader_present = {name: (grader_dir / name).exists() for name in _EXPECTED_ENTRIES}
+            grader_present = {
+                name: (grader_dir / name).exists() for name in _GRADER_EXPECTED_ENTRIES
+            }
         finally:
             shutil.rmtree(grader_dir, ignore_errors=True)
 
@@ -396,10 +420,10 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         "and that the base wheel's ``force-include`` table ships every input."
     )
 
-    # grader shares the runner's full source set; on a wheel install it must
-    # assemble the same inputs.
+    # grader shares the runner's full source set plus the langfuse and adapter
+    # trees; on a wheel install it must assemble them all.
     grader_missing = [
-        n for n in _EXPECTED_CONTEXT_ENTRIES if not probe_data["grader_present"].get(n)
+        n for n in _EXPECTED_FULL_WHEEL_CONTEXT_ENTRIES if not probe_data["grader_present"].get(n)
     ]
     assert not grader_missing, (
         "``get_image_definition('grader')`` did not land these inputs on a wheel "

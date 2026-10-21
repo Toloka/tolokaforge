@@ -10,11 +10,13 @@ The unit and canonical tiers assert the assembled build *context*. This tier run
 an actual ``docker build`` end-to-end from a scratch wheel-install venv — the only
 tier that proves the Dockerfile's in-container ``hatchling build`` stage actually
 compiles against the packaged ``_subset_build/`` sources, and that ``resolve_wheel``
-works on a wheel install for rag-service.
+works on a wheel install for rag-service. Every first-party Dockerfile runs the
+locked-install guard after its installs, so each green build also proves the
+image holds only ``uv.lock`` versions and local-wheel first-party distributions.
 
-Needs a Docker daemon; builds three images that compile wheels in-container, so it
-is marked ``slow`` and runs in the push/schedule integration lane. The three
-parametrized cases share a module-scoped venv, so they are pinned to one xdist
+Needs a Docker daemon; builds every first-party image, several compiling wheels
+in-container, so it is marked ``slow`` and runs in the push/schedule integration
+lane. The cases share a module-scoped venv, so they are pinned to one xdist
 worker (``--dist loadgroup``) to avoid rebuilding wheels + venv per worker.
 """
 
@@ -54,15 +56,18 @@ def wheel_install_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
-@pytest.mark.parametrize("service", ["runner", "rag-service", "grader"])
+@pytest.mark.parametrize(
+    "service",
+    ["runner", "rag-service", "grader", "db-service", "mock-web", "trial_node", "standalone"],
+)
 def test_image_builds_from_wheel_install(
     service: str,
     wheel_install_python: Path,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     """``docker build`` of *service* must succeed when driven from a wheel-install
-    venv — the wheel-install repro for rag-service / grader (whose
-    sibling-wheel-builder stage compiles the packaged sources in-container).
+    venv — the wheel-install repro for the images whose wheel-builder stages
+    compile the packaged sources in-container.
 
     The build runs from a CWD outside the repo so a ``sys.path[0]`` prepend cannot
     shadow the wheel-installed package with the source tree; the probe asserts it
@@ -114,4 +119,79 @@ def test_image_builds_from_wheel_install(
         if rmi.returncode != 0:
             # Report rather than swallow — a failed cleanup leaves a multi-GB
             # image on the runner.
+            print(f"warning: failed to remove image {tag!r} (exit {rmi.returncode}): {rmi.stderr}")
+
+
+@pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
+def test_standalone_with_every_extra_builds_from_wheel_install(
+    wheel_install_python: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """``TOLOKAFORGE_EXTRAS=all`` builds from a wheel install with the terminal-bench
+    adapter wheel compiled in-container from the packaged sources.
+
+    ``build_image`` takes no build-arg override, so the probe assembles the
+    production context and runs ``docker build`` on it directly. The in-image
+    guard fails the build if the adapter came from an index rather than the local
+    wheel; the run afterwards proves it is installed at all."""
+    probe_cwd = tmp_path_factory.mktemp("extras_build_cwd_outside_repo")
+    tag = "tolokaforge-standalone:wheel-install-extras-all"
+    probe = textwrap.dedent(f"""
+        import shutil
+        import subprocess
+        import sys
+
+        from tolokaforge.docker.builder import (
+            assemble_build_context,
+            get_image_definition,
+            repo_root,
+        )
+
+        root = repo_root()
+        assert not (root / "pyproject.toml").is_file(), f"not a wheel install: {{root}}"
+        definition = get_image_definition("standalone")
+        context = assemble_build_context(
+            root, definition["dockerfile"], definition["context_files"]
+        )
+        try:
+            build_args = {{**definition["build_args"], "TOLOKAFORGE_EXTRAS": "all"}}
+            command = ["docker", "build", "-t", {tag!r}, "-f", str(context / definition["dockerfile"])]
+            for key, value in build_args.items():
+                command += ["--build-arg", f"{{key}}={{value}}"]
+            sys.exit(subprocess.run([*command, str(context)]).returncode)
+        finally:
+            shutil.rmtree(context, ignore_errors=True)
+        """).strip()
+    result = subprocess.run(
+        [str(wheel_install_python), "-c", probe],
+        capture_output=True,
+        text=True,
+        cwd=str(probe_cwd),
+        timeout=_BUILD_TIMEOUT_S,
+    )
+    try:
+        assert result.returncode == 0, (
+            f"standalone TOLOKAFORGE_EXTRAS=all build from a wheel install failed "
+            f"(exit {result.returncode}):\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+        installed = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "/opt/venv/bin/python",
+                tag,
+                "-c",
+                "from importlib.metadata import version; "
+                "print(version('tolokaforge-adapter-terminal-bench'))",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert (
+            installed.returncode == 0
+        ), f"the `all` extra did not install the terminal-bench adapter:\n{installed.stderr}"
+    finally:
+        rmi = subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, text=True)
+        if rmi.returncode != 0:
             print(f"warning: failed to remove image {tag!r} (exit {rmi.returncode}): {rmi.stderr}")
