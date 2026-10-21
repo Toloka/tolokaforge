@@ -831,6 +831,14 @@ dev = [
     "click-repl>=0.3.0",
     "prompt-toolkit>=3.0.51",
 ]
+# Packages first-party Docker images install that no extra declares. Never installed
+# by `uv sync`; listing them puts them in uv.lock, so tolokaforge/docker/image-constraints.txt
+# pins them for image builds.
+image-services = [
+    "sentence-transformers>=2.2.0",
+    "torch",
+    "supervisor>=4.2,<5",
+]
 
 # =============================================================================
 # UV Configuration
@@ -869,8 +877,15 @@ tolokaforge-adapter-terminal-bench = { workspace = true }
 tolokaforge-coding-harnesses = { workspace = true }
 tolokaforge-models = { workspace = true }
 tolokaforge-langfuse = { workspace = true }
+torch = [{ index = "pytorch-cpu" }]
 
 # PyPI as primary index for cross-platform compatibility
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple/"
+
+# CPU torch builds, the variant the rag-service and standalone images install.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

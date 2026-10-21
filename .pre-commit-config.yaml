@@ -42,3 +42,13 @@ repos:
         pass_filenames: false
         always_run: true
         types: [python]
+
+      # Image and CI installs run under tolokaforge/docker/image-constraints.txt,
+      # the lock exported as pip constraints; this hook is its only generator.
+      # tests/canonical/test_image_constraints_match_lock.py checks it against uv.lock.
+      - id: image-constraints
+        name: Export uv.lock to image constraints
+        entry: uv --quiet export --format requirements.txt --frozen --all-packages --all-extras --all-groups --no-emit-workspace --no-hashes --no-annotate -o tolokaforge/docker/image-constraints.txt
+        language: system
+        files: ^uv\.lock$
+        pass_filenames: false
