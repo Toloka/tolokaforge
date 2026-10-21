@@ -27,7 +27,7 @@ _BUILD_TIMEOUT_S = 180
 
 def build_subset_wheel(dist_dir: Path) -> Path:
     """Build ``tolokaforge-runner-subset`` from the current tree into *dist_dir*."""
-    return _hatchling_build(
+    return hatchling_build(
         project_dir=REPO_ROOT,
         target="custom",
         dist_dir=dist_dir,
@@ -42,7 +42,7 @@ def build_models_wheel(dist_dir: Path) -> Path:
     The subset wheel's ``Requires-Dist: tolokaforge-models`` cannot resolve from
     PyPI in this repo's dev / CI environment, so a scratch-venv install passes
     this wheel alongside the subset one."""
-    return _hatchling_build(
+    return hatchling_build(
         project_dir=REPO_ROOT / "tolokaforge_models",
         target="wheel",
         dist_dir=dist_dir,
@@ -57,7 +57,7 @@ def build_base_wheel(dist_dir: Path) -> Path:
     This is the wheel a ``pip install tolokaforge`` ships — it carries the
     ``_subset_build/`` force-included sources every first-party image's build
     context needs on a wheel install."""
-    return _hatchling_build(
+    return hatchling_build(
         project_dir=REPO_ROOT,
         target="wheel",
         dist_dir=dist_dir,
@@ -68,7 +68,7 @@ def build_base_wheel(dist_dir: Path) -> Path:
 
 def build_coding_harnesses_wheel(dist_dir: Path) -> Path:
     """Build ``tolokaforge-coding-harnesses`` from the current tree into *dist_dir*."""
-    return _hatchling_build(
+    return hatchling_build(
         project_dir=REPO_ROOT / "tolokaforge_coding_harnesses",
         target="wheel",
         dist_dir=dist_dir,
@@ -149,7 +149,7 @@ def make_wheel_install_venv(venv_dir: Path, dist_dir: Path, base_wheel: Path) ->
     return venv_python
 
 
-def _hatchling_build(
+def hatchling_build(
     *,
     project_dir: Path,
     target: str,
