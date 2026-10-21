@@ -132,6 +132,13 @@ with three transport-neutral errors (`tolokaforge/core/dispatch/errors.py`):
 missing image, bad manifest — also not retried), and `DispatchTransient` (an
 infrastructure fault, including "no capacity now", that the orchestrator retries).
 
+On a dispatch run the orchestrator's trial-level retries
+(`orchestrator.max_attempt_retries` / `compute.max_attempt_retries`, default 0)
+are what re-run a trial after a `DispatchTransient` fault — they *are* the
+transient-retry path, not a second layer stacked on the adapter. A backend that
+performs its own trial-level retries should set `max_attempt_retries` to 0 so a
+failed trial is not executed twice.
+
 The `orchestrator.dispatch` block names the adapter and its options. When it is
 set, the orchestrator builds the adapter, runs the trial loop through
 `RemoteTrialExecutor`, and starts no local substrate backend — the node owns the
