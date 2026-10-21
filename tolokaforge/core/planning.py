@@ -70,8 +70,11 @@ def plan_trials(
             (``models.agent`` required; ``user`` / ``judge`` optional), the
             repeat count and shuffle flag (``orchestrator``), the run-level
             grader block (``grader``), the node run settings
-            (:meth:`NodeRunSettings.from_config`), and the observability block
-            (``observability``) each planned trial traces under.
+            (:meth:`NodeRunSettings.from_config`), the observability block
+            (``observability``) each planned trial traces under, and the
+            model-presets overlay (``engine.presets_file``) whose content each
+            planned trial carries so the node calls models as the single-box
+            path does.
         tasks: Preloaded tasks to plan. ``None`` loads them from *run_config*
             through its declared adapter — preloading gives exact control over
             the task set.
@@ -98,6 +101,7 @@ def plan_trials(
     import os
 
     from tolokaforge.core.adapter_params import assemble_adapter_params
+    from tolokaforge.core.llm.presets import _load_overlay_file, resolve_overlay_path
     from tolokaforge.core.models import ComputeConfig, GraderConfig
     from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
     from tolokaforge.core.trial import (
@@ -128,6 +132,15 @@ def plan_trials(
     probe = run_config.orchestrator.rate_limit_probe
     rate_limit_probe = probe if probe.enabled else None
     resolved_run_id = run_id or _resolve_run_id(run_config)
+
+    # Carry the model-presets overlay by value: the single-box path installs
+    # ``engine.presets_file`` process-globally, so each planned trial carries the
+    # same overlay content for the node to install before its model calls. Loading
+    # here also validates it once, up front. ``None`` when no overlay is configured.
+    presets_file = resolve_overlay_path(
+        config_value=run_config.engine.presets_file if run_config.engine else None
+    )
+    model_presets_overlay = _load_overlay_file(presets_file) if presets_file else None
 
     runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
     env_endpoints = _build_env_endpoints(runner_address)
@@ -179,6 +192,7 @@ def plan_trials(
                 rate_limit_probe=rate_limit_probe,
                 run_settings=run_settings,
                 observability=run_config.observability,
+                model_presets_overlay=model_presets_overlay,
             )
         )
     return planned

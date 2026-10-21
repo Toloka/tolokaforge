@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,6 +36,7 @@ from tolokaforge.core.conductor import (
 )
 from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
+from tolokaforge.core.llm.presets import get_overlay_data, set_overlay_data
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     EvaluationConfig,
@@ -365,6 +368,33 @@ def run_trial_from_inputs(inputs: TrialNodeInputs) -> TrialResult:
     _verify_task_pack(inputs)
     install_container_secrets()
 
+    with _carried_presets_overlay(inputs.model_presets_overlay):
+        return _run_verified_trial(inputs, task, spec)
+
+
+@contextmanager
+def _carried_presets_overlay(overlay: dict[str, Any] | None) -> Iterator[None]:
+    """Install a carried model-presets overlay for one trial, restoring prior state.
+
+    With no carried overlay the process overlay is left untouched, so a trial
+    that carries none runs exactly as it did before. With one, it becomes the
+    active overlay for this trial's model calls and the previous overlay is
+    restored on exit (even on error), so one trial's overlay cannot leak into
+    the next in a reused process.
+    """
+    if overlay is None:
+        yield
+        return
+    previous = get_overlay_data()
+    set_overlay_data(overlay)
+    try:
+        yield
+    finally:
+        set_overlay_data(previous)
+
+
+def _run_verified_trial(inputs: TrialNodeInputs, task: TaskConfig, spec: TrialSpec) -> TrialResult:
+    """Run the trial once its pack, secrets and model-presets overlay are in place."""
     logger = get_logger(spec.run_id)
     adapter = build_single_task_adapter(task, inputs.task_pack_dir)
     manifest = spec.task.environment_manifest

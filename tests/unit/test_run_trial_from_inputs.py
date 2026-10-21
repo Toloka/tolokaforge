@@ -433,6 +433,66 @@ class TestCarriedRunSettings:
             NodeRunSettings.model_validate({"max_turns": 7, "typesense": {}})
 
 
+class TestCarriedPresetsOverlay:
+    """A carried overlay installs for the trial and does not leak after it."""
+
+    _OVERLAY = {
+        "presets": {"carry_demo": {"match": ["carry-demo/*"], "content_policy": "anthropic"}}
+    }
+
+    def _content_policy_during_trial(
+        self, adapter: _FakeAdapter, monkeypatch: pytest.MonkeyPatch, **overrides: Any
+    ) -> str:
+        """Run a trial and capture the ``content_policy`` a lookup resolves mid-trial.
+
+        The spy fires inside ``register_preloaded_task``, which the trial unit
+        calls after the overlay is installed and before any model call, so the
+        captured value is exactly what the trial's model calls would resolve.
+        """
+        from tolokaforge.core.llm.presets import build_capabilities, resolve_policy_names
+
+        captured: dict[str, str] = {}
+        original = adapter.register_preloaded_task
+
+        def spy(task: Any, task_dir: Path) -> None:
+            caps = build_capabilities("carry-demo/model", "carry")
+            captured["content_policy"] = resolve_policy_names(caps)["content_policy"]
+            original(task, task_dir)
+
+        monkeypatch.setattr(adapter, "register_preloaded_task", spy)
+        run_trial_from_inputs(_inputs(**overrides))
+        return captured["content_policy"]
+
+    def test_the_overlay_is_active_during_the_trial(
+        self, _fake_adapter: _FakeAdapter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        resolved = self._content_policy_during_trial(
+            _fake_adapter, monkeypatch, model_presets_overlay=self._OVERLAY
+        )
+        assert resolved == "anthropic"
+
+    def test_without_the_field_presets_are_the_bundled_defaults(
+        self, _fake_adapter: _FakeAdapter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        resolved = self._content_policy_during_trial(_fake_adapter, monkeypatch)
+        assert resolved == "openai"
+
+    def test_the_overlay_does_not_leak_after_the_trial(self) -> None:
+        from tolokaforge.core.llm.presets import get_overlay_data
+
+        assert get_overlay_data() is None
+        run_trial_from_inputs(_inputs(model_presets_overlay=self._OVERLAY))
+        assert get_overlay_data() is None
+
+    def test_a_prior_overlay_is_restored_after_the_trial(self) -> None:
+        from tolokaforge.core.llm.presets import get_overlay_data, set_overlay_data
+
+        prior = {"presets": {"prior": {"match": ["prior/*"], "content_policy": "nova"}}}
+        set_overlay_data(prior)
+        run_trial_from_inputs(_inputs(model_presets_overlay=self._OVERLAY))
+        assert get_overlay_data() == prior
+
+
 class TestAgentClient:
     def test_no_fallbacks_builds_the_bare_client_carrying_the_probe(self) -> None:
         from tolokaforge.core.llm import LLMClient

@@ -266,6 +266,16 @@ class TrialNodeInputs(BaseModel):
     credentials travel here — the ``tracing`` block names exporters, run tag and plugin
     options only, and each receiver's credentials resolve from the node's own secret payload."""
 
+    model_presets_overlay: dict[str, Any] | None = None
+    """The parsed, validated model-presets overlay, carried by value. The single-box path
+    installs the operator's ``engine.presets_file`` overlay process-globally; carrying its
+    content here lets the node install the same overlay for its model calls, so the models
+    are called as they are on the single-box path. ``None`` runs on the bundled presets only.
+    It is the mapping the overlay loader returns — the overlay's top-level blocks (``default``,
+    ``presets``, ``providers``, ``litellm_models``) — not a file path: a node has no copy of
+    the operator's file. The node installs it as the active overlay for the trial and clears
+    it afterward."""
+
     model_config = {"extra": "forbid"}
 
     @model_validator(mode="before")

@@ -188,6 +188,52 @@ def test_three_steps_reproduce_the_run_report(tmp_path: Path) -> None:
     assert "tool_use" in files_b["metadata_slices.json"]["by_benchmark_type"]
 
 
+def _overlay_file(base_dir: Path) -> tuple[Path, dict[str, Any]]:
+    """Write a small valid preset overlay and return its path and parsed content."""
+    from tolokaforge.core.llm.presets import _load_overlay_file
+
+    overlay = base_dir / "overlay.yaml"
+    overlay.write_text(
+        "presets:\n  carry_demo:\n    match: ['carry-demo/*']\n    content_policy: anthropic\n"
+    )
+    return overlay, _load_overlay_file(str(overlay))
+
+
+def test_plan_trials_carries_the_presets_overlay_content(tmp_path: Path) -> None:
+    """With ``engine.presets_file`` set, every planned trial carries the validated
+    overlay mapping — the content a node installs, not the operator's file path."""
+    from tolokaforge.core.models import EngineConfig
+
+    task = _write_native_task(tmp_path / "pack", "demo")
+    overlay_path, overlay_data = _overlay_file(tmp_path)
+    config = RunConfig(
+        models={"agent": _AGENT, "user": _USER},
+        orchestrator=OrchestratorConfig(workers=1, repeats=2, auto_start_services=False),
+        evaluation=EvaluationConfig(output_dir=str(tmp_path / "results")),
+        engine=EngineConfig(presets_file=str(overlay_path)),
+    )
+
+    planned = plan_trials(
+        config, tasks=[task], runtime="in_memory", conductor="in_memory", grader="runner_rpc"
+    )
+
+    assert len(planned) == 2
+    assert all(inp.model_presets_overlay == overlay_data for inp in planned)
+
+
+def test_plan_trials_carries_none_without_a_presets_overlay(tmp_path: Path) -> None:
+    """With no ``engine.presets_file``, each planned trial carries ``None`` and the
+    node runs on the bundled presets — behaviour-preserving."""
+    task = _write_native_task(tmp_path / "pack", "demo")
+    config = _run_config(tmp_path / "results", repeats=2)
+
+    planned = plan_trials(
+        config, tasks=[task], runtime="in_memory", conductor="in_memory", grader="runner_rpc"
+    )
+
+    assert all(inp.model_presets_overlay is None for inp in planned)
+
+
 def _fabricated_result(task_id: str, *, passed: bool) -> TrialResult:
     """A graded single-trial result with ``trial_index=0`` and no live execution."""
     trajectory = Trajectory(
