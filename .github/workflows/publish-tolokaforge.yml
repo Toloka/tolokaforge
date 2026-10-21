@@ -37,7 +37,7 @@ jobs:
         run: uv python install "$(cat .python-version)"
 
       - name: Build package
-        run: uv build
+        run: uv build --build-constraint tolokaforge/docker/image-constraints.txt
 
       - name: Verify package contents
         run: |

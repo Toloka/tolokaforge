@@ -64,7 +64,7 @@ jobs:
         run: uv python install "$(cat .python-version)"
 
       - name: Install commitizen
-        run: uv sync --group dev
+        run: uv sync --group dev --locked
 
       - name: Configure git identity
         run: |

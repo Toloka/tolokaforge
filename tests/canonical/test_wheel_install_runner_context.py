@@ -46,6 +46,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils.image_constraints import IMAGE_CONSTRAINTS_PATH
 from tests.utils.wheel_builds import base_wheel_in, build_workspace_wheels, make_wheel_install_venv
 
 pytestmark = pytest.mark.canonical
@@ -108,6 +109,71 @@ def built_base_wheel(built_wheels_dist: Path) -> Path:
     return base_wheel_in(built_wheels_dist)
 
 
+@pytest.fixture(scope="module")
+def wheel_install_python(
+    built_base_wheel: Path, built_wheels_dist: Path, tmp_path_factory: pytest.TempPathFactory
+) -> Path:
+    """Python of a scratch venv holding the base wheel, installed by :func:`make_wheel_install_venv`."""
+    return make_wheel_install_venv(
+        tmp_path_factory.mktemp("scratch_venv"), built_wheels_dist, built_base_wheel
+    )
+
+
+def test_base_wheel_ships_the_image_constraints(built_base_wheel: Path) -> None:
+    """Image builds and the CI gate read the ``uv.lock`` export from the installed package."""
+    packaged = "tolokaforge/docker/image-constraints.txt"
+    with zipfile.ZipFile(built_base_wheel) as zf:
+        assert packaged in zf.namelist(), f"{built_base_wheel.name} does not ship {packaged}"
+        assert (
+            zf.read(packaged) == IMAGE_CONSTRAINTS_PATH.read_bytes()
+        ), f"{built_base_wheel.name} ships a {packaged} that differs from the repo file"
+
+
+def test_wheel_install_venv_passes_the_locked_install_guard(
+    wheel_install_python: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """The scratch venv holds ``uv.lock`` versions and local-file first-party wheels.
+
+    Runs the CI ``wheel-install-gate`` guard row against the packaged constraints
+    file, plus ``--exempt pip`` for the pip that ``python -m venv`` seeds."""
+    guard_cwd = tmp_path_factory.mktemp("guard_cwd_outside_repo")
+    packaged_constraints = subprocess.run(
+        [
+            str(wheel_install_python),
+            "-c",
+            "import pathlib, tolokaforge; "
+            "print(pathlib.Path(tolokaforge.__file__).parent / 'docker' / 'image-constraints.txt')",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=str(guard_cwd),
+    ).stdout.strip()
+    result = subprocess.run(
+        [
+            str(wheel_install_python),
+            "-m",
+            "tolokaforge.docker.dockerfiles.locked_install_check",
+            "--constraints",
+            packaged_constraints,
+            "--first-party",
+            "tolokaforge",
+            "--first-party",
+            "tolokaforge-models",
+            "--exempt",
+            "pip",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(guard_cwd),
+    )
+    assert result.returncode == 0, (
+        f"locked-install guard rejected the wheel-install venv (exit {result.returncode}):\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "first-party: tolokaforge, tolokaforge-models" in result.stdout, result.stdout
+
+
 def test_base_wheel_ships_runner_context_via_force_include(built_base_wheel: Path) -> None:
     """Every force-include entry the runner build context needs must be
     present in the built base wheel.
@@ -131,7 +197,7 @@ def test_base_wheel_ships_runner_context_via_force_include(built_base_wheel: Pat
 
 
 def test_core_stack_runner_context_assembles_from_wheel_install(
-    built_base_wheel: Path, built_wheels_dist: Path, tmp_path_factory: pytest.TempPathFactory
+    wheel_install_python: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
     """Install the base wheel into a scratch venv and drive the PRODUCTION
     path — ``core_stack().services['runner'].context_files`` +
@@ -153,8 +219,7 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
     return the same list — a necessary-but-not-sufficient invariant that
     would already be violated if the duplicate returned.
     """
-    venv_dir = tmp_path_factory.mktemp("scratch_venv")
-    venv_python = make_wheel_install_venv(venv_dir, built_wheels_dist, built_base_wheel)
+    venv_python = wheel_install_python
 
     # Run the probe from a CWD outside the repo — otherwise the scratch
     # venv's ``sys.path[0]`` prepends the CWD (repo root), and

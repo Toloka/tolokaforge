@@ -47,8 +47,9 @@ desync the two.
 Pushing the `vX.Y.Z` tag then triggers two tag-driven workflows automatically:
 
 - [`publish-tolokaforge.yml`](../.github/workflows/publish-tolokaforge.yml) —
-  builds the wheel + sdist and publishes them to PyPI via OIDC trusted
-  publishing (no stored token), then creates a GitHub Release.
+  builds the wheel + sdist with the locked build backend (see
+  [Relocking `uv.lock`](#relocking-uvlock)) and publishes them to PyPI via
+  OIDC trusted publishing (no stored token), then creates a GitHub Release.
 - [`release-gate.yml`](../.github/workflows/release-gate.yml) — runs lint, task
   validation, and the unit / canonical / integration test lanes against the
   tagged commit.
@@ -296,7 +297,11 @@ publish cadence* above.
 ## Relocking `uv.lock`
 
 `tolokaforge/docker/image-constraints.txt` is `uv.lock` exported as pip
-constraints; image builds and CI installs run under it. The `image-constraints`
+constraints; image builds and CI installs run under it. Every workflow
+`uv build` — the five publish workflows and CI's `wheel-install-gate` — passes
+it as `--build-constraint`, so the build backend (`hatchling`, `packaging`) is
+the locked version, and the release workflows install commitizen with
+`uv sync --locked`. The `image-constraints`
 pre-commit hook regenerates it whenever `uv.lock` changes, and
 `tests/canonical/test_image_constraints_match_lock.py` fails when the two
 disagree. Commit the regenerated file with the lock:

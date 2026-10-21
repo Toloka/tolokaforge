@@ -5,9 +5,12 @@ All tests are synthetic — no Docker daemon, no network, no real wheel builds.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import subprocess
+import sys
 import textwrap
 import tomllib
 from pathlib import Path
@@ -15,6 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.utils.image_constraints import IMAGE_CONSTRAINTS_PATH
 from tolokaforge.docker.wheel_resolver import (
     LocalSourceWheelProvider,
     NoWheelError,
@@ -24,6 +28,7 @@ from tolokaforge.docker.wheel_resolver import (
     WheelArtifact,
     WheelProvider,
     WheelResolver,
+    WheelResolverError,
     _EngineSourceSearch,
     _hash_file,
     _is_engine_pyproject,
@@ -326,61 +331,6 @@ class TestLocalSourceWheelProvider:
             assert provider.provide(cache_dir) is None
         assert "no engine source tree" in provider.last_failure
 
-    def test_build_wheel_calls_uv_with_correct_args(self, engine_root: Path, cache_dir: Path):
-        """Direct call to _build_wheel (real signature) — catches staticmethod/
-        self-binding regressions the patch-based tests miss."""
-        provider = LocalSourceWheelProvider()
-        captured: list[list[str]] = []
-
-        def fake_run_uv(args, timeout=300):
-            captured.append(args)
-            return True, ""
-
-        with patch(
-            "tolokaforge.docker.wheel_resolver._run_uv",
-            side_effect=fake_run_uv,
-        ):
-            provider._build_wheel(engine_root, cache_dir)
-
-        assert len(captured) == 1
-        assert captured[0][:2] == ["build", "--wheel"]
-        assert str(cache_dir) in captured[0]
-        assert str(engine_root) in captured[0]
-
-    def test_build_wheel_falls_back_to_pip_when_uv_fails(self, engine_root: Path, cache_dir: Path):
-        """uv build failure surfaces via pip wheel fallback."""
-        provider = LocalSourceWheelProvider()
-        with (
-            patch(
-                "tolokaforge.docker.wheel_resolver._run_uv",
-                return_value=(False, "uv not on PATH"),
-            ),
-            patch(
-                "tolokaforge.docker.wheel_resolver._run_pip",
-                return_value=(True, ""),
-            ) as mock_pip,
-        ):
-            provider._build_wheel(engine_root, cache_dir)
-        assert mock_pip.call_count == 1
-        assert provider.last_failure == ""
-
-    def test_build_wheel_records_both_failures(self, engine_root: Path, cache_dir: Path):
-        """When BOTH uv and pip fail, last_failure carries both stderrs."""
-        provider = LocalSourceWheelProvider()
-        with (
-            patch(
-                "tolokaforge.docker.wheel_resolver._run_uv",
-                return_value=(False, "uv not on PATH"),
-            ),
-            patch(
-                "tolokaforge.docker.wheel_resolver._run_pip",
-                return_value=(False, "pip build failed: missing hatchling"),
-            ),
-        ):
-            provider._build_wheel(engine_root, cache_dir)
-        assert "uv not on PATH" in provider.last_failure
-        assert "missing hatchling" in provider.last_failure
-
     def test_tasks_checkout_yields_none(
         self,
         tasks_root: Path,
@@ -396,6 +346,149 @@ class TestLocalSourceWheelProvider:
             str(fake_module),
         ):
             assert provider.provide(cache_dir) is None
+
+
+# ===================================================================
+# Locked wheel builds — both build sites, real subprocesses, stub builders
+# ===================================================================
+
+
+_RECORDED_ENV = ("PIP_CONSTRAINT", "PIP_BUILD_CONSTRAINT")
+
+
+class _StubBuilders:
+    """A stub ``uv`` on ``PATH`` and a stub ``sys.executable`` (the ``python -m pip``
+    the fallback runs) that each record argv and the pip constraint env, then exit
+    with a chosen code."""
+
+    def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._root = root
+        self._bin = root / "bin"
+        self._bin.mkdir()
+        self._monkeypatch = monkeypatch
+        monkeypatch.setenv("PATH", f"{self._bin}{os.pathsep}{os.environ['PATH']}")
+
+    def install(self, *, uv_exit: int, pip_exit: int) -> None:
+        self._write("uv", uv_exit)
+        self._monkeypatch.setattr(sys, "executable", str(self._write("python", pip_exit)))
+
+    def calls(self, name: str) -> list[dict]:
+        record = self._root / f"{name}.jsonl"
+        if not record.is_file():
+            return []
+        return [json.loads(line) for line in record.read_text().splitlines()]
+
+    def _write(self, name: str, exit_code: int) -> Path:
+        stub = self._bin / name
+        stub.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            f"with open({str(self._root / f'{name}.jsonl')!r}, 'a') as record:\n"
+            "    record.write(json.dumps({'argv': sys.argv[1:], 'env': "
+            f"{{k: os.environ.get(k) for k in {_RECORDED_ENV!r}}}}}) + '\\n')\n"
+            f"sys.stderr.write({name!r} + ' stub failed\\n')\n"
+            f"sys.exit({exit_code})\n"
+        )
+        stub.chmod(0o755)
+        return stub
+
+
+@pytest.fixture()
+def stub_builders(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _StubBuilders:
+    stub_root = tmp_path / "stubs"
+    stub_root.mkdir()
+    return _StubBuilders(stub_root, monkeypatch)
+
+
+def _committed_git_repo(root: Path) -> tuple[str, str]:
+    root.mkdir()
+    (root / "README").write_text("engine\n")
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    for argv in (["init", "-q"], ["add", "README"], ["commit", "-q", "-m", "init"]):
+        subprocess.run([*git, *argv], check=True, capture_output=True)
+    sha = subprocess.run(
+        [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    return str(root), sha
+
+
+def _build_from_local_source(engine_root: Path, cache_dir: Path) -> str:
+    provider = LocalSourceWheelProvider()
+    provider._build_wheel(engine_root, cache_dir)
+    return provider.last_failure
+
+
+def _build_from_git_origin(engine_root: Path, cache_dir: Path) -> str:
+    url, sha = _committed_git_repo(engine_root / "git-origin")
+    ok, err = ReinstallWheelProvider._materialize_git(url, sha, cache_dir)
+    assert ok == (err == "")
+    return err
+
+
+_BUILD_SITES = pytest.mark.parametrize(
+    "build", [_build_from_local_source, _build_from_git_origin], ids=["local-source", "git-origin"]
+)
+
+
+class TestLockedWheelBuild:
+    """Every engine wheel build pins its build backend to the packaged ``uv.lock`` export."""
+
+    @_BUILD_SITES
+    def test_uv_build_passes_the_packaged_build_constraints(
+        self, build, stub_builders: _StubBuilders, engine_root: Path, cache_dir: Path
+    ):
+        stub_builders.install(uv_exit=0, pip_exit=0)
+
+        assert build(engine_root, cache_dir) == ""
+
+        [uv_call] = stub_builders.calls("uv")
+        argv = uv_call["argv"]
+        assert argv[:2] == ["build", "--wheel"]
+        constraints = Path(argv[argv.index("--build-constraint") + 1])
+        assert constraints == IMAGE_CONSTRAINTS_PATH
+        assert stub_builders.calls("python") == []
+
+    @_BUILD_SITES
+    def test_pip_fallback_env_carries_both_constraint_variables(
+        self, build, stub_builders: _StubBuilders, engine_root: Path, cache_dir: Path
+    ):
+        stub_builders.install(uv_exit=1, pip_exit=0)
+
+        assert build(engine_root, cache_dir) == ""
+
+        [pip_call] = stub_builders.calls("python")
+        assert pip_call["argv"][:4] == ["-m", "pip", "wheel", "--no-deps"]
+        for variable in _RECORDED_ENV:
+            assert pip_call["env"][variable] == str(IMAGE_CONSTRAINTS_PATH), variable
+        assert IMAGE_CONSTRAINTS_PATH.is_file()
+
+    @_BUILD_SITES
+    def test_both_builder_failures_are_reported(
+        self, build, stub_builders: _StubBuilders, engine_root: Path, cache_dir: Path
+    ):
+        stub_builders.install(uv_exit=1, pip_exit=1)
+
+        failure = build(engine_root, cache_dir)
+
+        assert "uv build: uv stub failed" in failure
+        assert "pip wheel: python stub failed" in failure
+
+    @_BUILD_SITES
+    def test_missing_packaged_constraints_raise_naming_the_path(
+        self, build, stub_builders: _StubBuilders, engine_root: Path, cache_dir: Path, tmp_path
+    ):
+        stub_builders.install(uv_exit=0, pip_exit=0)
+        relocated_module = (
+            tmp_path / "site-packages" / "tolokaforge" / "docker" / "wheel_resolver.py"
+        )
+        missing = relocated_module.with_name("image-constraints.txt")
+
+        with (
+            patch("tolokaforge.docker.wheel_resolver.__file__", str(relocated_module)),
+            pytest.raises(WheelResolverError, match=re.escape(str(missing))),
+        ):
+            build(engine_root, cache_dir)
+        assert stub_builders.calls("uv") == []
 
 
 # ===================================================================

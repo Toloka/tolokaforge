@@ -99,7 +99,7 @@ jobs:
         run: uv python install "$(cat .python-version)"
 
       - name: Build wheel
-        run: uv build
+        run: uv build --build-constraint tolokaforge/docker/image-constraints.txt
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
