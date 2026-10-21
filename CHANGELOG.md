@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.33.1 (2026-10-21)
+
+### Fix
+
+- **deps**: cap litellm below 1.103 — it requires mcp 2, which our mcp<2 pin excludes (#1931)
+
 ## v0.33.0 (2026-10-21)
 
 ### Fix
