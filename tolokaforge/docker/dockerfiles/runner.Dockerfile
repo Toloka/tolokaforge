@@ -24,8 +24,9 @@
 #      union of the base wheel's ``[project.dependencies]`` reachable from
 #      the runner subset and the domain-tool ``[runner]`` extra) so no
 #      extras selector is needed at install time.
-#   3. runtime — copies only the venv, so git/curl/perl and the
-#      pip/setuptools/wheel toolchain never reach the shipped image.
+#   3. runtime — copies only the venv, so git/curl/perl, the
+#      pip/setuptools/wheel toolchain and the constraints file never reach the
+#      shipped image.
 #
 # Every stage that runs pip installs under ``image-constraints.txt``, the
 # ``uv.lock`` export: ``PIP_CONSTRAINT`` pins each third-party package and the
@@ -34,7 +35,8 @@
 # wheel-only except the lock's sdist-only packages (``--only-binary :all:
 # --no-binary sly``, in that order — pip applies them left to right), and
 # ``locked_install_check.py`` then fails the build if any installed distribution
-# is off the lock or a first-party one did not come from a local wheel.
+# is off the lock or a first-party one does not match the local wheel it was
+# installed from. Only the builder stages see pip and the constraints file.
 
 ARG PYTHON_VERSION=3.12
 
@@ -132,10 +134,23 @@ RUN python -m venv /opt/venv \
         --first-party tolokaforge-runner-subset \
         --first-party tolokaforge-models \
         --first-party tolokaforge-coding-harnesses \
-        --exempt pip \
-    && rm -f /tmp/tolokaforge_runner_subset-*.whl \
-              /tmp/tolokaforge_models-*.whl \
-              /tmp/tolokaforge_coding_harnesses-*.whl
+        --exempt pip
+
+# Playwright for the browser tool (opt-in via build arg), auto-set by the
+# orchestrator when a task enables the browser/mobile tools. Installed here,
+# where pip, the constraints and the first-party wheels the guard verifies
+# against are present; the runtime stage installs only Chromium.
+ARG INSTALL_PLAYWRIGHT=false
+RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
+    /opt/venv/bin/pip install --no-cache-dir --no-compile --only-binary :all: --no-binary sly \
+        playwright \
+    && /opt/venv/bin/python /opt/tolokaforge/locked_install_check.py \
+        --constraints /opt/tolokaforge/image-constraints.txt \
+        --first-party tolokaforge-runner-subset \
+        --first-party tolokaforge-models \
+        --first-party tolokaforge-coding-harnesses \
+        --exempt pip; \
+    fi
 
 # ---------------------------------------------------------------------------
 # runtime — copy only the venv; no build toolchain
@@ -156,23 +171,10 @@ WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 
-COPY tolokaforge/docker/image-constraints.txt tolokaforge/docker/dockerfiles/locked_install_check.py /opt/tolokaforge/
-ENV PIP_CONSTRAINT=/opt/tolokaforge/image-constraints.txt \
-    PIP_BUILD_CONSTRAINT=/opt/tolokaforge/image-constraints.txt
-
-# Playwright for browser tool (opt-in via build arg). Auto-set by the
-# orchestrator when a task enables the browser/mobile tools. Runs before the
-# toolchain strip below because it uses pip.
+# Chromium for the Playwright package the builder stage installed.
 ARG INSTALL_PLAYWRIGHT=false
 RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
-    pip install --no-cache-dir --only-binary :all: --no-binary sly playwright \
-    && python /opt/tolokaforge/locked_install_check.py \
-        --constraints /opt/tolokaforge/image-constraints.txt \
-        --first-party tolokaforge-runner-subset \
-        --first-party tolokaforge-models \
-        --first-party tolokaforge-coding-harnesses \
-        --exempt pip \
-    && playwright install --with-deps chromium; \
+    playwright install --with-deps chromium; \
     fi
 
 # Docker CLI + Compose plugin (opt-in via build arg). No Docker daemon — uses
@@ -197,9 +199,9 @@ RUN if [ "$INSTALL_DOCKER_CLI" = "true" ]; then \
     && rm -rf /var/lib/apt/lists/*; \
     fi
 
-# Strip the install toolchain — the runtime never installs packages. Reclaims
-# the pip/setuptools/wheel footprint the venv seeded at creation time. Last, so
-# the opt-in pip path above still has pip available.
+# Strip the install toolchain — the runtime never installs packages, so it
+# carries neither pip nor the constraints file. Reclaims the pip/setuptools/wheel
+# footprint the venv seeded at creation time.
 RUN rm -rf /opt/venv/lib/python*/site-packages/pip \
     /opt/venv/lib/python*/site-packages/pip-*.dist-info \
     /opt/venv/lib/python*/site-packages/setuptools \

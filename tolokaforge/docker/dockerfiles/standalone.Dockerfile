@@ -27,15 +27,19 @@
 # Every install here runs under image-constraints.txt, the uv.lock export, and
 # is checked against it (see the runner.Dockerfile header). The runtime keeps
 # PIP_CONSTRAINT and PIP_BUILD_CONSTRAINT pointing at it, so a derived image's
-# `pip install` pins every package the lock lists; a package the lock does not
-# list still resolves live, and `uv pip` reads neither variable. Opt out per
-# command with `PIP_CONSTRAINT= PIP_BUILD_CONSTRAINT= pip install ...`.
+# `pip install` pins every third-party package the lock pins. The constraints
+# hold no first-party distribution: a derived `pip install` takes the
+# terminal-bench adapter from an index, unpinned, and finds no
+# tolokaforge-langfuse on PyPI at all. A package the lock does not list also
+# resolves live, and `uv pip` reads neither variable.
+# Opt out per command with `PIP_CONSTRAINT= PIP_BUILD_CONSTRAINT= pip install ...`.
 #
-# A custom TOLOKAFORGE_EXTRAS builds pinned to the lock like the default, with
-# first-party wheels built from this image's own source: `otel` installs the
-# langfuse plugin wheel and `adapters` / `terminal_bench` / `all` the
-# terminal-bench adapter wheel, both built in the wheel-builder stage. `browser`
-# installs the Python package only; Chromium needs INSTALL_BROWSER=true.
+# A custom TOLOKAFORGE_EXTRAS is the way to get the first-party plugins pinned
+# and local: it builds pinned to the lock like the default, with first-party
+# wheels built from this image's own source — `otel` installs the langfuse
+# plugin wheel and `adapters` / `terminal_bench` / `all` the terminal-bench
+# adapter wheel, both built in the wheel-builder stage. `browser` installs the
+# Python package only; Chromium needs INSTALL_BROWSER=true.
 #
 # The INSTALL_BROWSER / INSTALL_DOCKER_CLI / INSTALL_TYPESENSE build args bake
 # the heavy add-ons at build time (same opt-in pattern as runner.Dockerfile).
@@ -45,9 +49,9 @@
 # flavor in particular needs the native arch (its raft writes stall under qemu).
 #
 # Three stages: wheel-builder (base + sibling + plugin wheels from source, like
-# grader.Dockerfile) -> builder (one shared /opt/venv with extras + the rag
-# search deps on CPU torch + the baked embedding model) -> runtime (copy the
-# venv, wire the four services under supervisord).
+# grader.Dockerfile) -> builder (one shared /opt/venv: the rag search deps on
+# CPU torch and the baked embedding model first, then the base wheel with its
+# extras) -> runtime (copy the venv, wire the four services under supervisord).
 
 ARG PYTHON_VERSION=3.12
 ARG EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
@@ -91,12 +95,6 @@ RUN python -m hatchling build --target wheel && \
 # ---------------------------------------------------------------------------
 FROM python:${PYTHON_VERSION}-slim AS builder
 
-ARG EMBEDDING_MODEL
-# Lean-base extras, comma-separated. Override with --build-arg
-# TOLOKAFORGE_EXTRAS=... to add office/adapters/otel, or layer them post-build
-# (pip is kept in runtime).
-ARG TOLOKAFORGE_EXTRAS="dx,server,rag,runner"
-
 # Build-only toolchain — never reaches the runtime stage (which copies only
 # the venv). Covers any sdist-only transitive dep that needs a compiler.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -109,38 +107,63 @@ COPY tolokaforge/docker/image-constraints.txt tolokaforge/docker/dockerfiles/loc
 ENV PIP_CONSTRAINT=/opt/tolokaforge/image-constraints.txt \
     PIP_BUILD_CONSTRAINT=/opt/tolokaforge/image-constraints.txt
 
+# The rag-service search stack (its requirements.txt is the SSOT) on CPU torch,
+# layered above every layer carrying tolokaforge source so a source edit
+# re-downloads neither torch nor the embedding model. CPU torch goes first,
+# alone and without its dependencies, from the CPU index at the locked `+cpu`
+# version, so the multi-GB CUDA build is never pulled — the single biggest size
+# win for the all-in-one image. The next install resolves torch's dependencies
+# from PyPI under the lock.
+COPY tolokaforge/env/rag_service/requirements.txt /tmp/rag-requirements.txt
+RUN python -m venv /opt/venv && \
+    /opt/venv/bin/pip install --no-cache-dir --only-binary :all: --no-binary sly \
+        --no-deps --index-url https://download.pytorch.org/whl/cpu torch && \
+    /opt/venv/bin/pip install --no-cache-dir --only-binary :all: --no-binary sly \
+        -r /tmp/rag-requirements.txt && \
+    /opt/venv/bin/python /opt/tolokaforge/locked_install_check.py \
+        --constraints /opt/tolokaforge/image-constraints.txt --exempt pip && \
+    /opt/venv/bin/pip check && \
+    /opt/venv/bin/python -c "import torch; assert torch.__version__.endswith('+cpu'), torch.__version__"
+
+# Bake the embedding model into the venv image so the rag-service stands up
+# with no HuggingFace round-trip. Must run with network on (no HF_HUB_OFFLINE
+# yet); the runtime stage sets HF_HUB_OFFLINE=1 so the baked weights are the
+# ones served.
+ARG EMBEDDING_MODEL
+ENV HF_HOME=/opt/hf-cache
+RUN /opt/venv/bin/python -c \
+    "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
+
 COPY --from=wheel-builder /src/dist/*.whl /tmp/wheels/
 COPY --from=wheel-builder /src/tolokaforge_models/dist/*.whl /tmp/wheels/
 COPY --from=wheel-builder /src/tolokaforge_coding_harnesses/dist/*.whl /tmp/wheels/
 COPY --from=wheel-builder /src/tolokaforge_langfuse/dist/*.whl /tmp/wheels/
 COPY --from=wheel-builder /src/external_adapters/tolokaforge-adapter-terminal-bench/dist/*.whl /tmp/wheels/
-COPY tolokaforge/env/rag_service/requirements.txt /tmp/rag-requirements.txt
 
-# CPU torch first, alone and without its dependencies, from the CPU index at the
-# locked `+cpu` version, so the multi-GB CUDA build is never pulled — the single
-# biggest size win for the all-in-one image. The next install resolves torch's
-# dependencies from PyPI under the lock. Then one install of the base wheel with
-# its extras, the local first-party wheels those extras require (installed by
-# path, so no index copy can stand in for them), the rag-service's search deps
-# (its requirements.txt is the SSOT for the search stack) and the supervisor.
-RUN python -m venv /opt/venv && \
-    BASE_WHL="$(ls /tmp/wheels/tolokaforge-*.whl)" && \
+# Lean-base extras, comma-separated. Override with --build-arg
+# TOLOKAFORGE_EXTRAS=... to add office/adapters/otel: this is how otel and
+# adapters get their first-party wheels from this image's source, which a
+# post-build `pip install` cannot (tolokaforge-langfuse is not on PyPI). Declared
+# here so the layers above are shared by every extras value.
+ARG TOLOKAFORGE_EXTRAS="dx,server,rag,runner"
+
+# One install of the base wheel with its extras, the local first-party wheels
+# those extras require (installed by path, so no index copy can stand in for
+# them) and the supervisor. The /tmp/wheels files stay: the guard compares each
+# first-party install with its wheel, and this stage never ships.
+RUN BASE_WHL="$(ls /tmp/wheels/tolokaforge-*.whl)" && \
     PLUGIN_WHEELS="" && \
     case ",${TOLOKAFORGE_EXTRAS}," in *,otel,*) \
         PLUGIN_WHEELS="${PLUGIN_WHEELS} $(ls /tmp/wheels/tolokaforge_langfuse-*.whl)" ;; esac && \
     case ",${TOLOKAFORGE_EXTRAS}," in *,adapters,*|*,terminal_bench,*|*,all,*) \
         PLUGIN_WHEELS="${PLUGIN_WHEELS} $(ls /tmp/wheels/tolokaforge_adapter_terminal_bench-*.whl)" ;; esac && \
     /opt/venv/bin/pip install --no-cache-dir --only-binary :all: --no-binary sly \
-        --no-deps --index-url https://download.pytorch.org/whl/cpu torch && \
-    /opt/venv/bin/pip install --no-cache-dir --only-binary :all: --no-binary sly \
         /tmp/wheels/tolokaforge_models-*.whl \
         /tmp/wheels/tolokaforge_coding_harnesses-*.whl \
         "${BASE_WHL}[${TOLOKAFORGE_EXTRAS}]" \
         ${PLUGIN_WHEELS} \
-        -r /tmp/rag-requirements.txt \
         "supervisor>=4.2,<5" && \
     /opt/venv/bin/pip check && \
-    /opt/venv/bin/python -c "import torch; assert torch.__version__.endswith('+cpu'), torch.__version__" && \
     /opt/venv/bin/python /opt/tolokaforge/locked_install_check.py \
         --constraints /opt/tolokaforge/image-constraints.txt \
         --first-party tolokaforge \
@@ -148,16 +171,23 @@ RUN python -m venv /opt/venv && \
         --first-party tolokaforge-coding-harnesses \
         --first-party tolokaforge-langfuse \
         --first-party tolokaforge-adapter-terminal-bench \
-        --exempt pip && \
-    rm -rf /tmp/wheels /tmp/rag-requirements.txt
+        --exempt pip
 
-# Bake the embedding model into the venv image so the rag-service stands up
-# with no HuggingFace round-trip. Must run with network on (no HF_HUB_OFFLINE
-# yet) and after sentence-transformers is installed; the runtime stage sets
-# HF_HUB_OFFLINE=1 so the baked weights are the ones served.
-ENV HF_HOME=/opt/hf-cache
-RUN /opt/venv/bin/python -c \
-    "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
+# Browser add-on (opt-in): the Playwright package installs here, under the
+# constraints and the guard; the runtime stage installs Chromium.
+ARG INSTALL_BROWSER=false
+RUN if [ "$INSTALL_BROWSER" = "true" ]; then \
+    /opt/venv/bin/pip install --no-cache-dir --only-binary :all: --no-binary sly \
+        'playwright>=1.40.0' 'pillow>=12.1.0' && \
+    /opt/venv/bin/python /opt/tolokaforge/locked_install_check.py \
+        --constraints /opt/tolokaforge/image-constraints.txt \
+        --first-party tolokaforge \
+        --first-party tolokaforge-models \
+        --first-party tolokaforge-coding-harnesses \
+        --first-party tolokaforge-langfuse \
+        --first-party tolokaforge-adapter-terminal-bench \
+        --exempt pip; \
+    fi
 
 # ---------------------------------------------------------------------------
 # runtime — copy the shared venv, wire the four services under supervisord
@@ -190,7 +220,8 @@ RUN useradd --create-home --uid 10001 runner
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/hf-cache /opt/hf-cache
 
-COPY tolokaforge/docker/image-constraints.txt tolokaforge/docker/dockerfiles/locked_install_check.py /opt/tolokaforge/
+# Derived images' `pip install` runs under the constraints (see the header).
+COPY tolokaforge/docker/image-constraints.txt /opt/tolokaforge/image-constraints.txt
 ENV PIP_CONSTRAINT=/opt/tolokaforge/image-constraints.txt \
     PIP_BUILD_CONSTRAINT=/opt/tolokaforge/image-constraints.txt
 
@@ -212,21 +243,11 @@ RUN chmod +x /usr/local/bin/tolokaforge-standalone-entrypoint && \
     chown -R runner:runner /srv /env /work /var/log/tolokaforge /opt/hf-cache
 
 # Opt-in heavy add-ons, same pattern as runner.Dockerfile. pip is retained
-# below (not stripped) so these can also be layered post-build by a derived
-# image — the PyPI-extras analog.
+# (not stripped) so these can also be layered post-build by a derived image —
+# the PyPI-extras analog.
 ARG INSTALL_BROWSER=false
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 RUN if [ "$INSTALL_BROWSER" = "true" ]; then \
-    /opt/venv/bin/pip install --no-cache-dir --only-binary :all: --no-binary sly \
-        'playwright>=1.40.0' 'pillow>=12.1.0' && \
-    /opt/venv/bin/python /opt/tolokaforge/locked_install_check.py \
-        --constraints /opt/tolokaforge/image-constraints.txt \
-        --first-party tolokaforge \
-        --first-party tolokaforge-models \
-        --first-party tolokaforge-coding-harnesses \
-        --first-party tolokaforge-langfuse \
-        --first-party tolokaforge-adapter-terminal-bench \
-        --exempt pip && \
     /opt/venv/bin/playwright install --with-deps chromium && \
     chown -R runner:runner /opt/pw-browsers; \
     fi

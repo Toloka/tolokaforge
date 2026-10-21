@@ -6,8 +6,10 @@ import re
 import tomllib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from functools import cache
 from itertools import chain
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote
 
 from packaging import tags
@@ -34,7 +36,10 @@ class ConstraintPin:
 
 
 def parse_constraint_lines(text: str) -> list[ConstraintPin]:
-    """Parse the export; raises ``ValueError`` naming any line that is not ``name==version [; marker]``."""
+    """Parse the export; raises ``ValueError`` naming any line that is not ``name==version [; marker]``.
+
+    Deliberately independent of the guard's parser, so the tests that compare
+    the two read the file through an oracle that shares none of the guard's code."""
     pins: list[ConstraintPin] = []
     for line in text.splitlines():
         if not line or line.startswith("#"):
@@ -55,22 +60,27 @@ def parse_constraint_lines(text: str) -> list[ConstraintPin]:
     return pins
 
 
+@cache
+def _lock_packages() -> tuple[dict[str, Any], ...]:
+    return tuple(tomllib.loads(UV_LOCK_PATH.read_text())["package"])
+
+
 def lock_registry_packages() -> list[Mapping[str, object]]:
     """Every ``[[package]]`` entry of ``uv.lock`` resolved from a package index."""
-    lock = tomllib.loads(UV_LOCK_PATH.read_text())
-    return [package for package in lock["package"] if "registry" in package["source"]]
+    return [package for package in _lock_packages() if "registry" in package["source"]]
 
 
+@cache
 def lock_workspace_names() -> frozenset[str]:
     """Normalized names of the ``uv.lock`` packages built from this tree rather than an index."""
-    lock = tomllib.loads(UV_LOCK_PATH.read_text())
     return frozenset(
         canonicalize_name(str(package["name"]))
-        for package in lock["package"]
+        for package in _lock_packages()
         if "registry" not in package["source"]
     )
 
 
+@cache
 def lock_registry_pins() -> frozenset[tuple[str, str]]:
     return frozenset(
         (canonicalize_name(str(package["name"])), str(package["version"]))
@@ -139,12 +149,13 @@ def _sdist_only_on(
     }
 
 
+@cache
 def linux_sdist_only_packages() -> frozenset[str]:
     """Names whose Linux-applicable pin has no ``any`` or manylinux wheel for the image interpreter on some image arch.
 
     This is the set every first-party image ``pip install`` exempts with ``--no-binary``.
     """
-    packages_by_pin = {
+    packages_by_pin: dict[tuple[str, str], Mapping[str, object]] = {
         (canonicalize_name(str(package["name"])), str(package["version"])): package
         for package in lock_registry_packages()
     }

@@ -301,7 +301,7 @@ constraints; image builds and CI installs run under it. Every workflow
 `uv build` — the five publish workflows and CI's `wheel-install-gate` — passes
 it as `--build-constraint`, so the build backend (`hatchling`, `packaging`) is
 the locked version, and the release workflows install commitizen with
-`uv sync --locked`. The `image-constraints`
+`uv sync --locked` under uv 0.9.5, the version CI pins. The `image-constraints`
 pre-commit hook regenerates it whenever `uv.lock` changes, and
 `tests/canonical/test_image_constraints_match_lock.py` fails when the two
 disagree. Commit the regenerated file with the lock:

@@ -1,14 +1,18 @@
 """Every first-party Dockerfile installs third-party packages at ``uv.lock`` versions.
 
-Each stage that runs ``pip install`` copies the lock's pip export into the image
-and points ``PIP_CONSTRAINT`` and ``PIP_BUILD_CONSTRAINT`` at it before its first
-install. Every install is wheel-only except the lock's Linux sdist-only packages
-(``--only-binary :all:`` followed by ``--no-binary <set>``), names only lock
-packages, installs first-party distributions by wheel path, and is followed in
-the same ``RUN`` by the locked-install guard with the stage's exemption row.
-CPU torch comes from the CPU index alone and without dependencies, and the
-standalone image installs the langfuse and terminal-bench adapter wheels exactly
-for the extras that require them.
+Each stage that runs ``pip install`` (or ``pip wheel`` / ``pip download``, under
+any ``pip``, ``pip3`` or ``pip3.X`` name) copies the lock's pip export into the
+image and points ``PIP_CONSTRAINT`` and ``PIP_BUILD_CONSTRAINT`` at it before its
+first install. Every install is wheel-only except the lock's Linux sdist-only
+packages (``--only-binary :all:`` followed by ``--no-binary <set>``), names only
+lock packages or local paths, installs first-party distributions by wheel path,
+and every ``RUN`` that installs runs the locked-install guard after its last
+install, with that ``RUN``'s exemption row. A stage copies the constraints file
+exactly when it points ``PIP_CONSTRAINT`` at it, and the guard only when it
+installs, so the only shipped images that keep the constraints are the ones
+whose runtime keeps pip for derived images. CPU torch comes from the CPU index
+alone and without dependencies, and the standalone image installs the langfuse
+and terminal-bench adapter wheels exactly for the extras that require them.
 """
 
 from __future__ import annotations
@@ -19,10 +23,11 @@ import tomllib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+from functools import cache
 from pathlib import Path, PurePosixPath
 
 import pytest
-from packaging.requirements import Requirement
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
 from tests.utils.image_constraints import (
@@ -45,6 +50,10 @@ _SEPARATORS = frozenset({"&&", "||", ";", ";;", "|", "(", ")"})
 _VALUED_OPTIONS = frozenset({"--only-binary", "--no-binary", "--index-url", "-r"})
 _FLAG_OPTIONS = frozenset({"--no-cache-dir", "--no-compile", "--no-deps"})
 _PLUGIN_WHEEL_RE = re.compile(r"/(?P<stem>tolokaforge_\w+)-\*\.whl")
+_PIP_EXECUTABLE_RE = re.compile(r"^pip(?:3(?:\.\d+)?)?$")
+_PIP_FETCH_SUBCOMMANDS = frozenset({"install", "wheel", "download"})
+_GUARD_SCRIPT = "locked_install_check.py"
+_LOCAL_PATH_PREFIXES = ("/", "./", "$")
 
 
 @dataclass(frozen=True)
@@ -64,19 +73,27 @@ _STANDALONE = GuardRow(
     _FULL_WHEEL.first_party | {"tolokaforge-langfuse", "tolokaforge-adapter-terminal-bench"}
 )
 
-_GUARD_ROWS: dict[str, dict[str, GuardRow]] = {
-    "runner.Dockerfile": {"wheel-builder": _BOOTSTRAP, "builder": _RUNNER, "stage 2": _RUNNER},
-    "grader.Dockerfile": {"wheel-builder": _BOOTSTRAP, "builder": _FULL_WHEEL},
-    "trial_node.Dockerfile": {"wheel-builder": _BOOTSTRAP, "builder": _FULL_WHEEL},
+#: Per stage, the guard row of each ``RUN`` that installs, in order.
+_GUARD_ROWS: dict[str, dict[str, tuple[GuardRow, ...]]] = {
+    "runner.Dockerfile": {"wheel-builder": (_BOOTSTRAP,), "builder": (_RUNNER, _RUNNER)},
+    "grader.Dockerfile": {"wheel-builder": (_BOOTSTRAP,), "builder": (_FULL_WHEEL,)},
+    "trial_node.Dockerfile": {"wheel-builder": (_BOOTSTRAP,), "builder": (_FULL_WHEEL,)},
     "standalone.Dockerfile": {
-        "wheel-builder": _BOOTSTRAP,
-        "builder": _STANDALONE,
-        "runtime": _STANDALONE,
+        "wheel-builder": (_BOOTSTRAP,),
+        "builder": (_BOOTSTRAP, _STANDALONE, _STANDALONE),
     },
-    "rag.Dockerfile": {"sibling-wheel-builder": _BOOTSTRAP, "stage 1": _FULL_WHEEL},
-    "db_service.Dockerfile": {"stage 0": _BOOTSTRAP},
-    "mock_web.Dockerfile": {"stage 0": _BOOTSTRAP},
+    "rag.Dockerfile": {
+        "sibling-wheel-builder": (_BOOTSTRAP,),
+        "stage 1": (_BOOTSTRAP, _FULL_WHEEL),
+    },
+    "db_service.Dockerfile": {"stage 0": (_BOOTSTRAP,)},
+    "mock_web.Dockerfile": {"stage 0": (_BOOTSTRAP,)},
 }
+
+#: Images whose runtime keeps pip, so derived ``pip install`` runs under the lock.
+_RUNTIME_KEEPS_CONSTRAINTS = frozenset(
+    {"rag.Dockerfile", "db_service.Dockerfile", "mock_web.Dockerfile", "standalone.Dockerfile"}
+)
 
 _CPU_TORCH_STAGES = frozenset({("rag.Dockerfile", "stage 1"), ("standalone.Dockerfile", "builder")})
 
@@ -98,21 +115,23 @@ class _Command:
     run: int
     tokens: tuple[str, ...]
 
-    def pip_install_args(self) -> tuple[str, ...] | None:
+    def _pip_subcommand(self, subcommands: frozenset[str]) -> tuple[str, ...] | None:
         for index, token in enumerate(self.tokens[:-1]):
-            if PurePosixPath(token).name == "pip" and self.tokens[index + 1] == "install":
+            is_pip = _PIP_EXECUTABLE_RE.match(PurePosixPath(token).name) is not None
+            if is_pip and self.tokens[index + 1] in subcommands:
                 return self.tokens[index + 2 :]
         return None
 
+    def pip_fetch_args(self) -> tuple[str, ...] | None:
+        """Arguments of a ``pip install`` / ``pip wheel`` / ``pip download``, else ``None``."""
+        return self._pip_subcommand(_PIP_FETCH_SUBCOMMANDS)
+
     def is_pip_check(self) -> bool:
-        return any(
-            PurePosixPath(token).name == "pip" and self.tokens[index + 1] == "check"
-            for index, token in enumerate(self.tokens[:-1])
-        )
+        return self._pip_subcommand(frozenset({"check"})) is not None
 
     def guard_args(self) -> tuple[str, ...] | None:
         for index, token in enumerate(self.tokens):
-            if token.endswith("locked_install_check.py"):
+            if token.endswith(_GUARD_SCRIPT):
                 return self.tokens[index + 1 :]
         return None
 
@@ -209,16 +228,28 @@ def _copied_files(stage: _Stage, before_run: int) -> dict[str, str]:
     return copied
 
 
+@cache
 def _lock_names() -> frozenset[str]:
     return frozenset(pin.name for pin in parse_constraint_lines(IMAGE_CONSTRAINTS_PATH.read_text()))
 
 
+@cache
 def _first_party_names() -> frozenset[str]:
     return lock_workspace_names() | {_SUBSET_DISTRIBUTION}
 
 
+def _is_local_path(token: str) -> bool:
+    return token.startswith(_LOCAL_PATH_PREFIXES) and "://" not in token and " @ " not in token
+
+
 def _requirement_offences(requirement_text: str) -> list[str]:
-    name = canonicalize_name(Requirement(requirement_text).name)
+    if "://" in requirement_text:
+        return [f"`{requirement_text}` installs from a URL"]
+    try:
+        requirement = Requirement(requirement_text)
+    except InvalidRequirement:
+        return [f"`{requirement_text}` is neither a local path (/, ./, $) nor a requirement"]
+    name = canonicalize_name(requirement.name)
     if name in _first_party_names():
         return [f"first-party `{requirement_text}` installed by name, not by local wheel path"]
     if name not in _lock_names():
@@ -234,7 +265,7 @@ def _requirements_file_lines(stage: _Stage, run: int, path: str) -> list[str]:
 
 
 def _install_offences(stage: _Stage, command: _Command, sdist_only: frozenset[str]) -> list[str]:
-    args = command.pip_install_args()
+    args = command.pip_fetch_args()
     assert args is not None
     offences: list[str] = []
     only_binary = _option_values(args, "--only-binary")
@@ -263,7 +294,7 @@ def _install_offences(stage: _Stage, command: _Command, sdist_only: frozenset[st
             if token not in _FLAG_OPTIONS:
                 offences.append(f"unaudited pip option `{token}`")
             continue
-        if "/" in token or token.startswith("$"):
+        if _is_local_path(token):
             continue
         requirements.append(token)
     if index_urls and (
@@ -296,43 +327,53 @@ def _env_offences(stage: _Stage, first_install_run: int) -> list[str]:
     return offences
 
 
-def _guard_offences(commands: list[_Command], installs: list[int], row: GuardRow) -> list[str]:
-    last_install = installs[-1]
-    guards = [
-        index
-        for index, command in enumerate(commands)
-        if index > last_install
-        and command.run == commands[last_install].run
-        and command.guard_args() is not None
-    ]
-    if not guards:
-        return ["no locked-install guard after the last install in the same RUN"]
-    guard_args = commands[guards[0]].guard_args()
-    assert guard_args is not None
+def _run_guard_offences(run_commands: list[_Command], row: GuardRow) -> list[str]:
+    last_install = max(
+        index for index, command in enumerate(run_commands) if command.pip_fetch_args() is not None
+    )
+    guard_args = next(
+        (args for command in run_commands[last_install + 1 :] if (args := command.guard_args())),
+        None,
+    )
+    run = run_commands[0].run
+    if guard_args is None:
+        return [f"RUN (instruction {run}): no locked-install guard after its last install"]
     constraints, found = _guard_row(guard_args)
     offences: list[str] = []
     if constraints != _IMAGE_CONSTRAINTS:
-        offences.append(f"guard checks `{constraints}`, not {_IMAGE_CONSTRAINTS}")
+        offences.append(
+            f"RUN (instruction {run}): guard checks `{constraints}`, not {_IMAGE_CONSTRAINTS}"
+        )
     if found != row:
-        offences.append(f"guard row {found} is not {row}")
+        offences.append(f"RUN (instruction {run}): guard row {found} is not {row}")
     return offences
 
 
-def _stage_offences(stage: _Stage, row: GuardRow | None) -> list[str]:
+def _guard_offences(commands: list[_Command], rows: tuple[GuardRow, ...]) -> list[str]:
+    install_runs = sorted({command.run for command in commands if command.pip_fetch_args()})
+    if len(install_runs) != len(rows):
+        return [f"{len(install_runs)} RUNs install, but the guard table lists {len(rows)} rows"]
+    offences: list[str] = []
+    for run, row in zip(install_runs, rows, strict=True):
+        offences += _run_guard_offences([c for c in commands if c.run == run], row)
+    return offences
+
+
+def _stage_offences(stage: _Stage, rows: tuple[GuardRow, ...] | None) -> list[str]:
     commands = _commands(stage)
-    installs = [index for index, cmd in enumerate(commands) if cmd.pip_install_args() is not None]
+    installs = [index for index, cmd in enumerate(commands) if cmd.pip_fetch_args() is not None]
     if not installs:
-        return [] if row is None else ["has a guard row but no pip install"]
-    if row is None:
-        return ["installs with pip but has no guard row in this test"]
+        return [] if rows is None else ["has guard rows but no pip install"]
+    if rows is None:
+        return ["installs with pip but has no guard rows in this test"]
     offences = _env_offences(stage, commands[installs[0]].run)
     sdist_only = linux_sdist_only_packages()
     for index in installs:
         offences += _install_offences(stage, commands[index], sdist_only)
-    return offences + _guard_offences(commands, installs, row)
+    return offences + _guard_offences(commands, rows)
 
 
-def find_unlocked_installs(text: str, rows: Mapping[str, GuardRow]) -> list[str]:
+def find_unlocked_installs(text: str, rows: Mapping[str, tuple[GuardRow, ...]]) -> list[str]:
     """One ``<stage>: <reason>`` line per way a Dockerfile's installs escape the lock."""
     stages = parse_stages(text)
     offences = [
@@ -362,19 +403,92 @@ def test_dockerfile_installs_are_locked(dockerfile: str) -> None:
     assert not offences, f"{dockerfile} installs outside uv.lock:\n" + "\n".join(offences)
 
 
+def _shipping_offences(stage: _Stage) -> list[str]:
+    end = len(stage.instructions)
+    copied = _copied_files(stage, end)
+    copies_constraints = copied.get(PurePosixPath(_IMAGE_CONSTRAINTS).name) == _CONSTRAINTS_SOURCE
+    sets_constraint = _env_assignments(stage, end).get("PIP_CONSTRAINT") == _IMAGE_CONSTRAINTS
+    installs = any(command.pip_fetch_args() is not None for command in _commands(stage))
+    offences: list[str] = []
+    if copies_constraints != sets_constraint:
+        offences.append(
+            "copies the constraints file but does not point PIP_CONSTRAINT at it, or the reverse"
+        )
+    if _GUARD_SCRIPT in copied and not installs:
+        offences.append(f"copies {_GUARD_SCRIPT} but installs nothing for it to check")
+    return offences
+
+
+def constraints_shipping(text: str) -> tuple[list[str], bool]:
+    """``(<stage>: <reason> lines, whether the final stage keeps PIP_CONSTRAINT)``."""
+    stages = parse_stages(text)
+    offences = [
+        f"{stage.name}: {offence}" for stage in stages for offence in _shipping_offences(stage)
+    ]
+    final = stages[-1]
+    keeps = _env_assignments(final, len(final.instructions)).get("PIP_CONSTRAINT") is not None
+    return offences, keeps
+
+
+def test_only_images_that_keep_pip_ship_the_constraints() -> None:
+    keeping: set[str] = set()
+    offences: list[str] = []
+    for path in _dockerfiles():
+        found, keeps = constraints_shipping(path.read_text())
+        offences += [f"{path.name} {offence}" for offence in found]
+        if keeps:
+            keeping.add(path.name)
+    assert not offences, "\n".join(offences)
+    assert keeping == _RUNTIME_KEEPS_CONSTRAINTS
+
+
+@pytest.mark.parametrize(
+    ("text", "reason", "keeps"),
+    [
+        pytest.param(
+            f"FROM python:3.12-slim\nCOPY {_CONSTRAINTS_SOURCE} /opt/tolokaforge/\n"
+            f"ENV PIP_CONSTRAINT={_IMAGE_CONSTRAINTS} PIP_BUILD_CONSTRAINT={_IMAGE_CONSTRAINTS}\n",
+            None,
+            True,
+            id="runtime-keeps-constraints",
+        ),
+        pytest.param(
+            "FROM python:3.12-slim AS builder\nFROM python:3.12-slim\n"
+            "COPY tolokaforge/docker/dockerfiles/locked_install_check.py /opt/tolokaforge/\n",
+            f"copies {_GUARD_SCRIPT} but installs nothing",
+            False,
+            id="guard-without-install",
+        ),
+        pytest.param(
+            f"FROM python:3.12-slim\nCOPY {_CONSTRAINTS_SOURCE} /opt/tolokaforge/\n",
+            "does not point PIP_CONSTRAINT at it",
+            False,
+            id="constraints-without-env",
+        ),
+    ],
+)
+def test_constraints_shipping_controls(text: str, reason: str | None, keeps: bool) -> None:
+    offences, found_keeps = constraints_shipping(text)
+    assert found_keeps is keeps
+    if reason is None:
+        assert offences == []
+    else:
+        assert any(reason in offence for offence in offences), offences
+
+
 def _cpu_torch_offences(stage: _Stage) -> list[str]:
     commands = _commands(stage)
     torch_steps = [
         index
         for index, command in enumerate(commands)
-        if _CPU_TORCH_INDEX in (command.pip_install_args() or ())
+        if _CPU_TORCH_INDEX in (command.pip_fetch_args() or ())
     ]
     if len(torch_steps) != 1:
         return [f"expected one CPU-index torch install, found {len(torch_steps)}"]
     step = torch_steps[0]
     later = [command for command in commands[step + 1 :] if command.run == commands[step].run]
     offences: list[str] = []
-    if not any(command.pip_install_args() is not None for command in later):
+    if not any(command.pip_fetch_args() is not None for command in later):
         offences.append("no PyPI install resolves torch's dependencies in the same RUN")
     if not any(command.is_pip_check() for command in later):
         offences.append("no `pip check` after the torch install in the same RUN")
@@ -389,8 +503,7 @@ def test_cpu_torch_comes_from_the_cpu_index() -> None:
     for path in _dockerfiles():
         for stage in parse_stages(path.read_text()):
             uses_cpu_index = any(
-                _CPU_TORCH_INDEX in (command.pip_install_args() or ())
-                for command in _commands(stage)
+                _CPU_TORCH_INDEX in (command.pip_fetch_args() or ()) for command in _commands(stage)
             )
             if not uses_cpu_index:
                 continue
@@ -467,7 +580,7 @@ def test_standalone_installs_plugin_wheels_exactly_for_the_extras_that_require_t
     install = next(
         args
         for command in _commands(builder)
-        if "${BASE_WHL}[${TOLOKAFORGE_EXTRAS}]" in (args := command.pip_install_args() or ())
+        if "${BASE_WHL}[${TOLOKAFORGE_EXTRAS}]" in (args := command.pip_fetch_args() or ())
     )
     for arm in arms:
         assert f"${{{arm.variable}}}" in install, (
@@ -492,7 +605,7 @@ def _sdist_only_flags() -> str:
 
 def test_a_locked_stage_passes() -> None:
     text = _LOCKED_STAGE.format(flags=_sdist_only_flags())
-    assert find_unlocked_installs(text, {"builder": _BOOTSTRAP}) == []
+    assert find_unlocked_installs(text, {"builder": (_BOOTSTRAP,)}) == []
 
 
 @pytest.mark.parametrize(
@@ -529,8 +642,63 @@ def test_a_locked_stage_passes() -> None:
             "`--upgrade`",
             id="upgrade-pip",
         ),
+        *(
+            pytest.param(
+                f'FROM python:3.12-slim AS builder\nRUN {command} --no-cache-dir "hatchling"\n',
+                "`PIP_CONSTRAINT` is not",
+                id=command.replace(" ", "-"),
+            )
+            for command in (
+                "pip3 install",
+                "/usr/local/bin/pip3.12 install",
+                "python -m pip install",
+                "pip wheel",
+                "pip download",
+            )
+        ),
+        pytest.param(
+            _LOCKED_STAGE.format(flags=_sdist_only_flags()).replace(
+                '"hatchling>=1.24,<2.0"', '"hatchling @ https://files.example/hatchling.whl"'
+            ),
+            "installs from a URL",
+            id="direct-reference",
+        ),
+        pytest.param(
+            _LOCKED_STAGE.format(flags=_sdist_only_flags()).replace(
+                '"hatchling>=1.24,<2.0"', "git+https://example.invalid/hatchling.git"
+            ),
+            "installs from a URL",
+            id="vcs-url",
+        ),
+        pytest.param(
+            _LOCKED_STAGE.format(flags=_sdist_only_flags()).replace(
+                '"hatchling>=1.24,<2.0"', "wheels/hatchling-1.31.0-py3-none-any.whl"
+            ),
+            "is neither a local path",
+            id="relative-path-without-dot-slash",
+        ),
     ],
 )
 def test_an_unlocked_stage_is_rejected(text: str, reason: str) -> None:
-    offences = find_unlocked_installs(text, {"builder": _BOOTSTRAP})
+    offences = find_unlocked_installs(text, {"builder": (_BOOTSTRAP,)})
     assert any(reason in offence for offence in offences), offences
+
+
+def test_every_installing_run_needs_its_own_guard() -> None:
+    """A guard in a later ``RUN`` does not cover an earlier one, whose installs a
+    step in between (e.g. a model bake) may already import."""
+    flags = _sdist_only_flags()
+    earlier = f"RUN pip install --no-cache-dir {flags} hatchling\n"
+    text = _LOCKED_STAGE.format(flags=flags).replace("RUN pip install", f"{earlier}RUN pip install")
+    assert find_unlocked_installs(text, {"builder": (_BOOTSTRAP, _BOOTSTRAP)}) == [
+        "builder: RUN (instruction 2): no locked-install guard after its last install"
+    ]
+    guarded = earlier.replace(
+        "hatchling\n",
+        f"hatchling && python /opt/tolokaforge/{_GUARD_SCRIPT} "
+        f"--constraints {_IMAGE_CONSTRAINTS} --exempt pip\n",
+    )
+    fixed = _LOCKED_STAGE.format(flags=flags).replace(
+        "RUN pip install", f"{guarded}RUN pip install"
+    )
+    assert find_unlocked_installs(fixed, {"builder": (_BOOTSTRAP, _BOOTSTRAP)}) == []

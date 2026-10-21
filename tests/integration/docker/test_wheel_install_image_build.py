@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import subprocess
 import textwrap
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,17 @@ pytestmark = [
 ]
 
 _BUILD_TIMEOUT_S = 1800
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_PLUGIN_PROJECTS = {
+    "tolokaforge-langfuse": _REPO_ROOT / "tolokaforge_langfuse",
+    "tolokaforge-adapter-terminal-bench": (
+        _REPO_ROOT / "external_adapters" / "tolokaforge-adapter-terminal-bench"
+    ),
+}
+
+
+def _project_version(project: Path) -> str:
+    return str(tomllib.loads((project / "pyproject.toml").read_text())["project"]["version"])
 
 
 @pytest.fixture(scope="module")
@@ -123,18 +135,19 @@ def test_image_builds_from_wheel_install(
 
 
 @pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
-def test_standalone_with_every_extra_builds_from_wheel_install(
+def test_standalone_with_every_plugin_extra_builds_from_wheel_install(
     wheel_install_python: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
-    """``TOLOKAFORGE_EXTRAS=all`` builds from a wheel install with the terminal-bench
-    adapter wheel compiled in-container from the packaged sources.
+    """``TOLOKAFORGE_EXTRAS=all,otel`` builds from a wheel install with the langfuse
+    plugin and terminal-bench adapter wheels compiled in-container from the
+    packaged sources (``all`` names the adapter only; ``otel`` adds langfuse).
 
     ``build_image`` takes no build-arg override, so the probe assembles the
     production context and runs ``docker build`` on it directly. The in-image
-    guard fails the build if the adapter came from an index rather than the local
-    wheel; the run afterwards proves it is installed at all."""
+    guard fails the build if either plugin did not come from its local wheel; the
+    run afterwards proves both are installed at this tree's versions."""
     probe_cwd = tmp_path_factory.mktemp("extras_build_cwd_outside_repo")
-    tag = "tolokaforge-standalone:wheel-install-extras-all"
+    tag = "tolokaforge-standalone:wheel-install-extras-all-otel"
     probe = textwrap.dedent(f"""
         import shutil
         import subprocess
@@ -153,7 +166,7 @@ def test_standalone_with_every_extra_builds_from_wheel_install(
             root, definition["dockerfile"], definition["context_files"]
         )
         try:
-            build_args = {{**definition["build_args"], "TOLOKAFORGE_EXTRAS": "all"}}
+            build_args = {{**definition["build_args"], "TOLOKAFORGE_EXTRAS": "all,otel"}}
             command = ["docker", "build", "-t", {tag!r}, "-f", str(context / definition["dockerfile"])]
             for key, value in build_args.items():
                 command += ["--build-arg", f"{{key}}={{value}}"]
@@ -170,7 +183,7 @@ def test_standalone_with_every_extra_builds_from_wheel_install(
     )
     try:
         assert result.returncode == 0, (
-            f"standalone TOLOKAFORGE_EXTRAS=all build from a wheel install failed "
+            f"standalone TOLOKAFORGE_EXTRAS=all,otel build from a wheel install failed "
             f"(exit {result.returncode}):\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
         installed = subprocess.run(
@@ -182,15 +195,16 @@ def test_standalone_with_every_extra_builds_from_wheel_install(
                 "/opt/venv/bin/python",
                 tag,
                 "-c",
-                "from importlib.metadata import version; "
-                "print(version('tolokaforge-adapter-terminal-bench'))",
+                "import json; from importlib.metadata import version; print(json.dumps("
+                f"{{name: version(name) for name in {sorted(_PLUGIN_PROJECTS)!r}}}))",
             ],
             capture_output=True,
             text=True,
         )
-        assert (
-            installed.returncode == 0
-        ), f"the `all` extra did not install the terminal-bench adapter:\n{installed.stderr}"
+        assert installed.returncode == 0, f"a plugin extra installed nothing:\n{installed.stderr}"
+        assert json.loads(installed.stdout) == {
+            name: _project_version(project) for name, project in _PLUGIN_PROJECTS.items()
+        }
     finally:
         rmi = subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, text=True)
         if rmi.returncode != 0:

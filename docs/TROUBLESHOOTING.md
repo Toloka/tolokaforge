@@ -155,9 +155,6 @@ throughout, which is what makes this hard to see: `uv run pytest` cannot reprodu
 make docker-build-core
 ```
 
-**Anyone holding an image built from an unpinned resolution must rebuild it**, whatever the
-tree they build from says today — the version is baked into the image.
-
 ## Browser Tool Errors
 
 - Ensure Playwright is installed:

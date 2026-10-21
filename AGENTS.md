@@ -87,7 +87,7 @@ uv pip list
 
 - Always use `uv run` prefix for Python commands — never `pip install` or bare `python`
 - Lockfile `uv.lock` ensures reproducible builds
-- Image and CI installs are pinned to `uv.lock` through `tolokaforge/docker/image-constraints.txt`, which the `image-constraints` pre-commit hook regenerates from the lock. A package an image installs must be in the lock, through an extra or the `image-services` dependency group. First-party wheels in images are built in-container and installed by path
+- Image and CI installs are pinned to `uv.lock` through `tolokaforge/docker/image-constraints.txt`, which the `image-constraints` pre-commit hook regenerates from the lock. A package an image installs must be in the lock, through an extra or the `image-services` dependency group. First-party wheels in images are installed by path and checked against the wheel file; all are built in-container except rag-service's base `tolokaforge` wheel, which the host-side `resolve_wheel()` provides (on a wheel install, possibly a `pip download --no-deps` of the installed version)
 - Virtual environment lives in `.venv`
 - For new dependencies, add to `pyproject.toml` and run `uv sync`
 - `uv` does **not** load `.env` — use `scripts/with_env.sh` wrapper when env vars are needed

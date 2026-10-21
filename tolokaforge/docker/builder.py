@@ -178,9 +178,10 @@ _PACKAGED_SUBSET_BUILD_DIR = "_subset_build"
 # tree slice rather than a resolved wheel, so it needs no host-side wheel
 # resolution — but it DOES pair with ``_full_source_definition()``, which picks
 # between the repo-root paths (source checkout) and the packaged copies
-# (wheel install, where the repo root is ``site-packages``). The grader
-# image compiles the identical source set, so ``_full_source_definition()`` shares
-# that mapping.
+# (wheel install, where the repo root is ``site-packages``). grader, trial_node
+# and standalone build the full base wheel from the runner's source set plus the
+# langfuse and terminal-bench adapter trees its ``force-include`` table names, and
+# resolve that superset through the same factory.
 #
 # This module is the single source of truth for every service's build-context
 # spec (dockerfile, context, context_files, build_args). The stack layer

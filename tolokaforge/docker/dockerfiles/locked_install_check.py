@@ -1,5 +1,16 @@
 """Fail when an installed distribution escaped the image constraints file.
 
+A third-party distribution passes only at a version a constraint line pins for
+this platform. A ``--first-party`` distribution passes only when its PEP 610
+``direct_url.json`` names a ``file://`` wheel that still exists and whose
+``RECORD`` lists exactly the files installed, so an index wheel that ships its
+own ``direct_url.json`` naming a local wheel passes only if it installed exactly
+that wheel's files. The comparison leaves out the rows pip or uv writes itself:
+``INSTALLER``, ``REQUESTED``, ``direct_url.json``, uv's ``uv_cache.json``,
+bytecode compiled from the wheel's own modules, and the console scripts its
+``entry_points.txt`` declares. Run it before the wheels it verifies against are
+deleted.
+
 Runs inside images against the interpreter whose environment it checks, so it
 imports only the standard library plus a marker evaluator: ``packaging`` when
 the environment has it, otherwise the copy vendored in ``pip``.
@@ -11,50 +22,74 @@ itself could not run.
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib
 import json
 import re
 import sys
+import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from importlib import metadata
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from packaging.markers import Marker
+from typing import Protocol
+from urllib.parse import unquote, urlparse
 
 _PACKAGING_ROOTS = ("packaging", "pip._vendor.packaging")
 _PIN_LINE_RE = re.compile(
     r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[^\s;]+)(?:\s*;\s*(?P<marker>\S.*))?$"
 )
 _NAME_SEPARATORS_RE = re.compile(r"[-_.]+")
+_INSTALLER_WRITTEN_METADATA = frozenset(
+    {"INSTALLER", "REQUESTED", "direct_url.json", "RECORD", "uv_cache.json"}
+)
+_SCRIPT_GROUPS = ("console_scripts", "gui_scripts")
+_LIBRARY_DATA_DIRS = frozenset({"purelib", "platlib"})
+_SHOWN_PATHS = 5
 
 
 class GuardError(Exception):
     """The check could not run; maps to exit code 2."""
 
 
+class MarkerEvaluator(Protocol):
+    def evaluate(self, environment: dict[str, str] | None = None) -> bool: ...
+
+
 @dataclass(frozen=True)
 class Pin:
     name: str
     version: str
-    marker: Marker | None
+    marker: MarkerEvaluator | None
+
+
+class Origin(str, Enum):
+    INDEX = "index"
+    LOCAL_WHEEL = "local_wheel"
+    UNVERIFIED_LOCAL = "unverified_local"
 
 
 @dataclass(frozen=True)
 class InstalledDist:
     name: str
     version: str
-    from_local_file: bool
+    origin: Origin
+    unverified_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.origin is Origin.UNVERIFIED_LOCAL) != (self.unverified_reason is not None):
+            raise ValueError(
+                f"{self.name}: unverified_reason must be set exactly for {Origin.UNVERIFIED_LOCAL}"
+            )
 
 
 class OffenceKind(str, Enum):
-    NOT_CONSTRAINED = "not in constraints for this platform"
-    VERSION_MISMATCH = "constraints pin"
-    FIRST_PARTY_NOT_LOCAL = "first-party distribution not installed from a local file"
+    NOT_CONSTRAINED = "not_constrained"
+    VERSION_MISMATCH = "version_mismatch"
+    FIRST_PARTY_NOT_LOCAL = "first_party_not_local"
+    FIRST_PARTY_UNVERIFIED = "first_party_unverified"
 
 
 @dataclass(frozen=True)
@@ -63,11 +98,17 @@ class Offender:
     version: str
     kind: OffenceKind
     pinned_versions: tuple[str, ...] = ()
+    unverified_reason: str | None = None
 
     def __str__(self) -> str:
-        detail = self.kind.value
-        if self.kind is OffenceKind.VERSION_MISMATCH:
-            detail = f"{detail} {', '.join(self.pinned_versions)}"
+        if self.kind is OffenceKind.NOT_CONSTRAINED:
+            detail = "not in constraints for this platform"
+        elif self.kind is OffenceKind.VERSION_MISMATCH:
+            detail = f"constraints pin {', '.join(self.pinned_versions)}"
+        elif self.kind is OffenceKind.FIRST_PARTY_NOT_LOCAL:
+            detail = "first-party distribution not installed from a local file"
+        else:
+            detail = f"first-party distribution's {self.unverified_reason}"
         return f"{self.name} {self.version}: {detail}"
 
 
@@ -139,9 +180,16 @@ def _offence(
     if name in exempt_names:
         return None
     if name in first_party_names:
-        if dist.from_local_file:
+        if dist.origin is Origin.LOCAL_WHEEL:
             return None
-        return Offender(name, dist.version, OffenceKind.FIRST_PARTY_NOT_LOCAL)
+        if dist.origin is Origin.INDEX:
+            return Offender(name, dist.version, OffenceKind.FIRST_PARTY_NOT_LOCAL)
+        return Offender(
+            name,
+            dist.version,
+            OffenceKind.FIRST_PARTY_UNVERIFIED,
+            unverified_reason=dist.unverified_reason,
+        )
     pinned = applicable.get(name)
     if pinned is None:
         return Offender(name, dist.version, OffenceKind.NOT_CONSTRAINED)
@@ -156,8 +204,8 @@ def find_offenders(
     first_party: Iterable[str],
     exempt: Iterable[str],
 ) -> list[Offender]:
-    """Every installed distribution that is neither exempt, a local-file first-party
-    install, nor at a version an applicable pin names."""
+    """Every installed distribution that is neither exempt, a verified local-wheel
+    first-party install, nor at a version an applicable pin names."""
     first_party_names = {normalize_name(name) for name in first_party}
     exempt_names = {normalize_name(name) for name in exempt}
     offences = (_offence(dist, applicable, first_party_names, exempt_names) for dist in installed)
@@ -167,26 +215,114 @@ def find_offenders(
     )
 
 
-def _installed_from_local_file(dist: metadata.Distribution, name: str) -> bool:
+class _Uncomparable(Exception):
+    """A local wheel's RECORD cannot be compared with the installed one."""
+
+
+@dataclass(frozen=True)
+class _WheelRecord:
+    dist_info: str
+    rows: Mapping[str, str]
+
+
+def _record_rows(text: str) -> dict[str, str]:
+    """RECORD ``path -> hash`` rows."""
+    return {row[0]: row[1] for row in csv.reader(text.splitlines()) if row}
+
+
+def _installed_path(wheel_path: str) -> str:
+    top, _, rest = wheel_path.partition("/")
+    if not top.endswith(".data"):
+        return wheel_path
+    category, _, path = rest.partition("/")
+    if category not in _LIBRARY_DATA_DIRS:
+        raise _Uncomparable(f"it installs {top}/{category}/ outside site-packages")
+    return path
+
+
+def _read_wheel_record(wheel: Path) -> _WheelRecord:
+    """The wheel's RECORD rows keyed by the path each file installs to."""
+    try:
+        with zipfile.ZipFile(wheel) as archive:
+            records = [
+                name
+                for name in archive.namelist()
+                if name.count("/") == 1 and name.endswith(".dist-info/RECORD")
+            ]
+            if len(records) != 1:
+                raise _Uncomparable(f"it holds {len(records)} .dist-info/RECORD files")
+            text = archive.read(records[0]).decode("utf-8")
+    except (zipfile.BadZipFile, OSError, UnicodeDecodeError) as exc:
+        raise _Uncomparable(f"it is unreadable ({exc})") from exc
+    rows = {
+        _installed_path(path): digest
+        for path, digest in _record_rows(text).items()
+        if path != records[0]
+    }
+    return _WheelRecord(records[0].split("/", 1)[0], rows)
+
+
+def _installer_written(path: str, expected: _WheelRecord, scripts: frozenset[str]) -> bool:
+    pure = PurePosixPath(path)
+    if pure.parent.as_posix() == expected.dist_info:
+        return pure.name in _INSTALLER_WRITTEN_METADATA
+    if pure.parent.name == "__pycache__" and pure.suffix == ".pyc":
+        source = pure.parent.parent / f"{pure.name.split('.', 1)[0]}.py"
+        return source.as_posix() in expected.rows
+    return path.startswith("../") and pure.name in scripts
+
+
+def _differing_paths(dist: metadata.Distribution, expected: _WheelRecord) -> list[str]:
+    installed_record = dist.read_text("RECORD")
+    if installed_record is None:
+        raise _Uncomparable("the installed distribution has no RECORD")
+    scripts = frozenset(
+        entry_point.name for entry_point in dist.entry_points if entry_point.group in _SCRIPT_GROUPS
+    )
+    installed = {
+        (path, digest)
+        for path, digest in _record_rows(installed_record).items()
+        if not _installer_written(path, expected, scripts)
+    }
+    return sorted({path for path, _ in installed ^ set(expected.rows.items())})
+
+
+def _local_wheel_origin(dist: metadata.Distribution, wheel: Path) -> tuple[Origin, str | None]:
+    if not wheel.is_file():
+        return Origin.UNVERIFIED_LOCAL, f"local wheel {wheel} does not exist"
+    try:
+        differing = _differing_paths(dist, _read_wheel_record(wheel))
+    except _Uncomparable as exc:
+        return Origin.UNVERIFIED_LOCAL, f"local wheel {wheel} cannot be compared: {exc}"
+    if not differing:
+        return Origin.LOCAL_WHEEL, None
+    shown = ", ".join(differing[:_SHOWN_PATHS])
+    more = f" and {len(differing) - _SHOWN_PATHS} more" if len(differing) > _SHOWN_PATHS else ""
+    return Origin.UNVERIFIED_LOCAL, f"files differ from its local wheel {wheel}: {shown}{more}"
+
+
+def _origin(dist: metadata.Distribution, name: str) -> tuple[Origin, str | None]:
     direct_url = dist.read_text("direct_url.json")
     if direct_url is None:
-        return False
+        return Origin.INDEX, None
     try:
         url = json.loads(direct_url)["url"]
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         raise GuardError(f"{name}: unreadable direct_url.json ({exc!r}): {direct_url!r}")
-    return isinstance(url, str) and url.startswith("file://")
+    if not isinstance(url, str) or not url.startswith("file://"):
+        return Origin.INDEX, None
+    return _local_wheel_origin(dist, Path(unquote(urlparse(url).path)))
 
 
 def installed_distributions(path: Sequence[str] | None = None) -> list[InstalledDist]:
-    """Distributions visible on *path* (default ``sys.path``), with their PEP 610 origin."""
+    """Distributions visible on *path* (default ``sys.path``), with their verified origin."""
     found = metadata.distributions() if path is None else metadata.distributions(path=list(path))
     installed: list[InstalledDist] = []
     for dist in found:
         name = dist.metadata["Name"]
         if not name:
             raise GuardError(f"distribution metadata without a Name under {dist.locate_file('')}")
-        installed.append(InstalledDist(name, dist.version, _installed_from_local_file(dist, name)))
+        installed.append(InstalledDist(name, dist.version, *_origin(dist, name)))
     return installed
 
 

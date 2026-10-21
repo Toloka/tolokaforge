@@ -157,15 +157,36 @@ lock's pip export, shipped in the base wheel) to
 `PIP_BUILD_CONSTRAINT` at it, so every third-party package and the build backend
 of any sdist pip builds resolve to the lock's version. Installs are wheel-only
 except the lock's Linux sdist-only packages (`--only-binary :all: --no-binary
-sly`, in that order). First-party distributions are wheels built in the image's
-own wheel-builder stage and installed by path, never from an index. After the
-last install into each environment the build runs
-`tolokaforge/docker/dockerfiles/locked_install_check.py`, which fails the build
-when an installed distribution is not at a version the lock pins for that
-platform, or a first-party one was not installed from a local file. rag-service
-and standalone install CPU torch from the PyTorch CPU index at the locked `+cpu`
-version. `tests/canonical/test_dockerfile_installs_are_locked.py` holds the
-Dockerfiles to this.
+sly`, in that order). First-party distributions are installed by wheel path, so
+pip never takes them from an index. Every image builds them in its own
+wheel-builder stage, except rag-service's base `tolokaforge` wheel: the host-side
+`resolve_wheel()` provides it (built from a source checkout, or on a wheel install
+found in the pip/uv cache, rebuilt from the install's origin, or fetched with
+`pip download --no-deps` at the exact installed version); only its
+`tolokaforge-models` and `tolokaforge-coding-harnesses` sibling wheels are built
+in-container. Every `RUN` that installs runs
+`tolokaforge/docker/dockerfiles/locked_install_check.py` after its last install,
+so no later step (such as a model bake) runs on an unchecked environment. The
+guard fails the build when an installed distribution is not
+at a version the lock pins for that platform, or a first-party one's
+`direct_url.json` does not name a local wheel that still exists and whose
+`RECORD` lists exactly the installed files. rag-service and standalone install
+CPU torch from the PyTorch CPU index at the locked `+cpu` version.
+`tests/canonical/test_dockerfile_installs_are_locked.py` holds the Dockerfiles to
+this.
+
+The published rag-service, db-service, mock-web and standalone images keep pip in
+their runtime, along with `/opt/tolokaforge/image-constraints.txt` and
+`PIP_CONSTRAINT` / `PIP_BUILD_CONSTRAINT` pointing at it. A derived image's
+`pip install` on top of them therefore pins every third-party package the lock
+pins to the release's version, including the build backend of any sdist it
+builds. First-party plugins (`tolokaforge-langfuse`, the terminal-bench adapter)
+are not in the constraints, packages the lock does not list still resolve live,
+and `uv pip` reads neither variable. To install outside the lock, clear both for
+one command — the recipe is in
+[`deploy/single-container/README.md`](../deploy/single-container/README.md#add-ons-like-pypi-extras).
+The runner, grader and trial-node runtimes ship neither pip nor the constraints
+file.
 
 The build-context spec for every first-party service — its Dockerfile, context,
 `context_files`, and `build_args` — has one source of truth: the builder's image

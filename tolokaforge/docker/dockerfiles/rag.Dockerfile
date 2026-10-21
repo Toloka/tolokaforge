@@ -40,7 +40,7 @@ FROM python:${PYTHON_VERSION}-slim
 
 WORKDIR /app
 
-COPY tolokaforge/docker/image-constraints.txt /opt/tolokaforge/image-constraints.txt
+COPY tolokaforge/docker/image-constraints.txt tolokaforge/docker/dockerfiles/locked_install_check.py /opt/tolokaforge/
 ENV PIP_CONSTRAINT=/opt/tolokaforge/image-constraints.txt \
     PIP_BUILD_CONSTRAINT=/opt/tolokaforge/image-constraints.txt
 
@@ -53,6 +53,8 @@ COPY tolokaforge/env/rag_service/requirements.txt ./service-requirements.txt
 RUN pip install --no-cache-dir --only-binary :all: --no-binary sly \
         --no-deps --index-url https://download.pytorch.org/whl/cpu torch \
     && pip install --no-cache-dir --only-binary :all: --no-binary sly -r service-requirements.txt \
+    && python /opt/tolokaforge/locked_install_check.py \
+        --constraints /opt/tolokaforge/image-constraints.txt --exempt pip \
     && pip check \
     && python -c "import torch; assert torch.__version__.endswith('+cpu'), torch.__version__"
 
@@ -62,8 +64,9 @@ RUN pip install --no-cache-dir --only-binary :all: --no-binary sly \
 # This layer must stay above every layer carrying tolokaforge source: app.py
 # ships inside the wheel installed below, so a bake placed after that COPY
 # re-downloads 88MB on every edit to any tolokaforge file. Its cache key here
-# is {base image, image-constraints.txt, service-requirements.txt,
-# EMBEDDING_MODEL, this command}, so every uv.lock change re-bakes it.
+# is {base image, image-constraints.txt, locked_install_check.py,
+# service-requirements.txt, EMBEDDING_MODEL, this command}, so every uv.lock
+# change re-bakes it.
 ARG EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ENV HF_HOME=/opt/hf-cache
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
@@ -83,9 +86,10 @@ ARG WHEEL_FILENAME
 COPY ${WHEEL_FILENAME} /tmp/
 COPY --from=sibling-wheel-builder /src/tolokaforge_models/dist/*.whl /tmp/wheels/
 COPY --from=sibling-wheel-builder /src/tolokaforge_coding_harnesses/dist/*.whl /tmp/wheels/
-COPY tolokaforge/docker/dockerfiles/locked_install_check.py /opt/tolokaforge/locked_install_check.py
 # One install of the three local wheels, so the base wheel's
 # ``tolokaforge-models`` requirement is met by the local wheel, never an index.
+# The guard compares each first-party install with its wheel, so it runs before
+# the wheels are deleted.
 RUN pip install --no-cache-dir --only-binary :all: --no-binary sly \
         /tmp/wheels/tolokaforge_models-*.whl \
         /tmp/wheels/tolokaforge_coding_harnesses-*.whl \

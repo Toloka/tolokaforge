@@ -451,6 +451,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
+          # Pinned to ci.yml's uv: `uv sync --locked` must read the lock with the uv that wrote it.
+          version: "0.9.5"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 

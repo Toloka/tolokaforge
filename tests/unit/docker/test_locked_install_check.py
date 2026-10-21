@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import subprocess
 import sys
+import zipfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -17,12 +21,15 @@ from tolokaforge.docker.dockerfiles.locked_install_check import (
     InstalledDist,
     OffenceKind,
     Offender,
+    Origin,
 )
 
 GUARD_SCRIPT = Path(guard.__file__)
 LINUX = {"sys_platform": "linux", "platform_system": "Linux", "platform_machine": "x86_64"}
 DARWIN = {"sys_platform": "darwin", "platform_system": "Darwin", "platform_machine": "arm64"}
 PROBE_PROJECT = "lockguard-probe"
+INDEX = Origin.INDEX
+LOCAL = Origin.LOCAL_WHEEL
 
 
 def _committed_pins() -> list[guard.Pin]:
@@ -77,59 +84,81 @@ def test_torch_pin_is_chosen_by_marker(
     environment: dict[str, str], installed_version: str, expected: list[str]
 ) -> None:
     applicable = guard.applicable_pins(_committed_pins(), environment)
-    assert _offenders([InstalledDist("torch", installed_version, False)], applicable) == expected
+    assert _offenders([InstalledDist("torch", installed_version, INDEX)], applicable) == expected
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("installed", "first_party", "exempt", "expected"),
     [
-        pytest.param(InstalledDist("litellm", "1.93.0", False), (), (), [], id="pinned-version"),
+        pytest.param(InstalledDist("litellm", "1.93.0", INDEX), (), (), [], id="pinned-version"),
         pytest.param(
-            InstalledDist("litellm", "1.107.0", False),
+            InstalledDist("litellm", "1.107.0", INDEX),
             (),
             (),
             ["litellm 1.107.0: constraints pin 1.93.0"],
             id="version-mismatch",
         ),
         pytest.param(
-            InstalledDist("left-pad", "1.0", False),
+            InstalledDist("left-pad", "1.0", INDEX),
             (),
             (),
             ["left-pad 1.0: not in constraints for this platform"],
             id="absent-name",
         ),
         pytest.param(
-            InstalledDist("Typing_Extensions", "4.15.0", False),
+            InstalledDist("Typing_Extensions", "4.15.0", INDEX),
             (),
             (),
             [],
             id="installed-name-normalized",
         ),
         pytest.param(
-            InstalledDist("tolokaforge-models", "1.8.1", False),
+            InstalledDist("tolokaforge-models", "1.8.1", INDEX),
             ("tolokaforge_models",),
             (),
             ["tolokaforge-models 1.8.1: first-party distribution not installed from a local file"],
             id="first-party-from-index",
         ),
         pytest.param(
-            InstalledDist("tolokaforge-models", "1.8.1", True),
+            InstalledDist(
+                "tolokaforge-models",
+                "1.8.1",
+                Origin.UNVERIFIED_LOCAL,
+                "local wheel /tmp/wheels/tolokaforge_models-1.8.1-py3-none-any.whl does not exist",
+            ),
+            ("tolokaforge-models",),
+            (),
+            [
+                "tolokaforge-models 1.8.1: first-party distribution's local wheel "
+                "/tmp/wheels/tolokaforge_models-1.8.1-py3-none-any.whl does not exist"
+            ],
+            id="first-party-unverified",
+        ),
+        pytest.param(
+            InstalledDist("left-pad", "1.0", Origin.UNVERIFIED_LOCAL, "files differ"),
+            (),
+            (),
+            ["left-pad 1.0: not in constraints for this platform"],
+            id="unverified-third-party-is-judged-by-its-pin",
+        ),
+        pytest.param(
+            InstalledDist("tolokaforge-models", "1.8.1", LOCAL),
             ("Tolokaforge.Models",),
             (),
             [],
             id="first-party-from-local-file",
         ),
         pytest.param(
-            InstalledDist("litellm", "1.107.0", True),
+            InstalledDist("litellm", "1.107.0", LOCAL),
             ("tolokaforge",),
             (),
             ["litellm 1.107.0: constraints pin 1.93.0"],
             id="local-file-third-party-still-pinned",
         ),
-        pytest.param(InstalledDist("Pip", "25.0.1", False), (), ("PIP",), [], id="exempt-absent"),
+        pytest.param(InstalledDist("Pip", "25.0.1", INDEX), (), ("PIP",), [], id="exempt-absent"),
         pytest.param(
-            InstalledDist("litellm", "1.107.0", False), (), ("litellm",), [], id="exempt-mismatch"
+            InstalledDist("litellm", "1.107.0", INDEX), (), ("litellm",), [], id="exempt-mismatch"
         ),
     ],
 )
@@ -149,7 +178,7 @@ def test_find_offenders(
 @pytest.mark.unit
 def test_offender_carries_kind_and_pins() -> None:
     [offender] = guard.find_offenders(
-        [InstalledDist("torch", "2.14.1", False)],
+        [InstalledDist("torch", "2.14.1", INDEX)],
         {"torch": frozenset({"2.14.1+cpu"})},
         first_party=(),
         exempt=(),
@@ -175,25 +204,51 @@ def test_unparseable_line_is_refused(line: str) -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("direct_url", "from_local_file"),
+    ("direct_url", "origin", "reason"),
     [
-        (None, False),
-        ('{"url": "file:///wheels/probe-0.1.0-py3-none-any.whl", "archive_info": {}}', True),
-        ('{"url": "file:///src/probe", "dir_info": {"editable": true}}', True),
+        (None, INDEX, None),
         (
             '{"url": "https://files.example/probe-0.1.0-py3-none-any.whl", "archive_info": {}}',
-            False,
+            INDEX,
+            None,
+        ),
+        (
+            '{"url": "file:///nonexistent/probe-0.1.0-py3-none-any.whl", "archive_info": {}}',
+            Origin.UNVERIFIED_LOCAL,
+            "local wheel /nonexistent/probe-0.1.0-py3-none-any.whl does not exist",
         ),
     ],
-    ids=["no-direct-url", "local-wheel", "local-editable", "remote-url"],
+    ids=["no-direct-url", "remote-url", "missing-local-wheel"],
 )
 def test_origin_is_read_from_direct_url_json(
-    tmp_path: Path, direct_url: str | None, from_local_file: bool
+    tmp_path: Path, direct_url: str | None, origin: Origin, reason: str | None
 ) -> None:
     _write_dist_info(tmp_path, direct_url)
     assert guard.installed_distributions([str(tmp_path)]) == [
-        InstalledDist("probe", "0.1.0", from_local_file)
+        InstalledDist("probe", "0.1.0", origin, reason)
     ]
+
+
+@pytest.mark.unit
+def test_a_local_directory_is_not_a_local_wheel(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "probe"
+    source.mkdir(parents=True)
+    site_packages = tmp_path / "site-packages"
+    site_packages.mkdir()
+    _write_dist_info(site_packages, json.dumps({"url": source.as_uri(), "dir_info": {}}))
+    assert guard.installed_distributions([str(site_packages)]) == [
+        InstalledDist(
+            "probe", "0.1.0", Origin.UNVERIFIED_LOCAL, f"local wheel {source} does not exist"
+        )
+    ]
+
+
+@pytest.mark.unit
+def test_unverified_reason_is_set_exactly_for_an_unverified_origin() -> None:
+    with pytest.raises(ValueError, match="unverified_reason"):
+        InstalledDist("probe", "0.1.0", LOCAL, "files differ")
+    with pytest.raises(ValueError, match="unverified_reason"):
+        InstalledDist("probe", "0.1.0", Origin.UNVERIFIED_LOCAL)
 
 
 @pytest.mark.unit
@@ -319,14 +374,14 @@ def test_local_file_origin_is_read_from_a_real_install(
 
     _pip_install(python, "--force-reinstall", str(wheel))
     installed = guard.installed_distributions([_site_packages(python)])
-    assert InstalledDist(PROBE_PROJECT, "0.1.0", True) in installed
-    assert next(d for d in installed if d.name == "pip").from_local_file is False
+    assert InstalledDist(PROBE_PROJECT, "0.1.0", LOCAL) in installed
+    assert next(d for d in installed if d.name == "pip").origin is INDEX
     by_path = _run_guard(python, empty, *flags)
     assert by_path.returncode == 0, by_path.stderr
     assert by_path.stdout.startswith("locked-install check: 2 distributions"), by_path.stdout
 
     _pip_install(python, "--force-reinstall", "--find-links", str(wheel.parent), PROBE_PROJECT)
-    assert InstalledDist(PROBE_PROJECT, "0.1.0", False) in guard.installed_distributions(
+    assert InstalledDist(PROBE_PROJECT, "0.1.0", INDEX) in guard.installed_distributions(
         [_site_packages(python)]
     )
     by_name = _run_guard(python, empty, *flags)
@@ -334,3 +389,125 @@ def test_local_file_origin_is_read_from_a_real_install(
     assert by_name.stderr.splitlines() == [
         f"{PROBE_PROJECT} 0.1.0: first-party distribution not installed from a local file"
     ]
+
+
+def _record_hash(content: bytes) -> str:
+    digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+    return f"sha256={digest}"
+
+
+def _write_wheel(directory: Path, files: Mapping[str, str]) -> Path:
+    """A ``lockguard-probe 0.1.0`` wheel holding *files* plus its metadata, with a valid RECORD."""
+    dist_info = "lockguard_probe-0.1.0.dist-info"
+    contents = {
+        **files,
+        f"{dist_info}/METADATA": f"Metadata-Version: 2.1\nName: {PROBE_PROJECT}\nVersion: 0.1.0\n",
+        f"{dist_info}/WHEEL": "Wheel-Version: 1.0\nGenerator: probe\nRoot-Is-Purelib: true\n"
+        "Tag: py3-none-any\n",
+    }
+    record = "".join(
+        f"{path},{_record_hash(text.encode())},{len(text.encode())}\n"
+        for path, text in contents.items()
+    )
+    wheel = directory / "lockguard_probe-0.1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for path, text in contents.items():
+            archive.writestr(path, text)
+        archive.writestr(f"{dist_info}/RECORD", f"{record}{dist_info}/RECORD,,\n")
+    return wheel
+
+
+@pytest.mark.canonical
+def test_an_index_wheel_claiming_a_local_origin_is_refused(
+    probe_venv: tuple[Path, Path], tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """A wheel can ship its own ``direct_url.json``; installed by name, it claims the
+    local wheel's ``file://`` URL but its files are not that wheel's."""
+    python, wheel = probe_venv
+    empty = tmp_path_factory.mktemp("spoof_constraints") / "empty.txt"
+    empty.write_text("")
+    index = tmp_path_factory.mktemp("spoof_index")
+    claim = json.dumps({"url": wheel.as_uri(), "archive_info": {}})
+    _write_wheel(
+        index,
+        {
+            "lockguard_probe/__init__.py": "PAYLOAD = True\n",
+            "lockguard_probe-0.1.0.dist-info/direct_url.json": claim,
+        },
+    )
+
+    _pip_install(python, "--force-reinstall", "--find-links", str(index), PROBE_PROJECT)
+    result = _run_guard(python, empty, "--first-party", PROBE_PROJECT, "--exempt", "pip")
+
+    assert result.returncode == 1, result.stdout
+    [line] = result.stderr.splitlines()
+    assert line.startswith(
+        f"{PROBE_PROJECT} 0.1.0: first-party distribution's files differ from its local wheel "
+        f"{wheel}:"
+    ), line
+
+
+@pytest.mark.canonical
+def test_a_first_party_install_whose_wheel_is_gone_is_refused(
+    probe_venv: tuple[Path, Path], tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    python, wheel = probe_venv
+    empty = tmp_path_factory.mktemp("gone_constraints") / "empty.txt"
+    empty.write_text("")
+    moved = tmp_path_factory.mktemp("gone_wheel") / wheel.name
+    moved.write_bytes(wheel.read_bytes())
+
+    _pip_install(python, "--force-reinstall", str(moved))
+    moved.unlink()
+    result = _run_guard(python, empty, "--first-party", PROBE_PROJECT, "--exempt", "pip")
+
+    assert result.returncode == 1, result.stdout
+    assert result.stderr.splitlines() == [
+        f"{PROBE_PROJECT} 0.1.0: first-party distribution's local wheel {moved} does not exist"
+    ]
+
+
+@pytest.mark.canonical
+@pytest.mark.parametrize(
+    ("files", "expected_stderr"),
+    [
+        pytest.param(
+            {
+                "lockguard_probe/__init__.py": "def main() -> None: ...\n",
+                "lockguard_probe-0.1.0.dist-info/entry_points.txt": (
+                    "[console_scripts]\nlockguard-probe = lockguard_probe:main\n"
+                ),
+            },
+            None,
+            id="console-script-is-installer-written",
+        ),
+        pytest.param(
+            {
+                "lockguard_probe/__init__.py": "",
+                "lockguard_probe-0.1.0.data/scripts/lockguard-tool": "#!python\n",
+            },
+            "cannot be compared: it installs lockguard_probe-0.1.0.data/scripts/ outside "
+            "site-packages",
+            id="data-outside-site-packages",
+        ),
+    ],
+)
+def test_installer_written_rows_against_a_real_install(
+    probe_venv: tuple[Path, Path],
+    tmp_path: Path,
+    files: Mapping[str, str],
+    expected_stderr: str | None,
+) -> None:
+    python, _ = probe_venv
+    empty = tmp_path / "empty.txt"
+    empty.write_text("")
+    wheel = _write_wheel(tmp_path, files)
+
+    _pip_install(python, "--force-reinstall", str(wheel))
+    result = _run_guard(python, empty, "--first-party", PROBE_PROJECT, "--exempt", "pip")
+
+    if expected_stderr is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1, result.stdout
+        assert expected_stderr in result.stderr, result.stderr

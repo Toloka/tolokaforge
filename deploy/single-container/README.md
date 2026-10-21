@@ -64,10 +64,15 @@ RUN /opt/venv/bin/pip install 'tolokaforge[browser]' && \
 
 The image sets `PIP_CONSTRAINT` and `PIP_BUILD_CONSTRAINT` to
 `/opt/tolokaforge/image-constraints.txt`, the `uv.lock` export of the release it
-was built from, so a derived image's `pip install` pins every package the lock
-lists to the version the engine was tested with. A package the lock does not list
-still resolves live, and `uv pip` reads neither variable. To install outside the
-lock, clear both for that one command:
+was built from, so a derived image's `pip install` pins every third-party package
+the lock pins to the version the engine was tested with. First-party plugins —
+`tolokaforge-langfuse` and the terminal-bench adapter — are not in the
+constraints: a derived `pip install 'tolokaforge[adapters]'` takes the adapter
+from an index, unpinned, and `tolokaforge[otel]` finds no `tolokaforge-langfuse`
+on PyPI at all. Build with `TOLOKAFORGE_EXTRAS` below to get them pinned and built
+from the image's own source. A package the lock does not
+list still resolves live, and `uv pip` reads neither variable. To install outside
+the lock, clear both for that one command:
 
 ```dockerfile
 RUN PIP_CONSTRAINT= PIP_BUILD_CONSTRAINT= /opt/venv/bin/pip install 'some-package==1.2.3'
