@@ -25,8 +25,8 @@ import pytest
 
 from tests.utils.search_backends import register_search_backends
 from tolokaforge.adapters.base import DockerStackRequirements
+from tolokaforge.core.engine_stack_runtime import _run_needs_full_stack, _tasks_need_full_stack
 from tolokaforge.core.models import TaskConfig
-from tolokaforge.core.orchestrator import _run_needs_full_stack, _tasks_need_full_stack
 from tolokaforge.testing.search_backends import in_memory_search_backend_factory
 
 pytestmark = pytest.mark.unit
