@@ -60,6 +60,27 @@ loop must be installed in the node's image, or the trial fails on the node.
 A failed trial is a successful RPC with `success = false`; only a transport
 fault is a gRPC error.
 
+### Versioned JSON contract
+
+`TrialNodeInputs` and `TrialResult` are the JSON payload shapes, independent of
+the gRPC envelope: the node carries them inside `RunTrialRequest` /
+`RunTrialResponse`, and the same `TrialNodeInputs` drives one trial on a single
+box through [`tolokaforge run-trial --inputs`](API.md#one-shot-mode) with no gRPC
+at all. Their committed JSON schemas under [`schemas/`](schemas/) —
+`trial_node_inputs.v1.json` and `trial_result.v1.json` — are the contract an
+out-of-process caller pins to. `TRIAL_CONTRACT_VERSION`
+(`tolokaforge.core.trial_contract`) versions those two shapes, independent of
+`NODE_PROTOCOL_VERSION` (which versions the gRPC `RunTrial` envelope) and of the
+package version. Both models forbid unknown fields. Regenerate the schemas after
+a deliberate model change and bump the version:
+
+```bash
+uv run python scripts/export_trial_contract_schemas.py
+```
+
+A canonical test holds the committed schemas level with the models, so a model
+change reds the suite until the schema is regenerated and the version bumped.
+
 ### Error types
 
 | `error_type` | Raised when | Control-plane handling |

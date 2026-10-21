@@ -232,10 +232,65 @@ Errors:
 
 ## tolokaforge run-trial
 
-`tolokaforge run-trial` runs a single trial as a subprocess a harness in any
-language drives over a pipe — the subprocess wrapper of `run_trial`. It reads
-one request on stdin, runs one trial, and writes one terminal message on
-stdout.
+`tolokaforge run-trial` runs a single trial, in one of two modes:
+
+- **One-shot** (`--inputs <file>`) runs one trial from a serialized
+  [`TrialNodeInputs`](#versioned-trial-contract) file and exits with a code an
+  out-of-process caller can act on. This is the shape a sandbox-per-trial
+  backend uses: it cannot open a connection into the sandbox, so it writes the
+  inputs in, runs this command, and reads the result and exit code back out.
+- **Pipe** (no `--inputs`) runs one trial as a subprocess a harness in any
+  language drives over stdin/stdout — the subprocess wrapper of `run_trial`.
+
+### One-shot mode
+
+```bash
+tolokaforge run-trial --inputs trial.json \
+  --task-pack-root <dir> --output-dir <dir>
+```
+
+Reads a serialized `TrialNodeInputs`, runs one trial through the standalone
+entry [`run_trial_from_inputs`](TRIAL_NODE_SERVICE.md), writes the reduced bundle
+and a `trial_result.json` (a serialized `TrialResult`) under `--output-dir`, and
+exits.
+
+- `--task-pack-root <dir>` and `--output-dir <dir>` override the inputs'
+  `task_pack_dir` / `output_dir` with this host's paths; both apply only to
+  `--inputs`. With a pack root set, each manifest `compose_file` in the inputs is
+  rebased onto `<root>/<task_id>` and the task's files are read from there; the
+  content-hash check still applies to whatever is mounted.
+
+**Exit codes** — a backend reads them to decide whether to retry:
+
+| Outcome | exit |
+|---|---|
+| a `TrialResult` was produced and written (a graded failure is still this — the trial ran) | 0 |
+| deterministic failure, do not retry (`ProvisionError` / `TaskPackDrift` / `NotImplemented` / `InvalidConfig`) | 2 |
+| transient failure, a retry may clear it (any other, unexpected, internal fault) | 3 |
+
+The full traceback for a failure is written to stderr.
+
+<a id="versioned-trial-contract"></a>
+**Versioned JSON contract.** `TrialNodeInputs` and `TrialResult` are the JSON
+shapes an out-of-process caller serializes. Their committed JSON schemas under
+[`docs/schemas/`](schemas/) are the versioned contract to pin to —
+`trial_node_inputs.v1.json` and `trial_result.v1.json`. `TRIAL_CONTRACT_VERSION`
+(`tolokaforge.core.trial_contract`) versions those two shapes, independent of the
+gRPC `NODE_PROTOCOL_VERSION` and of the package version. Both models forbid
+unknown fields. Regenerate the schemas after a deliberate model change and bump
+the version:
+
+```bash
+uv run python scripts/export_trial_contract_schemas.py
+```
+
+A canonical test holds the committed schemas level with the models, so a model
+change reds the suite until the schema is regenerated and the version bumped.
+
+### Pipe mode
+
+It reads one request on stdin, runs one trial, and writes one terminal message
+on stdout.
 
 **Framing.** UTF-8 JSON Lines: one JSON object per line, `\n`-delimited, on
 both stdin and stdout. Every message carries `"v":1` — the wire-protocol
