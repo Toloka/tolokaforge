@@ -396,6 +396,13 @@ def _carried_presets_overlay(overlay: dict[str, Any] | None) -> Iterator[None]:
 def _run_verified_trial(inputs: TrialNodeInputs, task: TaskConfig, spec: TrialSpec) -> TrialResult:
     """Run the trial once its pack, secrets and model-presets overlay are in place."""
     logger = get_logger(spec.run_id)
+    if inputs.job_id is not None:
+        logger.info("Trial bound to caller job id", job_id=inputs.job_id)
+    # A caller job id scopes the whole trial's on-disk footprint — artifacts,
+    # captured logs and the tracing receipt — under ``<output_dir>/<job_id>``, and
+    # becomes the trace run identity, so a retry or resume of the same job is
+    # recognisable. With none, every path and the trace are keyed as without it.
+    output_dir = _job_scoped_output_dir(inputs.output_dir, inputs.job_id)
     adapter = build_single_task_adapter(task, inputs.task_pack_dir)
     manifest = spec.task.environment_manifest
     runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
@@ -405,7 +412,7 @@ def _run_verified_trial(inputs: TrialNodeInputs, task: TaskConfig, spec: TrialSp
             env_manifest=manifest,
             run_id=spec.run_id,
             seeds={},
-            log_capture=_build_log_capture(inputs.output_dir, inputs.run_settings),
+            log_capture=_build_log_capture(output_dir, inputs.run_settings),
             mount_docker_socket=run_needs_docker_cli(task.adapter_type, [task])
             or spec.agent_model_config.harness is not None,
             expose_substrate=inputs.grader_config is not None
@@ -420,14 +427,12 @@ def _run_verified_trial(inputs: TrialNodeInputs, task: TaskConfig, spec: TrialSp
 
     agent_client = _build_agent_client(spec.agent_model_config, inputs.rate_limit_probe)
     user_config = require_user_simulator_config(spec.user_model_config)
-    output_path = inputs.output_dir if inputs.output_dir is not None else Path(spec.run_id)
-    artifact_writer = (
-        FileArtifactWriter() if inputs.output_dir is not None else InMemoryArtifactWriter()
-    )
+    output_path = output_dir if output_dir is not None else Path(inputs.job_id or spec.run_id)
+    artifact_writer = FileArtifactWriter() if output_dir is not None else InMemoryArtifactWriter()
     # Live tracing is built before the backend connects, so a missing plugin or an
     # exporter no plugin provides fails here with nothing to tear down.
     observer, run_identity = _resolve_trial_tracing(
-        inputs.observability, run_id=spec.run_id, output_dir=inputs.output_dir
+        inputs.observability, run_id=spec.run_id, job_id=inputs.job_id, output_dir=output_dir
     )
     unit = build_trial_execution_unit(
         TrialExecutionContext(
@@ -465,13 +470,14 @@ def _run_verified_trial(inputs: TrialNodeInputs, task: TaskConfig, spec: TrialSp
         try:
             unit.close()
         finally:
-            _finish_trial_tracing(observer, inputs.output_dir, logger)
+            _finish_trial_tracing(observer, output_dir, logger)
 
 
 def _resolve_trial_tracing(
     observability: ObservabilityConfig | None,
     *,
     run_id: str,
+    job_id: str | None,
     output_dir: Path | None,
 ) -> tuple[TrialObserver, RunIdentity | None]:
     """The live observer and run identity for one trial, or the null observer.
@@ -482,10 +488,16 @@ def _resolve_trial_tracing(
     process secret manager the node has already installed. Without one the trial
     runs untraced. ``run_identity.json`` is written next to the trial's artifacts
     when an observer is active and *output_dir* is set.
+
+    A caller *job_id* is the external run id the trace is keyed under, so the
+    span and run identity carry it; an explicit ``tracing.run_id`` in the config
+    still wins. With no job id the engine run id keys the trace as before.
     """
     if observability is None:
         return NullTrialObserver(), None
-    return build_trial_observer(observability, engine_run_id=run_id, output_dir=output_dir)
+    return build_trial_observer(
+        observability, engine_run_id=job_id or run_id, output_dir=output_dir
+    )
 
 
 def _finish_trial_tracing(
@@ -581,6 +593,19 @@ def _build_agent_client(
             "served-throughput measurement. Run the probe against a single model."
         )
     return FallbackLLMClient(primary=agent, fallbacks=agent.fallbacks)  # type: ignore[return-value]
+
+
+def _job_scoped_output_dir(output_dir: Path | None, job_id: str | None) -> Path | None:
+    """The on-disk output root for one trial, nested under the caller *job_id*.
+
+    With both set the root is ``<output_dir>/<job_id>``, so one job's whole
+    footprint lives in its own directory and a retry or resume of the same job
+    writes to the same place. With no job id the root is *output_dir* unchanged;
+    with no *output_dir* the trial writes nothing.
+    """
+    if output_dir is None or job_id is None:
+        return output_dir
+    return output_dir / job_id
 
 
 def _build_log_capture(

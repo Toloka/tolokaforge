@@ -3749,7 +3749,12 @@ class Orchestrator:
         """
         for lease in leases:
             try:
-                adapter.cancel(JobHandle(trial_id=f"{lease.task_id}:{lease.trial_index}"))
+                adapter.cancel(
+                    JobHandle(
+                        trial_id=f"{lease.task_id}:{lease.trial_index}",
+                        attempt_id=lease.retry_count,
+                    )
+                )
             except DispatchUnsupported as exc:
                 self.logger.debug(
                     "Dispatch backend cannot cancel an in-flight job; leaving it to finish",

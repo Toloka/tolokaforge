@@ -93,7 +93,10 @@ def plan_trials(
 
     Returns:
         One :class:`TrialNodeInputs` per ``(task, repeat)``, each ready to hand
-        to :func:`run_trial_from_inputs`.
+        to :func:`run_trial_from_inputs`. Each carries ``job_id=None``: only the
+        caller knows a job's unique id (its own workflow or CI run plus the
+        trial), so a caller that wants its jobs recognisable across a retry or
+        resume sets ``job_id`` on each planned input itself.
 
     Raises:
         pydantic.ValidationError: ``models`` has no ``agent`` entry.
