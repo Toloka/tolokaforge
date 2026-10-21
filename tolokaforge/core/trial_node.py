@@ -60,7 +60,8 @@ from tolokaforge.core.trial_executor import (
     TrialExecutor,
 )
 from tolokaforge.core.trial_grader import TrialGrader
-from tolokaforge.observability.observer import NullTrialObserver, TrialObserver
+from tolokaforge.observability.factory import build_trial_observer, write_tracing_receipt
+from tolokaforge.observability.observer import NullTrialObserver, TrialObserver, safely
 from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 from tolokaforge.secrets import (
     CONTAINER_SECRETS_ENV_VAR,
@@ -72,7 +73,7 @@ if TYPE_CHECKING:
     from tolokaforge.adapters import BaseAdapter
     from tolokaforge.core.dispatch.adapter import DispatchAdapter
     from tolokaforge.core.logging import StructuredLogger
-    from tolokaforge.core.models import TaskConfig
+    from tolokaforge.core.models import ObservabilityConfig, TaskConfig
     from tolokaforge.core.models.run_config import GraderConfig
     from tolokaforge.core.output.artifacts import TrialArtifactWriter
     from tolokaforge.core.rate_limiter import GlobalRateLimiter
@@ -393,6 +394,11 @@ def run_trial_from_inputs(inputs: TrialNodeInputs) -> TrialResult:
     artifact_writer = (
         FileArtifactWriter() if inputs.output_dir is not None else InMemoryArtifactWriter()
     )
+    # Live tracing is built before the backend connects, so a missing plugin or an
+    # exporter no plugin provides fails here with nothing to tear down.
+    observer, run_identity = _resolve_trial_tracing(
+        inputs.observability, run_id=spec.run_id, output_dir=inputs.output_dir
+    )
     unit = build_trial_execution_unit(
         TrialExecutionContext(
             adapter=adapter,
@@ -413,6 +419,8 @@ def run_trial_from_inputs(inputs: TrialNodeInputs) -> TrialResult:
             grader_config=inputs.grader_config,
             grpc_max_message_mb=inputs.grpc_max_message_mb,
             conductor_factory=conductor_factory,
+            trial_observer=observer,
+            run_identity=run_identity,
             provision_error="propagate",
             probe_source=f"run_trial_from_inputs(conductor={inputs.conductor!r})",
         )
@@ -424,7 +432,51 @@ def run_trial_from_inputs(inputs: TrialNodeInputs) -> TrialResult:
         finally:
             runtime_backend.close()
     finally:
-        unit.close()
+        try:
+            unit.close()
+        finally:
+            _finish_trial_tracing(observer, inputs.output_dir, logger)
+
+
+def _resolve_trial_tracing(
+    observability: ObservabilityConfig | None,
+    *,
+    run_id: str,
+    output_dir: Path | None,
+) -> tuple[TrialObserver, RunIdentity | None]:
+    """The live observer and run identity for one trial, or the null observer.
+
+    With an observability block carried on the inputs, this builds the same
+    observer and identity the single-box orchestrator builds, through
+    :func:`build_trial_observer`; each receiver's credentials resolve from the
+    process secret manager the node has already installed. Without one the trial
+    runs untraced. ``run_identity.json`` is written next to the trial's artifacts
+    when an observer is active and *output_dir* is set.
+    """
+    if observability is None:
+        return NullTrialObserver(), None
+    return build_trial_observer(observability, engine_run_id=run_id, output_dir=output_dir)
+
+
+def _finish_trial_tracing(
+    observer: TrialObserver, output_dir: Path | None, logger: StructuredLogger
+) -> None:
+    """Flush the observer and write its export receipt next to the trial's artifacts.
+
+    Mirrors the single-box run's trace finish: a non-null observer is flushed on
+    every exit path and its receipt lands in *output_dir*. The observability layer
+    only warns, never raises into the caller.
+    """
+    if isinstance(observer, NullTrialObserver):
+        return
+    receipt = safely(observer.run_finished)
+    if receipt is None:
+        return
+    if output_dir is not None:
+        try:
+            write_tracing_receipt(output_dir, receipt)
+        except OSError as exc:
+            logger.warning("Could not write the tracing receipt", error=str(exc))
 
 
 class TaskPackDriftError(RuntimeError):

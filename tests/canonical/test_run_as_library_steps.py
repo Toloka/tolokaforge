@@ -29,11 +29,13 @@ from tolokaforge.core.models import (
     Grade,
     HarnessAdapterConfig,
     ModelConfig,
+    ObservabilityConfig,
     OrchestratorConfig,
     ProjectConfig,
     RunConfig,
     TaskConfig,
     TaskDefaults,
+    TracingConfig,
     Trajectory,
     TrialStatus,
 )
@@ -261,6 +263,37 @@ def test_plan_trials_stamps_the_configs_grpc_message_bound(tmp_path: Path) -> No
 
     assert planned
     assert all(inp.grpc_max_message_mb == 123 for inp in planned)
+
+
+def test_plan_trials_carries_the_observability_block(tmp_path: Path) -> None:
+    """The run's observability block reaches every planned trial, so a library trial traces
+    under the same config a single-box run does."""
+    task = _write_native_task(tmp_path / "pack", "demo")
+    config = RunConfig(
+        models={"agent": _AGENT, "user": _USER},
+        orchestrator=OrchestratorConfig(workers=1, repeats=2, auto_start_services=False),
+        evaluation=EvaluationConfig(output_dir=str(tmp_path / "results")),
+        observability=ObservabilityConfig(tracing=TracingConfig(exporter="otlp", run_tag="v1")),
+    )
+
+    planned = plan_trials(config, tasks=[task], runtime="in_memory", conductor="in_memory")
+
+    assert planned
+    assert all(inp.observability is config.observability for inp in planned)
+    assert planned[0].observability is not None
+    assert planned[0].observability.tracing is not None
+    assert planned[0].observability.tracing.exporter == "otlp"
+
+
+def test_plan_trials_without_observability_carries_none(tmp_path: Path) -> None:
+    """A run with no observability block plans trials that trace nothing."""
+    task = _write_native_task(tmp_path / "pack", "demo")
+    config = _run_config(tmp_path / "results", repeats=1)
+
+    planned = plan_trials(config, tasks=[task], runtime="in_memory", conductor="in_memory")
+
+    assert planned
+    assert all(inp.observability is None for inp in planned)
 
 
 def test_delegated_task_folds_like_native(

@@ -159,6 +159,18 @@ _PREFIX_SHAPE = re.compile(r"^[a-z][a-z0-9_]*$")
 _VALUE_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+@:-]*$")
 MAX_VALUE_CHARS = 128
 
+# An open caller namespace: a workflow-engine or CI caller tags spans with its own
+# workflow / run ids under ``caller_<name>`` or ``x_<name>``, accepted by shape rather than
+# membership in the closed core set, so a caller need not be enumerated in the shared vocabulary.
+# The value still obeys the 128-char value cap, and a producer prefix is still refused.
+CALLER_NAMESPACE_ROOTS: tuple[str, ...] = ("caller", "x")
+_CALLER_NAMESPACE_SHAPE = re.compile(r"^(?:caller|x)_[a-z0-9][a-z0-9_]*$")
+
+
+def is_caller_namespace(prefix: str) -> bool:
+    """A caller's open-namespace prefix (``caller_<name>`` / ``x_<name>``), accepted by shape."""
+    return bool(_CALLER_NAMESPACE_SHAPE.match(prefix))
+
 
 class VocabularyError(ValueError):
     """A tag outside the vocabulary; the message names the tag, never a credential."""
@@ -204,10 +216,15 @@ def is_valid_value(value: object) -> bool:
 
 
 def check_caller_prefix(prefix: str, *, where: str = "tag") -> str:
-    """A prefix a caller (or a profile) may speak about: known, and not the producer's."""
+    """A prefix a caller (or a profile) may speak about: a core caller prefix, or an open
+    ``caller_<name>`` / ``x_<name>`` namespace a caller reserves for its own ids. A producer
+    prefix is refused either way."""
+    if is_caller_namespace(prefix):
+        return prefix
     if prefix not in CORE_PREFIXES:
         raise VocabularyError(
-            f"{where}: {prefix!r} is not a core prefix; the core prefixes are {list(CORE_PREFIXES)}"
+            f"{where}: {prefix!r} is not a core prefix; the core prefixes are {list(CORE_PREFIXES)}, "
+            f"or a caller namespace ({'/'.join(f'{root}_<name>' for root in CALLER_NAMESPACE_ROOTS)})"
         )
     if prefix in PRODUCER_PREFIXES:
         raise VocabularyError(f"{where}: {prefix!r} is set by the producer and cannot be supplied")

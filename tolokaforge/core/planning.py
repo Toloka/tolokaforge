@@ -69,8 +69,9 @@ def plan_trials(
         run_config: The run configuration. Supplies the role → model map
             (``models.agent`` required; ``user`` / ``judge`` optional), the
             repeat count and shuffle flag (``orchestrator``), the run-level
-            grader block (``grader``), and the node run settings
-            (:meth:`NodeRunSettings.from_config`).
+            grader block (``grader``), the node run settings
+            (:meth:`NodeRunSettings.from_config`), and the observability block
+            (``observability``) each planned trial traces under.
         tasks: Preloaded tasks to plan. ``None`` loads them from *run_config*
             through its declared adapter — preloading gives exact control over
             the task set.
@@ -177,6 +178,7 @@ def plan_trials(
                 output_dir=None,
                 rate_limit_probe=rate_limit_probe,
                 run_settings=run_settings,
+                observability=run_config.observability,
             )
         )
     return planned
