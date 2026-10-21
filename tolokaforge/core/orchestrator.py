@@ -32,6 +32,7 @@ from tolokaforge.adapters._task_loader import (
     uses_search,
     validate_grading_yaml,
 )
+from tolokaforge.core.adapter_params import assemble_adapter_params
 from tolokaforge.core.budgets import (
     LIMIT_HIT_MARKER_FILENAME,
     BudgetHit,
@@ -318,6 +319,21 @@ def _configured_harness(config: Any) -> str | None:
     if selected and selected != ENGINE_LOOP:
         return str(selected)
     return None
+
+
+def _adapter_is_node_runnable(adapter: Any) -> bool:
+    """Whether *adapter* can be seeded with a pre-loaded task on a dispatch node.
+
+    ``register_preloaded_task`` is the node-runnable seam: the
+    :class:`~tolokaforge.adapters.BaseAdapter` default raises, so an adapter is
+    node-runnable only when it overrides that default with a real implementation
+    (any adapter class, in or out of tree, duck-typed the same way). An adapter
+    that exposes no such attribute at all is not node-runnable.
+    """
+    method = getattr(adapter, "register_preloaded_task", None)
+    if method is None:
+        return False
+    return getattr(method, "__func__", method) is not BaseAdapter.register_preloaded_task
 
 
 def _harness_provider_probe(
@@ -909,61 +925,15 @@ class Orchestrator:
     def _create_adapter(self) -> BaseAdapter:
         """Create adapter based on configuration"""
         adapter_config = self.config.evaluation.harness_adapter
+        adapter_type = adapter_config.type if adapter_config else AdapterType.NATIVE
 
-        if adapter_config:
-            adapter_type = adapter_config.type
-            params = adapter_config.params.copy()
-        else:
-            adapter_type = AdapterType.NATIVE
-            params = {}
-
-        # Coding-harness selector: canonical home is ``models.agent.harness``
-        # (adapter-agnostic). Inject it into adapter params here so adapters
-        # that already read ``params["agent_harness"]`` keep working; the
-        # legacy ``harness_adapter.params.agent_harness`` shape is lifted to
-        # ``models.agent`` at parse time, so nothing else in this method sees
-        # the old location. ``models.agent.name`` doubles as the model the
-        # CLI receives — the same field the engine loop reads.
-        agent_model_config = self.config.models.get("agent") if self.config.models else None
-        if agent_model_config is not None and agent_model_config.harness is not None:
-            params.setdefault("agent_harness", agent_model_config.harness)
-            params.setdefault("agent_model", agent_model_config.name)
-
-        # Add tasks_glob to params for both native and other adapters
-        params["tasks_glob"] = self.config.evaluation.tasks_glob
-        # ``evaluation.projects`` is the canonical field; the deprecated
-        # ``evaluation.task_packs`` alias is coerced by
-        # ``EvaluationConfig`` so ``projects`` always carries the
-        # effective list here.
-        task_packs = list(self.config.evaluation.projects)
-
-        # In Docker flows, TASK_PACKS_DIRS can override config paths to container-visible mounts.
-        env_task_packs = os.environ.get("TASK_PACKS_DIRS", "").strip()
-        if env_task_packs:
-            task_packs = [part.strip() for part in env_task_packs.split(",") if part.strip()]
-        params["task_packs"] = task_packs
-
-        typesense_config = self.config.orchestrator.effective_typesense()
-        if typesense_config is not None:
-            params["typesense"] = typesense_config.model_dump()
-
-        # Layer project.task_defaults under every task the adapter loads.
-        # Adapters consume this via ``load_task_yaml(project_task_defaults=...)``.
-        # ``exclude_defaults`` drops fields the project author didn't set
-        # so we don't repeat schema defaults inside every task dict.
-        if self.project is not None:
-            defaults = self.project.task_defaults.model_dump(exclude_defaults=True)
-            if defaults:
-                params["project_task_defaults"] = defaults
-            # Forward the project's default_environment patch so the adapter
-            # can bind it to each task's own environment patch via
-            # ``project_loader.resolve`` and hand the resulting
-            # ``EnvironmentManifest`` to ``TaskDescription``.
-            if self.project.default_environment is not None:
-                params["project_default_environment"] = self.project.default_environment
+        # The single assembly path ``tolokaforge run`` and the library planning
+        # path share, so both resolve the same adapter from the same config.
+        params = assemble_adapter_params(self.config, project=self.project)
 
         # The record factory scrubs message text, not extras, so a key in
         # this dump would render verbatim regardless of the redaction set.
+        typesense_config = self.config.orchestrator.effective_typesense()
         log_params = params
         if typesense_config is not None:
             log_params = {**params, "typesense": typesense_config.model_dump(exclude={"api_key"})}
@@ -1588,12 +1558,19 @@ class Orchestrator:
             unsupported.append(
                 "a custom conductor_factory (the node runs its own in_process conductor)"
             )
-        if any(task.adapter_type != "native" for task in self.tasks) or (
-            _configured_harness(self.config) is not None
-        ):
+        # The node-runnability check is per-run (on ``self.adapter``), not
+        # per-task — a deliberate choice for single-adapter runs. ``self.adapter``
+        # is populated by ``load_tasks()`` before this runs on a dispatch run; a
+        # pre-loaded-task embedder skips that, so resolve it the way the run will.
+        adapter = self.adapter if self.adapter is not None else self._create_adapter()
+        if not _adapter_is_node_runnable(adapter):
             unsupported.append(
-                "a non-native adapter or coding-harness mode (a dispatch node "
-                "runs only the native adapter without harness mode)"
+                "a non-node-runnable adapter (a dispatch node seeds each adapter with a "
+                "pre-loaded task; this adapter does not implement that seam)"
+            )
+        if _configured_harness(self.config) is not None:
+            unsupported.append(
+                "coding-harness mode (a dispatch node runs the native loop without harness mode)"
             )
         if self.config.effective_max_requests_per_second is not None:
             unsupported.append(
@@ -1615,6 +1592,12 @@ class Orchestrator:
             unsupported.append(
                 "the orchestrator.typesense search plane (it is a control-plane-local container "
                 "bridged onto the runner's Docker network; a dispatch node has no such bridge)"
+            )
+        if self.config.engine is not None and self.config.engine.presets_file:
+            unsupported.append(
+                "engine.presets_file (the model-presets overlay is installed process-globally on "
+                "the control plane and is not carried to a node, so the node would run without it; "
+                "set it on the node, or run under the shared or per_trial substrate)"
             )
         if unsupported:
             raise ValueError(

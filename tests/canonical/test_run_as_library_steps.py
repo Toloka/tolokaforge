@@ -22,14 +22,18 @@ import pytest
 
 from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.adapter_params import assemble_adapter_params
 from tolokaforge.core.models import (
     ComputeConfig,
     EvaluationConfig,
     Grade,
+    HarnessAdapterConfig,
     ModelConfig,
     OrchestratorConfig,
+    ProjectConfig,
     RunConfig,
     TaskConfig,
+    TaskDefaults,
     Trajectory,
     TrialStatus,
 )
@@ -316,3 +320,59 @@ def test_public_api_surface_imports() -> None:
     assert TrialNodeInputs is not None
     assert TR is not None
     assert RunReport is not None
+
+
+def _pack_config_with_harness_params(output_dir: Path, pack_dir: Path, repeats: int) -> RunConfig:
+    """A config that carries both ``harness_adapter.params`` and a project pack."""
+    return RunConfig(
+        models={"agent": _AGENT, "user": _USER},
+        orchestrator=OrchestratorConfig(workers=1, repeats=repeats, auto_start_services=False),
+        evaluation=EvaluationConfig(
+            output_dir=str(output_dir),
+            projects=[str(pack_dir)],
+            tasks_glob="tasks/**/task.yaml",
+            harness_adapter=HarnessAdapterConfig(type="native", params={"custom_marker": "x"}),
+        ),
+    )
+
+
+def test_library_adapter_params_match_the_orchestrator(tmp_path: Path) -> None:
+    """The library path assembles the same adapter params the orchestrator does,
+    including ``harness_adapter.params`` and ``project.task_defaults``."""
+    pack_dir = tmp_path / "pack"
+    _write_native_task(pack_dir, "demo")
+    config = _pack_config_with_harness_params(tmp_path / "results", pack_dir, repeats=1)
+    project = ProjectConfig(name="demo", task_defaults=TaskDefaults(max_turns=7))
+
+    orch = Orchestrator(config, project=project)
+    orch.load_tasks()
+    assert orch.adapter is not None
+
+    library_params = assemble_adapter_params(config, project=project)
+
+    assert library_params == orch.adapter.params
+    assert library_params["custom_marker"] == "x"
+    assert library_params["project_task_defaults"] == {"max_turns": 7}
+
+
+def test_plan_trials_plans_the_same_trials_as_a_single_box_run(tmp_path: Path) -> None:
+    """``plan_trials`` loads the same tasks the orchestrator does (project
+    ``task_defaults`` applied) and expands the same ``(task, repeat)`` set."""
+    pack_dir = tmp_path / "pack"
+    _write_native_task(pack_dir, "demo")
+    config = _pack_config_with_harness_params(tmp_path / "results", pack_dir, repeats=2)
+    project = ProjectConfig(name="demo", task_defaults=TaskDefaults(max_turns=7))
+
+    orch = Orchestrator(config, project=project)
+    orch.load_tasks()
+    expected_ids = {
+        f"{task.task_id}:{trial_idx}"
+        for task in orch.tasks
+        for trial_idx in range(config.orchestrator.repeats)
+    }
+    assert all(task.max_turns == 7 for task in orch.tasks)
+
+    planned = plan_trials(config, runtime="in_memory", conductor="in_memory", project=project)
+
+    assert {inputs.trial_spec.trial_id for inputs in planned} == expected_ids
+    assert all(inputs.trial_spec.max_turns == 7 for inputs in planned)

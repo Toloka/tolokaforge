@@ -35,7 +35,14 @@ class DispatchTransient(_DispatchFailure):
 
 
 class DispatchProvisionError(_DispatchFailure):
-    """The adapter could not place or start the trial on its backend."""
+    """A deterministic placement/start fault a retry cannot change.
+
+    The sandbox could not be placed or started for a reason that stays broken
+    across attempts — a bad compose file, a missing image, a malformed manifest.
+    It maps to a non-retryable ``PROVISION_ERROR`` result. A backend that has no
+    capacity *right now* (a transient "no capacity" condition) must raise
+    ``DispatchTransient`` instead, so the orchestrator retries it.
+    """
 
 
 class DispatchUnsupported(DispatchRefused):
