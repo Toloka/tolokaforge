@@ -87,6 +87,7 @@ from tolokaforge.core.project_loader import (
 )
 from tolokaforge.core.resume import RunStateManager, resolve_resume_run_directory
 from tolokaforge.core.run_queue import create_run_queue
+from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.dx._display import (
     DisplayMode,
     console,
@@ -155,6 +156,7 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str | None, sourc
     backend_class = {
         "shared": "SharedStackRuntimeBackend",
         "per_trial": "SharedStackRuntimeBackend (per-trial mode)",
+        "remote": "GrpcNodeDispatchAdapter (deprecated alias for dispatch.adapter=grpc_node)",
     }.get(runtime_choice, runtime_choice)
     isolation_line = {
         "shared": (
@@ -163,6 +165,10 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str | None, sourc
         "per_trial": (
             "one docker-compose stack per trial via Testcontainers "
             "(concurrent trials fully isolated)"
+        ),
+        "remote": (
+            "one trial node leased per trial from orchestrator.remote.nodes "
+            "(no local stack; node count bounds concurrency)"
         ),
     }.get(runtime_choice, "unknown")
     console.print(
@@ -208,9 +214,6 @@ class _GroupedCommandsGroup(click.Group):
     COMMAND_GROUPS: dict[str, str] = {
         "repl": "Interactive",
         "run": "Runs",
-        # Hidden, so this heading never renders; the entry exists because the
-        # registered-vs-mapped contract inspects ``cli.commands``, which
-        # includes hidden commands.
         "run-trial": "Runs",
         "prepare": "Runs",
         "worker": "Runs",
@@ -224,6 +227,7 @@ class _GroupedCommandsGroup(click.Group):
         "reconcile": "Runs",
         "rejudge": "Runs",
         "retrace": "Runs",
+        "trial-node": "Runs",
         "validate": "Tasks",
         "docker": "Docker",
         "config": "Config",
@@ -389,6 +393,11 @@ cli.add_command(assets)
 from tolokaforge.dx.cli.run_trial_command import run_trial  # noqa: E402
 
 cli.add_command(run_trial)
+
+# Register the `trial-node` command that serves whole trials over gRPC.
+from tolokaforge.dx.cli.trial_node_command import trial_node  # noqa: E402
+
+cli.add_command(trial_node)
 
 # Register the offline-regrade `grade` / `grade-run` verbs.
 from tolokaforge.dx.cli.grade import grade, grade_run  # noqa: E402
@@ -689,8 +698,10 @@ def _run_dry_run(
         "built-in 'shared' (one docker-compose stack across every trial), 'per_trial' "
         "(an isolated stack per trial via Testcontainers, required by tasks whose "
         "environment_manifest declares isolation: per_trial), 'in_memory', or a "
-        "plug-in's registered name. Validated at run start with an actionable error "
-        "listing the known names. See docs/RUNTIME_BACKENDS.md."
+        "plug-in's registered name. 'remote' is a deprecated alias for the "
+        "'grpc_node' dispatch adapter (orchestrator.dispatch). Validated at run "
+        "start with an actionable error listing the known names. See "
+        "docs/RUNTIME_BACKENDS.md."
     ),
 )
 @click.option(
@@ -1000,14 +1011,21 @@ def run(
     # ``models.agent.fallbacks`` is realised as a per-invocation
     # ``agent_client_factory`` that wraps the primary agent model in a
     # :class:`FallbackLLMClient`. When the list is empty the seam stays
-    # ``None`` and the orchestrator constructs a bare :class:`LLMClient`.
+    # ``None`` and the orchestrator constructs a bare :class:`LLMClient`. On a
+    # dispatch run the seam stays ``None`` as well: the node reads the chain
+    # from the model config it is sent and builds its own client.
+    orchestrator_config = run_config.orchestrator
+    is_dispatch_run = (
+        orchestrator_config.dispatch is not None or orchestrator_config.runtime == "remote"
+    )
     agent_client_factory: Callable[[ModelConfig], LLMClient] | None = None
     if fallback_chain:
+        if not is_dispatch_run:
 
-        def _fallback_factory(primary: ModelConfig) -> LLMClient:
-            return FallbackLLMClient(primary=primary, fallbacks=fallback_chain)  # type: ignore[return-value]
+            def _fallback_factory(primary: ModelConfig) -> LLMClient:
+                return FallbackLLMClient(primary=primary, fallbacks=fallback_chain)  # type: ignore[return-value]
 
-        agent_client_factory = _fallback_factory
+            agent_client_factory = _fallback_factory
         console.print(
             f"[cyan]Fallback chain: {', '.join(f'{m.provider}/{m.name}' for m in fallback_chain)}[/cyan]"
         )
@@ -1052,6 +1070,14 @@ def run(
 
             output_dir = orchestrator.run(run_id=run_id, output_dir=run_dir)
         success = True
+    except ProvisionError as exc:
+        # The run-level engine/runner stack failed to come up (e.g. the
+        # composer's ``docker compose up --wait`` failed). Surface it as a
+        # clean operator error — non-zero exit, no raw traceback — rather than
+        # letting the typed provisioning failure escape uncaught. Per-trial
+        # provisioning failures never reach here: they are recorded as
+        # infrastructure aborts inside the run.
+        raise click.ClickException(f"the engine/runner stack could not be started: {exc}") from exc
     finally:
         stopped_reason = _read_limit_hit_reason(output_dir if output_dir is not None else run_dir)
         print_run_end_banner(

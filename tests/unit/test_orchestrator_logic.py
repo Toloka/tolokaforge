@@ -1825,7 +1825,7 @@ def _builtin_registry_loaders(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch the grader/conductor loaders at their orchestrator-module binding
     to the real built-in factories.
 
-    Keeps ``_build_conductor`` tests decoupled from installed entry-point
+    Keeps ``_build_trial_unit`` tests decoupled from installed entry-point
     metadata (no ``uv sync`` required to run them under ``-m unit``) while
     still exercising the real dispatch wiring.
     """
@@ -1833,11 +1833,11 @@ def _builtin_registry_loaders(monkeypatch: pytest.MonkeyPatch) -> None:
     from tolokaforge.core.trial_grader import runner_rpc_trial_grader_factory
 
     monkeypatch.setattr(
-        "tolokaforge.core.orchestrator.load_trial_grader",
+        "tolokaforge.core.trial_node.load_trial_grader",
         lambda name: runner_rpc_trial_grader_factory,
     )
     monkeypatch.setattr(
-        "tolokaforge.core.orchestrator.load_conductor",
+        "tolokaforge.core.trial_node.load_conductor",
         lambda name: in_process_conductor_factory,
     )
 
@@ -1868,7 +1868,7 @@ class TestArtifactWriterInjection:
         assert orch._artifact_writer is writer
 
     def test_injected_writer_threads_to_conductor(self, tmp_path: Path) -> None:
-        """The conductor constructed by ``_build_conductor`` receives the
+        """The conductor constructed by ``_build_trial_unit`` receives the
         same writer the orchestrator was given — not a fresh
         :class:`FileArtifactWriter`."""
         from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
@@ -1888,7 +1888,7 @@ class TestArtifactWriterInjection:
         )
         orch.adapter = MagicMock()
 
-        orch._build_conductor(
+        orch._build_trial_unit(
             agent_client=MagicMock(),
             runtime_backend=MagicMock(),
             output_dir=tmp_path,
@@ -1929,7 +1929,7 @@ class TestConductorInjection:
         assert orch._conductor_factory is factory
 
     def test_default_factory_builds_in_process_conductor(self, tmp_path: Path) -> None:
-        """When no factory is injected, ``_build_conductor`` resolves the
+        """When no factory is injected, ``_build_trial_unit`` resolves the
         built-in ``in_process`` conductor and ``runner_rpc`` grader through the
         registry — yielding an :class:`InProcessConductor` holding a
         :class:`RunnerRPCTrialGrader`."""
@@ -1938,18 +1938,18 @@ class TestConductorInjection:
         from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
 
         orch = Orchestrator(_make_run_config())
-        orch.adapter = MagicMock()  # _build_conductor raises if adapter is unset
+        orch.adapter = MagicMock()  # _build_trial_unit raises if adapter is unset
 
-        conductor = orch._build_conductor(
+        conductor = orch._build_trial_unit(
             agent_client=MagicMock(),
             runtime_backend=MagicMock(),
             output_dir=tmp_path,
             request_limiter=MagicMock(),
-        )
+        ).conductor
         assert isinstance(conductor, InProcessConductor)
         assert isinstance(conductor.trial_grader, RunnerRPCTrialGrader)
 
-    def test_build_conductor_raises_when_adapter_is_unset(self, tmp_path: Path) -> None:
+    def test_build_trial_unit_raises_when_adapter_is_unset(self, tmp_path: Path) -> None:
         """Fail-fast: building a conductor before ``load_tasks()`` ran (so
         ``self.adapter`` is still ``None``) raises immediately, instead of
         silently propagating ``None`` into the Conductor's body where it
@@ -1960,7 +1960,7 @@ class TestConductorInjection:
         assert orch.adapter is None
 
         with pytest.raises(RuntimeError, match="adapter is loaded"):
-            orch._build_conductor(
+            orch._build_trial_unit(
                 agent_client=MagicMock(),
                 runtime_backend=MagicMock(),
                 output_dir=tmp_path,
@@ -1984,7 +1984,7 @@ class TestConductorInjection:
         orch = Orchestrator(_make_run_config(), deps=OrchestratorDeps(conductor_factory=factory))
         orch.adapter = MagicMock()
 
-        orch._build_conductor(
+        orch._build_trial_unit(
             agent_client=MagicMock(),
             runtime_backend=MagicMock(),
             output_dir=tmp_path,
@@ -2001,19 +2001,19 @@ class TestConductorInjection:
 
 
 # ===================================================================
-# Adapter-declared trial-grader name — orchestrator._build_conductor
+# Adapter-declared trial-grader name — orchestrator._build_trial_unit
 # ===================================================================
 
 
 class _RecordingGrader:
     """Minimal real ``TrialGrader`` the fixture factory produces.
 
-    ``_build_conductor`` only stores it on the context; ``grade`` is never
+    ``_build_trial_unit`` only stores it on the context; ``grade`` is never
     reached in these tests, so it hard-fails if the build path ever calls it.
     """
 
     def grade(self, spec: Any, trajectory: Any, agent_system_prompt: str) -> Any:
-        raise AssertionError("recording grader.grade must not run during _build_conductor")
+        raise AssertionError("recording grader.grade must not run during _build_trial_unit")
 
 
 class _FakeDist:
@@ -2047,9 +2047,9 @@ class _UnregisteredGraderAdapter(NativeAdapter):
 
 @pytest.mark.unit
 class TestAdapterDeclaredTrialGraderName:
-    """``_build_conductor`` resolves the grader by ``adapter.trial_grader_name``.
+    """``_build_trial_unit`` resolves the grader by ``adapter.trial_grader_name``.
 
-    Exercises the real ``Orchestrator._build_conductor`` with real
+    Exercises the real ``Orchestrator._build_trial_unit`` with real
     ``NativeAdapter`` subclasses and real ``plugin_registry`` resolution — no
     monkeypatch stands in for the load path under test. A capturing
     ``conductor_factory`` reads ``ctx.trial_grader`` off the real
@@ -2088,7 +2088,7 @@ class TestAdapterDeclaredTrialGraderName:
 
         orch = Orchestrator(_make_run_config(), deps=OrchestratorDeps(conductor_factory=factory))
         orch.adapter = adapter
-        orch._build_conductor(
+        orch._build_trial_unit(
             agent_client=MagicMock(),
             runtime_backend=MagicMock(),
             output_dir=tmp_path,
@@ -2164,7 +2164,7 @@ class TestAdapterDeclaredTrialGraderName:
         config = _make_run_config(grader=GraderConfig(name="recording_grader"))
         orch = Orchestrator(config, deps=OrchestratorDeps(conductor_factory=factory))
         orch.adapter = _DefaultGraderAdapter({"tasks_glob": "tasks/**/task.yaml"})
-        orch._build_conductor(
+        orch._build_trial_unit(
             agent_client=MagicMock(),
             runtime_backend=MagicMock(),
             output_dir=tmp_path,
@@ -2204,7 +2204,7 @@ class TestAdapterDeclaredTrialGraderName:
         config = _make_run_config(grader=block)
         orch = Orchestrator(config, deps=OrchestratorDeps(conductor_factory=conductor_factory))
         orch.adapter = _DefaultGraderAdapter({"tasks_glob": "tasks/**/task.yaml"})
-        orch._build_conductor(
+        orch._build_trial_unit(
             agent_client=MagicMock(),
             runtime_backend=MagicMock(),
             output_dir=tmp_path,

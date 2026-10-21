@@ -2,6 +2,104 @@
 
 Key classes and entry points for programmatic usage.
 
+## Driving a run as three composable steps
+
+`run_trial` runs one trial end-to-end. To drive a whole batch from your own
+orchestration layer — your own scheduler, your own distributed backend — and
+still get the report a single `tolokaforge run` writes, compose three steps:
+
+1. **`plan_trials(run_config)`** — expand the run into a flat list of
+   `TrialNodeInputs`, one per `(task, repeat)`. Each is a self-contained,
+   serializable description of one trial you can ship to wherever it will run.
+   `plan_trials` **does** build and resolve an adapter per task — to describe
+   each task, and to load the tasks through the config's adapter when
+   `tasks=None` — so the adapter must be installed and node-runnable wherever
+   `plan_trials` runs. Only the conductor and runtime backend stay unresolved;
+   they travel as data on each trial.
+2. **`run_trial_from_inputs(inputs)`** — run one `TrialNodeInputs` to a
+   `TrialResult`. Your layer calls this itself, on whatever backend it owns,
+   in whatever order and concurrency it likes.
+3. **`aggregate_results(results, run_config=cfg, output_dir=out)`** — fold the
+   `TrialResult`s (or a run directory) into the four aggregate artifacts a full
+   run writes.
+
+```python
+from tolokaforge.runner import plan_trials, run_trial_from_inputs, aggregate_results
+
+planned = plan_trials(cfg)                       # list[TrialNodeInputs]
+results = [run_trial_from_inputs(i) for i in planned]  # your scheduler drives this
+report = aggregate_results(results, run_config=cfg, output_dir="results/my_run")
+print(report.aggregate["success_rate_micro"])
+```
+
+**Guarantee.** The guarantee is scoped to the four **aggregate** files, not the
+whole run directory. The four artifacts `aggregate_results` writes
+(`aggregate.json`, `per_task_metrics.json`, `metadata_slices.json`,
+`failure_attribution.json`) reproduce the report a single `tolokaforge run`
+writes, field for field, except the disk-only non-reproducible stamps
+(`tolokaforge_version`, `captured_service_logs`). It does **not** reproduce the
+rest of the run directory — notably `run_state.json` (the orchestrator's own
+queue/resume ledger) and the tracing/observability receipt — which are products
+of the orchestrated run, not of the aggregation step. It works the same for the
+native loop and for a delegated harness — the harness identity travels as data
+on each planned trial (`trial_spec.task.adapter_type`, the agent model's
+`harness`), not as a resolved object. `aggregate_results` renumbers
+`trial_index` per task, so independently produced single-trial results (each
+`trial_index=0`) count as the repeats they are.
+
+### plan_trials
+
+```python
+def plan_trials(
+    run_config: RunConfig,
+    tasks: Sequence[TaskConfig] | None = None,
+    *,
+    runtime: str = "auto",
+    grader: str | None = None,
+    conductor: str = "in_process",
+    run_id: str | None = None,
+) -> list[TrialNodeInputs]: ...
+```
+
+- **`run_config`** — supplies the role → model map (`models.agent` required),
+  the repeat count and shuffle flag, the run-level grader block, and the node
+  run settings. Tasks load through its declared adapter.
+- **`tasks`** — preloaded `TaskConfig`s to plan instead of loading from the
+  config; preloading gives exact control over the task set.
+- **`runtime` / `grader` / `conductor`** — carried as data on each trial.
+  `runtime="auto"` defers per-trial isolation to the task; `grader=None`
+  carries the run config's own grader block (which defers to the adapter
+  default when unset).
+
+### aggregate_results
+
+```python
+def aggregate_results(
+    results,                       # Iterable[TrialResult | Trajectory], or a run-dir Path
+    *,
+    run_config: RunConfig | None = None,
+    tasks: Sequence[TaskConfig] | None = None,
+    output_dir: Path | str | None = None,
+) -> RunReport: ...
+```
+
+- **`results`** — the trials to aggregate, as `TrialResult` / `Trajectory`
+  objects or a run directory whose `trials/<task_id>/<trial_index>/` bundles are
+  read back.
+- **`run_config` / `tasks`** — source the per-task metadata (benchmark type,
+  complexity, tags, expected failure modes) the slices group by. Omit both to
+  fold unclassified (or to read a run directory's per-trial `task.yaml`
+  snapshots).
+- **`output_dir`** — when given, the four JSONs are written here through the
+  same writer a full run uses.
+- **Returns** a `RunReport` (`per_task_metrics`, `aggregate`,
+  `metadata_slices`, `failure_attribution`).
+
+**Caveat.** The built-in remote dispatch adapter (`grpc_node`) still refuses
+coding-harness mode — a transport limit, not a surface limit. Driving a
+delegated harness through the three steps works on any backend you run
+`run_trial_from_inputs` on yourself.
+
 ## run_trial
 
 Run one trial in-process and get its `TrialResult` back, without
@@ -134,10 +232,65 @@ Errors:
 
 ## tolokaforge run-trial
 
-`tolokaforge run-trial` runs a single trial as a subprocess a harness in any
-language drives over a pipe — the subprocess wrapper of `run_trial`. It reads
-one request on stdin, runs one trial, and writes one terminal message on
-stdout.
+`tolokaforge run-trial` runs a single trial, in one of two modes:
+
+- **One-shot** (`--inputs <file>`) runs one trial from a serialized
+  [`TrialNodeInputs`](#versioned-trial-contract) file and exits with a code an
+  out-of-process caller can act on. This is the shape a sandbox-per-trial
+  backend uses: it cannot open a connection into the sandbox, so it writes the
+  inputs in, runs this command, and reads the result and exit code back out.
+- **Pipe** (no `--inputs`) runs one trial as a subprocess a harness in any
+  language drives over stdin/stdout — the subprocess wrapper of `run_trial`.
+
+### One-shot mode
+
+```bash
+tolokaforge run-trial --inputs trial.json \
+  --task-pack-root <dir> --output-dir <dir>
+```
+
+Reads a serialized `TrialNodeInputs`, runs one trial through the standalone
+entry [`run_trial_from_inputs`](TRIAL_NODE_SERVICE.md), writes the reduced bundle
+and a `trial_result.json` (a serialized `TrialResult`) under `--output-dir`, and
+exits.
+
+- `--task-pack-root <dir>` and `--output-dir <dir>` override the inputs'
+  `task_pack_dir` / `output_dir` with this host's paths; both apply only to
+  `--inputs`. With a pack root set, each manifest `compose_file` in the inputs is
+  rebased onto `<root>/<task_id>` and the task's files are read from there; the
+  content-hash check still applies to whatever is mounted.
+
+**Exit codes** — a backend reads them to decide whether to retry:
+
+| Outcome | exit |
+|---|---|
+| a `TrialResult` was produced and written (a graded failure is still this — the trial ran) | 0 |
+| deterministic failure, do not retry (`ProvisionError` / `TaskPackDrift` / `NotImplemented` / `InvalidConfig`) | 2 |
+| transient failure, a retry may clear it (any other, unexpected, internal fault) | 3 |
+
+The full traceback for a failure is written to stderr.
+
+<a id="versioned-trial-contract"></a>
+**Versioned JSON contract.** `TrialNodeInputs` and `TrialResult` are the JSON
+shapes an out-of-process caller serializes. Their committed JSON schemas under
+[`docs/schemas/`](schemas/) are the versioned contract to pin to —
+`trial_node_inputs.v1.json` and `trial_result.v1.json`. `TRIAL_CONTRACT_VERSION`
+(`tolokaforge.core.trial_contract`) versions those two shapes, independent of the
+gRPC `NODE_PROTOCOL_VERSION` and of the package version. Both models forbid
+unknown fields. Regenerate the schemas after a deliberate model change and bump
+the version:
+
+```bash
+uv run python scripts/export_trial_contract_schemas.py
+```
+
+A canonical test holds the committed schemas level with the models, so a model
+change reds the suite until the schema is regenerated and the version bumped.
+
+### Pipe mode
+
+It reads one request on stdin, runs one trial, and writes one terminal message
+on stdout.
 
 **Framing.** UTF-8 JSON Lines: one JSON object per line, `\n`-delimited, on
 both stdin and stdout. Every message carries `"v":1` — the wire-protocol

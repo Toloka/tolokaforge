@@ -199,6 +199,13 @@ shared = "tolokaforge.core.shared_stack_runtime:shared_runtime_backend_factory"
 per_trial = "tolokaforge.core.per_trial_runtime:per_trial_runtime_backend_factory"
 in_memory = "tolokaforge.core.runtime:in_memory_runtime_backend_factory"
 
+# Where a whole trial runs. ``local`` runs each trial on this machine, in a
+# thread pool or on spawned local worker processes. ``grpc_node`` leases a trial
+# node per trial and ships the whole trial over the trial-node RunTrial RPC.
+[project.entry-points."tolokaforge.dispatch_adapters"]
+local = "tolokaforge.core.dispatch.local:local_dispatch_adapter_factory"
+grpc_node = "tolokaforge.core.dispatch.grpc_node:grpc_node_dispatch_adapter_factory"
+
 [project.entry-points."tolokaforge.trial_graders"]
 runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
 # Second impl proves the plug-in seam accepts fundamentally different grader

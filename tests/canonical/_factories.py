@@ -107,6 +107,7 @@ def make_trial_spec(
     trial_id: str = "task-1:0",
     run_id: str = "run-1",
     task_id: str = "task-1",
+    attempt_id: int = 0,
     agent_model_config: ModelConfig | None = None,
     env_endpoints: EnvEndpoints | None = None,
 ) -> TrialSpec:
@@ -114,6 +115,7 @@ def make_trial_spec(
         trial_id=trial_id,
         run_id=run_id,
         task=make_task_description(task_id=task_id),
+        attempt_id=attempt_id,
         agent_model_config=agent_model_config or ModelConfig(provider="openai", name="gpt-4"),
         env_endpoints=env_endpoints or make_env_endpoints(),
     )

@@ -1,0 +1,2208 @@
+{
+  "$defs": {
+    "CostByRoleMetrics": {
+      "additionalProperties": false,
+      "description": "One ``role`` row of a trial's cost / token spend, summed across models.\n\nThe per-role view of :class:`CostByRoleModelMetrics`. ``sum(cost_usd)`` over\nthese rows equals :attr:`Metrics.cost_usd` on every trial \u2014 LLM-loop,\nconversational, and coding-harness \u2014 because the harness residual (whole\n``cost_usd``, empty ``usage.calls``) is reconciled onto the ``agent`` row.",
+      "properties": {
+        "cache_creation_input_tokens": {
+          "default": 0,
+          "title": "Cache Creation Input Tokens",
+          "type": "integer"
+        },
+        "cache_read_input_tokens": {
+          "default": 0,
+          "title": "Cache Read Input Tokens",
+          "type": "integer"
+        },
+        "cached_tokens": {
+          "default": 0,
+          "title": "Cached Tokens",
+          "type": "integer"
+        },
+        "completion_tokens": {
+          "default": 0,
+          "title": "Completion Tokens",
+          "type": "integer"
+        },
+        "cost_usd": {
+          "default": 0.0,
+          "title": "Cost Usd",
+          "type": "number"
+        },
+        "prompt_tokens": {
+          "default": 0,
+          "title": "Prompt Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "title": "CostByRoleMetrics",
+      "type": "object"
+    },
+    "CostByRoleModelMetrics": {
+      "additionalProperties": false,
+      "description": "One ``(role, model)`` row of a trial's cost / token spend.\n\nThe finest grain of the per-role rollup: a trial that runs the agent and the\nuser simulator on different models contributes one row per pair. ``model`` is\nthe client slug the calls were served by, ``None`` only for calls built\nwithout a serving client (the reconciled residual always carries the agent\nmodel, so ``None`` here means genuinely unattributed).\n\nA dict keyed by the ``(role, model)`` tuple would not round-trip through\nYAML/JSON, so the key is spread onto explicit fields, mirroring\n:class:`RateLimitProbeRoleMetrics`.",
+      "properties": {
+        "cache_creation_input_tokens": {
+          "default": 0,
+          "title": "Cache Creation Input Tokens",
+          "type": "integer"
+        },
+        "cache_read_input_tokens": {
+          "default": 0,
+          "title": "Cache Read Input Tokens",
+          "type": "integer"
+        },
+        "cached_tokens": {
+          "default": 0,
+          "title": "Cached Tokens",
+          "type": "integer"
+        },
+        "completion_tokens": {
+          "default": 0,
+          "title": "Completion Tokens",
+          "type": "integer"
+        },
+        "cost_usd": {
+          "default": 0.0,
+          "title": "Cost Usd",
+          "type": "number"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "prompt_tokens": {
+          "default": 0,
+          "title": "Prompt Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "title": "CostByRoleModelMetrics",
+      "type": "object"
+    },
+    "CriterionResult": {
+      "additionalProperties": false,
+      "description": "Per-criterion judge output.\n\n``score`` is 0/1 for binary criteria and 0\u20131 for graded ones. ``met`` is the\nbinary verdict (for graded criteria, whether it cleared the author's bar).",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "justification": {
+          "title": "Justification",
+          "type": "string"
+        },
+        "met": {
+          "title": "Met",
+          "type": "boolean"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "met",
+        "score",
+        "justification"
+      ],
+      "title": "CriterionResult",
+      "type": "object"
+    },
+    "CustomCheckDetail": {
+      "description": "Detail for individual custom check result",
+      "properties": {
+        "check_name": {
+          "title": "Check Name",
+          "type": "string"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Details"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "score": {
+          "default": 0.0,
+          "title": "Score",
+          "type": "number"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "check_name",
+        "status"
+      ],
+      "title": "CustomCheckDetail",
+      "type": "object"
+    },
+    "FirstUserMessageSource": {
+      "description": "Where the transcript's first user message came from.\n\nIt is message index 0 unless the agent's opening line\n(``actors.user.first_agent_message``) or a user tool step precedes it.",
+      "enum": [
+        "pinned",
+        "simulator"
+      ],
+      "title": "FirstUserMessageSource",
+      "type": "string"
+    },
+    "Grade": {
+      "description": "Grading result",
+      "properties": {
+        "binary_pass": {
+          "title": "Binary Pass",
+          "type": "boolean"
+        },
+        "comparison_view": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Comparison View"
+        },
+        "components": {
+          "$ref": "#/$defs/GradeComponents"
+        },
+        "criterion_results": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CriterionResult"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Criterion Results"
+        },
+        "custom_checks_details": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CustomCheckDetail"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Custom Checks Details"
+        },
+        "judge_agent_prompt_included": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Judge Agent Prompt Included"
+        },
+        "judge_custom_prompt": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Judge Custom Prompt"
+        },
+        "judge_inputs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JudgeInputs"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "judge_kb_gating": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JudgeKbGating"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "judge_status": {
+          "$ref": "#/$defs/JudgeStatus",
+          "default": "unspecified"
+        },
+        "judge_transcript": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Judge Transcript"
+        },
+        "judge_usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JudgeUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reasons": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            }
+          ],
+          "default": "",
+          "title": "Reasons"
+        },
+        "score": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Score",
+          "type": "number"
+        },
+        "state_diff": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State Diff"
+        },
+        "state_snapshots": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GradingStateSnapshots"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "synthesized_by_termination_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TerminationReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "trace_check_results": {
+          "items": {
+            "$ref": "#/$defs/TraceConstraintResult"
+          },
+          "title": "Trace Check Results",
+          "type": "array"
+        },
+        "trace_checks_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TraceChecksSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "binary_pass",
+        "score"
+      ],
+      "title": "Grade",
+      "type": "object"
+    },
+    "GradeComponents": {
+      "description": "Individual grading component scores",
+      "properties": {
+        "custom_checks": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Custom Checks"
+        },
+        "llm_judge": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Llm Judge"
+        },
+        "state_checks": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State Checks"
+        },
+        "trace_checks": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trace Checks"
+        },
+        "transcript_rules": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transcript Rules"
+        }
+      },
+      "title": "GradeComponents",
+      "type": "object"
+    },
+    "GradingStateSnapshots": {
+      "additionalProperties": false,
+      "description": "States reconstructed by a host grader, persisted in a separate sidecar.\n\nThese need not be live substrate snapshots: ``source`` names how the grader\nobtained them. They are evidence, never an implicit grading configuration.",
+      "properties": {
+        "final": {
+          "additionalProperties": true,
+          "title": "Final",
+          "type": "object"
+        },
+        "golden": {
+          "additionalProperties": true,
+          "title": "Golden",
+          "type": "object"
+        },
+        "initial": {
+          "additionalProperties": true,
+          "title": "Initial",
+          "type": "object"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "initial",
+        "golden",
+        "final"
+      ],
+      "title": "GradingStateSnapshots",
+      "type": "object"
+    },
+    "JudgeInputs": {
+      "additionalProperties": false,
+      "description": "The judge's non-derivable ``LLMJudge.run()`` inputs, recorded for offline replay.\n\nThe transcript, agent policy, rubric, and judge model are already structured in\nsibling artifacts (``trajectory.yaml``, ``prompts.yaml``, ``task.yaml``); this\nrecords only what a replay cannot otherwise reconstruct: the exact\n``state_diff`` string the judge saw (``None`` when no diff was built) and its\nnon-KB read-tool surface (``get_db_state`` / ``query_db`` / ``read_file`` \u2014 the\nKB surface lives in :class:`JudgeKbGating`). Written to a sidecar\n``judge_inputs.yaml``, never inlined in ``grade.yaml`` (the diff can be large).\nSee docs/OUTPUT_FORMAT.md.",
+      "properties": {
+        "read_tools_offered": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Read Tools Offered",
+          "type": "array"
+        },
+        "state_diff_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State Diff Text"
+        }
+      },
+      "title": "JudgeInputs",
+      "type": "object"
+    },
+    "JudgeKbGating": {
+      "additionalProperties": false,
+      "description": "The rubric judge's knowledge-search gating for this trial (host-side model).\n\nKept distinct from :class:`JudgeUsage` (which stays strictly token/cost\naccounting): this is the audit + replay record of *which* KB tools the judge\nwas offered and which config withheld. ``knowledge_search_disabled`` is the\nauthoritative replay signal \u2014 ``True`` means\n``grading.llm_judge.customization.disable_knowledge_search`` withheld KB,\nregardless of whether the agent had a KB tool this trial. ``offered`` /\n``withheld`` are supporting audit detail; an empty ``withheld`` on a disabled\njudge means the agent had no KB tool to gate.",
+      "properties": {
+        "knowledge_search_disabled": {
+          "title": "Knowledge Search Disabled",
+          "type": "boolean"
+        },
+        "offered": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Offered",
+          "type": "array"
+        },
+        "withheld": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Withheld",
+          "type": "array"
+        }
+      },
+      "required": [
+        "knowledge_search_disabled",
+        "offered",
+        "withheld"
+      ],
+      "title": "JudgeKbGating",
+      "type": "object"
+    },
+    "JudgeStatus": {
+      "description": "Outcome of the rubric judge for a grade (mirrors proto ``JudgeStatus``).\n\n``ERRORED`` is the fail-loud marker: the judge malfunctioned (retry / budget\nexhaustion or a crash) and there is NO trustworthy numeric score \u2014 the\n``llm_judge`` component is incomplete, NOT 0.0. ``UNSPECIFIED`` means no\njudge was configured / run. The integer values match the proto enum so the\ngRPC wire value maps directly via :meth:`from_proto`.",
+      "enum": [
+        "unspecified",
+        "completed",
+        "errored"
+      ],
+      "title": "JudgeStatus",
+      "type": "string"
+    },
+    "JudgeUsage": {
+      "additionalProperties": false,
+      "description": "The rubric judge's OWN token usage / cost (host-side boundary model).\n\nThe judge runs its own LLM inside the Runner, so its spend is separate from\nthe agent's (which lives in ``Metrics.usage``). This is intentionally a\ndistinct, small type rather than the per-call\n:class:`~tolokaforge.core.llm.usage.Usage`: the judge reports a single\naggregate (no per-call cache history), and its ``tool_calls`` / ``calls``\ncounters are judge-specific accounting. Field set mirrors the runner's\n:class:`tolokaforge.core.grading.judge.JudgeUsage` dataclass 1:1 and the\nproto ``JudgeReport`` usage fields.\n\n``cost_usd`` is the eval's own figure for the judge; ``billed_cost_usd`` is\nwhat the providers stated they charged, the sum over the judge's calls and\n``None`` unless every call stated one (a ``grade.yaml`` written before the\nfield existed reads ``None``). See docs/OUTPUT_FORMAT.md.",
+      "properties": {
+        "billed_cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Billed Cost Usd"
+        },
+        "calls": {
+          "default": 0,
+          "title": "Calls",
+          "type": "integer"
+        },
+        "completion_tokens": {
+          "default": 0,
+          "title": "Completion Tokens",
+          "type": "integer"
+        },
+        "consistency_rejections": {
+          "default": 0,
+          "title": "Consistency Rejections",
+          "type": "integer"
+        },
+        "cost_usd": {
+          "default": 0.0,
+          "title": "Cost Usd",
+          "type": "number"
+        },
+        "prompt_tokens": {
+          "default": 0,
+          "title": "Prompt Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        },
+        "tool_calls": {
+          "default": 0,
+          "title": "Tool Calls",
+          "type": "integer"
+        }
+      },
+      "title": "JudgeUsage",
+      "type": "object"
+    },
+    "Message": {
+      "description": "Conversation message",
+      "properties": {
+        "content": {
+          "default": "",
+          "title": "Content",
+          "type": "string"
+        },
+        "content_blocks": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Blocks"
+        },
+        "openrouter_generation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Openrouter Generation Id"
+        },
+        "reasoning": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StructuredReasoning"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "role": {
+          "$ref": "#/$defs/MessageRole"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        },
+        "tool_calls": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ToolCall"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Calls"
+        },
+        "tool_status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolExecutionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ts": {
+          "format": "date-time",
+          "title": "Ts",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "title": "Message",
+      "type": "object"
+    },
+    "MessageRole": {
+      "description": "Message role in conversation",
+      "enum": [
+        "system",
+        "user",
+        "assistant",
+        "tool"
+      ],
+      "title": "MessageRole",
+      "type": "string"
+    },
+    "Metrics": {
+      "additionalProperties": false,
+      "description": "Trial execution metrics.\n\n``usage`` carries the full :class:`Usage` accounting (prompt / completion /\nreasoning / cache-creation / cache-read / cached / provider_raw / calls).\nPer-call cost / latency live on ``usage.calls[*]`` \u2014 the previously\nredundant flat ``api_call_latencies_s`` list is gone.\n\n``cost_usd`` is the trial-level sum of every API call's ``cost_usd``;\nwalk ``usage.calls`` to find which calls were litellm- vs locally-priced\n(each :class:`ProviderRawCall` carries its own ``cost_source``). The\nearlier ``cost_usd_est`` / ``cost_usd_provider`` split is gone. On a\ncoding-harness trial there are no API calls to sum \u2014 the engine issues\nnone \u2014 so it is instead the engine's price for the tokens the CLI\nreported, with the CLI's own figure kept beside it as\n``harness_reported_cost_usd``.\n\nThe ``rate_limit_*`` and ``probe_*`` counters are populated only while\n:class:`RateLimitProbeConfig` is enabled; on every other run they stay at\ntheir zero / ``None`` / empty defaults. Two prefixes, two censuses of the\nsame mode: ``rate_limit_*`` is the FAILURE side (429 retries and the sleep\nthey cost) and ``probe_*`` is the SUCCESS side (goodput, served\nconcurrency, tokens). Both are needed \u2014 the 429 census is\nschedule-dependent and, for some providers, silent, while goodput and\nlatency are not.\n\n``latency_total_s`` is trial wall time and therefore *includes* the probe's\n429 sleep \u2014 a non-zero ``rate_limit_wait_s`` is the mechanical marker that\nthis trial's latency figures are not comparable with a normal run's.\n\nThe flat counters of both censuses are the sum across\n``rate_limit_by_role_model``, whose rows keep the agent's and the\nsimulator's numbers apart (they are different models). ``probe_buckets``\nresolves the same rows into fixed-width absolute-time windows, because a\ncumulative total hides non-stationarity \u2014 measured goodput decays at CONSTANT\noffered concurrency (``docs/OUTPUT_FORMAT.md`` \u00a7 Field observations).\n\nA single trial's goodput *ratio* is meaningless \u2014 goodput is a run-level\nquantity. Every field here is therefore an additive count over an\nabsolute-time window, never a rate: a consumer sums the counts across\ntrials and legs first, and forms the ratio last. See\n``docs/OUTPUT_FORMAT.md`` \u00a7 ``probe_*`` for the arithmetic.",
+      "properties": {
+        "api_calls": {
+          "default": 0,
+          "title": "Api Calls",
+          "type": "integer"
+        },
+        "cost_by_role": {
+          "items": {
+            "$ref": "#/$defs/CostByRoleMetrics"
+          },
+          "title": "Cost By Role",
+          "type": "array"
+        },
+        "cost_by_role_model": {
+          "items": {
+            "$ref": "#/$defs/CostByRoleModelMetrics"
+          },
+          "title": "Cost By Role Model",
+          "type": "array"
+        },
+        "cost_cache_rate_fallback": {
+          "default": false,
+          "title": "Cost Cache Rate Fallback",
+          "type": "boolean"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        },
+        "harness_reported_cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Harness Reported Cost Usd"
+        },
+        "harness_stdout_dialect": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Harness Stdout Dialect"
+        },
+        "harness_usage_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Harness Usage Source"
+        },
+        "latency_total_s": {
+          "default": 0.0,
+          "title": "Latency Total S",
+          "type": "number"
+        },
+        "openrouter_generation_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Openrouter Generation Ids",
+          "type": "array"
+        },
+        "parser_errors": {
+          "items": {
+            "$ref": "#/$defs/ParserErrorRecord"
+          },
+          "title": "Parser Errors",
+          "type": "array"
+        },
+        "pricing_basis": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Pricing Basis",
+          "type": "object"
+        },
+        "pricing_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pricing Key"
+        },
+        "probe_bucket_width_s": {
+          "default": 0,
+          "title": "Probe Bucket Width S",
+          "type": "integer"
+        },
+        "probe_buckets": {
+          "items": {
+            "$ref": "#/$defs/RateLimitProbeBucketMetrics"
+          },
+          "title": "Probe Buckets",
+          "type": "array"
+        },
+        "probe_completion_tokens": {
+          "default": 0,
+          "title": "Probe Completion Tokens",
+          "type": "integer"
+        },
+        "probe_dropped_buckets": {
+          "default": 0,
+          "title": "Probe Dropped Buckets",
+          "type": "integer"
+        },
+        "probe_prompt_tokens": {
+          "default": 0,
+          "title": "Probe Prompt Tokens",
+          "type": "integer"
+        },
+        "probe_success_duration_s": {
+          "default": 0.0,
+          "title": "Probe Success Duration S",
+          "type": "number"
+        },
+        "probe_successful_calls": {
+          "default": 0,
+          "title": "Probe Successful Calls",
+          "type": "integer"
+        },
+        "rate_limit_by_role_model": {
+          "items": {
+            "$ref": "#/$defs/RateLimitProbeRoleMetrics"
+          },
+          "title": "Rate Limit By Role Model",
+          "type": "array"
+        },
+        "rate_limit_first_ts": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rate Limit First Ts"
+        },
+        "rate_limit_last_ts": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rate Limit Last Ts"
+        },
+        "rate_limit_retries": {
+          "default": 0,
+          "title": "Rate Limit Retries",
+          "type": "integer"
+        },
+        "rate_limit_wait_s": {
+          "default": 0.0,
+          "title": "Rate Limit Wait S",
+          "type": "number"
+        },
+        "reasoning_channel_unknown": {
+          "default": 0,
+          "title": "Reasoning Channel Unknown",
+          "type": "integer"
+        },
+        "reasoning_recovered_by_fallback": {
+          "default": 0,
+          "title": "Reasoning Recovered By Fallback",
+          "type": "integer"
+        },
+        "reasoning_replay_dropped": {
+          "default": false,
+          "title": "Reasoning Replay Dropped",
+          "type": "boolean"
+        },
+        "stuck_detected": {
+          "default": false,
+          "title": "Stuck Detected",
+          "type": "boolean"
+        },
+        "tool_calls": {
+          "default": 0,
+          "title": "Tool Calls",
+          "type": "integer"
+        },
+        "tool_commands": {
+          "default": 0,
+          "title": "Tool Commands",
+          "type": "integer"
+        },
+        "tool_output_chars_truncated": {
+          "default": 0,
+          "title": "Tool Output Chars Truncated",
+          "type": "integer"
+        },
+        "tool_success_rate": {
+          "default": 0.0,
+          "title": "Tool Success Rate",
+          "type": "number"
+        },
+        "tool_usage": {
+          "items": {
+            "$ref": "#/$defs/ToolUsage"
+          },
+          "title": "Tool Usage",
+          "type": "array"
+        },
+        "turns": {
+          "default": 0,
+          "title": "Turns",
+          "type": "integer"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        }
+      },
+      "title": "Metrics",
+      "type": "object"
+    },
+    "ParserErrorRecord": {
+      "additionalProperties": false,
+      "description": "One serialisable ``tool_call.function.arguments`` parse-error record.\n\nMirrors the ephemeral ``tolokaforge.core.llm.client.ParserError`` frozen\ndataclass across the artefact boundary: the client-side sidecar is\nin-process only, this Pydantic form persists into the trial bundle so\ndownstream analytics (per-preset opt-in decisions for the parser-error\nretry seam, per-workload rate tallies) can read it after the fact.\n\n``raw_arguments`` is already bounded by\n``PARSER_ERROR_RAW_ARGS_EXCERPT_MAX_CHARS`` at the source; no additional\nclipping here.",
+      "properties": {
+        "raw_arguments": {
+          "title": "Raw Arguments",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_name",
+        "raw_arguments",
+        "reason"
+      ],
+      "title": "ParserErrorRecord",
+      "type": "object"
+    },
+    "ProviderRawCall": {
+      "description": "Per-call provider metrics \u2014 the unit record for trial-level analytics.\n\nOne ``ProviderRawCall`` is appended to :attr:`Usage.calls` for every\nLLM API call, so a dialogue's full cost / latency / cache history is\npreserved (instead of being collapsed via \"latest wins\" on\n``provider_raw``). Downstream analytics walk this list to answer\n\"which call stalled?\" and \"which calls were cache-hits?\".",
+      "properties": {
+        "billed_cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Billed Cost Usd"
+        },
+        "cache_creation_input_tokens": {
+          "default": 0,
+          "title": "Cache Creation Input Tokens",
+          "type": "integer"
+        },
+        "cache_read_input_tokens": {
+          "default": 0,
+          "title": "Cache Read Input Tokens",
+          "type": "integer"
+        },
+        "cached_tokens": {
+          "default": 0,
+          "title": "Cached Tokens",
+          "type": "integer"
+        },
+        "completion_tokens": {
+          "default": 0,
+          "title": "Completion Tokens",
+          "type": "integer"
+        },
+        "cost_source": {
+          "default": "unknown",
+          "enum": [
+            "litellm",
+            "local",
+            "unknown"
+          ],
+          "title": "Cost Source",
+          "type": "string"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        },
+        "gateway_route": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gateway Route"
+        },
+        "gateway_route_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "exact",
+                "wildcard"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gateway Route Kind"
+        },
+        "latency_s": {
+          "default": 0.0,
+          "title": "Latency S",
+          "type": "number"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "openrouter_generation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Openrouter Generation Id"
+        },
+        "prompt_tokens": {
+          "default": 0,
+          "title": "Prompt Tokens",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        },
+        "role": {
+          "default": "agent",
+          "enum": [
+            "agent",
+            "user",
+            "judge",
+            "grader"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "upstream_provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Upstream Provider"
+        }
+      },
+      "title": "ProviderRawCall",
+      "type": "object"
+    },
+    "RateLimitProbeBucketMetrics": {
+      "additionalProperties": false,
+      "description": "One fixed-width absolute-time window of one ``(role, model)``'s throughput.\n\n**The window boundary is anchored on the Unix epoch, not on run start.**\nThat is the whole reason this row exists. The intended measurement runs all\nseven domain legs simultaneously, each in its own runner process, and sums\nper-leg throughput into a global number; the sum is only valid if the legs'\nwindows can be aligned in absolute time. ``bucket_start_ts`` is\n``floor(epoch_seconds / bucket_width_s) * bucket_width_s`` rendered as UTC,\nso two processes on two machines with synchronised clocks emit the *same*\nvalue for the same instant and a consumer joins on it directly.\n\nCumulative totals cannot replace these rows: measured goodput is\nnon-stationary at CONSTANT offered concurrency, and one blended average\nreports neither end of the decay (``docs/OUTPUT_FORMAT.md`` \u00a7 Field\nobservations).\n\nA call is counted in the window it *finished* in \u2014 goodput is completions\nper window. ``retries`` / ``wait_s`` are the 429s scheduled inside the same\nwindow, so the served and rejected sides of one interval sit side by side.\n\nNo ``first_ts`` / ``last_ts``, unlike :class:`RateLimitProbeRoleMetrics`:\n``bucket_start_ts`` plus ``Metrics.probe_bucket_width_s`` already bound every\nevent in the row, and a sub-window position is not a quantity a cross-leg sum\ncan use.",
+      "properties": {
+        "bucket_start_ts": {
+          "format": "date-time",
+          "title": "Bucket Start Ts",
+          "type": "string"
+        },
+        "completion_tokens": {
+          "default": 0,
+          "title": "Completion Tokens",
+          "type": "integer"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "prompt_tokens": {
+          "default": 0,
+          "title": "Prompt Tokens",
+          "type": "integer"
+        },
+        "retries": {
+          "default": 0,
+          "title": "Retries",
+          "type": "integer"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "success_duration_s": {
+          "default": 0.0,
+          "title": "Success Duration S",
+          "type": "number"
+        },
+        "successful_calls": {
+          "default": 0,
+          "title": "Successful Calls",
+          "type": "integer"
+        },
+        "wait_s": {
+          "default": 0.0,
+          "title": "Wait S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "bucket_start_ts",
+        "role",
+        "model"
+      ],
+      "title": "RateLimitProbeBucketMetrics",
+      "type": "object"
+    },
+    "RateLimitProbeRoleMetrics": {
+      "additionalProperties": false,
+      "description": "One ``(role, model)`` row of a trial's rate-limit probe accounting.\n\nA trial's roles are different *models* in a real arena config \u2014 the agent\nis the model under test and the user simulator is a fixed, unrelated one \u2014\nso their counters must never be shared. ``role`` + ``model`` is the key;\nthe flat ``Metrics.rate_limit_*`` / ``Metrics.probe_*`` scalars are the sum\nacross these rows.\n\nBoth censuses live on the row: the FAILURE side (``retries`` / ``wait_s``)\nand the SUCCESS side (``successful_calls`` / ``success_duration_s`` and the\ntoken counts). The pair is the point \u2014 the 429 census is schedule-dependent\nand, for some providers, silent: a provider can throttle by slowing calls\ndown rather than rejecting them, which only goodput and latency catch. See\n``docs/OUTPUT_FORMAT.md`` \u00a7 Field observations for the measurements.\n\n``Metrics.usage`` cannot answer the same question: ``usage.calls`` records\nonly served responses, so the 429 / retry / wait census is absent from it.\nThese rows are the rate-limit record.\n\n``model`` is the raw provider-qualified slug the client called\n(``openrouter/anthropic/claude-sonnet-4.6``). The engine deliberately does\n*not* map it to an upstream-provider taxonomy: that grouping lives in the\nconsumer, and attributing a 429 to the OpenRouter upstream that actually\nserved the request needs wire data the engine does not capture.",
+      "properties": {
+        "completion_tokens": {
+          "default": 0,
+          "title": "Completion Tokens",
+          "type": "integer"
+        },
+        "first_ts": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "First Ts"
+        },
+        "last_ts": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Ts"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "prompt_tokens": {
+          "default": 0,
+          "title": "Prompt Tokens",
+          "type": "integer"
+        },
+        "retries": {
+          "default": 0,
+          "title": "Retries",
+          "type": "integer"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "success_duration_s": {
+          "default": 0.0,
+          "title": "Success Duration S",
+          "type": "number"
+        },
+        "successful_calls": {
+          "default": 0,
+          "title": "Successful Calls",
+          "type": "integer"
+        },
+        "wait_s": {
+          "default": 0.0,
+          "title": "Wait S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "role",
+        "model"
+      ],
+      "title": "RateLimitProbeRoleMetrics",
+      "type": "object"
+    },
+    "ReasoningBlock": {
+      "description": "One structured thinking block as returned by the provider.\n\n``signature`` is populated for Anthropic interleaved-thinking replays;\n``encrypted_data`` carries the opaque payload for ``redacted_thinking`` blocks.\nBoth may be ``None`` for providers that do not expose them (e.g. OpenAI's\n``reasoning_content`` summaries).\n\n``extras`` carries provider-specific fields from the raw envelope that we\nmust round-trip verbatim but don't model as first-class attributes. The\n2026-05-21 OTS investigation discovered that OpenRouter's Gemini\n``reasoning_details`` envelope attaches an ``id`` field to encrypted\nblocks that **literally matches the corresponding ``tool_call.id``** \u2014\nOpenRouter uses that linkage to reconstruct the thought_signature \u2194\ntool_call binding on the next turn. Stripping ``id`` / ``format`` /\n``index`` halved Pro's turn-2 reasoning tokens in a controlled A/B\n(148 \u2192 76 with everything else identical). Stored as a sorted tuple of\n``(key, value)`` pairs so the dataclass remains frozen and hashable.",
+      "properties": {
+        "encrypted_data": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Encrypted Data"
+        },
+        "extras": {
+          "default": [],
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            ],
+            "type": "array"
+          },
+          "title": "Extras",
+          "type": "array"
+        },
+        "signature": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signature"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "thinking",
+            "redacted_thinking",
+            "summary_text"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "title": "ReasoningBlock",
+      "type": "object"
+    },
+    "RecordedToolCall": {
+      "additionalProperties": false,
+      "description": "One tool call as the trial recorded it.\n\nThe single recorded-tool-call type on both grading substrates. Produced\nonce per call, in true execution order across every executor, by the\ntrial's :class:`ToolCallRecorder`.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "call_id": {
+          "minLength": 1,
+          "title": "Call Id",
+          "type": "string"
+        },
+        "executor": {
+          "$ref": "#/$defs/ToolExecutorIdentity"
+        },
+        "latency_seconds": {
+          "title": "Latency Seconds",
+          "type": "number"
+        },
+        "output": {
+          "title": "Output",
+          "type": "string"
+        },
+        "sequence": {
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/ToolExecutionStatus"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "sequence",
+        "tool_name",
+        "arguments",
+        "executor",
+        "status",
+        "output",
+        "latency_seconds",
+        "timestamp"
+      ],
+      "title": "RecordedToolCall",
+      "type": "object"
+    },
+    "ReplyDefect": {
+      "additionalProperties": false,
+      "description": "One detector's finding on one generated user reply.\n\nProduced by the user-reply guard\n(:mod:`tolokaforge.core.actors.reply_guard`) and carried on the\n:class:`~tolokaforge.core.llm.client.GenerationResult` of the turn whose\nearlier attempts it describes.",
+      "properties": {
+        "detector": {
+          "title": "Detector",
+          "type": "string"
+        },
+        "excerpt": {
+          "maxLength": 200,
+          "title": "Excerpt",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "detector",
+        "reason",
+        "excerpt"
+      ],
+      "title": "ReplyDefect",
+      "type": "object"
+    },
+    "SnapshotOutcome": {
+      "description": "Trial-end grade-bundle produce outcome tag.\n\nWritten to :attr:`SnapshotStatus.outcome` by the orchestrator's\ntrial-end producer seam. Downstream reporting code imports the symbol\nand compares by identity (``status.outcome is SnapshotOutcome.STORED``)\nrather than by string literal \u2014 string comparisons drift when a new\noutcome is added.",
+      "enum": [
+        "stored",
+        "oversize",
+        "produce_failed",
+        "ungraded"
+      ],
+      "title": "SnapshotOutcome",
+      "type": "string"
+    },
+    "SnapshotStatus": {
+      "additionalProperties": false,
+      "description": "Grade-bundle produce outcome for a trial.\n\nPopulated when the orchestrator's snapshot mode is enabled\n(``grader.snapshot.enabled=true``) and the trial reached the\nproducer seam. ``uri`` / ``bundle_size_bytes`` / ``cap_bytes`` /\n``reason`` are keyed by ``outcome``: :attr:`SnapshotOutcome.STORED`\ncarries ``uri`` + ``bundle_size_bytes``; :attr:`SnapshotOutcome.OVERSIZE`\ncarries ``bundle_size_bytes`` + ``cap_bytes`` + ``reason``;\n:attr:`SnapshotOutcome.PRODUCE_FAILED` carries ``reason``;\n:attr:`SnapshotOutcome.UNGRADED` carries no side data. Consumers gate on\n``outcome`` before reading the optional fields.",
+      "properties": {
+        "bundle_size_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bundle Size Bytes"
+        },
+        "cap_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cap Bytes"
+        },
+        "outcome": {
+          "$ref": "#/$defs/SnapshotOutcome"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Uri"
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "title": "SnapshotStatus",
+      "type": "object"
+    },
+    "StructuredReasoning": {
+      "description": "Bundle of :class:`ReasoningBlock` values with optional summary + usage.\n\n``budget_used`` is populated from ``usage.completion_tokens_details.reasoning_tokens``\nwhen available.\n\n``transport`` records *which* provider shape the blocks were extracted\nfrom so the codec emits the matching replay shape on the next turn:\n``thinking_blocks`` for direct Anthropic (``anthropic_native``) or\n``reasoning_details`` for OpenRouter-routed Anthropic. ``None`` when\nno structured blocks were extracted (e.g. summary-only OpenAI shape)\n\u2014 replay is a no-op in that case.",
+      "properties": {
+        "blocks": {
+          "items": {
+            "$ref": "#/$defs/ReasoningBlock"
+          },
+          "title": "Blocks",
+          "type": "array"
+        },
+        "budget_used": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budget Used"
+        },
+        "capture_only": {
+          "default": false,
+          "title": "Capture Only",
+          "type": "boolean"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        },
+        "transport": {
+          "anyOf": [
+            {
+              "enum": [
+                "anthropic_native",
+                "openrouter"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transport"
+        }
+      },
+      "title": "StructuredReasoning",
+      "type": "object"
+    },
+    "TerminationReason": {
+      "description": "Reason why the dialogue was terminated",
+      "enum": [
+        "agent_done",
+        "agent_submitted",
+        "user_stop",
+        "stuck_detected",
+        "timeout",
+        "max_turns",
+        "max_steps",
+        "too_many_errors",
+        "trial_token_budget",
+        "user_tool_loop_limit",
+        "error",
+        "rate_limit",
+        "api_timeout",
+        "api_error",
+        "provider_refused_all_requests",
+        "empty_completion",
+        "reasoning_without_action",
+        "context_window_exceeded",
+        "provision_error",
+        "trial_lost"
+      ],
+      "title": "TerminationReason",
+      "type": "string"
+    },
+    "ToolCall": {
+      "description": "Tool call from agent",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "arguments"
+      ],
+      "title": "ToolCall",
+      "type": "object"
+    },
+    "ToolExecutionStatus": {
+      "description": "How a tool call ended, as stamped on the trial's tool-call record.\n\nThe closed vocabulary a recorded tool call can carry. Every member is\nreachable from at least one recording path on at least one substrate \u2014\n``tests/canonical/test_tool_execution_status_reachability.py`` asserts it \u2014\nso a ``status`` matcher can never name an outcome no run produces.",
+      "enum": [
+        "success",
+        "environment_error",
+        "error",
+        "timeout",
+        "tool_not_found",
+        "invalid_arguments"
+      ],
+      "title": "ToolExecutionStatus",
+      "type": "string"
+    },
+    "ToolExecutorIdentity": {
+      "description": "Which side of the dialogue made a tool call.\n\n``USER`` is reached by a trial whose task declares ``tools.user.enabled``:\nthe conductor builds the user actor its own executor and the simulator is\noffered those schemas \u2014 equally on both substrates.",
+      "enum": [
+        "agent",
+        "user"
+      ],
+      "title": "ToolExecutorIdentity",
+      "type": "string"
+    },
+    "ToolUsage": {
+      "description": "Tool usage statistics",
+      "properties": {
+        "call_count": {
+          "default": 0,
+          "title": "Call Count",
+          "type": "integer"
+        },
+        "error_count": {
+          "default": 0,
+          "title": "Error Count",
+          "type": "integer"
+        },
+        "success_count": {
+          "default": 0,
+          "title": "Success Count",
+          "type": "integer"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "total_duration_s": {
+          "default": 0.0,
+          "title": "Total Duration S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "tool_name"
+      ],
+      "title": "ToolUsage",
+      "type": "object"
+    },
+    "TraceChecksSummary": {
+      "additionalProperties": false,
+      "description": "Which route a trial was scored on and whether a gate shut it.\n\nThe part of :class:`TraceChecksResult` that survives onto the ``Grade``: the\nper-constraint verdicts ride ``Grade.trace_check_results`` beside it, and the\naccounting is the runner's own. ``None`` on a ``Grade`` means the runner that\nproduced it predates the field, which is a different statement from a summary\nsaying no gate failed.",
+      "properties": {
+        "failed_gate_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Failed Gate Ids",
+          "type": "array"
+        },
+        "gate_failed": {
+          "default": false,
+          "title": "Gate Failed",
+          "type": "boolean"
+        },
+        "paths": {
+          "items": {
+            "$ref": "#/$defs/TracePathResult"
+          },
+          "title": "Paths",
+          "type": "array"
+        },
+        "winning_path": {
+          "default": "",
+          "title": "Winning Path",
+          "type": "string"
+        }
+      },
+      "title": "TraceChecksSummary",
+      "type": "object"
+    },
+    "TraceConstraintKind": {
+      "description": "One member of the closed constraint vocabulary.\n\nEach member names a field of :class:`TraceConstraintExpr` holding that kind's\npayload, so a kind and the payload address that reaches it are the same token.",
+      "enum": [
+        "present",
+        "absent",
+        "count",
+        "before",
+        "immediately_before",
+        "absent_before",
+        "absent_between",
+        "all_of",
+        "any_of",
+        "negate"
+      ],
+      "title": "TraceConstraintKind",
+      "type": "string"
+    },
+    "TraceConstraintResult": {
+      "additionalProperties": false,
+      "description": "The verdict one declared trace constraint reached.\n\n``message`` is empty on a pass and names what went wrong otherwise \u2014 an\nunmatched anchor, a failed condition, or the evidence the trial does not carry.\n``matched_positions`` holds timeline positions rather than events, so a grade\nstays readable and serialisable; an event is looked up by position against\n``trajectory.yaml``.\n\nThree flags separate the ways ``passed`` is ``False``. ``undecided`` names an\nevidence gap: no completion of the trial's missing record settles the verdict,\nso the constraint forfeits its weight and shuts a gate it carries. ``withheld``\nnames an author opt-out: the anchor matched nothing and the constraint declared\n``on_missing: withhold``, so its weight enters neither the numerator nor the\ndenominator and a withheld gate does not shut the block. Neither flag set with\n``passed=False`` is a definite failure \u2014 the trial did not satisfy the\nconstraint on evidence it did carry. The three flags are the fields a reader\nclassifies a constraint's discriminating power from without matching on\n``message`` prose.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TraceConstraintKind"
+        },
+        "matched_positions": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Matched Positions",
+          "type": "array"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "severity": {
+          "$ref": "#/$defs/TraceConstraintSeverity",
+          "default": "scored"
+        },
+        "undecided": {
+          "default": false,
+          "title": "Undecided",
+          "type": "boolean"
+        },
+        "weight": {
+          "title": "Weight",
+          "type": "number"
+        },
+        "withheld": {
+          "default": false,
+          "title": "Withheld",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "passed",
+        "weight"
+      ],
+      "title": "TraceConstraintResult",
+      "type": "object"
+    },
+    "TraceConstraintSeverity": {
+      "description": "Whether a constraint is scored or gates the trial.\n\nA gate is excluded from the weighted average entirely \u2014 it enters neither the\nnumerator nor the denominator \u2014 and a violated one fails the trial whatever the\nscored constraints said.",
+      "enum": [
+        "scored",
+        "gate"
+      ],
+      "title": "TraceConstraintSeverity",
+      "type": "string"
+    },
+    "TracePathResult": {
+      "additionalProperties": false,
+      "description": "How one alternative route scored, whether or not it won.\n\n``score`` is the route's own normalised score over the shared constraints and\nits own. A gate zeroes the *component*, never a path's number, so the value the\nargmax compared stays readable in the grade \u2014 a winner that won by a hair reads\ndifferently from one that won by a mile.",
+      "properties": {
+        "gate_failed": {
+          "title": "Gate Failed",
+          "type": "boolean"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "score",
+        "gate_failed"
+      ],
+      "title": "TracePathResult",
+      "type": "object"
+    },
+    "Trajectory": {
+      "description": "Complete trial trajectory.\n\nCarries only the message trace + status + metrics. The agent's system\nprompt and the user simulator's system prompt live in a sibling\n``prompts.yaml`` artifact (written by\n:class:`~tolokaforge.core.output.artifacts.FileArtifactWriter.write_prompts`)\nso this file stays small and easy to scan during analysis. Tool\nschemas similarly live in ``tools_schemas.yaml``. Every trial bundle\nis self-contained \u2014 no cross-trial sidecars.",
+      "properties": {
+        "attempt_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attempt Id"
+        },
+        "end_ts": {
+          "format": "date-time",
+          "title": "End Ts",
+          "type": "string"
+        },
+        "environment_errors": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Environment Errors"
+        },
+        "final_env_state": {
+          "additionalProperties": true,
+          "title": "Final Env State",
+          "type": "object"
+        },
+        "first_user_message_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FirstUserMessageSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "grade": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Grade"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "grading_comparison_view": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grading Comparison View"
+        },
+        "grading_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grading Error"
+        },
+        "grading_judge_usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JudgeUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "grading_state_diff": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grading State Diff"
+        },
+        "grading_state_snapshots": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GradingStateSnapshots"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "title": "Messages",
+          "type": "array"
+        },
+        "metrics": {
+          "$ref": "#/$defs/Metrics"
+        },
+        "provision_stage": {
+          "anyOf": [
+            {
+              "enum": [
+                "materialise_run",
+                "provision",
+                "await_ready",
+                "reset_recipe",
+                "register_trial",
+                "cycle"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provision Stage"
+        },
+        "simulation_steps": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Simulation Steps"
+        },
+        "simulator_schema_version": {
+          "default": 4,
+          "title": "Simulator Schema Version",
+          "type": "integer"
+        },
+        "snapshot_status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SnapshotStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "start_ts": {
+          "format": "date-time",
+          "title": "Start Ts",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TrialStatus",
+          "default": "completed"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "termination_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TerminationReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tool_log": {
+          "items": {
+            "$ref": "#/$defs/RecordedToolCall"
+          },
+          "title": "Tool Log",
+          "type": "array"
+        },
+        "trial_index": {
+          "title": "Trial Index",
+          "type": "integer"
+        },
+        "user_reply_guard_events": {
+          "items": {
+            "$ref": "#/$defs/UserReplyGuardEvent"
+          },
+          "title": "User Reply Guard Events",
+          "type": "array"
+        }
+      },
+      "required": [
+        "task_id",
+        "trial_index",
+        "start_ts",
+        "end_ts",
+        "messages"
+      ],
+      "title": "Trajectory",
+      "type": "object"
+    },
+    "TrialStatus": {
+      "description": "Trial execution status",
+      "enum": [
+        "completed",
+        "failed",
+        "timeout",
+        "error"
+      ],
+      "title": "TrialStatus",
+      "type": "string"
+    },
+    "Usage": {
+      "description": "Normalized token + cache accounting across providers.\n\nEvery field is populated from the litellm-canonical ``ModelResponse.usage``\nsurface by :class:`UsageExtractor` \u2014 see module docstring for the exact\nsource paths. Missing attributes are coerced to ``0``; ``provider_raw``\ncarries the forensic dump of the raw provider-specific block.\n\n**Per-call history (``calls``).** Each LLM API call produces one\n:class:`ProviderRawCall` appended to this tuple. ``__add__``\nconcatenates, so a runner-accumulated ``Usage`` carries the full\ntrial timeline \u2014 readers walk ``calls`` for per-call cost / latency\ndiagnostics, while the flat token fields stay as a fast aggregate sum.\n\n**Accumulation semantics (``__add__``).** Token / cache counters sum\nfield-wise. ``calls`` concatenates. ``provider_raw`` follows\n\"latest wins\" \u2014 the right-hand operand's dict is preserved (the\nraw shapes differ per call, so merging would be lossy).",
+      "properties": {
+        "cache_creation_input_tokens": {
+          "default": 0,
+          "title": "Cache Creation Input Tokens",
+          "type": "integer"
+        },
+        "cache_read_input_tokens": {
+          "default": 0,
+          "title": "Cache Read Input Tokens",
+          "type": "integer"
+        },
+        "cached_tokens": {
+          "default": 0,
+          "title": "Cached Tokens",
+          "type": "integer"
+        },
+        "calls": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProviderRawCall"
+          },
+          "title": "Calls",
+          "type": "array"
+        },
+        "completion_tokens": {
+          "default": 0,
+          "title": "Completion Tokens",
+          "type": "integer"
+        },
+        "prompt_tokens": {
+          "default": 0,
+          "title": "Prompt Tokens",
+          "type": "integer"
+        },
+        "provider_raw": {
+          "additionalProperties": true,
+          "title": "Provider Raw",
+          "type": "object"
+        },
+        "reasoning_tokens": {
+          "default": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        }
+      },
+      "title": "Usage",
+      "type": "object"
+    },
+    "UserReplyGuardEvent": {
+      "additionalProperties": false,
+      "description": "What one user turn cost when it cost more than one generation.\n\nA turn whose first generation passed the guard records no event, so a trial\nthat never broke frame carries an empty list rather than a row per turn.",
+      "properties": {
+        "message_index": {
+          "title": "Message Index",
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/UserReplyOutcome"
+        },
+        "rejected": {
+          "items": {
+            "$ref": "#/$defs/ReplyDefect"
+          },
+          "minItems": 1,
+          "title": "Rejected",
+          "type": "array"
+        }
+      },
+      "required": [
+        "message_index",
+        "outcome",
+        "rejected"
+      ],
+      "title": "UserReplyGuardEvent",
+      "type": "object"
+    },
+    "UserReplyOutcome": {
+      "description": "The reply guard's verdict on one dispatched user turn.",
+      "enum": [
+        "delivered",
+        "refused"
+      ],
+      "title": "UserReplyOutcome",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The result of a trial \u2014 ``Trajectory`` plus the canonical trial id and worker id.",
+  "properties": {
+    "trajectory": {
+      "$ref": "#/$defs/Trajectory"
+    },
+    "trial_id": {
+      "title": "Trial Id",
+      "type": "string"
+    },
+    "worker_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Worker Id"
+    }
+  },
+  "required": [
+    "trial_id",
+    "trajectory"
+  ],
+  "title": "TrialResult",
+  "type": "object"
+}

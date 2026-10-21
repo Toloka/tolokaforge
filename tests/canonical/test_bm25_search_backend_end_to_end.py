@@ -31,9 +31,9 @@ from tests.canonical._factories import write_yaml_file
 from tests.utils.runner_requests import execute_request, register_request
 from tolokaforge.adapters._task_loader import load_task_yaml
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.engine_stack_runtime import _tasks_need_full_stack
 from tolokaforge.core.grading.judge_tools import SearchKbTool
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.core.orchestrator import _tasks_need_full_stack
 from tolokaforge.core.search.bm25 import Bm25KnowledgeSearch, Bm25SearchIndex, clear_index_cache
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2

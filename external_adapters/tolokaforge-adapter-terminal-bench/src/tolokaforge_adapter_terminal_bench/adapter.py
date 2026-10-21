@@ -61,6 +61,7 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
 from tolokaforge_adapter_terminal_bench.task_parser import (
     TerminalBenchTask,
     discover_tasks,
+    parse_task_dir,
 )
 from tolokaforge_coding_harnesses import (
     DEFAULT_PATH_RESOLVER,
@@ -398,6 +399,23 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         if not self._tasks:
             self._tasks = discover_tasks(self.terminal_bench_dir)
 
+    def register_preloaded_task(self, task: TaskConfig, task_dir: Path) -> None:
+        """Seed discovery with the one task a standalone trial entry mounted.
+
+        *task_dir* is the task's own directory (``task.toml`` / ``task.yaml``
+        inside it), and its name must be ``task.task_id`` — the id discovery
+        would have derived from it. Seeding the task table also short-circuits
+        :meth:`_ensure_discovered`, so no sibling task is ever scanned.
+        """
+        task_dir = Path(task_dir)
+        if task.task_id != task_dir.name:
+            raise ValueError(
+                f"terminal-bench adapter: task {task.task_id!r} does not match the "
+                f"mounted task directory {str(task_dir)!r} (its name is the task id)"
+            )
+        self._tasks[task.task_id] = parse_task_dir(task_dir)
+        self._environments.pop(task.task_id, None)
+
     def get_task_dir(self, task_id: str) -> Path:
         self._ensure_discovered()
         return self._tasks[task_id].task_dir
@@ -474,7 +492,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     def get_task(self, task_id: str) -> TaskConfig:
         self._ensure_discovered()
         meta = self._tasks[task_id]
-        return TaskConfig(
+        task = TaskConfig(
             task_id=task_id,
             name=task_id,
             category="terminal",
@@ -496,6 +514,11 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 "tags": meta.tags,
             },
         )
+        # Carry the task's own directory so a standalone trial entry can seed a
+        # fresh adapter from it (``register_preloaded_task``) and so the task
+        # resolves its assets relative to where it was loaded.
+        task._source_dir = meta.task_dir
+        return task
 
     def _environment_patch(self, task_id: str) -> EnvironmentPatch:
         """Two-stack composition plan (ADR-0044 § 5 ``MULTI_SCOPE``).

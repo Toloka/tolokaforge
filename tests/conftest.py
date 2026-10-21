@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from tests.utils.secret_state import secret_manager_installed
-from tolokaforge.core.llm.presets import set_overlay_path
+from tolokaforge.core.llm.presets import set_overlay_data, set_overlay_path
 
 pytest_plugins = ["pytester"]
 """``pytester`` is a pytest-built-in plugin that lets tests spin up an isolated
@@ -31,6 +31,9 @@ def overlay_isolation():
     function call that sets a module global to ``None``.
     """
     yield
+    # Clear any carried-by-content overlay a test installed; the session overlay is
+    # a path, never carried content, so this always resets to ``None``.
+    set_overlay_data(None)
     # Restore the SESSION overlay (TF_PRESETS_FILE), not unconditionally None: a
     # session-wide overlay installed for the whole run - the resolve reprobe sets
     # TF_PRESETS_FILE so every probe runs under the candidate policy - must survive

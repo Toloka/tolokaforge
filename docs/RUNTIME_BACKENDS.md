@@ -24,6 +24,21 @@ ten methods, three concerns:
 Every implementation ships all ten. The orchestrator holds one backend
 instance for the whole run; the conductor calls it per-trial.
 
+A runtime backend answers one question: **how is a trial's sandbox built?** A
+second question — **where is the whole trial sent to run?** — is a separate axis,
+the **dispatch adapter** ([ADR-0064](adr/0064-dispatch-adapter-seam.md)). The two
+choices are independent.
+
+A `DispatchAdapter` (`connect` / `close` / `run_trial_node(inputs) -> TrialResult`)
+is selected by the `orchestrator.dispatch` config block. When it is set,
+`build_trial_execution_unit` routes trials through `RemoteTrialExecutor` and the
+orchestrator builds no substrate backend — the node owns the substrate. When the
+block is absent, the run takes the substrate path below with
+`ProvisioningTrialExecutor`, so `shared`, `per_trial` and `in_memory` are
+untouched. The in-tree `local` and `grpc_node` adapters are described under
+[Dispatch adapters](#dispatch-adapters); the full dispatch story is in
+[DETACHED_EXECUTION.md](DETACHED_EXECUTION.md).
+
 ```mermaid
 graph TB
     subgraph Process["Orchestrator process"]
@@ -104,6 +119,103 @@ backend — the class body is a dataclass, not a re-implementation.
 **`InMemoryRuntimeBackend`** — test-only. Records every method call on a
 `RuntimeBackendCallLog`; no Docker daemon required. Used by canonical
 contract tests.
+
+## Dispatch adapters
+
+Where a *whole trial* runs is a separate axis from how its sandbox is built
+([ADR-0064](adr/0064-dispatch-adapter-seam.md)). A `DispatchAdapter` takes one
+trial's `TrialNodeInputs` and returns its graded `TrialResult`. Adapters register
+under the `tolokaforge.dispatch_adapters` entry-point group and report failures
+with three transport-neutral errors (`tolokaforge/core/dispatch/errors.py`):
+`DispatchRefused` (a deterministic refusal the orchestrator does not retry),
+`DispatchProvisionError` (a deterministic placement/start fault — bad compose,
+missing image, bad manifest — also not retried), and `DispatchTransient` (an
+infrastructure fault, including "no capacity now", that the orchestrator retries).
+
+On a dispatch run the orchestrator's trial-level retries
+(`orchestrator.max_attempt_retries` / `compute.max_attempt_retries`, default 0)
+are what re-run a trial after a `DispatchTransient` fault — they *are* the
+transient-retry path, not a second layer stacked on the adapter. A backend that
+performs its own trial-level retries should set `max_attempt_retries` to 0 so a
+failed trial is not executed twice.
+
+The `orchestrator.dispatch` block names the adapter and its options. When it is
+set, the orchestrator builds the adapter, runs the trial loop through
+`RemoteTrialExecutor`, and starts no local substrate backend — the node owns the
+substrate. When it is absent, the run takes the single-box substrate path above,
+unchanged.
+
+```yaml
+orchestrator:
+  auto_start_services: false
+  dispatch:
+    adapter: local
+    config:
+      mode: subprocess
+      workers: 2
+```
+
+**`local`** — runs each whole trial on the machine the orchestrator runs on. It
+is the native dispatch path and the single-box test bed for distributed
+dispatch: it needs no external dispatch service. `config.mode` picks between two
+modes, and `config.workers` (default 1) is the trial concurrency in both.
+
+- `thread` (the default) runs each trial in-process on a thread pool of
+  `config.workers` threads, calling the same whole-trial entry a node runs. It
+  spawns no process and opens no socket.
+- `subprocess` spawns `config.workers` local `tolokaforge trial-node` worker
+  processes, each on its own loopback port, and dispatches to them exactly as
+  `grpc_node` dispatches to configured nodes. `config.lease_timeout_s`
+  (default 300) bounds how long a trial waits for a free worker, and
+  `config.grpc_max_message_mb` (defaulted from `compute.grpc_max_message_mb`) is
+  set on each worker and its client so both ends share one bound. The adapter
+  spawns the workers when it connects and tears them down when it closes; each
+  worker's trial artifacts are written under an adapter-owned temporary directory
+  that is discarded on close.
+
+Both modes run the same trial unit as a real node, so a run reads the same
+whichever it picks. `thread` mode shares the process's secret manager across its
+trials, as the single-box worker pool already does; `subprocess` mode gives each
+worker its own process, matching a node.
+
+**`grpc_node`** — hands each whole trial to a trial node leased from an in-process
+node registry ([ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md),
+[`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)). `config.nodes` seeds an
+`InMemoryNodeRegistry` with the `host:port` addresses of nodes started with
+`tolokaforge trial-node`. `config.lease_timeout_s` (default 300) bounds how long a
+trial waits for a free node, and `config.grpc_max_message_mb` (defaulted from
+`compute.grpc_max_message_mb`) bounds each node channel.
+
+For each trial, `run_trial_node` leases one node, connects within the run's
+connect budget (which also checks protocol and message-size skew), ships the
+serialized `TrialNodeInputs` over the `RunTrial` RPC, and releases the lease
+whatever the outcome — translating every node failure into the neutral dispatch
+vocabulary. The node runs the conductor, the agent loop, the grader and the
+trial's substrate itself. The control plane builds no grader or conductor; it
+writes a reduced bundle (`trajectory.yaml`, `tool_log.yaml`, `metrics.yaml`,
+`grade.yaml`) from the returned trajectory. Each node serves one trial at a time,
+so the node count bounds trial concurrency.
+
+Run shapes a dispatch run refuses at run start rather than degrading. Every
+dispatch adapter — the `local` thread/subprocess path and `grpc_node` alike —
+hands each whole trial to a node that rebuilds its run config from the trial
+inputs, so the settings and adapter refusals below apply to **every** dispatch
+adapter. Only the manifest-hosting refusal (first bullet) is `grpc_node`-specific:
+it alone ships the task pack to a remote node.
+
+- (`grpc_node` only) A task `environment_manifest` the node cannot host, named by task: more than one stack, a service with `isolation: reset` (reset-isolation seeds are not yet shipped to the node), or a compose file outside the task's own directory (project-level or shared compose does not ship with the pack). Run those under `shared` or `per_trial`. A single-stack, non-reset manifest whose compose file is in the task directory is accepted: the node rebases the compose path onto its task-pack mount and materialises the stack once for its trial (see [TRIAL_NODE_SERVICE.md](TRIAL_NODE_SERVICE.md)).
+- An adapter that is not node-runnable (it does not implement `register_preloaded_task`), or coding-harness mode (`models.agent.harness`): a dispatch node runs the native loop without harness mode. A non-native adapter is accepted as long as it is node-runnable.
+- `grader_rpc` and `queue` graders (they need a static runner address); `runner_rpc` only.
+- `grader.snapshot.enabled`: the node grades in-process and produces no control-plane grade bundle.
+- `auto_start_services: true`: no local stack is started; set it to `false`.
+- `engine.presets_file`: the model-presets overlay is installed process-globally on the control plane and is not carried to a node, so a node would run without it; set it on the node instead, or run under the `shared` or `per_trial` substrate.
+- Run settings the node does not carry, named in one error: `max_requests_per_second` (a run-level throttle is global across trials; a node runs one trial and cannot enforce a shared limit), the `orchestrator.typesense` search plane (a control-plane-local container bridged onto the runner's Docker network; a dispatch node has no such bridge), a custom `conductor_factory`, a custom `agent_client_factory` (set `models.agent.fallbacks` instead; the node carries it), and a fallback chain together with an enabled `orchestrator.rate_limit_probe`.
+- Carried to the node, so accepted at any value: `orchestrator.timeouts`, `max_turns`, `max_trial_tokens`, `stuck_heuristics`, `agent_loop` (the loop must be registered on the node), `compute.log_tail` / `compute.capture_logs_on_success`, and the agent's `fallbacks` chain.
+- Worker mode (`run_worker`): each process would build its own node registry.
+
+A configured `observability.tracing` exporter does not refuse: it logs a warning, because the node emits no live traces and the exporter sees only the reduced bundle.
+
+`orchestrator.runtime: remote` (and `--runtime remote`) is a one-release deprecated alias for `dispatch.adapter: grpc_node` with `config.nodes` taken from `orchestrator.remote.nodes`; it emits a `DeprecationWarning`. Migrate to the `dispatch` block.
 
 ## Network posture
 
@@ -978,7 +1090,7 @@ finally:
     runtime_backend.teardown(handle)
 ```
 
-The `Orchestrator._build_trial_executor(runtime_backend, conductor)` helper composes one per run; both dispatch sites (`Orchestrator.run()` and `Orchestrator.run_worker()`) submit `trial_executor.execute` to their worker pools in place of `conductor.run`. Provisioning parallelism = worker count. Both backends now uniformly source per-trial endpoints from `endpoints(handle)`, so the `env_endpoints` substitution is substrate-agnostic — a no-op for the shared-stack path (same value across trials, resolved once at backend construction) and load-bearing for the per-trial path (real per-trial URLs).
+`build_trial_execution_unit` (`tolokaforge.core.trial_node`) composes one per run; both dispatch sites (`Orchestrator.run()` and `Orchestrator.run_worker()`) submit `trial_unit.execute` to their worker pools in place of `conductor.run`. Provisioning parallelism = worker count. Both backends now uniformly source per-trial endpoints from `endpoints(handle)`, so the `env_endpoints` substitution is substrate-agnostic — a no-op for the shared-stack path (same value across trials, resolved once at backend construction) and load-bearing for the per-trial path (real per-trial URLs).
 
 `ProvisionError` at any provisioning stage synthesises a failed `TrialResult` with `TerminationReason.PROVISION_ERROR`; `attribute_failure()` classifies it as `provision_failure` (deterministic=True) in `DETERMINISTIC_CLASSES`, so retry logic and dashboards can distinguish substrate failures from tool / grader / model-reasoning failures.
 
@@ -1023,6 +1135,7 @@ The runner and db-service images are also published to Docker Hub (see [STANDALO
 
 - `tolokaforge/core/per_trial_runtime.py` — the preset (delegates every method onto the composer-driven `SharedStackRuntimeBackend`).
 - `tolokaforge/core/runtime.py` — the `RuntimeBackend` Protocol + `InMemoryRuntimeBackend`.
+- `tolokaforge/core/dispatch/` — the dispatch-adapter seam ([ADR-0064](adr/0064-dispatch-adapter-seam.md)): `adapter.py` (Protocol), `errors.py` (neutral vocabulary), `grpc_node.py` (the `grpc_node` adapter). `tolokaforge/core/node_registry.py` — its node registry ([ADR-0059](adr/0059-remote-runtime-backend.md), [ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md)); `tolokaforge/trial_node/` — the node service ([`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md)).
 - `tolokaforge/core/shared_stack_runtime.py` — `SharedStackRuntimeBackend` + `RunnerClient` Protocol + `GrpcRunnerClient`.
 - `tolokaforge/core/default_substrate_composer.py` — the sequencer that walks the composition plan and stitches materialiser + dispatchers together.
 - `tolokaforge/core/docker_compose_materialiser.py` — the docker-compose materialiser (compose lifecycle, log routing, per-service capture).

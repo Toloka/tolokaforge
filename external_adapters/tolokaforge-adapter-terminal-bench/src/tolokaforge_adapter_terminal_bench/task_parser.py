@@ -376,6 +376,72 @@ def _find_compose(task_dir: Path) -> Path | None:
     return None
 
 
+def parse_task_dir(task_dir: Path) -> TerminalBenchTask:
+    """Parse one terminal-bench task directory into a :class:`TerminalBenchTask`.
+
+    *task_dir* holds the task's ``task.toml`` (or the legacy ``task.yaml``) and
+    its name is the task id. Shared by :func:`discover_tasks` and the adapter's
+    standalone-trial seeding path, so a task mounted alone on a node is parsed
+    exactly as it would be during a full discovery scan.
+    """
+    task_id = task_dir.name
+    compose_file = _find_compose(task_dir)
+
+    yaml_data = _load_task_yaml(task_dir)
+    instruction = _parse_instruction(task_dir, yaml_data)
+    toml_data = _parse_task_toml(task_dir)
+
+    metadata = toml_data.get("metadata", {})
+    agent = toml_data.get("agent", {})
+    verifier = toml_data.get("verifier", {})
+    environment = toml_data.get("environment", {})
+
+    environment_mode = verifier.get("environment_mode")
+    if environment_mode is not None and not isinstance(environment_mode, str):
+        raise ValueError(
+            f"terminal-bench task {task_id!r}: verifier.environment_mode must be a "
+            f"string; got {environment_mode!r}."
+        )
+
+    artifacts = _parse_artifacts(task_id, toml_data)
+    has_tests_dockerfile = (task_dir / "tests" / "Dockerfile").is_file()
+    shape = detect_shape(
+        environment_mode=environment_mode,
+        artifacts=artifacts,
+        has_tests_dockerfile=has_tests_dockerfile,
+    )
+    if shape is TaskShape.SEPARATE_VERIFIER and not has_tests_dockerfile:
+        # The verifier container is built from ``tests/Dockerfile``; a task that
+        # declares the separate-verifier shape (via artifacts or environment_mode)
+        # without shipping it cannot be run. Fail here with the reason rather than
+        # letting the per-trial compose build die on a missing Dockerfile.
+        raise ValueError(
+            f"terminal-bench task {task_id!r}: declares the separate-verifier shape "
+            "(top-level artifacts or verifier.environment_mode='separate') but ships no "
+            "tests/Dockerfile to build its verifier container from."
+        )
+
+    return TerminalBenchTask(
+        task_id=task_id,
+        task_dir=task_dir,
+        compose_file=compose_file,
+        instruction=instruction,
+        difficulty=metadata.get("difficulty", "medium"),
+        tags=metadata.get("tags", []),
+        agent_timeout_sec=agent.get("timeout_sec", 1800.0),
+        verifier_timeout_sec=_parse_verifier_timeout(task_id, verifier),
+        cpus=environment.get("cpus", 2),
+        memory_mb=environment.get("memory_mb", 4096),
+        environment_mode=environment_mode,
+        artifacts=artifacts,
+        collect=_parse_collect(task_id, verifier),
+        has_tests_dockerfile=has_tests_dockerfile,
+        has_tests_compose=(task_dir / "tests" / "docker-compose.yaml").is_file(),
+        shape=shape,
+        harness_skills_dir=_parse_harness_skills_dir(task_id, task_dir, yaml_data),
+    )
+
+
 def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
     """Find terminal-bench task directories under *base_dir*.
 
@@ -398,61 +464,6 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
     declared |= {p.parent for p in base_dir.glob("*/task.yaml")}
 
     for task_dir in sorted(declared):
-        task_id = task_dir.name
-        compose_file = _find_compose(task_dir)
-
-        yaml_data = _load_task_yaml(task_dir)
-        instruction = _parse_instruction(task_dir, yaml_data)
-        toml_data = _parse_task_toml(task_dir)
-
-        metadata = toml_data.get("metadata", {})
-        agent = toml_data.get("agent", {})
-        verifier = toml_data.get("verifier", {})
-        environment = toml_data.get("environment", {})
-
-        environment_mode = verifier.get("environment_mode")
-        if environment_mode is not None and not isinstance(environment_mode, str):
-            raise ValueError(
-                f"terminal-bench task {task_id!r}: verifier.environment_mode must be a "
-                f"string; got {environment_mode!r}."
-            )
-
-        artifacts = _parse_artifacts(task_id, toml_data)
-        has_tests_dockerfile = (task_dir / "tests" / "Dockerfile").is_file()
-        shape = detect_shape(
-            environment_mode=environment_mode,
-            artifacts=artifacts,
-            has_tests_dockerfile=has_tests_dockerfile,
-        )
-        if shape is TaskShape.SEPARATE_VERIFIER and not has_tests_dockerfile:
-            # The verifier container is built from ``tests/Dockerfile``; a task that
-            # declares the separate-verifier shape (via artifacts or environment_mode)
-            # without shipping it cannot be run. Fail here with the reason rather than
-            # letting the per-trial compose build die on a missing Dockerfile.
-            raise ValueError(
-                f"terminal-bench task {task_id!r}: declares the separate-verifier shape "
-                "(top-level artifacts or verifier.environment_mode='separate') but ships no "
-                "tests/Dockerfile to build its verifier container from."
-            )
-
-        tasks[task_id] = TerminalBenchTask(
-            task_id=task_id,
-            task_dir=task_dir,
-            compose_file=compose_file,
-            instruction=instruction,
-            difficulty=metadata.get("difficulty", "medium"),
-            tags=metadata.get("tags", []),
-            agent_timeout_sec=agent.get("timeout_sec", 1800.0),
-            verifier_timeout_sec=_parse_verifier_timeout(task_id, verifier),
-            cpus=environment.get("cpus", 2),
-            memory_mb=environment.get("memory_mb", 4096),
-            environment_mode=environment_mode,
-            artifacts=artifacts,
-            collect=_parse_collect(task_id, verifier),
-            has_tests_dockerfile=has_tests_dockerfile,
-            has_tests_compose=(task_dir / "tests" / "docker-compose.yaml").is_file(),
-            shape=shape,
-            harness_skills_dir=_parse_harness_skills_dir(task_id, task_dir, yaml_data),
-        )
+        tasks[task_dir.name] = parse_task_dir(task_dir)
 
     return tasks

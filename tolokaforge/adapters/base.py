@@ -442,6 +442,27 @@ class BaseAdapter(ABC):
         """
         pass
 
+    def register_preloaded_task(self, task: TaskConfig, task_dir: Path) -> None:
+        """Seed this adapter with an already-validated task and its pack directory.
+
+        The optional seam that makes an adapter *node-runnable*: a standalone
+        trial entry holds a serialized :class:`TaskConfig` and a mounted pack,
+        not a pack to discover, so it hands both to a freshly built adapter and
+        then resolves ``task.task_id`` through the ordinary per-task methods
+        (:meth:`to_task_description`, :meth:`get_grading_config`,
+        :meth:`create_environment`, :meth:`get_system_prompt`).
+
+        *task_dir* is the directory holding the task's own files. An adapter
+        that supports this overrides the method; one that does not keeps this
+        default, which fails loud rather than letting a node discover the gap
+        mid-trial.
+        """
+        raise NotImplementedError(
+            f"adapter {type(self).__name__!r} is not node-runnable: it does not implement "
+            "register_preloaded_task, so a standalone trial entry cannot seed it with a "
+            f"pre-loaded task ({task.task_id!r})"
+        )
+
     @abstractmethod
     def get_task_dir(self, task_id: str) -> Path:
         """

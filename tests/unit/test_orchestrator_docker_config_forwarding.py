@@ -12,15 +12,14 @@ Two guards, cheap to run and both catching the same regression from
 different angles:
 
 1. **Behavioural** — patches ``core_stack`` / ``full_stack`` in the
-   ``tolokaforge.docker.stacks`` source module (the orchestrator
+   ``tolokaforge.docker.stacks`` source module (``build_engine_stack``
    imports them inline, so patching at the source symbol wins) and
-   drives the orchestrator's stack-construction block via a tiny
-   trigger helper that runs the exact source snippet from
-   ``orchestrator.run()``.
-2. **Static** — greps ``orchestrator.py`` for a ``config=`` argument
-   on the ``stack_factory(...)`` call. Cheap belt-and-suspenders — if
-   the behavioural test's trigger drifts from the real ``run()`` path,
-   the static check still fires.
+   runs the exact stack-construction snippet ``build_engine_stack``
+   uses via a tiny trigger helper.
+2. **Static** — greps ``engine_stack_runtime.py`` for a ``config=``
+   argument on the ``stack_factory(...)`` call. Cheap
+   belt-and-suspenders — if the behavioural trigger drifts from the
+   real ``build_engine_stack`` path, the static check still fires.
 """
 
 from __future__ import annotations
@@ -38,24 +37,24 @@ from tolokaforge.docker import stacks as stacks_module
 pytestmark = pytest.mark.unit
 
 
-ORCHESTRATOR_SOURCE = Path(
-    __import__("tolokaforge.core.orchestrator", fromlist=["__file__"]).__file__
+STACK_BUILDER_SOURCE = Path(
+    __import__("tolokaforge.core.engine_stack_runtime", fromlist=["__file__"]).__file__
 ).read_text()
 
 
 class TestStackFactoryPassesConfigStatically:
     """Text-level guard: the ``stack_factory(...)`` call in
-    orchestrator.py must include ``config=`` as a kwarg. Cheap
-    regression check independent of any runtime harness — a delete
-    of the fix fails here immediately."""
+    ``engine_stack_runtime.py`` must include ``config=`` as a kwarg.
+    Cheap regression check independent of any runtime harness — a
+    delete of the fix fails here immediately."""
 
     def test_stack_factory_call_passes_config_kwarg(self) -> None:
         # The exact expression the fix installs. Anchored on
         # ``stack_factory`` to reject accidental matches on unrelated
         # ``config=`` uses elsewhere in the file.
         pattern = re.compile(r"stack_factory\s*\(\s*config\s*=", re.MULTILINE)
-        assert pattern.search(ORCHESTRATOR_SOURCE), (
-            "Orchestrator.run() must call stack_factory(config=..., ...) — "
+        assert pattern.search(STACK_BUILDER_SOURCE), (
+            "build_engine_stack must call stack_factory(config=..., ...) — "
             "the docker.image_source policy is inert without this wire. See "
             "the #1 finding on PR #1082's /code-review."
         )
@@ -66,10 +65,10 @@ class TestStackFactoryPassesConfigStatically:
         # core_stack, full_stack` pattern one line above). A rewrite
         # that moves the import to the top of the file is fine — this
         # test just guards against 'import lost during a refactor'.
-        assert "DockerConfig" in ORCHESTRATOR_SOURCE, (
-            "orchestrator.py needs DockerConfig visible so the "
+        assert "DockerConfig" in STACK_BUILDER_SOURCE, (
+            "engine_stack_runtime.py needs DockerConfig visible so the "
             "stack-construction block can fall back to DockerConfig() "
-            "when self.config.docker is None."
+            "when config.docker is None."
         )
 
 
@@ -92,8 +91,8 @@ class TestBehaviouralStackFactoryReceivesConfig:
         monkeypatch.setattr(stacks_module, "core_stack", _factory)
         monkeypatch.setattr(stacks_module, "full_stack", _factory)
 
-        # Reproduce the exact orchestrator snippet the fix installs, so
-        # a regression that swaps `config=docker_config, **core_stack_kwargs`
+        # Reproduce the exact build_engine_stack snippet the fix installs,
+        # so a regression that swaps `config=docker_config, **core_stack_kwargs`
         # for `**core_stack_kwargs` alone fails here even if the module
         # source still passes the static check above by coincidence.
         from tolokaforge.docker.stacks import core_stack
