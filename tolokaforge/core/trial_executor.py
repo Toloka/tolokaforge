@@ -16,25 +16,19 @@ swappable seam that owns that bracket:
   resolved by ``runtime_backend.endpoints(handle)`` are substituted into
   the ``TrialSpec.env_endpoints`` field the conductor sees.
 
-* :class:`RemoteTrialExecutor` — the whole-trial implementation. It ships the
-  trial's :class:`TrialNodeInputs` to a :class:`DispatchAdapter` that owns the
-  trial, receives the graded :class:`TrialResult`, and writes the reduced on-disk
-  bundle from it.
-
-The Protocol is deliberately narrow so the orchestrator holds one executor
-shape whether the trial runs here or on a node.
+The Protocol is deliberately narrow so a future ``RemoteTrialExecutor``
+(gRPC client to a trial-plane worker) can replace the local composition
+without touching the orchestrator.
 """
 
 from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import yaml
 
-from tolokaforge.core.dispatch.adapter import DispatchAdapter
-from tolokaforge.core.dispatch.errors import DispatchProvisionError, DispatchRefused
 from tolokaforge.core.models import (
     JudgeStatus,
     Metrics,
@@ -49,25 +43,18 @@ from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
 )
 from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
-from tolokaforge.core.trial import NodeRunSettings, TrialNodeInputs, TrialResult, TrialSpec
+from tolokaforge.core.trial import TrialResult, TrialSpec
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from tolokaforge.core.conductor import Conductor
     from tolokaforge.core.logging import StructuredLogger
-    from tolokaforge.core.models.run_config import GraderConfig, RateLimitProbeConfig
     from tolokaforge.core.output.artifacts import TrialArtifactWriter
     from tolokaforge.core.trial import EnvEndpoints
 
-#: What :class:`ProvisioningTrialExecutor` does with a :class:`ProvisionError`:
-#: ``"synthesize"`` returns a ``PROVISION_ERROR`` result, ``"propagate"`` re-raises.
-ProvisionErrorPolicy = Literal["synthesize", "propagate"]
-
 __all__ = [
-    "ProvisionErrorPolicy",
     "ProvisioningTrialExecutor",
-    "RemoteTrialExecutor",
     "TrialExecutor",
 ]
 
@@ -112,8 +99,9 @@ class ProvisioningTrialExecutor:
     aggregation see a consistent trial-directory shape whether the trial
     completed or failed to provision.
 
-    Instantiated once per run by ``build_trial_execution_unit`` and
-    submitted to the worker pool per trial. Provisioning parallelism = worker count.
+    Instantiated once per run by the orchestrator's
+    ``_build_trial_executor`` helper and submitted to the worker pool
+    per trial. Provisioning parallelism = worker count.
     """
 
     def __init__(
@@ -124,14 +112,7 @@ class ProvisioningTrialExecutor:
         output_dir: Path,
         artifact_writer: TrialArtifactWriter,
         events: RunDisplayEvents = _NULL_EVENTS,
-        provision_error: ProvisionErrorPolicy = "synthesize",
     ) -> None:
-        if provision_error not in get_args(ProvisionErrorPolicy):
-            raise ValueError(
-                f"provision_error must be one of {get_args(ProvisionErrorPolicy)}, "
-                f"got {provision_error!r}"
-            )
-        self.provision_error = provision_error
         self.runtime_backend = runtime_backend
         self.conductor = conductor
         self.logger = logger
@@ -158,7 +139,9 @@ class ProvisioningTrialExecutor:
                 stage=e.stage,
                 error=e.reason,
             )
-            return self._on_provision_error(spec, e)
+            result = _synthesize_provision_failure_result(spec, e)
+            self._write_provision_failure_bundle(result.trajectory, e)
+            return result
 
         try:
             self.runtime_backend.await_ready(handle)
@@ -171,7 +154,9 @@ class ProvisioningTrialExecutor:
                 error=e.reason,
             )
             self._safe_teardown(handle, task_id, trial_idx)
-            return self._on_provision_error(spec, e)
+            result = _synthesize_provision_failure_result(spec, e)
+            self._write_provision_failure_bundle(result.trajectory, e)
+            return result
 
         persisted_spec: TrialSpec | None = None
         try:
@@ -207,7 +192,9 @@ class ProvisioningTrialExecutor:
                     stage=e.stage,
                     error=e.reason,
                 )
-                return self._on_provision_error(spec, e)
+                result = _synthesize_provision_failure_result(spec, e)
+                self._write_provision_failure_bundle(result.trajectory, e)
+                return result
             self._amend_trial_metrics(
                 task_id,
                 trial_idx,
@@ -226,18 +213,6 @@ class ProvisioningTrialExecutor:
             self._safe_teardown(handle, task_id, trial_idx)
             if persisted_spec is not None:
                 self._announce_persisted(persisted_spec, task_id, trial_idx)
-
-    def _on_provision_error(self, spec: TrialSpec, error: ProvisionError) -> TrialResult:
-        """Apply the ``provision_error`` policy to a provisioning failure.
-
-        ``"synthesize"`` turns it into a ``PROVISION_ERROR`` result plus a
-        minimal failure bundle; ``"propagate"`` re-raises it to the caller.
-        """
-        if self.provision_error == "propagate":
-            raise error
-        result = _synthesize_provision_failure_result(spec, error)
-        self._write_provision_failure_bundle(result.trajectory, error)
-        return result
 
     def _announce_persisted(self, spec: TrialSpec, task_id: str, trial_idx: int) -> None:
         announce = getattr(self.conductor, "trial_persisted", None)
@@ -293,9 +268,38 @@ class ProvisioningTrialExecutor:
         ``output_dir/trials/{task_id}/{trial_index}/``.
 
         The conductor never ran, so nothing else writes this trial's directory.
-        See :func:`_write_failure_bundle`.
+        Reuses the run's ``artifact_writer`` (no schema duplication), then amends
+        ``metrics.yaml`` with the top-level failure signal (``error`` /
+        ``error_reason`` / ``error_stage``) via the shared ``_amend_trial_metrics``
+        path. Any write failure is logged and swallowed — mirrors
+        ``_safe_teardown``; it never masks the synthesized ``ProvisionError``
+        result the caller returns.
         """
-        _write_failure_bundle(self.artifact_writer, self.output_dir, self.logger, trajectory, error)
+        task_id = trajectory.task_id
+        trial_idx = trajectory.trial_index
+        trial_dir = self.output_dir / "trials" / task_id / str(trial_idx)
+        try:
+            self.artifact_writer.write_trajectory(trial_dir, trajectory)
+            self.artifact_writer.write_metrics(trial_dir, trajectory)
+            if trajectory.grade is not None:
+                self.artifact_writer.write_grade(trial_dir, trajectory.grade)
+        except Exception as write_err:  # noqa: BLE001 — best-effort diagnostic bundle
+            self.logger.warning(
+                "Writing provision-failure bundle failed; continuing",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=str(write_err),
+            )
+            return
+        self._amend_trial_metrics(
+            task_id,
+            trial_idx,
+            {
+                "error": TerminationReason.PROVISION_ERROR.value,
+                "error_reason": error.reason,
+                "error_stage": error.stage,
+            },
+        )
 
     def _maybe_flag_missing_judge_verdict(
         self, trajectory: Trajectory, task_id: str, trial_idx: int
@@ -332,11 +336,28 @@ class ProvisioningTrialExecutor:
     def _amend_trial_metrics(self, task_id: str, trial_idx: int, updates: dict[str, Any]) -> None:
         """Merge ``updates`` into the trial's ``metrics.yaml`` as top-level keys.
 
-        See :func:`_amend_trial_metrics` — the durable landing spot for
-        host-side per-trial values (``provisioning_duration_s``,
-        ``captured_service_logs``).
+        Read-add-write of the plain YAML mapping the conductor already wrote —
+        the durable landing spot for host-side per-trial values
+        (``provisioning_duration_s``, ``captured_service_logs``). No-op when the
+        file is absent. Logs and continues on I/O failure so a diagnostic write
+        never masks the trial result.
         """
-        _amend_trial_metrics(self.output_dir, self.logger, task_id, trial_idx, updates)
+        metrics_path = self.output_dir / "trials" / task_id / str(trial_idx) / METRICS_FILENAME
+        if not metrics_path.exists():
+            return
+        try:
+            with metrics_path.open() as f:
+                metrics = yaml.safe_load(f) or {}
+            metrics.update(updates)
+            with metrics_path.open("w") as f:
+                yaml.safe_dump(metrics, f, sort_keys=False)
+        except Exception as amend_err:  # noqa: BLE001 — best-effort diagnostic amendment
+            self.logger.warning(
+                "Amending metrics.yaml failed; continuing",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=str(amend_err),
+            )
 
     def _safe_teardown(self, handle: EnvHandle, task_id: str, trial_idx: int) -> None:
         """Best-effort teardown that logs failures instead of swallowing them.
@@ -361,206 +382,6 @@ class ProvisioningTrialExecutor:
             task_id=task_id,
             trial_index=trial_idx,
         )
-
-
-class RemoteTrialExecutor:
-    """:class:`TrialExecutor` that has a :class:`DispatchAdapter` run the whole trial.
-
-    Assembles the trial's :class:`TrialNodeInputs` from the spec, the task and
-    the run's settings, hands them to the backend, and writes the reduced
-    on-disk bundle — ``trajectory.yaml`` / ``tool_log.yaml`` / ``metrics.yaml`` /
-    ``grade.yaml`` under ``output_dir/trials/{task_id}/{trial_index}/`` — from the
-    returned trajectory. The node keeps its own fuller bundle.
-
-    Failures follow the orchestrator's retry classification, read off the
-    adapter's transport-neutral vocabulary
-    (:mod:`tolokaforge.core.dispatch.errors`). A :class:`DispatchProvisionError`
-    and a :class:`DispatchRefused` both become a ``PROVISION_ERROR`` result with
-    a failure bundle, which the orchestrator does not retry; a
-    :class:`DispatchTransient` propagates, and the orchestrator retries any
-    exception a trial raises.
-    """
-
-    def __init__(
-        self,
-        *,
-        backend: DispatchAdapter,
-        runtime: str,
-        conductor: str,
-        grader_config: GraderConfig | None,
-        grpc_max_message_mb: int,
-        rate_limit_probe: RateLimitProbeConfig | None,
-        run_settings: NodeRunSettings,
-        logger: StructuredLogger,
-        output_dir: Path,
-        artifact_writer: TrialArtifactWriter,
-    ) -> None:
-        self.backend = backend
-        self.runtime = runtime
-        self.conductor = conductor
-        self.grader_config = grader_config
-        self.grpc_max_message_mb = grpc_max_message_mb
-        self.rate_limit_probe = rate_limit_probe
-        self.run_settings = run_settings
-        self.logger = logger
-        self.output_dir = output_dir
-        self.artifact_writer = artifact_writer
-        self._pack_hashes: dict[Path, str] = {}
-
-    def execute(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
-        task_id, trial_idx = _split_trial_id(spec.trial_id)
-        inputs = self._inputs(spec, task_config)
-        self.logger.info("Dispatching trial to a node", task_id=task_id, trial_index=trial_idx)
-        try:
-            result = self.backend.run_trial_node(inputs)
-        except DispatchProvisionError as error:
-            return self._on_failure(
-                spec,
-                ProvisionError(trial_id=spec.trial_id, stage=error.stage, reason=error.reason),
-            )
-        except DispatchRefused as refusal:
-            return self._on_failure(
-                spec,
-                ProvisionError(
-                    trial_id=spec.trial_id,
-                    stage="provision",
-                    reason=f"{refusal.error_type}: {refusal.reason}",
-                ),
-            )
-        self._write_result_bundle(result.trajectory)
-        return result
-
-    def _inputs(self, spec: TrialSpec, task_config: TaskConfig) -> TrialNodeInputs:
-        """Serialize-ready inputs: the node supplies its own output directory."""
-        pack_dir = task_config.source_dir
-        return TrialNodeInputs(
-            task=task_config,
-            trial_spec=spec,
-            grader_config=self.grader_config,
-            grpc_max_message_mb=self.grpc_max_message_mb,
-            runtime=self.runtime,
-            conductor=self.conductor,
-            task_pack_dir=pack_dir,
-            task_pack_hash=self._pack_hash(pack_dir) if pack_dir is not None else None,
-            output_dir=None,
-            rate_limit_probe=self.rate_limit_probe,
-            run_settings=self.run_settings,
-        )
-
-    def _pack_hash(self, pack_dir: Path) -> str:
-        """Content hash of *pack_dir*, computed once per pack for the run."""
-        cached = self._pack_hashes.get(pack_dir)
-        if cached is None:
-            # Imported here because ``trial_node`` imports this module.
-            from tolokaforge.core.trial_node import compute_task_pack_hash
-
-            cached = self._pack_hashes[pack_dir] = compute_task_pack_hash(pack_dir)
-        return cached
-
-    def _on_failure(self, spec: TrialSpec, error: ProvisionError) -> TrialResult:
-        task_id, trial_idx = _split_trial_id(spec.trial_id)
-        self.logger.error(
-            "Trial failed on the node",
-            task_id=task_id,
-            trial_index=trial_idx,
-            stage=error.stage,
-            error=error.reason,
-        )
-        result = _synthesize_provision_failure_result(spec, error)
-        _write_failure_bundle(
-            self.artifact_writer, self.output_dir, self.logger, result.trajectory, error
-        )
-        return result
-
-    def _write_result_bundle(self, trajectory: Trajectory) -> None:
-        """Persist the reduced bundle for a trial the node ran.
-
-        A write failure propagates: a graded trial with no bundle on disk must
-        not read as a clean run.
-        """
-        trial_dir = self.output_dir / "trials" / trajectory.task_id / str(trajectory.trial_index)
-        self.artifact_writer.write_trajectory(trial_dir, trajectory)
-        self.artifact_writer.write_tool_log(trial_dir, trajectory)
-        self.artifact_writer.write_metrics(trial_dir, trajectory)
-        if trajectory.grade is not None:
-            self.artifact_writer.write_grade(trial_dir, trajectory.grade)
-
-
-def _amend_trial_metrics(
-    output_dir: Path,
-    logger: StructuredLogger,
-    task_id: str,
-    trial_idx: int,
-    updates: dict[str, Any],
-) -> None:
-    """Merge ``updates`` into the trial's ``metrics.yaml`` as top-level keys.
-
-    Read-add-write of the plain YAML mapping the conductor already wrote —
-    the durable landing spot for host-side per-trial values. No-op when the
-    file is absent. Logs and continues on I/O failure so a diagnostic write
-    never masks the trial result.
-    """
-    metrics_path = output_dir / "trials" / task_id / str(trial_idx) / METRICS_FILENAME
-    if not metrics_path.exists():
-        return
-    try:
-        with metrics_path.open() as f:
-            metrics = yaml.safe_load(f) or {}
-        metrics.update(updates)
-        with metrics_path.open("w") as f:
-            yaml.safe_dump(metrics, f, sort_keys=False)
-    except Exception as amend_err:  # noqa: BLE001 — best-effort diagnostic amendment
-        logger.warning(
-            "Amending metrics.yaml failed; continuing",
-            task_id=task_id,
-            trial_index=trial_idx,
-            error=str(amend_err),
-        )
-
-
-def _write_failure_bundle(
-    artifact_writer: TrialArtifactWriter,
-    output_dir: Path,
-    logger: StructuredLogger,
-    trajectory: Trajectory,
-    error: ProvisionError,
-) -> None:
-    """Persist a minimal trial bundle for a trial that never ran.
-
-    Writes ``trajectory.yaml`` / ``metrics.yaml`` / ``grade.yaml`` under
-    ``output_dir/trials/{task_id}/{trial_index}/`` through the run's
-    ``artifact_writer`` (no schema duplication), then amends ``metrics.yaml``
-    with the top-level failure signal (``error`` / ``error_reason`` /
-    ``error_stage``). Any write failure is logged and swallowed — it never
-    masks the synthesized ``ProvisionError`` result the caller returns.
-    """
-    task_id = trajectory.task_id
-    trial_idx = trajectory.trial_index
-    trial_dir = output_dir / "trials" / task_id / str(trial_idx)
-    try:
-        artifact_writer.write_trajectory(trial_dir, trajectory)
-        artifact_writer.write_metrics(trial_dir, trajectory)
-        if trajectory.grade is not None:
-            artifact_writer.write_grade(trial_dir, trajectory.grade)
-    except Exception as write_err:  # noqa: BLE001 — best-effort diagnostic bundle
-        logger.warning(
-            "Writing provision-failure bundle failed; continuing",
-            task_id=task_id,
-            trial_index=trial_idx,
-            error=str(write_err),
-        )
-        return
-    _amend_trial_metrics(
-        output_dir,
-        logger,
-        task_id,
-        trial_idx,
-        {
-            "error": TerminationReason.PROVISION_ERROR.value,
-            "error_reason": error.reason,
-            "error_stage": error.stage,
-        },
-    )
 
 
 def _split_trial_id(trial_id: str) -> tuple[str, int]:

@@ -61,29 +61,6 @@ class TestPrefixes:
         with pytest.raises(v.VocabularyError, match="must be one of"):
             v.validate_caller_tag("dataset:v9", profile_values={"dataset": ("v1",)})
 
-    def test_a_caller_namespace_prefix_is_accepted_by_shape(self) -> None:
-        # a workflow-engine or CI caller tags spans with its own ids, without being
-        # enumerated in the closed core set
-        assert v.is_caller_namespace("caller_workflow")
-        assert v.is_caller_namespace("x_ci")
-        assert v.check_caller_prefix("caller_workflow") == "caller_workflow"
-        assert v.validate_caller_tag("caller_workflow:run-abc_123") == "caller_workflow:run-abc_123"
-        assert v.validate_caller_tag("x_ci:build.42") == "x_ci:build.42"
-
-    def test_a_bare_unknown_core_prefix_is_still_refused(self) -> None:
-        assert not v.is_caller_namespace("campaign")
-        with pytest.raises(v.VocabularyError, match="not a core prefix"):
-            v.validate_caller_tag("campaign:x")
-
-    def test_a_caller_namespace_value_still_obeys_the_cap(self) -> None:
-        with pytest.raises(v.VocabularyError, match="128"):
-            v.validate_caller_tag("caller_workflow:" + "a" * 129)
-
-    def test_a_producer_prefix_is_not_a_caller_namespace(self) -> None:
-        assert not v.is_caller_namespace("model")
-        with pytest.raises(v.VocabularyError, match="set by the producer"):
-            v.validate_caller_tag("model:x/y")
-
     @pytest.mark.parametrize(
         ("name", "value"),
         [

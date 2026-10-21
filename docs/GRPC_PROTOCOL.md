@@ -653,18 +653,6 @@ message HealthCheckResponse {
 }
 ```
 
-## Trial-node protocol
-
-The control plane ↔ trial-node contract is a separate proto (`tolokaforge/trial_node/trial_node.proto`, package `tolokaforge.trial_node`) with its own version, documented in [`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md). It does not share a version number with the runner protocol above.
-
-#### Node version lock
-
-`client_protocol_version` on `RunTrialRequest` declares the protocol the calling engine speaks; `NODE_PROTOCOL_VERSION` in [`tolokaforge/trial_node/protocol.py`](../tolokaforge/trial_node/protocol.py) is the single source of that number. The node refuses a caller below its own version with `error_type = VersionSkew` before doing any work, and the engine refuses a node whose `node_protocol_version` (on every `RunTrialResponse` and on `HealthCheckResponse`) is below its own. A node image that predates the service answers `UNIMPLEMENTED`, which the engine reports as the same skew.
-
-Node version 1 is the first: `RunTrial` runs a whole trial from serialized `TrialNodeInputs` and answers with a `TrialResult` or a structured `error_type` / `stage` / `reason`, and `HealthCheck` reports the node's protocol version and message-size bound.
-
-Node version 2 is the first whose `TrialNodeInputs` carries `run_settings` (timeouts, turn and token caps, stuck heuristics, agent loop, log capture). A node below it rejects the inputs at the wire model, since it declares no such field.
-
 ## Message Details
 
 ### RegisterTrialRequest

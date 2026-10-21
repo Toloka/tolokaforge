@@ -544,7 +544,6 @@ _CLI_FORBIDDEN_IMPORT_ROOTS: frozenset[str] = frozenset(
         "tolokaforge.docker",
         "tolokaforge.core.orchestrator",
         "tolokaforge.core.run_trial",
-        "tolokaforge.core.trial_node",
         "tolokaforge.core.compose_materialisation",
         "tolokaforge.core.shared_stack_runtime",
         "tolokaforge.core.per_trial_runtime",

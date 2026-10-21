@@ -117,7 +117,6 @@ EXEMPT: dict[str, str] = {
     "run": "executes trials and writes bundles; never reads one back to grade it",
     "run-trial": "executes one trial over a pipe; writes a bundle, reads none back",
     "status": "reports a run directory's live progress; derives no verdict",
-    "trial-node": "serves whole-trial RunTrial calls; writes bundles, reads none back to grade",
     "validate": "validates task configurations; reads no trial bundle",
     "worker": "executes queued trials; writes bundles, reads none back to grade",
 }

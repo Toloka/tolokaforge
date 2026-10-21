@@ -63,9 +63,8 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.run_display_events import RateLimitProbeStats
+from tolokaforge.core.run_trial import _build_run_config
 from tolokaforge.core.runner import TrialRunner
-from tolokaforge.core.trial import NodeRunSettings
-from tolokaforge.core.trial_node import _build_run_config
 from tolokaforge.runner.models import Criterion, Rubric
 
 pytestmark = pytest.mark.unit
@@ -591,13 +590,13 @@ class TestTheConductorMustSupportTheMode:
         return orch
 
     def _build(self, orch: Orchestrator, tmp_path: Path) -> object:
-        with patch("tolokaforge.core.trial_node.load_trial_grader", return_value=MagicMock()):
-            return orch._build_trial_unit(
+        with patch("tolokaforge.core.orchestrator.load_trial_grader", return_value=MagicMock()):
+            return orch._build_conductor(
                 agent_client=MagicMock(),
                 runtime_backend=MagicMock(),
                 output_dir=tmp_path,
                 request_limiter=None,
-            ).conductor
+            )
 
     def test_the_in_process_conductor_declares_support(self) -> None:
         assert InProcessConductor.supports_rate_limit_probe is True
@@ -1082,7 +1081,7 @@ class TestNonProbingRolesStayOnTheDefaultPath:
     def test_run_trials_composed_config_leaves_the_mode_off_by_default(self) -> None:
         """``run_trial(rate_limit_probe=None)`` composes a config with the mode
         off, so nothing downstream of it can arm a probe."""
-        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), None, NodeRunSettings())
+        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), None)
 
         assert config.orchestrator.rate_limit_probe.enabled is False
 
@@ -1090,22 +1089,21 @@ class TestNonProbingRolesStayOnTheDefaultPath:
         """With the mode on, the composed episode budget has to clear the whole
         per-*turn* 429 ceiling — every per-call budget the turn can spend *and*
         every one of their overshoots — not just one call's budget."""
-        settings = NodeRunSettings(
-            timeouts=TimeoutConfig(episode_s=int(_PROBE.turn_wall_ceiling_s * 2) + 1)
-        )
-        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), _PROBE, settings)
+        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), _PROBE)
 
         assert config.orchestrator.rate_limit_probe.enabled is True
-        assert config.orchestrator.timeouts.episode_s == 16841
-
-    def test_run_trials_composed_config_fits_the_invariant_for_any_legal_block(self) -> None:
-        """A block with a large ``retry_interval_s`` composes a config that
-        validates once the carried episode budget clears its per-turn ceiling."""
-        probe = _PROBE.model_copy(update={"retry_interval_s": 6000.0})
-        settings = NodeRunSettings(
-            timeouts=TimeoutConfig(episode_s=int(probe.turn_wall_ceiling_s * 2) + 1)
+        assert (
+            config.orchestrator.timeouts.episode_s
+            == int(_PROBE.turn_wall_ceiling_s * 2) + 1
+            == 16841
         )
 
-        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), probe, settings)
+    def test_run_trials_composed_config_fits_the_invariant_for_any_legal_block(self) -> None:
+        """``_probe_episode_s`` doubles the *ceiling*, so a block with a large
+        ``retry_interval_s`` composes a config that validates rather than one
+        that raises at ``OrchestratorConfig`` construction."""
+        probe = _PROBE.model_copy(update={"retry_interval_s": 6000.0})
+
+        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), probe)
 
         assert probe.turn_wall_ceiling_s < config.orchestrator.timeouts.episode_s

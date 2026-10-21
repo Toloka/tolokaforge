@@ -91,7 +91,6 @@ __all__ = [
     "UnclaimedRouteFamily",
     "build_capabilities",
     "capability_override_errors",
-    "get_overlay_data",
     "get_overlay_path",
     "get_resolved_presets",
     "ignored_sampling_params",
@@ -100,7 +99,6 @@ __all__ = [
     "resolve_effective_preset",
     "resolve_overlay_path",
     "resolve_policy_names",
-    "set_overlay_data",
     "set_overlay_path",
     "unclaimed_route_families",
     "unclaimed_route_family",
@@ -412,21 +410,7 @@ def _normalize_slot_value(
 #: module state cannot leak between cases.
 _OVERLAY_PATH: str | None = None
 
-#: Module-level overlay content, installed by value rather than by file path.
-#: ``None`` → no carried overlay. Mutated only via :func:`set_overlay_data`.
-#: Set on a node that was handed the overlay mapping as data (no file to read);
-#: takes precedence over :data:`_OVERLAY_PATH` so the by-value payload the node
-#: carries wins when both happen to be set. In practice they never coexist — a
-#: node carries data and reads no file, the CLI installs a path and carries no
-#: data.
-_OVERLAY_DATA: dict[str, Any] | None = None
-
-#: Source label for a carried-by-content overlay in merge logging, where a file
-#: path would otherwise appear.
-_CARRIED_OVERLAY_SOURCE: Final = "<carried overlay>"
-
-#: Memoised merged preset data. Cleared by :func:`set_overlay_path` and
-#: :func:`set_overlay_data`.
+#: Memoised merged preset data. Cleared by :func:`set_overlay_path`.
 _CACHED_PRESETS: dict[str, Any] | None = None
 
 
@@ -456,40 +440,6 @@ def get_overlay_path() -> str | None:
     into queue run-state so worker subprocesses can inherit it.
     """
     return _OVERLAY_PATH
-
-
-def set_overlay_data(data: dict[str, Any] | None) -> None:
-    """Install (or clear) a preset overlay carried as content rather than a path.
-
-    The counterpart to :func:`set_overlay_path` for a node that was handed the
-    overlay mapping by value and has no file to read. *data* is the same parsed
-    overlay :func:`_load_overlay_file` returns, validated again here through
-    :func:`_validate_overlay` so a malformed payload fails at install rather
-    than at the first model call. ``None`` clears the carried overlay.
-
-    A carried overlay takes precedence over an overlay path: the by-value
-    payload a node carries wins when both happen to be set. The two are not
-    meant to coexist — a node carries data and installs no path, the CLI
-    installs a path and carries no data.
-
-    Clears the merged-preset cache, like :func:`set_overlay_path`, so the next
-    :func:`_load_presets` re-merges against the new state.
-    """
-    global _OVERLAY_DATA, _CACHED_PRESETS
-    if data is not None:
-        _validate_overlay(data, _CARRIED_OVERLAY_SOURCE)
-    _OVERLAY_DATA = data
-    _CACHED_PRESETS = None
-
-
-def get_overlay_data() -> dict[str, Any] | None:
-    """Return the carried overlay content, or ``None`` if none is installed.
-
-    Read-only accessor — :func:`set_overlay_data` is the sole mutator. A caller
-    that installs a carried overlay around one unit of work reads the prior
-    value here to restore it afterward.
-    """
-    return _OVERLAY_DATA
 
 
 def resolve_overlay_path(
@@ -877,22 +827,14 @@ def _merge_overlay(
 def _load_presets() -> dict[str, Any]:
     """Load model capability presets — bundled YAML merged with overlay if set.
 
-    The overlay is a carried-by-content mapping (:func:`set_overlay_data`) when
-    a node carries one, otherwise the file at :data:`_OVERLAY_PATH`
-    (:func:`set_overlay_path`); carried content wins when both are set.
-    Module-level cached. Invalidate via either setter. The cache is
-    process-local; subprocess workers re-run this fresh on first call.
+    Module-level cached. Invalidate via :func:`set_overlay_path`. The cache
+    is process-local; subprocess workers re-run this fresh on first call.
     """
     global _CACHED_PRESETS
     if _CACHED_PRESETS is not None:
         return _CACHED_PRESETS
 
     bundled = _load_bundled_presets()
-    # A carried-by-content overlay wins over a path overlay: it is the by-value
-    # payload a node was handed, with no file to read.
-    if _OVERLAY_DATA is not None:
-        _CACHED_PRESETS = _merge_overlay(bundled, _OVERLAY_DATA, _CARRIED_OVERLAY_SOURCE)
-        return _CACHED_PRESETS
     if _OVERLAY_PATH is None:
         _CACHED_PRESETS = bundled
         return _CACHED_PRESETS

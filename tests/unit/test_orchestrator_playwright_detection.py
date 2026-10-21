@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import pytest
 
-from tolokaforge.core.engine_stack_runtime import _tasks_need_playwright
 from tolokaforge.core.models import TaskConfig
+from tolokaforge.core.orchestrator import _tasks_need_playwright
 
 pytestmark = pytest.mark.unit
 

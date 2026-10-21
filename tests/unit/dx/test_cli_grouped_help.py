@@ -129,9 +129,7 @@ class TestGroupedHelpLayout:
             "rejudge",
             "retrace",
             "run",
-            "run-trial",
             "status",
-            "trial-node",
             "worker",
         ]
 

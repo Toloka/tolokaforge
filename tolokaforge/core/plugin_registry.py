@@ -54,7 +54,6 @@ S3-compatible endpoints).
 The groups:
 
 * ``tolokaforge.runtime_backends`` → :data:`RuntimeBackendFactory`
-* ``tolokaforge.dispatch_adapters`` → :data:`DispatchAdapterFactory`
 * ``tolokaforge.trial_graders`` → :data:`TrialGraderFactory`
 * ``tolokaforge.conductors`` → :data:`~tolokaforge.core.conductor.ConductorFactory`
 * ``tolokaforge.service_readiness_probes`` → :data:`ReadinessProbeFactory`
@@ -157,7 +156,6 @@ if TYPE_CHECKING:
         SubstrateComposer,
     )
     from tolokaforge.core.conductor import Conductor, ConductorContext
-    from tolokaforge.core.dispatch.adapter import DispatchAdapter
     from tolokaforge.core.grading.bundle_store import BundleStore
     from tolokaforge.core.grading.comparison_view import ComparisonViewRule
     from tolokaforge.core.logging import StructuredLogger
@@ -183,8 +181,6 @@ __all__ = [
     "AgentLoopFactory",
     "ConductorFactory",
     "CustomCheckExecutorFactory",
-    "DispatchAdapterBuildContext",
-    "DispatchAdapterFactory",
     "DuplicateRegistrationError",
     "JudgeModelProviderFactory",
     "RAG_SERVICE_STACK_SERVICE",
@@ -220,7 +216,6 @@ __all__ = [
     "available_compose_materialisers",
     "available_conductors",
     "available_custom_check_executors",
-    "available_dispatch_adapters",
     "available_grader_kinds",
     "available_grading_methods",
     "available_grading_substrates",
@@ -246,7 +241,6 @@ __all__ = [
     "load_compose_materialiser",
     "load_conductor",
     "load_custom_check_executor",
-    "load_dispatch_adapter",
     "load_grader_kind",
     "load_grading_method",
     "load_grading_substrate",
@@ -268,7 +262,6 @@ __all__ = [
 ]
 
 RUNTIME_BACKENDS_GROUP = "tolokaforge.runtime_backends"
-DISPATCH_ADAPTERS_GROUP = "tolokaforge.dispatch_adapters"
 TRIAL_GRADERS_GROUP = "tolokaforge.trial_graders"
 CONDUCTORS_GROUP = "tolokaforge.conductors"
 SERVICE_READINESS_PROBES_GROUP = "tolokaforge.service_readiness_probes"
@@ -402,7 +395,7 @@ class RuntimeBackendBuildContext:
     mount_docker_socket: bool = False
     """Bind-mount the host docker socket into the materialised runner. Set by
     the same predicate that decides whether to bake the docker CLI into the
-    runner image (see :func:`~tolokaforge.core.compose_materialisation.run_needs_docker_cli`): the terminal-bench
+    runner image (see :func:`_run_needs_docker_cli`): the terminal-bench
     adapter (which shells out to docker directly against the host daemon) or
     any run routing a shipped tool through the compose variant
     (``tools.agent.<tool>.service``), whose wrappers ``docker exec`` from the
@@ -451,24 +444,6 @@ class RuntimeBackendBuildContext:
 
 
 @dataclass(frozen=True)
-class DispatchAdapterBuildContext:
-    """Everything a dispatch-adapter factory may need to build its adapter.
-
-    Carries only dispatch-relevant fields; a factory is free to ignore any of
-    them. ``config`` is the adapter's own options block, whose shape each adapter
-    defines and validates.
-    """
-
-    events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
-    connect_timeout_s: float = 30.0
-    """Budget for the adapter's first contact with its backend, seconds."""
-    connect_retry_interval_s: float = 1.0
-    """Interval between contact attempts within :attr:`connect_timeout_s`, seconds."""
-    config: Mapping[str, object] = field(default_factory=dict)
-    """The adapter-specific options block."""
-
-
-@dataclass(frozen=True)
 class TrialGraderContext:
     """Configuration a trial-grader factory receives from the orchestrator.
 
@@ -497,7 +472,7 @@ class TrialGraderContext:
     worker-pool sizing and the downstream ``worker_grader`` name.
 
     :attr:`runtime_backend` is an in-process routing shim populated only by
-    ``build_trial_execution_unit``. When a runtime backend routes grades
+    ``orchestrator._build_conductor``. When a runtime backend routes grades
     per-trial (``PerTrialRuntimeBackend``), it exposes no static
     ``runner_address`` because each trial owns its own runner endpoint;
     passing the backend directly lets ``RunnerRPCTrialGrader`` delegate to
@@ -538,7 +513,6 @@ class TurnPolicyContext:
 
 
 RuntimeBackendFactory = Callable[[RuntimeBackendBuildContext], "RuntimeBackend"]
-DispatchAdapterFactory = Callable[[DispatchAdapterBuildContext], "DispatchAdapter"]
 TrialGraderFactory = Callable[[TrialGraderContext], "TrialGrader"]
 ReadinessProbeFactory = Callable[[], "ServiceReadinessProbe"]
 TurnPolicyFactory = Callable[[TurnPolicyContext], "TurnPolicy"]
@@ -621,11 +595,6 @@ def _clear_discovery_cache() -> None:
 def load_runtime_backend(name: str) -> RuntimeBackendFactory:
     """Resolve a registered runtime-backend name to its factory callable."""
     return cast(RuntimeBackendFactory, _load(RUNTIME_BACKENDS_GROUP, name))
-
-
-def load_dispatch_adapter(name: str) -> DispatchAdapterFactory:
-    """Resolve a registered dispatch-adapter name to its factory callable."""
-    return cast(DispatchAdapterFactory, _load(DISPATCH_ADAPTERS_GROUP, name))
 
 
 def load_trial_grader(name: str) -> TrialGraderFactory:
@@ -913,11 +882,6 @@ def load_tool_library(name: str) -> ToolLibrary:
     by the caller, :func:`tolokaforge.core.tool_libraries.resolve_tool_libraries`.
     """
     return cast("ToolLibrary", _load(TOOL_LIBRARIES_GROUP, name))
-
-
-def available_dispatch_adapters() -> list[str]:
-    """Sorted names registered in the ``tolokaforge.dispatch_adapters`` group."""
-    return sorted(discover_entry_points(DISPATCH_ADAPTERS_GROUP))
 
 
 def available_runtime_backends() -> list[str]:

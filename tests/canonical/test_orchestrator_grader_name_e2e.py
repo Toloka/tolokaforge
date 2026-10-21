@@ -6,7 +6,7 @@ pack with a :class:`NativeAdapter` subclass declaring a custom
 unique sentinel into the :class:`~tolokaforge.core.models.Grade`; a minimal
 recording conductor routes grading through ``ctx.trial_grader``. The sentinel on
 the collected grade proves the adapter-declared name flowed orchestrator
-(``_build_trial_unit``) → ``ConductorContext.trial_grader`` → the conductor's
+(``_build_conductor``) → ``ConductorContext.trial_grader`` → the conductor's
 grade call — the positive custom-grader path end-to-end.
 
 Hermetic — no services, no LLM, no Docker — so it runs on every PR. The

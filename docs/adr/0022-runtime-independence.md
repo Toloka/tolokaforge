@@ -127,14 +127,6 @@ def run_trial(
 
 `auto` is a **reserved parameter value, not a registrable backend name.** The sentinel is intercepted before the registry lookup, so a plug-in cannot register a backend under the name `auto` — Surface 1's fail-loud policy is preserved, and there is no ambiguity between the sentinel and a discovered name.
 
-**Composable run steps.** Where `run_trial` runs one trial end-to-end, a run can also be driven as three composable library functions over the same `TrialNodeInputs` / `TrialResult` types, so an external orchestration layer owns the scheduling and reproduces the report a single `tolokaforge run` writes:
-
-- `plan_trials(run_config)` — expands the run into the flat list of serializable `TrialNodeInputs` (one per `(task, repeat)`); no adapter / conductor / runtime object is resolved at plan time (the harness identity travels as data).
-- `run_trial_from_inputs(inputs)` — the standalone trial entry the caller drives per trial, on whatever backend it owns.
-- `aggregate_results(results)` — folds the results (or a run directory) into the four aggregate artifacts a full run writes, reproducing them except the disk-only non-reproducible stamps (`tolokaforge_version`, `captured_service_logs`).
-
-The report-assembly stitch (`build_run_report`) and the trial expansion (`expand_trials`) are the same pure functions the single-box orchestrator calls, so the three steps and `tolokaforge run` agree by construction. See `docs/API.md` § *Driving a run as three composable steps*.
-
 ### Surface 3 — `tolokaforge run-trial` subprocess wire format (#538)
 
 `tolokaforge run-trial` runs one trial as a subprocess a harness in any language drives over a pipe.

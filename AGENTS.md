@@ -206,7 +206,6 @@ uv run pytest -v 2>&1 | tee /tmp/test-output.log
 | `tolokaforge/core` | Orchestration, grading, metrics, models, search |
 | `tolokaforge/core/llm` | LLM abstractions — reasoning, schema, cache, usage, client |
 | `tolokaforge/runner` | gRPC runner service (DB client, tool factory, LLM judge) |
-| `tolokaforge/trial_node` | Trial node service: a gRPC node that runs one whole trial per `RunTrial` call, dialled by the `grpc_node` dispatch adapter (`orchestrator.dispatch`) (`docs/TRIAL_NODE_SERVICE.md`) |
 | `tolokaforge/adapters` | Benchmark adapters (native, tau, tlk_mcp_core) |
 | `tolokaforge/secrets` | Secret management (SecretManager, providers, config) |
 | `tolokaforge/tools` | Tool registry and builtin tools |

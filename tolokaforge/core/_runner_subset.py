@@ -65,8 +65,7 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     # else at the core root — the orchestrator, dry-run, config validator,
     # compose materialisation, engine run state, backend capabilities,
     # runtime / conductor / trial-grader protocol definitions, the
-    # ``run_trial`` library entry, the standalone ``trial_node`` entry and
-    # its per-trial execution unit, run queue, resume, project loader,
+    # ``run_trial`` library entry, run queue, resume, project loader,
     # metrics, run-level budgets, ``model_data_fingerprint``, and the remaining
     # utility modules — is orchestrator-only. ``model_data`` is included;
     # its orchestrator-only compute sibling ``model_data_fingerprint`` is

@@ -8,10 +8,6 @@ Locks the surface in ``tolokaforge/dx/cli/main.py``:
   :class:`FallbackLLMClient`.
 * When the field is absent or empty, the factory stays ``None`` and the
   orchestrator constructs a bare :class:`LLMClient`.
-* On a dispatch run — an ``orchestrator.dispatch`` block or the deprecated
-  ``runtime: remote`` alias — the factory stays ``None`` even with fallbacks:
-  the node reads the chain from the model config it is sent and builds its own
-  client, and the orchestrator refuses a control-plane factory on that path.
 """
 
 from __future__ import annotations
@@ -54,31 +50,6 @@ def _config_with_fallbacks(tmp_path: Path, fallbacks: list[dict]) -> Path:
                     "tasks_glob": str(tmp_path / "tasks" / "*"),
                 },
                 "orchestrator": {"repeats": 1, "auto_start_services": False},
-                "compute": {"workers": 1},
-            }
-        )
-    )
-    return config_path
-
-
-def _dispatch_config(tmp_path: Path, orchestrator: dict[str, Any]) -> Path:
-    """A run config with agent fallbacks and a caller-supplied dispatch orchestrator block."""
-    config_path = tmp_path / "run.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "models": {
-                    "agent": {
-                        "provider": "openrouter",
-                        "name": "gpt-4",
-                        "fallbacks": [{"provider": "openai", "name": "gpt-4o-mini"}],
-                    },
-                },
-                "evaluation": {
-                    "output_dir": str(tmp_path / "out"),
-                    "tasks_glob": str(tmp_path / "tasks" / "*"),
-                },
-                "orchestrator": {"repeats": 1, "auto_start_services": False, **orchestrator},
                 "compute": {"workers": 1},
             }
         )
@@ -165,56 +136,6 @@ class TestFallbackFromConfig:
                     "compute": {"workers": 1},
                 }
             )
-        )
-        expected_dir = (tmp_path / "results" / "run").resolve()
-        fidelity_clean_run_dir(expected_dir)
-        captured: dict[str, Any] = {}
-        monkeypatch.setattr(
-            cli_main,
-            "Orchestrator",
-            _make_capturing_orchestrator(captured, run_return=expected_dir),
-        )
-
-        result = runner.invoke(cli, ["run", "--config", str(config_path)])
-
-        assert result.exit_code == 0, result.stderr
-        assert captured["deps"].agent_client_factory is None
-
-    def test_dispatch_block_with_fallbacks_leaves_factory_none(
-        self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A dispatch run with fallbacks builds no control-plane factory — the node
-        carries the chain, and the orchestrator refuses a control-plane factory here."""
-        config_path = _dispatch_config(
-            tmp_path,
-            {"dispatch": {"adapter": "grpc_node", "config": {"nodes": ["node-a:50061"]}}},
-        )
-        expected_dir = (tmp_path / "results" / "run").resolve()
-        fidelity_clean_run_dir(expected_dir)
-        captured: dict[str, Any] = {}
-        monkeypatch.setattr(
-            cli_main,
-            "Orchestrator",
-            _make_capturing_orchestrator(captured, run_return=expected_dir),
-        )
-
-        result = runner.invoke(cli, ["run", "--config", str(config_path)])
-
-        assert result.exit_code == 0, result.stderr
-        assert captured["deps"].agent_client_factory is None
-
-    def test_runtime_remote_alias_with_fallbacks_leaves_factory_none(
-        self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        config_path = _dispatch_config(
-            tmp_path,
-            {"runtime": "remote", "remote": {"nodes": ["node-a:50061"]}},
         )
         expected_dir = (tmp_path / "results" / "run").resolve()
         fidelity_clean_run_dir(expected_dir)

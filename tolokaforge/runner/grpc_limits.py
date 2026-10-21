@@ -1,7 +1,4 @@
-"""The gRPC channel limits shared by the engine, the runner, the grader and the trial node.
-
-The message-size bound is one value for every data-carrying endpoint; the keepalive
-options keep the trial node's single long call observable.
+"""The one gRPC message-size bound shared by the engine, the runner and the grader.
 
 A trial's whole JSON-DB world crosses gRPC in single unary messages: the
 ``RegisterTrial`` request carries the initial state inline, ``GetState`` and
@@ -31,10 +28,7 @@ __all__ = [
     "MAX_MESSAGE_MB_CEILING",
     "MAX_MESSAGE_MB_FLOOR",
     "MAX_MESSAGE_SETTING",
-    "KEEPALIVE_TIME_MS",
-    "KEEPALIVE_TIMEOUT_MS",
     "channel_options",
-    "keepalive_options",
     "max_message_mb_from_env",
     "resource_exhausted_message",
     "validate_max_message_mb",
@@ -87,31 +81,6 @@ def channel_options(max_message_mb: int) -> list[tuple[str, int]]:
     return [
         ("grpc.max_send_message_length", limit_bytes),
         ("grpc.max_receive_message_length", limit_bytes),
-    ]
-
-
-KEEPALIVE_TIME_MS = 20_000
-"""Idle time before a keepalive ping is sent on a long-lived call."""
-
-KEEPALIVE_TIMEOUT_MS = 10_000
-"""How long a keepalive ping may go unanswered before the channel is dropped."""
-
-
-def keepalive_options() -> list[tuple[str, int]]:
-    """gRPC server / channel options keeping a single long unary call observable.
-
-    A trial runs inside one RPC that lasts minutes; without pings a node that
-    dies mid-trial leaves the caller blocked until the call deadline. Pings are
-    permitted while no data flows, and the server accepts them at the client's
-    cadence, so the same options apply to ``grpc.server(options=...)`` and
-    ``grpc.insecure_channel(target, options=...)``.
-    """
-    return [
-        ("grpc.keepalive_time_ms", KEEPALIVE_TIME_MS),
-        ("grpc.keepalive_timeout_ms", KEEPALIVE_TIMEOUT_MS),
-        ("grpc.keepalive_permit_without_calls", 1),
-        ("grpc.http2.max_pings_without_data", 0),
-        ("grpc.http2.min_ping_interval_without_data_ms", KEEPALIVE_TIME_MS // 2),
     ]
 
 

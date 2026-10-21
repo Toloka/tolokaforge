@@ -54,7 +54,7 @@ from tolokaforge.core.grading.golden_replay import (
     UnreplayableGoldenSource,
     UnresolvableGoldenAction,
 )
-from tolokaforge.core.trial_node import build_single_task_adapter
+from tolokaforge.core.run_trial import _build_single_task_adapter
 
 pytestmark = pytest.mark.unit
 
@@ -451,7 +451,7 @@ def test_the_run_trial_path_refuses_a_falsy_grading_shape(tmp_path: Path) -> Non
     _pack(tmp_path, grading_yaml=yaml.safe_dump({"transcript_rules": []}))
     task = load_task(tmp_path / "tasks" / _TASK_ID / "task.yaml")
 
-    adapter = build_single_task_adapter(task)
+    adapter = _build_single_task_adapter(task)
 
     with pytest.raises(RuntimeError) as excinfo:
         adapter.to_task_description(task.task_id)

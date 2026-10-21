@@ -60,7 +60,7 @@ _TASK_ID = "capstone"
 # The baseline drives the same NativeAdapter the probe reads the task from, so
 # every adapter seam the orchestrator touches — the grading gate's get_task_dir
 # and grading_combine_layer among them — answers about the pack on disk.
-# _build_trial_unit resolves adapter.trial_grader_name, which the pack leaves at
+# _build_conductor resolves adapter.trial_grader_name, which the pack leaves at
 # the base-class "runner_rpc", and builds the default grader into
 # ctx.trial_grader — which would fire a real gRPC. The baseline injects the
 # fixture grader through the conductor_factory closure, which supplies

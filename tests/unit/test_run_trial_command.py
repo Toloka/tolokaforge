@@ -7,8 +7,6 @@ canonical tier (``tests/canonical/test_run_trial_cli_subprocess.py``).
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from pydantic import BaseModel, ValidationError
 
@@ -19,17 +17,11 @@ from tolokaforge.core.plugin_registry import (
 )
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.trial import TrialResult
-from tolokaforge.core.trial_node import TaskPackDriftError
 from tolokaforge.dx.cli.run_trial_command import (
-    ONESHOT_EXIT_DETERMINISTIC,
-    ONESHOT_EXIT_TRANSIENT,
-    TRIAL_RESULT_FILENAME,
     CancelMessage,
     ProtocolError,
     StartMessage,
     _Cancelled,
-    _oneshot_failure_exit_code,
-    _write_trial_result,
     marshal_error,
     marshal_result,
     parse_envelope,
@@ -135,43 +127,6 @@ class TestMarshalResult:
         assert envelope["v"] == 1
         assert envelope["type"] == "result"
         assert TrialResult.model_validate(envelope["result"]) == result
-
-
-class TestOneshotExitCode:
-    """The one-shot ``--inputs`` mode splits a failure into don't-retry vs retry."""
-
-    def test_provision_error_is_deterministic(self) -> None:
-        exc = ProvisionError(trial_id="t:0", stage="await_ready", reason="stack not ready")
-        assert _oneshot_failure_exit_code(exc) == ONESHOT_EXIT_DETERMINISTIC
-
-    def test_task_pack_drift_is_deterministic(self) -> None:
-        assert _oneshot_failure_exit_code(TaskPackDriftError("drift")) == ONESHOT_EXIT_DETERMINISTIC
-
-    def test_not_implemented_is_deterministic(self) -> None:
-        exc = NotImplementedError("adapter is not node-runnable")
-        assert _oneshot_failure_exit_code(exc) == ONESHOT_EXIT_DETERMINISTIC
-
-    def test_unknown_implementation_is_deterministic(self) -> None:
-        exc = UnknownImplementationError("bogus", RUNTIME_BACKENDS_GROUP, ["shared", "in_memory"])
-        assert _oneshot_failure_exit_code(exc) == ONESHOT_EXIT_DETERMINISTIC
-
-    def test_unexpected_fault_is_transient(self) -> None:
-        assert _oneshot_failure_exit_code(RuntimeError("boom")) == ONESHOT_EXIT_TRANSIENT
-
-    def test_the_two_codes_are_distinct_and_non_zero(self) -> None:
-        assert 0 != ONESHOT_EXIT_DETERMINISTIC != ONESHOT_EXIT_TRANSIENT != 0
-
-
-class TestWriteTrialResult:
-    def test_writes_result_json_at_output_dir(self, tmp_path: Path) -> None:
-        result = TrialResult(trial_id="task-1:0", trajectory=make_trajectory())
-        _write_trial_result(result, tmp_path)
-        written = (tmp_path / TRIAL_RESULT_FILENAME).read_text(encoding="utf-8")
-        assert TrialResult.model_validate_json(written) == result
-
-    def test_no_output_dir_writes_nothing(self) -> None:
-        result = TrialResult(trial_id="task-1:0", trajectory=make_trajectory())
-        _write_trial_result(result, None)  # does not raise
 
 
 class TestRegistration:
