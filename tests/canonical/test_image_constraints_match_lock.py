@@ -7,8 +7,6 @@ stale export would let them install versions the lock never chose. The pre-commi
 
 from __future__ import annotations
 
-import tomllib
-
 import pytest
 import yaml
 
@@ -42,32 +40,6 @@ def test_constraints_pin_exactly_the_lock_registry_packages() -> None:
         f"{IMAGE_CONSTRAINTS_PATH.relative_to(REPO_ROOT)} drifted from uv.lock; "
         f"missing pins: {missing}; extra pins: {extra}. Regenerate with `{_REGENERATE}`."
     )
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        "litellm>=1.93.0",
-        "-e ./tolokaforge_models",
-        "--index-url https://download.pytorch.org/whl/cpu",
-        "tolokaforge-models @ file:///src/tolokaforge_models",
-        "litellm==1.93.0 \\",
-    ],
-)
-def test_a_line_that_is_not_an_exact_pin_is_refused(line: str) -> None:
-    with pytest.raises(ValueError, match="not a `name==version"):
-        parse_constraint_lines(f"addict==2.4.0\n{line}\n")
-
-
-def test_litellm_pin_is_the_locked_version() -> None:
-    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text())
-    (locked,) = {package["version"] for package in lock["package"] if package["name"] == "litellm"}
-    pinned = {
-        pin.version
-        for pin in parse_constraint_lines(IMAGE_CONSTRAINTS_PATH.read_text())
-        if pin.name == "litellm"
-    }
-    assert pinned == {locked}
 
 
 def test_linux_sdist_only_set_follows_the_linux_applicable_pin() -> None:

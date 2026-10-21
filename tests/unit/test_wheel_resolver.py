@@ -18,7 +18,6 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.utils.image_constraints import IMAGE_CONSTRAINTS_PATH
 from tolokaforge.docker.wheel_resolver import (
     LocalSourceWheelProvider,
     NoWheelError,
@@ -353,13 +352,9 @@ class TestLocalSourceWheelProvider:
 # ===================================================================
 
 
-_RECORDED_ENV = ("PIP_CONSTRAINT", "PIP_BUILD_CONSTRAINT")
-
-
 class _StubBuilders:
     """A stub ``uv`` on ``PATH`` and a stub ``sys.executable`` (the ``python -m pip``
-    the fallback runs) that each record argv and the pip constraint env, then exit
-    with a chosen code."""
+    the fallback runs) that each record their argv, then exit with a chosen code."""
 
     def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._root = root
@@ -382,10 +377,9 @@ class _StubBuilders:
         stub = self._bin / name
         stub.write_text(
             f"#!{sys.executable}\n"
-            "import json, os, sys\n"
+            "import json, sys\n"
             f"with open({str(self._root / f'{name}.jsonl')!r}, 'a') as record:\n"
-            "    record.write(json.dumps({'argv': sys.argv[1:], 'env': "
-            f"{{k: os.environ.get(k) for k in {_RECORDED_ENV!r}}}}}) + '\\n')\n"
+            "    record.write(json.dumps({'argv': sys.argv[1:]}) + '\\n')\n"
             f"sys.stderr.write({name!r} + ' stub failed\\n')\n"
             f"sys.exit({exit_code})\n"
         )
@@ -431,36 +425,8 @@ _BUILD_SITES = pytest.mark.parametrize(
 
 
 class TestLockedWheelBuild:
-    """Every engine wheel build pins its build backend to the packaged ``uv.lock`` export."""
-
-    @_BUILD_SITES
-    def test_uv_build_passes_the_packaged_build_constraints(
-        self, build, stub_builders: _StubBuilders, engine_root: Path, cache_dir: Path
-    ):
-        stub_builders.install(uv_exit=0, pip_exit=0)
-
-        assert build(engine_root, cache_dir) == ""
-
-        [uv_call] = stub_builders.calls("uv")
-        argv = uv_call["argv"]
-        assert argv[:2] == ["build", "--wheel"]
-        constraints = Path(argv[argv.index("--build-constraint") + 1])
-        assert constraints == IMAGE_CONSTRAINTS_PATH
-        assert stub_builders.calls("python") == []
-
-    @_BUILD_SITES
-    def test_pip_fallback_env_carries_both_constraint_variables(
-        self, build, stub_builders: _StubBuilders, engine_root: Path, cache_dir: Path
-    ):
-        stub_builders.install(uv_exit=1, pip_exit=0)
-
-        assert build(engine_root, cache_dir) == ""
-
-        [pip_call] = stub_builders.calls("python")
-        assert pip_call["argv"][:4] == ["-m", "pip", "wheel", "--no-deps"]
-        for variable in _RECORDED_ENV:
-            assert pip_call["env"][variable] == str(IMAGE_CONSTRAINTS_PATH), variable
-        assert IMAGE_CONSTRAINTS_PATH.is_file()
+    """Failure reporting of the engine wheel builds; the locked backend itself is locked by
+    ``tests/canonical/test_locked_wheel_build.py``."""
 
     @_BUILD_SITES
     def test_both_builder_failures_are_reported(

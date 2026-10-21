@@ -506,6 +506,14 @@ packages = [
 
 [tool.hatch.build.targets.sdist]
 
+# The release workflows' ``uv build`` makes the wheel from the sdist, so the
+# sdist must carry every tree the wheel force-includes. The shared
+# ``[tool.hatch.build].exclude`` drops ``external_adapters/**`` from the sdist
+# too, so ship back exactly the adapter files the wheel table names.
+[tool.hatch.build.targets.sdist.force-include]
+"external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml" = "external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml"
+"external_adapters/tolokaforge-adapter-terminal-bench/src" = "external_adapters/tolokaforge-adapter-terminal-bench/src"
+
 # =============================================================================
 # Runner-subset wheel — Docker-only build artifact, NEVER published to PyPI.
 # =============================================================================

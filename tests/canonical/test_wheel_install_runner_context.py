@@ -21,8 +21,11 @@ rewrite drives the *production* path — the same one
 
 - **The base wheel's ``[tool.hatch.build.targets.wheel.force-include]``
   table** must ship every input the runner Dockerfile needs
-  (``test_base_wheel_ships_runner_context_via_force_include``). A future
-  edit that drops any force-include entry fails here.
+  (``test_base_wheel_ships_runner_context_via_force_include``), both in a
+  wheel built from the tree and in the wheel the release workflows' plain
+  ``uv build`` makes from the sdist. A future edit that drops any
+  force-include entry, or a sdist that lacks a tree the table names, fails
+  here.
 - **The wheel-install branch, wired end-to-end through ``core_stack()``**,
   must produce a runner build context that assembles into a directory
   containing every file the Dockerfile ``COPY`` lines expect
@@ -39,6 +42,7 @@ CWD-prepend into ``sys.path`` can't hide a partial wheel-install failure.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import textwrap
 import zipfile
@@ -130,6 +134,28 @@ def built_base_wheel(built_wheels_dist: Path) -> Path:
 
 
 @pytest.fixture(scope="module")
+def sdist_built_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The engine wheel ``uv build`` makes from the sdist, as the release workflows run it."""
+    if shutil.which("uv") is None:
+        pytest.skip("uv CLI not available")
+    out_dir = tmp_path_factory.mktemp("release_dist")
+    command = [
+        "uv",
+        "build",
+        "--build-constraint",
+        str(IMAGE_CONSTRAINTS_PATH),
+        "--out-dir",
+        str(out_dir),
+    ]
+    result = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, (
+        f"`{' '.join(command)}` failed (exit {result.returncode}):\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    return base_wheel_in(out_dir)
+
+
+@pytest.fixture(scope="module")
 def wheel_install_python(
     built_base_wheel: Path, built_wheels_dist: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> Path:
@@ -194,9 +220,12 @@ def test_wheel_install_venv_passes_the_locked_install_guard(
     assert "first-party: tolokaforge, tolokaforge-models" in result.stdout, result.stdout
 
 
-def test_base_wheel_ships_runner_context_via_force_include(built_base_wheel: Path) -> None:
+@pytest.mark.parametrize("wheel_fixture", ["built_base_wheel", "sdist_built_wheel"])
+def test_base_wheel_ships_runner_context_via_force_include(
+    wheel_fixture: str, request: pytest.FixtureRequest
+) -> None:
     """Every force-include entry the runner build context needs must be
-    present in the built base wheel.
+    present in the base wheel, whether built from the tree or from the sdist.
 
     Locks the ``[tool.hatch.build.targets.wheel.force-include]`` table in
     ``pyproject.toml`` — a future refactor that drops any of these
@@ -205,12 +234,13 @@ def test_base_wheel_ships_runner_context_via_force_include(built_base_wheel: Pat
     would legitimately fail on the missing input, leaving the reader to
     diagnose whether the pyproject table drifted or the resolver did).
     """
-    with zipfile.ZipFile(built_base_wheel) as zf:
+    wheel: Path = request.getfixturevalue(wheel_fixture)
+    with zipfile.ZipFile(wheel) as zf:
         names = set(zf.namelist())
 
     missing = [path for path in _EXPECTED_FORCE_INCLUDES if path not in names]
     assert not missing, (
-        f"base wheel {built_base_wheel.name} is missing force-include entries "
+        f"base wheel {wheel.name} is missing force-include entries "
         f"the runner build context needs on a wheel install: {missing}. "
         "Check ``[tool.hatch.build.targets.wheel.force-include]`` in ``pyproject.toml``."
     )
