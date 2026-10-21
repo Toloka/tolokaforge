@@ -95,7 +95,12 @@ portable unit.**
 
 - You can run one trial with **no orchestrator** in the process.
 - **Delegated harnesses are node-runnable** through the same unit as native
-  trials.
+  trials — but only through the **library entry** (`run_trial_from_inputs`),
+  which runs one already-built trial unit directly. The orchestrated
+  dispatch/remote path refuses coding-harness mode (and any adapter that is not
+  node-runnable) at run start (`orchestrator.py`
+  `_refuse_settings_the_node_does_not_carry`), so a delegated harness reaches a
+  node only when the caller drives the trial unit itself.
 - Because there is now exactly **one** way to run a trial, five latent bugs in
   the old single-trial path disappeared (a wrong grader address under one runtime
   mode, a dropped message-size limit, a missing Docker socket for some tasks, a
