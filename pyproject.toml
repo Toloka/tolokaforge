@@ -47,7 +47,9 @@ dependencies = [
     # gateway route), it has the native ``meta`` provider, and it is past the
     # 1.92.x line, which imports fastapi on the tool-call path.
     # 1.107.0 is excluded: that PyPI release ships credential-stealing malware.
-    "litellm>=1.93.0,<2.0.0,!=1.107.0",
+    # Capped below 1.103.0: litellm 1.103 moved to mcp 2, which the ``mcp<2``
+    # pin below cannot satisfy (locked by test_litellm_mcp_range_compatibility).
+    "litellm>=1.93.0,<1.103.0,!=1.107.0",
     # Data validation and schemas
     "pydantic>=2.0.0",
     "pydantic[email]>=2.0.0",
