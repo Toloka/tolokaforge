@@ -46,7 +46,8 @@ dependencies = [
     # outside openai.com (so Anthropic prompt caching survives a resolved LLM
     # gateway route), it has the native ``meta`` provider, and it is past the
     # 1.92.x line, which imports fastapi on the tool-call path.
-    "litellm>=1.93.0,<2.0.0",
+    # 1.107.0 is excluded: that PyPI release ships credential-stealing malware.
+    "litellm>=1.93.0,<2.0.0,!=1.107.0",
     # Data validation and schemas
     "pydantic>=2.0.0",
     "pydantic[email]>=2.0.0",
