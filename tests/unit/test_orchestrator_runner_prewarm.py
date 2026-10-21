@@ -80,7 +80,9 @@ def test_prewarm_probe_uses_resolved_budget_and_returns_on_success(
     orch = _orchestrator(tmp_path, RuntimeConnectConfig(timeout_s=45.0, retry_interval_s=0.25))
     probe = MagicMock()
     probe.wait.return_value = ProbeResult(healthy=True, message="ok")
-    with patch("tolokaforge.core.orchestrator.HealthProbe.tcp", return_value=probe) as tcp_ctor:
+    with patch(
+        "tolokaforge.core.engine_stack_runtime.HealthProbe.tcp", return_value=probe
+    ) as tcp_ctor:
         orch._prewarm_runner_host_endpoint("localhost:54321")
     tcp_ctor.assert_called_once_with(host="localhost", port=54321, timeout_s=45.0, interval_s=0.25)
     probe.wait.assert_called_once_with()
@@ -95,7 +97,7 @@ def test_prewarm_probe_failure_raises_actionable_error(
     probe.wait.side_effect = HealthProbeError(
         ProbeType.TCP, "localhost:54321", "connection refused after 30 attempts"
     )
-    with patch("tolokaforge.core.orchestrator.HealthProbe.tcp", return_value=probe):
+    with patch("tolokaforge.core.engine_stack_runtime.HealthProbe.tcp", return_value=probe):
         with pytest.raises(RuntimeError) as exc_info:
             orch._prewarm_runner_host_endpoint("localhost:54321")
     msg = str(exc_info.value)

@@ -14,6 +14,8 @@ Components:
 - ``run_trial`` — single-trial library entry (ADR-0022 § Surface 2)
 - ``plan_trials`` — a run config → the serializable ``TrialNodeInputs`` per trial
 - ``run_trial_from_inputs`` — standalone trial entry over serialized inputs
+- ``run_trial_with_stack`` — brings up the engine stack for one trial, runs it,
+  and tears the stack down (the library route for a fresh-sandbox caller)
 - ``aggregate_results`` — trial results → the four run-aggregate artifacts
 - ``load_task`` — ``task.yaml`` → validated ``TaskConfig`` loader
 - Protocol definitions (runner_pb2, runner_pb2_grpc)
@@ -75,6 +77,12 @@ def __getattr__(name: str):
         obj = importlib.import_module("tolokaforge.core.trial_node").run_trial_from_inputs
         globals()[name] = obj
         return obj
+    if name == "run_trial_with_stack":
+        import importlib
+
+        obj = importlib.import_module("tolokaforge.core.engine_stack_runtime").run_trial_with_stack
+        globals()[name] = obj
+        return obj
     if name == "plan_trials":
         import importlib
 
@@ -108,6 +116,7 @@ __all__ = [
     # Composable run steps
     "plan_trials",
     "run_trial_from_inputs",
+    "run_trial_with_stack",
     "aggregate_results",
     "RunReport",
     "load_task",

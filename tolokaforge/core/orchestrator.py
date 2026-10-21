@@ -23,7 +23,6 @@ from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_ada
 from tolokaforge.adapters._task_loader import (
     GradingSourceKind,
     declared_search_backend,
-    declared_tool_names,
     grading_source_under_adapter,
     replay_world_under_adapter,
     search_declaration,
@@ -52,7 +51,14 @@ from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
     write_engine_run_state,
 )
-from tolokaforge.core.env_var import parse_env_positive_float
+from tolokaforge.core.engine_stack_runtime import (
+    _declared_engine_service_snapshots,
+    _engine_service_snapshots,
+    _run_uses_coding_harness,
+    build_engine_stack,
+    prewarm_runner_host_endpoint,
+    resolve_runtime_connect_budget,
+)
 from tolokaforge.core.failure_attribution import (
     TrialOutcomeClass,
     classify_trial_outcome,
@@ -104,7 +110,6 @@ from tolokaforge.core.output.report import (
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.planning import expand_trials
 from tolokaforge.core.plugin_registry import (
-    RAG_SERVICE_STACK_SERVICE,
     DispatchAdapterBuildContext,
     RegistryError,
     RuntimeBackendBuildContext,
@@ -128,7 +133,6 @@ from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
-    ServiceSnapshot,
     _NullRunDisplayEvents,
 )
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
@@ -145,7 +149,6 @@ from tolokaforge.core.trial_node import (
     TrialExecutionUnit,
     build_trial_execution_unit,
 )
-from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.observability.factory import (
     RunIdentity,
     build_trial_observer,
@@ -160,39 +163,6 @@ if TYPE_CHECKING:
     from tolokaforge.core.search.typesense_server import TypeSenseServerManager
     from tolokaforge.docker.stacks import TypeSenseAddress
 
-# Tools that need Playwright + Chromium baked into the runner image. The
-# orchestrator scans the task list before starting the docker stack and
-# enables the ``INSTALL_PLAYWRIGHT`` build arg when any task uses one of
-# them. ``MobileTool`` subclasses ``BrowserTool`` so it has the same
-# Playwright dependency — keeping the list inline (vs. inferring from the
-# class hierarchy) avoids importing the tool modules at orchestrator
-# import time.
-_PLAYWRIGHT_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
-
-# Tools / initial-state declarations that require ``full_stack`` (mock-web
-# at port 8080 and rag-service at 8001) on top of the core db-service +
-# runner. ``browser`` and ``mobile`` reach mock-web for app/site URLs. A task
-# may also declare ``initial_state.mock_web`` directly without enabling those
-# tools. Knowledge-base search needs rag-service when the task's search backend
-# says so (ADR-0054): not by the tool's name, which a task may choose, but by
-# the ``stack_service`` its backend (``initial_state.rag.backend``, default
-# ``rag_service``) declares — for a task that searches at all, i.e. declares a
-# corpus or enables its search tool (``initial_state.rag.tool.name``, default
-# ``search_kb``).
-#
-# Routing matrix, over either actor's block:
-# +------------------------------------------------------+--------------+
-# | Signal in task config                                | Stack        |
-# +------------------------------------------------------+--------------+
-# | tools.<actor>.enabled ∋ browser                      | full_stack   |
-# | tools.<actor>.enabled ∋ mobile                       | full_stack   |
-# | initial_state.mock_web is truthy                     | full_stack   |
-# | the task searches, and its backend's stack_service   | full_stack   |
-# |   is rag_service (the default backend's)             |              |
-# | otherwise                                            | core_stack   |
-# +------------------------------------------------------+--------------+
-_FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
-
 # Where a bridged local TypeSense server answers from inside ``runner-net``.
 # The alias is attached when the bridge connects the container to the network,
 # and the container port is fixed by the image — only the host-mapped port
@@ -200,34 +170,6 @@ _FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 _TYPESENSE_NETWORK_ALIAS = "typesense"
 _TYPESENSE_CONTAINER_PORT = 8108
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-
-
-def _tasks_need_playwright(tasks: list[Any]) -> bool:
-    """Return True iff any task enables a Playwright-dependent tool.
-
-    Used by :class:`Orchestrator` to decide whether to pass
-    ``enable_playwright=True`` to :func:`core_stack`. Either actor's declaration
-    counts: the runner reconstructs a user tool through the same wrapper as an
-    agent tool, so a user-side ``browser`` needs the same image. Pure function so
-    unit tests can construct ``TaskConfig`` instances directly without
-    standing up the docker stack.
-    """
-    return any(_PLAYWRIGHT_TOOL_NAMES & declared_tool_names(task) for task in tasks)
-
-
-def _run_uses_coding_harness(config: "RunConfig") -> bool:
-    """Return True iff the run config selects a coding-harness CLI.
-
-    A native coding-harness pack drives its bash tool through
-    ``docker compose exec`` (the mixin's harness tool schema uses the
-    ``docker_compose_exec`` invocation style). The runner container therefore
-    needs the docker CLI even though ``NativeAdapter.requires_docker_cli_in_
-    runner`` is ``False`` at class level. Terminal-bench's own flag already
-    forces the CLI in, so this predicate is the shipped route for the native
-    harness case.
-    """
-    agent_model = config.models.get("agent") if config.models else None
-    return agent_model is not None and agent_model.harness is not None
 
 
 def _compose_service_image_ref(compose_file: Path, service: str) -> str | None:
@@ -427,69 +369,11 @@ def _local_image_exists(image_ref: str) -> bool:
     return result.returncode == 0
 
 
-def _tasks_need_full_stack(tasks: list[Any]) -> bool:
-    """Return True iff any task needs ``full_stack`` (mock-web / rag).
-
-    See ``_FULL_STACK_TOOL_NAMES`` for the routing matrix. Detection works
-    on both ``ToolsConfig`` / ``InitialStateConfig`` Pydantic models and
-    plain dicts (raw YAML), to keep the unit tests simple.
-    """
-    for task in tasks:
-        if _FULL_STACK_TOOL_NAMES & declared_tool_names(task):
-            return True
-        if _search_needs_rag_service(task):
-            return True
-        initial_state = task.initial_state if task.initial_state is not None else None
-        if initial_state is None:
-            continue
-        mock_web = (
-            initial_state.mock_web
-            if hasattr(initial_state, "mock_web")
-            else (initial_state.get("mock_web") if isinstance(initial_state, dict) else None)
-        )
-        if mock_web:
-            return True
-    return False
-
-
 def _is_a_malformed_search_declaration(error: Exception) -> bool:
     """Whether a task failed to load because its ``initial_state.rag`` is malformed."""
     if not isinstance(error, ValidationError):
         return False
     return any(tuple(detail["loc"][:2]) == ("initial_state", "rag") for detail in error.errors())
-
-
-def _search_needs_rag_service(task: Any) -> bool:
-    """Whether the task searches with a backend that declares the rag-service stack service.
-
-    A typed ``rag: {}`` block declares no corpus, so it searches only if an actor
-    enables its search tool — as the empty dict it replaced never selected the
-    full stack on its own.
-    """
-    search = search_declaration(task)
-    if not uses_search(task, search):
-        return False
-    return declared_search_backend(search).stack_service == RAG_SERVICE_STACK_SERVICE
-
-
-def _run_needs_full_stack(tasks: list[Any], stack_requirements: Any) -> bool:
-    """Return True iff the run needs ``full_stack``.
-
-    Combines the task-level signals (:func:`_tasks_need_full_stack`) with the
-    adapter's declarative stack needs
-    (``DockerStackRequirements.needs_rag_service``). Adapters whose search
-    signal is not visible in task tool names or ``initial_state`` (e.g. a
-    domain-shipped ``docindex/`` knowledge base surfaced as
-    ``TaskDescription.search.enabled``) declare the rag-service need on their
-    :meth:`BaseAdapter.docker_stack_requirements`. The Runner hard-fails
-    ``RegisterTrial`` for search-enabled tasks when no RAG client is
-    configured (``runner/service.py``), so the provisioning decision must
-    follow the same signal the Runner enforces. Duck-typed like its sibling
-    so unit tests can pass lightweight stand-ins.
-    """
-    if stack_requirements is not None and getattr(stack_requirements, "needs_rag_service", False):
-        return True
-    return _tasks_need_full_stack(tasks)
 
 
 def resolve_run_directory(base_output_dir: str | Path) -> tuple[str, Path]:
@@ -530,46 +414,6 @@ def _normalise_runner_url(runner_address: str) -> str:
     if runner_address.startswith(("http://", "https://")):
         return runner_address
     return f"http://{runner_address}"
-
-
-def _declared_engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
-    """Return one ``ServiceSnapshot`` per declared engine service.
-
-    Fired on ``phase_changed(phase="starting_services", …)`` so the
-    panel can render the service list with ``status="created"`` before
-    any container has been brought up. Reads ``service_stack.services``
-    — the declared :class:`ServiceDefinition` mapping — so it works
-    before ``start_all()``.
-    """
-    snapshots: list[ServiceSnapshot] = []
-    for name in service_stack.services:
-        snapshots.append(ServiceSnapshot(name=name, status="created", ports={}, role="engine"))
-    return snapshots
-
-
-def _engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
-    """Return one ``ServiceSnapshot`` per running engine service.
-
-    Fired on ``phase_changed(phase="services_ready", …)`` after
-    ``start_all()`` completes so the panel can render live status +
-    resolved ports. Reads ``service_stack.get_status()`` for the
-    lifecycle string and ``.health`` for the probe verdict; the widget
-    prefers ``health`` when present because ``status="running"`` on a
-    container whose probe is still starting overstates readiness.
-    """
-    statuses = service_stack.get_status()
-    snapshots: list[ServiceSnapshot] = []
-    for name, status in statuses.items():
-        effective = status.health if status.health not in (None, "unknown") else status.status
-        snapshots.append(
-            ServiceSnapshot(
-                name=name,
-                status=effective,
-                ports=dict(status.ports),
-                role="engine",
-            )
-        )
-    return snapshots
 
 
 _RunScopeStackSignature = tuple[str, str, str, tuple[tuple[str, str], ...]]
@@ -1724,65 +1568,22 @@ class Orchestrator:
         RuntimeBackendBuildContext plumbing). Env-var values that fail
         to parse fall back to the YAML block with a warning.
         """
-        runtime_connect = self.config.orchestrator.runtime_connect
-        timeout_s = parse_env_positive_float(
-            "TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S",
-            default=runtime_connect.timeout_s,
-            logger=self.logger,
-        )
-        retry_interval_s = parse_env_positive_float(
-            "TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S",
-            default=runtime_connect.retry_interval_s,
-            logger=self.logger,
-        )
-        assert timeout_s is not None and retry_interval_s is not None
-        return timeout_s, retry_interval_s
+        return resolve_runtime_connect_budget(self.config, logger=self.logger)
 
     def _prewarm_runner_host_endpoint(self, runner_address: str) -> None:
         """Probe the runner's PUBLISHED host port before constructing the backend.
 
-        Compose's internal ``HEALTHCHECK`` says the gRPC server bound
-        its port inside the container, but the published host port has
-        propagation lag (particularly under Docker Desktop). Doing the
-        readiness gate here means ``runtime_backend.connect()`` never
-        races the port-publish — it dials a socket already listening
-        from the host.
-
-        TCP-level probe (not gRPC) because the runner service does not
-        implement the standard ``grpc.health.v1.Health/Check`` interface
-        — its own health check lives on ``RunnerService.HealthCheck``.
-        Port reachability is what closes the compose-vs-host-publish gap
-        anyway; gRPC-level health is covered by the client-side connect
-        retry.
-
-        Budget is the operator-configured ``orchestrator.runtime_connect``
-        (env-var-overridable). A refusal here raises an actionable
-        ``RuntimeError`` naming the resolved host:port and the knob to
-        raise; the downstream ``connect()`` would otherwise surface a
-        confusing ``Runner service not healthy after 30.1s``.
+        Runs after ``start_all(wait=True)`` and before
+        ``runtime_backend.connect()`` so the backend never races the host
+        port-publish. Budget is the operator-configured
+        ``orchestrator.runtime_connect`` (env-var-overridable); a refusal raises
+        an actionable ``RuntimeError`` naming the resolved host:port and the knob
+        to raise.
         """
-        timeout_s, retry_interval_s = self._resolve_runtime_connect_budget()
-        host, port_str = runner_address.rsplit(":", 1)
-        port = int(port_str)
-        try:
-            HealthProbe.tcp(
-                host=host,
-                port=port,
-                timeout_s=timeout_s,
-                interval_s=retry_interval_s,
-            ).wait()
-        except HealthProbeError as exc:
-            raise RuntimeError(
-                f"Runner host-side readiness probe failed at {host}:{port} after "
-                f"{timeout_s}s. Raise orchestrator.runtime_connect.timeout_s in the "
-                f"run config, or set TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S, if the "
-                f"container needs longer to cold-boot. Detail: {exc}"
-            ) from exc
-        self.logger.info(
-            "Runner host-side readiness confirmed",
-            host=host,
-            port=port,
-            budget_s=timeout_s,
+        prewarm_runner_host_endpoint(
+            runner_address,
+            budget=self._resolve_runtime_connect_budget(),
+            logger=self.logger,
         )
 
     def _teardown_engine_services(self, service_stack: Any) -> None:
@@ -3322,109 +3123,20 @@ class Orchestrator:
         service_stack = None
         if self.config.orchestrator.auto_start_services and not self._is_dispatch_run():
             try:
-                from tolokaforge.docker.stacks import core_stack, full_stack
-
-                self.logger.info("Auto-starting Docker services via EngineStack")
-                stack_requirements = (
-                    self.adapter.docker_stack_requirements() if self.adapter is not None else None
+                # Build the stack the run's tasks need (runner + db-service,
+                # plus the search plane when a task needs one). The shared
+                # factory resolves the adapter's stack requirements, the
+                # playwright/docker-cli signals, and core-vs-full selection; the
+                # library route builds the same way through the same function.
+                service_stack, stack_requirements = build_engine_stack(
+                    self.config,
+                    self.adapter,
+                    self.tasks,
+                    typesense_stack_kwargs=self._typesense_stack_kwargs(),
+                    grpc_max_message_mb=self._grpc_max_message_mb(),
+                    state_read_timeout_s=self._state_read_timeout_s(),
+                    logger=self.logger,
                 )
-                core_stack_kwargs = (
-                    stack_requirements.to_core_stack_kwargs() if stack_requirements else {}
-                )
-                # Ensure host-side paths for any extra bind mounts exist so
-                # Docker doesn't create them as root-owned at start-up.
-                for host_path, _ in core_stack_kwargs.get("extra_runner_binds", []):
-                    Path(host_path).mkdir(parents=True, exist_ok=True)
-                # Detect required Docker features from task configs.
-                # Both browser and mobile (a BrowserTool subclass) need
-                # Playwright/Chromium baked in; skipping the install for
-                # the common case keeps image builds fast.
-                if _tasks_need_playwright(self.tasks):
-                    self.logger.info(
-                        "Playwright-dependent tool detected in tasks — enabling Playwright"
-                    )
-                    core_stack_kwargs["enable_playwright"] = True
-                # The runner container is created knowing where TypeSense is,
-                # so nothing has to rewrite a task's address after the fact.
-                core_stack_kwargs.update(self._typesense_stack_kwargs())
-                adapter_type = (
-                    self.config.evaluation.harness_adapter.type
-                    if self.config.evaluation.harness_adapter
-                    else None
-                )
-                if run_needs_docker_cli(adapter_type, self.tasks) or _run_uses_coding_harness(
-                    self.config
-                ):
-                    self.logger.info(
-                        "Docker CLI required in runner image "
-                        "(terminal-bench adapter, compose-variant tools, "
-                        "or coding-harness mode detected)"
-                    )
-                    core_stack_kwargs["enable_docker_cli"] = True
-                    # Fail loud before any container work: INSTALL_DOCKER_CLI
-                    # is a Dockerfile build arg the orchestrator sets, so it
-                    # only takes effect on a locally-built runner. A pulled
-                    # runner would die on the first tool call with
-                    # `[Errno 2] No such file or directory: 'docker'`.
-                    import tolokaforge as _engine_pkg
-                    from tolokaforge.core.models.docker_config import DockerConfig
-                    from tolokaforge.docker.builder import repo_root
-                    from tolokaforge.docker.image_source_policy import (
-                        check_runner_docker_cli_available,
-                    )
-
-                    _docker_cfg = self.config.docker or DockerConfig()
-                    check_runner_docker_cli_available(
-                        needs_docker_cli=True,
-                        request=_docker_cfg.image_source,
-                        is_wheel_install=not (repo_root() / "pyproject.toml").is_file(),
-                        engine_version=_engine_pkg.__version__,
-                    )
-                # Pick full_stack (db-service + runner + rag-service +
-                # mock-web) when any task talks to mock-web or rag (see
-                # ``_FULL_STACK_TOOL_NAMES`` for the routing matrix) OR when
-                # the adapter declares a rag-service need
-                # (``DockerStackRequirements.needs_rag_service``).
-                # ``full_stack`` accepts every kwarg ``core_stack`` does,
-                # so the playwright/binds plumbing above still applies.
-                if _run_needs_full_stack(self.tasks, stack_requirements):
-                    self.logger.info(
-                        "Full-stack-dependent run detected (task browser/mobile, "
-                        "initial_state.mock_web, a search backend needing rag-service, or "
-                        "adapter-declared rag-service need) "
-                        "- using full_stack (db-service + runner + rag-service + mock-web)",
-                        adapter_needs_rag_service=bool(
-                            stack_requirements is not None
-                            and getattr(stack_requirements, "needs_rag_service", False)
-                        ),
-                    )
-                    stack_factory = full_stack
-                else:
-                    self.logger.info("Creating service stack (db-service + runner)")
-                    stack_factory = core_stack
-                # Thread the run's docker config through to the stack so
-                # ``docker.image_source`` (CLI flag, TOLOKAFORGE_IMAGE_SOURCE
-                # env, or YAML) actually reaches ``EngineStack._maybe_pull_
-                # service_image``. Without this explicit forwarding the
-                # entire pull-vs-build policy stays inert — the stack
-                # factories default ``config=None`` → ``DockerConfig()`` →
-                # ``image_source='auto'``, so an operator setting
-                # ``--image-source build`` on a wheel install would still
-                # get a silent pull.
-                from tolokaforge.core.models.docker_config import DockerConfig
-
-                docker_config = self.config.docker or DockerConfig()
-                # Route ``grader.expose_substrate`` from the run config into
-                # the runner container so it registers the SubstrateService
-                # gRPC servicer alongside RunnerService (same listen port).
-                # Absent block == absent field == off.
-                if self.config.grader is not None and self.config.grader.expose_substrate:
-                    core_stack_kwargs["expose_substrate"] = True
-                # The runner container serves with the bound the engine's
-                # client channels use (``compute.grpc_max_message_mb``).
-                core_stack_kwargs["grpc_max_message_mb"] = self._grpc_max_message_mb()
-                core_stack_kwargs["state_read_timeout_s"] = self._state_read_timeout_s()
-                service_stack = stack_factory(config=docker_config, **core_stack_kwargs)
                 # Any task-declared manifest hands the substrate to the
                 # composer — the task-declared compose owns the runner +
                 # db-service, so the built-in engine containers go unused.

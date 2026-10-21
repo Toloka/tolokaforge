@@ -160,10 +160,20 @@ The node builds and pulls no images. `tolokaforge-runner:local` and
 `tolokaforge-db-service:local` must already exist on the Docker daemon the node
 drives (`make docker-build-core` at node bootstrap, or pull and tag them), together
 with every public image a task-declared stack names (for example `nginx:1.27-alpine`
-for the `multi_service` example). A runner must be reachable at `EXECUTOR_ADDRESS`
-(default `executor:50051`) for tasks that declare no stack of their own; a task that
-declares a single-stack `environment_manifest` has the node materialise that stack
-once for its trial from the mounted pack, and needs no pre-running runner.
+for the `multi_service` example).
+
+A task that declares no stack of its own resolves to the shared runtime and dials a
+runner at `EXECUTOR_ADDRESS` (default `executor:50051`). A fresh-sandbox caller that
+has no pre-running runner uses `run_trial_with_stack` (from `tolokaforge.runner`):
+it brings up the same services a `tolokaforge run` would start for the task — the
+runner, db-service, and a search plane when the task needs one — points
+`EXECUTOR_ADDRESS` at the started runner, runs the trial, and tears the stack down.
+The bring-up reuses the engine's own stack-selection logic, so a sandbox-per-trial
+backend does not have to copy it. A caller that already has a runner listening at
+`EXECUTOR_ADDRESS` calls the pure `run_trial_from_inputs` directly and skips the
+bring-up. A task that declares a single-stack `environment_manifest` has the node
+materialise that stack once for its trial from the mounted pack, and needs no
+pre-running runner either way.
 
 A containerised node reaches the stack it starts through the host's Docker socket,
 so the stack's published ports land on the Docker host, not inside the node
