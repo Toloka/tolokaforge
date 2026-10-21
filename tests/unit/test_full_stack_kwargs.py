@@ -211,7 +211,8 @@ def test_full_stack_default_omits_docker_cli():
 
 def test_full_stack_mock_web_pins_build_context():
     """``mock-web`` declares ``context_files`` so its image-content-hash
-    only depends on the service's own source. Without this the orchestrator
+    only depends on the service's own source and the ``uv.lock`` constraints
+    export plus the locked-install guard its Dockerfile COPYs. Without this the orchestrator
     hashes the whole repo and the cache fires on every unrelated edit
     (observed during PR #127 verification — repeated 10+ minute rebuilds
     triggered by changes that mock-web's Dockerfile never COPYs in).
@@ -219,7 +220,11 @@ def test_full_stack_mock_web_pins_build_context():
     stack = full_stack()
     mock_web = stack.services.get("mock-web")
     assert mock_web is not None
-    assert mock_web.context_files == ["tolokaforge/env/mock_web_service/"]
+    assert mock_web.context_files == [
+        "tolokaforge/env/mock_web_service/",
+        "tolokaforge/docker/image-constraints.txt",
+        "tolokaforge/docker/dockerfiles/locked_install_check.py",
+    ]
 
 
 def test_full_stack_rag_service_pins_build_context():
@@ -232,8 +237,10 @@ def test_full_stack_rag_service_pins_build_context():
 
     Checked by set-equality against every path the rag Dockerfile COPYs:
     the resolved tolokaforge wheel (absolute host path, so only its
-    ``.whl`` shape is asserted, not the path itself) plus the three fixed
-    source trees the ``sibling-wheel-builder`` stage compiles in-container.
+    ``.whl`` shape is asserted, not the path itself), the service tree and the
+    two sibling source trees the ``sibling-wheel-builder`` stage compiles
+    in-container, plus the ``uv.lock`` constraints export and the
+    locked-install guard.
     A new entry appearing here means either (a) an intentional Dockerfile
     COPY was added and this set needs updating alongside, or (b) a
     whole-repo-hash regression this test catches on the way in.
@@ -249,6 +256,8 @@ def test_full_stack_rag_service_pins_build_context():
     assert non_wheel_entries == sorted(
         [
             "tolokaforge/env/rag_service/",
+            "tolokaforge/docker/image-constraints.txt",
+            "tolokaforge/docker/dockerfiles/locked_install_check.py",
             "tolokaforge_models/",
             "tolokaforge_coding_harnesses/",
         ]

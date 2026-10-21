@@ -21,8 +21,11 @@ rewrite drives the *production* path — the same one
 
 - **The base wheel's ``[tool.hatch.build.targets.wheel.force-include]``
   table** must ship every input the runner Dockerfile needs
-  (``test_base_wheel_ships_runner_context_via_force_include``). A future
-  edit that drops any force-include entry fails here.
+  (``test_base_wheel_ships_runner_context_via_force_include``), both in a
+  wheel built from the tree and in the wheel the release workflows' plain
+  ``uv build`` makes from the sdist. A future edit that drops any
+  force-include entry, or a sdist that lacks a tree the table names, fails
+  here.
 - **The wheel-install branch, wired end-to-end through ``core_stack()``**,
   must produce a runner build context that assembles into a directory
   containing every file the Dockerfile ``COPY`` lines expect
@@ -39,6 +42,7 @@ CWD-prepend into ``sys.path`` can't hide a partial wheel-install failure.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import textwrap
 import zipfile
@@ -46,6 +50,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils.image_constraints import IMAGE_CONSTRAINTS_PATH
 from tests.utils.wheel_builds import base_wheel_in, build_workspace_wheels, make_wheel_install_venv
 
 pytestmark = pytest.mark.canonical
@@ -68,6 +73,14 @@ _EXPECTED_FORCE_INCLUDES: tuple[str, ...] = (
     # with no pyproject and the build dies.
     "tolokaforge/_subset_build/tolokaforge_models/pyproject.toml",
     "tolokaforge/_subset_build/tolokaforge_coding_harnesses/pyproject.toml",
+    # The base wheel's own force-include table names the langfuse and adapter
+    # trees, so the grader / trial_node / standalone target-wheel builds need
+    # them; standalone also builds both plugin wheels from them.
+    "tolokaforge/_subset_build/tolokaforge_langfuse/pyproject.toml",
+    "tolokaforge/_subset_build/tolokaforge_langfuse/src/tolokaforge_langfuse/__init__.py",
+    "tolokaforge/_subset_build/external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml",
+    "tolokaforge/_subset_build/external_adapters/tolokaforge-adapter-terminal-bench/src/"
+    "tolokaforge_adapter_terminal_bench/__init__.py",
 )
 
 # Every file the runner (and grader — same full source set) Dockerfile ``COPY``
@@ -85,10 +98,22 @@ _EXPECTED_CONTEXT_ENTRIES: tuple[str, ...] = (
     "tolokaforge_coding_harnesses/pyproject.toml",
 )
 
+# The grader (like trial_node and standalone) builds the full base wheel, whose
+# force-include table names these trees on top of the runner's source set.
+_EXPECTED_FULL_WHEEL_CONTEXT_ENTRIES: tuple[str, ...] = (
+    *_EXPECTED_CONTEXT_ENTRIES,
+    "tolokaforge_langfuse/pyproject.toml",
+    "tolokaforge_langfuse/src/tolokaforge_langfuse",
+    "external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml",
+    "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench",
+)
+
 # The rag-service build context does not compile the full engine; it copies the
 # resolved wheel, its own service dir, and only the two sibling trees.
 _EXPECTED_RAG_CONTEXT_ENTRIES: tuple[str, ...] = (
     "tolokaforge/env/rag_service",
+    "tolokaforge/docker/image-constraints.txt",
+    "tolokaforge/docker/dockerfiles/locked_install_check.py",
     "tolokaforge_models/pyproject.toml",
     "tolokaforge_coding_harnesses/pyproject.toml",
 )
@@ -108,9 +133,99 @@ def built_base_wheel(built_wheels_dist: Path) -> Path:
     return base_wheel_in(built_wheels_dist)
 
 
-def test_base_wheel_ships_runner_context_via_force_include(built_base_wheel: Path) -> None:
+@pytest.fixture(scope="module")
+def sdist_built_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The engine wheel ``uv build`` makes from the sdist, as the release workflows run it."""
+    if shutil.which("uv") is None:
+        pytest.skip("uv CLI not available")
+    out_dir = tmp_path_factory.mktemp("release_dist")
+    command = [
+        "uv",
+        "build",
+        "--build-constraint",
+        str(IMAGE_CONSTRAINTS_PATH),
+        "--out-dir",
+        str(out_dir),
+    ]
+    result = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, (
+        f"`{' '.join(command)}` failed (exit {result.returncode}):\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    return base_wheel_in(out_dir)
+
+
+@pytest.fixture(scope="module")
+def wheel_install_python(
+    built_base_wheel: Path, built_wheels_dist: Path, tmp_path_factory: pytest.TempPathFactory
+) -> Path:
+    """Python of a scratch venv holding the base wheel, installed by :func:`make_wheel_install_venv`."""
+    return make_wheel_install_venv(
+        tmp_path_factory.mktemp("scratch_venv"), built_wheels_dist, built_base_wheel
+    )
+
+
+def test_base_wheel_ships_the_image_constraints(built_base_wheel: Path) -> None:
+    """Image builds and the CI gate read the ``uv.lock`` export from the installed package."""
+    packaged = "tolokaforge/docker/image-constraints.txt"
+    with zipfile.ZipFile(built_base_wheel) as zf:
+        assert packaged in zf.namelist(), f"{built_base_wheel.name} does not ship {packaged}"
+        assert (
+            zf.read(packaged) == IMAGE_CONSTRAINTS_PATH.read_bytes()
+        ), f"{built_base_wheel.name} ships a {packaged} that differs from the repo file"
+
+
+def test_wheel_install_venv_passes_the_locked_install_guard(
+    wheel_install_python: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """The scratch venv holds ``uv.lock`` versions and local-file first-party wheels.
+
+    Runs the CI ``wheel-install-gate`` guard row against the packaged constraints
+    file, plus ``--exempt pip`` for the pip that ``python -m venv`` seeds."""
+    guard_cwd = tmp_path_factory.mktemp("guard_cwd_outside_repo")
+    packaged_constraints = subprocess.run(
+        [
+            str(wheel_install_python),
+            "-c",
+            "import pathlib, tolokaforge; "
+            "print(pathlib.Path(tolokaforge.__file__).parent / 'docker' / 'image-constraints.txt')",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=str(guard_cwd),
+    ).stdout.strip()
+    result = subprocess.run(
+        [
+            str(wheel_install_python),
+            "-m",
+            "tolokaforge.docker.dockerfiles.locked_install_check",
+            "--constraints",
+            packaged_constraints,
+            "--first-party",
+            "tolokaforge",
+            "--first-party",
+            "tolokaforge-models",
+            "--exempt",
+            "pip",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(guard_cwd),
+    )
+    assert result.returncode == 0, (
+        f"locked-install guard rejected the wheel-install venv (exit {result.returncode}):\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "first-party: tolokaforge, tolokaforge-models" in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("wheel_fixture", ["built_base_wheel", "sdist_built_wheel"])
+def test_base_wheel_ships_runner_context_via_force_include(
+    wheel_fixture: str, request: pytest.FixtureRequest
+) -> None:
     """Every force-include entry the runner build context needs must be
-    present in the built base wheel.
+    present in the base wheel, whether built from the tree or from the sdist.
 
     Locks the ``[tool.hatch.build.targets.wheel.force-include]`` table in
     ``pyproject.toml`` — a future refactor that drops any of these
@@ -119,19 +234,20 @@ def test_base_wheel_ships_runner_context_via_force_include(built_base_wheel: Pat
     would legitimately fail on the missing input, leaving the reader to
     diagnose whether the pyproject table drifted or the resolver did).
     """
-    with zipfile.ZipFile(built_base_wheel) as zf:
+    wheel: Path = request.getfixturevalue(wheel_fixture)
+    with zipfile.ZipFile(wheel) as zf:
         names = set(zf.namelist())
 
     missing = [path for path in _EXPECTED_FORCE_INCLUDES if path not in names]
     assert not missing, (
-        f"base wheel {built_base_wheel.name} is missing force-include entries "
+        f"base wheel {wheel.name} is missing force-include entries "
         f"the runner build context needs on a wheel install: {missing}. "
         "Check ``[tool.hatch.build.targets.wheel.force-include]`` in ``pyproject.toml``."
     )
 
 
 def test_core_stack_runner_context_assembles_from_wheel_install(
-    built_base_wheel: Path, built_wheels_dist: Path, tmp_path_factory: pytest.TempPathFactory
+    wheel_install_python: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
     """Install the base wheel into a scratch venv and drive the PRODUCTION
     path — ``core_stack().services['runner'].context_files`` +
@@ -153,8 +269,7 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
     return the same list — a necessary-but-not-sufficient invariant that
     would already be violated if the duplicate returned.
     """
-    venv_dir = tmp_path_factory.mktemp("scratch_venv")
-    venv_python = make_wheel_install_venv(venv_dir, built_wheels_dist, built_base_wheel)
+    venv_python = wheel_install_python
 
     # Run the probe from a CWD outside the repo — otherwise the scratch
     # venv's ``sys.path[0]`` prepends the CWD (repo root), and
@@ -170,6 +285,7 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
     # ``COPY`` lines expect.
     probe_prelude = (
         f"_EXPECTED_ENTRIES = {list(_EXPECTED_CONTEXT_ENTRIES)!r}\n"
+        f"_GRADER_EXPECTED_ENTRIES = {list(_EXPECTED_FULL_WHEEL_CONTEXT_ENTRIES)!r}\n"
         f"_RAG_EXPECTED_ENTRIES = {list(_EXPECTED_RAG_CONTEXT_ENTRIES)!r}\n"
         f"_PYPROJECT_MARKER = {'[tool.hatch.build.targets.custom]'!r}\n"
     )
@@ -232,13 +348,16 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         finally:
             shutil.rmtree(build_dir, ignore_errors=True)
 
-        # Grader shares the runner's full source set and has no stack, so its
-        # production path is get_image_definition("grader"); on a wheel install
-        # it must resolve to the packaged copies, not repo-relative paths.
+        # Grader shares the runner's full source set plus the plugin trees and has
+        # no stack, so its production path is get_image_definition("grader"); on a
+        # wheel install it must resolve to the packaged copies, not repo-relative
+        # paths.
         grader = get_image_definition("grader")
         grader_dir = assemble_build_context(root, grader["dockerfile"], grader["context_files"])
         try:
-            grader_present = {name: (grader_dir / name).exists() for name in _EXPECTED_ENTRIES}
+            grader_present = {
+                name: (grader_dir / name).exists() for name in _GRADER_EXPECTED_ENTRIES
+            }
         finally:
             shutil.rmtree(grader_dir, ignore_errors=True)
 
@@ -331,10 +450,10 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         "and that the base wheel's ``force-include`` table ships every input."
     )
 
-    # grader shares the runner's full source set; on a wheel install it must
-    # assemble the same inputs.
+    # grader shares the runner's full source set plus the langfuse and adapter
+    # trees; on a wheel install it must assemble them all.
     grader_missing = [
-        n for n in _EXPECTED_CONTEXT_ENTRIES if not probe_data["grader_present"].get(n)
+        n for n in _EXPECTED_FULL_WHEEL_CONTEXT_ENTRIES if not probe_data["grader_present"].get(n)
     ]
     assert not grader_missing, (
         "``get_image_definition('grader')`` did not land these inputs on a wheel "

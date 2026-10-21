@@ -33,13 +33,25 @@ FROM python:${PYTHON_VERSION}-slim AS wheel-builder
 
 WORKDIR /src
 
-RUN pip install --no-cache-dir "hatchling>=1.24,<2.0"
+# Installs run under the uv.lock export and are checked against it — see the
+# runner.Dockerfile header.
+COPY tolokaforge/docker/image-constraints.txt tolokaforge/docker/dockerfiles/locked_install_check.py /opt/tolokaforge/
+ENV PIP_CONSTRAINT=/opt/tolokaforge/image-constraints.txt \
+    PIP_BUILD_CONSTRAINT=/opt/tolokaforge/image-constraints.txt
+
+RUN pip install --no-cache-dir --only-binary :all: --no-binary sly "hatchling>=1.24,<2.0" \
+    && python /opt/tolokaforge/locked_install_check.py \
+        --constraints /opt/tolokaforge/image-constraints.txt --exempt pip
 
 COPY pyproject.toml README.md LICENSE .python-version /src/
 COPY scripts/hatch/ /src/scripts/hatch/
 COPY tolokaforge/ /src/tolokaforge/
 COPY tolokaforge_models/ /src/tolokaforge_models/
 COPY tolokaforge_coding_harnesses/ /src/tolokaforge_coding_harnesses/
+# The base wheel's force-include table names these two trees, so its build
+# fails without them.
+COPY tolokaforge_langfuse/ /src/tolokaforge_langfuse/
+COPY external_adapters/tolokaforge-adapter-terminal-bench/ /src/external_adapters/tolokaforge-adapter-terminal-bench/
 
 # Build the base wheel — the node ships the whole tolokaforge distribution,
 # tolokaforge_models and tolokaforge_coding_harnesses included.
@@ -56,19 +68,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m venv /opt/venv && \
-    /opt/venv/bin/pip install --no-cache-dir --upgrade pip
+COPY tolokaforge/docker/image-constraints.txt tolokaforge/docker/dockerfiles/locked_install_check.py /opt/tolokaforge/
+ENV PIP_CONSTRAINT=/opt/tolokaforge/image-constraints.txt \
+    PIP_BUILD_CONSTRAINT=/opt/tolokaforge/image-constraints.txt
 
 COPY --from=wheel-builder /src/dist/*.whl /tmp/wheels/
 COPY --from=wheel-builder /src/tolokaforge_models/dist/*.whl /tmp/wheels/
 COPY --from=wheel-builder /src/tolokaforge_coding_harnesses/dist/*.whl /tmp/wheels/
 
-# Install the sibling wheels first so their versions resolve before the
-# base wheel that depends on them (matching the runner image install order).
-RUN /opt/venv/bin/pip install --no-cache-dir \
+# One install of all three local wheels, so the base wheel's
+# ``tolokaforge-models`` requirement is met by the local wheel, never an index.
+RUN python -m venv /opt/venv && \
+    /opt/venv/bin/pip install --no-cache-dir --only-binary :all: --no-binary sly \
         /tmp/wheels/tolokaforge_models-*.whl \
-        /tmp/wheels/tolokaforge_coding_harnesses-*.whl && \
-    /opt/venv/bin/pip install --no-cache-dir /tmp/wheels/tolokaforge-*.whl
+        /tmp/wheels/tolokaforge_coding_harnesses-*.whl \
+        /tmp/wheels/tolokaforge-*.whl && \
+    /opt/venv/bin/python /opt/tolokaforge/locked_install_check.py \
+        --constraints /opt/tolokaforge/image-constraints.txt \
+        --first-party tolokaforge \
+        --first-party tolokaforge-models \
+        --first-party tolokaforge-coding-harnesses \
+        --exempt pip
 
 # ---------------------------------------------------------------------------
 # runtime — copy only the venv; strip pip/setuptools/wheel for image size

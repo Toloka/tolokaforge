@@ -36,7 +36,7 @@ A real run executes `cz bump`, which:
 1. Bumps `[project].version` in `pyproject.toml`.
 2. Regenerates `CHANGELOG.md` from the Conventional Commit history.
 3. Relocks `uv.lock` to the new version (a commitizen pre-bump hook) and folds it
-   into the release commit.
+   into the release commit (see [Relocking `uv.lock`](#relocking-uvlock)).
 4. Commits `chore(release): bump version to X.Y.Z`.
 5. Creates and pushes the annotated `vX.Y.Z` tag.
 
@@ -47,8 +47,9 @@ desync the two.
 Pushing the `vX.Y.Z` tag then triggers two tag-driven workflows automatically:
 
 - [`publish-tolokaforge.yml`](../.github/workflows/publish-tolokaforge.yml) —
-  builds the wheel + sdist and publishes them to PyPI via OIDC trusted
-  publishing (no stored token), then creates a GitHub Release.
+  builds the wheel + sdist with the locked build backend (see
+  [Relocking `uv.lock`](#relocking-uvlock)) and publishes them to PyPI via
+  OIDC trusted publishing (no stored token), then creates a GitHub Release.
 - [`release-gate.yml`](../.github/workflows/release-gate.yml) — runs lint, task
   validation, and the unit / canonical / integration test lanes against the
   tagged commit.
@@ -292,6 +293,35 @@ multi-arch `standalone` — **without** logging in or pushing: a safe pre-check
 that the Dockerfiles and wheel still build. Set `publish: true` on that same
 dispatch to turn it into the off-cycle real publish described under *Standalone
 publish cadence* above.
+
+## Relocking `uv.lock`
+
+`tolokaforge/docker/image-constraints.txt` is `uv.lock` exported as pip
+constraints; image builds and CI installs run under it. Every workflow
+`uv build` — the five publish workflows and CI's `wheel-install-gate` — passes
+it as `--build-constraint`, so the build backend (`hatchling`, `packaging`) is
+the locked version, and the release workflows install commitizen with
+`uv sync --locked` under uv 0.9.5, the version CI pins. The `image-constraints`
+pre-commit hook regenerates it whenever `uv.lock` changes, and
+`tests/canonical/test_image_constraints_match_lock.py` fails when the two
+disagree. Commit the regenerated file with the lock:
+
+```bash
+uvx uv@0.9.5 lock
+uv run pre-commit run image-constraints --files uv.lock
+```
+
+Relock with uv 0.9.5, the version CI pins: `[tool.uv] required-version` admits
+every 0.9.x, and another uv may write a different lock or export. CI runs the
+hook under 0.9.5, so a diff it reports is the 0.9.5 export.
+
+The commitizen pre-bump relocks of the three release workflows move only
+workspace members' versions, which the export omits, so release commits leave
+the constraints file unchanged.
+
+Every `uv lock`, the release workflows' relocks included, reaches
+`https://download.pytorch.org/whl/cpu`: the `image-services` dependency group
+resolves `torch` from that index.
 
 ## Typical order
 
