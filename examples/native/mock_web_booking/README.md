@@ -50,8 +50,9 @@ uv run tolokaforge validate --tasks "examples/native/mock_web_booking/dataset/**
 scripts/with_env.sh uv run tolokaforge run --config examples/native/mock_web_booking/run_configs/dev.yaml
 ```
 
-Needs a running Docker daemon with the standalone stack up (so `mock-web:8080`
-is reachable on the runner network) and `OPENROUTER_API_KEY` in `.env`.
+Needs a running Docker daemon and `OPENROUTER_API_KEY` in `.env`. The run starts
+its own engine stack, and the task's `http_request` allow-list makes that stack
+include mock-web, so `mock-web:8080` is reachable from the runner.
 
 ## Layout
 

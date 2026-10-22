@@ -18,6 +18,7 @@ import pytest
 import yaml
 
 from tolokaforge.adapters._task_loader import load_task_yaml
+from tolokaforge.core.engine_stack_runtime import _tasks_need_full_stack
 from tolokaforge.core.models import GradingConfig
 
 pytestmark = pytest.mark.canonical
@@ -47,6 +48,16 @@ def test_task_loads_and_enables_http_request_to_mock_web() -> None:
     assert enabled == ["http_request"], f"agent must enable only http_request, got: {enabled!r}"
     hosts = agent_tools.get("http_request", {}).get("allowed_hosts", [])
     assert _MOCK_WEB_HOST in hosts, f"allow-list must include {_MOCK_WEB_HOST!r}, got: {hosts!r}"
+
+
+def test_the_run_starts_a_stack_that_serves_mock_web() -> None:
+    """An auto-started run of the pack gets mock-web (#1935).
+
+    The pack's only mock-web signal is its ``http_request`` allow-list; a core
+    stack would leave every booking request with no service to reach.
+    """
+    task, _ = load_task_yaml(_TASK_YAML)
+    assert _tasks_need_full_stack([task]) is True
 
 
 def test_task_targets_the_mock_web_booking_endpoint() -> None:
