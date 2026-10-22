@@ -159,6 +159,77 @@ def test_a_user_declared_browser_triggers_full_stack():
     assert _tasks_need_full_stack([_task(user_tools=[])]) is False
 
 
+def _task_with_tool_blocks(agent: dict, user: dict | None = None) -> TaskConfig:
+    return TaskConfig(
+        task_id="t",
+        name="t",
+        category="x",
+        description="x",
+        max_turns=1,
+        initial_user_message="x",
+        tools={"agent": agent, "user": user or {"enabled": []}},
+        actors={"user": {"mode": "llm"}},
+        grading="grading.yaml",
+    )
+
+
+class TestAnHttpRequestThatReachesMockWeb:
+    """``http_request`` requests mock-web on its default hosts (#1935).
+
+    A task that enables it with no ``allowed_hosts``, or with mock-web among them,
+    calls ``http://mock-web:8080``; on a core stack that request has no service to
+    reach. The selection reads the hosts the task declares: a task that names other
+    hosts only, an app world's for one, does not ask for mock-web.
+    """
+
+    def test_its_default_hosts_trigger_full_stack(self):
+        assert _tasks_need_full_stack([_task(["http_request"])]) is True
+
+    def test_an_empty_host_list_falls_back_to_the_default_hosts(self):
+        task = _task_with_tool_blocks(
+            {"enabled": ["http_request"], "http_request": {"allowed_hosts": []}}
+        )
+        assert _tasks_need_full_stack([task]) is True
+
+    def test_localhost_alone_keeps_the_core_stack(self):
+        """The runner container's ``localhost`` is the runner, not mock-web."""
+        task = _task_with_tool_blocks(
+            {"enabled": ["http_request"], "http_request": {"allowed_hosts": ["localhost:8080"]}}
+        )
+        assert _tasks_need_full_stack([task]) is False
+
+    @pytest.mark.parametrize("host", ["mock-web", "mock-web:8080"])
+    def test_allowed_hosts_naming_mock_web_trigger_full_stack(self, host):
+        task = _task_with_tool_blocks(
+            {"enabled": ["http_request"], "http_request": {"allowed_hosts": [host]}}
+        )
+        assert _tasks_need_full_stack([task]) is True
+
+    def test_allowed_hosts_without_mock_web_keep_the_core_stack(self):
+        task = _task_with_tool_blocks(
+            {
+                "enabled": ["http_request"],
+                "http_request": {"allowed_hosts": ["helpdesk.vendor.example"]},
+            }
+        )
+        assert _tasks_need_full_stack([task]) is False
+
+    def test_mock_web_on_another_port_keeps_the_core_stack(self):
+        task = _task_with_tool_blocks(
+            {"enabled": ["http_request"], "http_request": {"allowed_hosts": ["mock-web:9090"]}}
+        )
+        assert _tasks_need_full_stack([task]) is False
+
+    def test_a_user_declared_http_request_triggers_full_stack(self):
+        assert _tasks_need_full_stack([_task(user_tools=["http_request"])]) is True
+
+    def test_a_host_list_without_the_tool_enabled_keeps_the_core_stack(self):
+        task = _task_with_tool_blocks(
+            {"enabled": ["bash"], "http_request": {"allowed_hosts": ["mock-web:8080"]}}
+        )
+        assert _tasks_need_full_stack([task]) is False
+
+
 def test_empty_task_list_returns_false():
     assert _tasks_need_full_stack([]) is False
 

@@ -14,11 +14,8 @@ from typing import Any
 
 import httpx
 
-from tolokaforge.core.hosts import host_listed, unreachable_hosts
+from tolokaforge.core.hosts import HTTP_REQUEST_DEFAULT_HOSTS, host_listed, unreachable_hosts
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
-
-DEFAULT_ALLOWED_HOSTS: tuple[str, ...] = ("mock-web", "mock-web:8080", "localhost:8080")
-"""The hosts the tool reaches when ``allowed_hosts`` is not configured."""
 
 REDACTED_CREDENTIAL = "***REDACTED***"
 """What a presented token reads as if a response quotes it back."""
@@ -51,7 +48,7 @@ class HTTPRequestTool(Tool):
             description="Make HTTP requests to web services",
             policy=policy,
         )
-        self.allowed_hosts = allowed_hosts or list(DEFAULT_ALLOWED_HOSTS)
+        self.allowed_hosts = allowed_hosts or list(HTTP_REQUEST_DEFAULT_HOSTS)
         self._bearer: _Bearer | None = None
 
     def present_bearer(self, token: str, hosts: Collection[str]) -> None:
