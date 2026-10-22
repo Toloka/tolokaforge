@@ -154,8 +154,8 @@ choose isolation, write reset recipes, and grade against substrate state.
 
 ## When to declare a multi-container task
 
-The engine already ships built-in stacks — `core_stack` (runner +
-db-service) and `full_stack` (adds mock-web + rag-service). If your task
+The engine already ships built-in services: runner and db-service, plus
+mock-web and rag-service, each started only when a task needs it. If your task
 only needs those services, don't declare a stack; just point at the
 right run config and the engine wires the built-ins for you.
 

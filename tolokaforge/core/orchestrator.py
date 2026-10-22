@@ -3123,11 +3123,20 @@ class Orchestrator:
         service_stack = None
         if self.config.orchestrator.auto_start_services and not self._is_dispatch_run():
             try:
+                # Any task-declared manifest hands the substrate to the
+                # composer: the task-declared compose owns the runner +
+                # db-service, so the built-in engine containers go unused.
+                # The engine images still need to be BUILT so task compose
+                # files can reference the ``:local`` aliases, but the
+                # container-start is skipped, and so are the optional services,
+                # whose images no alias names.
+                task_stack_mode = self._any_task_declares_environment_manifest()
                 # Build the stack the run's tasks need (runner + db-service,
                 # plus the search plane when a task needs one). The shared
                 # factory resolves the adapter's stack requirements, the
-                # playwright/docker-cli signals, and core-vs-full selection; the
-                # library route builds the same way through the same function.
+                # playwright/docker-cli signals, and the optional services the
+                # run starts; the library route builds the same way through the
+                # same function.
                 service_stack, stack_requirements = build_engine_stack(
                     self.config,
                     self.adapter,
@@ -3136,14 +3145,8 @@ class Orchestrator:
                     grpc_max_message_mb=self._grpc_max_message_mb(),
                     state_read_timeout_s=self._state_read_timeout_s(),
                     logger=self.logger,
+                    optional_services=not task_stack_mode,
                 )
-                # Any task-declared manifest hands the substrate to the
-                # composer — the task-declared compose owns the runner +
-                # db-service, so the built-in engine containers go unused.
-                # The engine images still need to be BUILT so task compose
-                # files can reference the ``:local`` aliases, but the
-                # container-start is skipped.
-                task_stack_mode = self._any_task_declares_environment_manifest()
                 if task_stack_mode:
                     self.logger.info(
                         "Preparing Docker engine images (task-declared-stack mode: "

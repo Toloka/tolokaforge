@@ -274,8 +274,8 @@ class EngineStack(BaseModel):
       if that substrate is always task-declared) — it would NOT extend or
       subclass ``EngineStack``.
     - **Engine-specific**: it materialises the engine's *built-in* services
-      (``core_stack`` = runner + db-service, ``full_stack`` adds mock-web +
-      rag-service). Task-declared services (from
+      (``core_stack`` = runner + db-service, ``full_stack`` adds mock-web
+      and/or rag-service, each when the run needs it). Task-declared services (from
       ``environment_manifest.compose_file``) are materialised elsewhere via
       testcontainers-``DockerCompose`` inside the concrete
       :class:`RuntimeBackend` implementations (see

@@ -31,9 +31,10 @@ from tests.canonical._factories import write_yaml_file
 from tests.utils.runner_requests import execute_request, register_request
 from tolokaforge.adapters._task_loader import load_task_yaml
 from tolokaforge.adapters.native import NativeAdapter
-from tolokaforge.core.engine_stack_runtime import _tasks_need_full_stack
+from tolokaforge.core.engine_stack_runtime import resolve_engine_services
 from tolokaforge.core.grading.judge_tools import SearchKbTool
 from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.models.docker_config import EngineServicesConfig
 from tolokaforge.core.search.bm25 import Bm25KnowledgeSearch, Bm25SearchIndex, clear_index_cache
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -133,7 +134,8 @@ def test_bm25_serves_the_agent_and_the_judge_from_one_in_process_index(tmp_path:
     adapter, task_yaml = _pack(tmp_path)
 
     task, _ = load_task_yaml(task_yaml)
-    assert _tasks_need_full_stack([task]) is False, "bm25 declares no stack service"
+    plan = resolve_engine_services([task], None, EngineServicesConfig())
+    assert plan.rag_service.start is False, "bm25 declares no stack service"
 
     description = adapter.to_task_description("bm25_task")
     (tool,) = description.agent_tools

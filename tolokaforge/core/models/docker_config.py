@@ -41,6 +41,53 @@ for environments that never touch Docker Hub.
 """
 
 
+EngineServiceMode = Literal["auto", "always", "never"]
+"""Whether an optional engine service starts with the run.
+
+``auto``: when the run needs it, that is, a task or the adapter asks for it.
+
+``always``: whatever the tasks say; for a pack that reaches the service in a way
+the engine cannot see.
+
+``never``: not at all; a run that needs it is refused before any engine container starts.
+
+``on`` / ``off`` are not spellings of these: YAML reads them as booleans.
+"""
+
+
+class EngineServicesConfig(BaseModel):
+    """The ``docker.services`` block: which optional engine services a run starts.
+
+    The runner and db-service always start. rag-service and mock-web are resolved
+    one by one, so a run that needs one of them does not start the other (see
+    :func:`tolokaforge.core.engine_stack_runtime.resolve_engine_services`).
+    """
+
+    rag_service: EngineServiceMode = Field(
+        default="auto",
+        description="rag-service, the service the rag_service search backend indexes into",
+    )
+    mock_web: EngineServiceMode = Field(
+        default="auto",
+        description="mock-web, the service browser, mobile and http_request tasks request",
+    )
+
+    model_config = {
+        "frozen": True,
+        "extra": "forbid",
+    }
+
+    @field_validator("rag_service", "mock_web", mode="before")
+    @classmethod
+    def _refuse_a_boolean(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError(
+                f"got the boolean {value!r}: YAML reads on/off, yes/no and true/false "
+                "as booleans. Write always, never or auto."
+            )
+        return value
+
+
 class DockerConfig(BaseModel):
     """Configuration for Docker foundation layer operations.
 
@@ -56,6 +103,8 @@ class DockerConfig(BaseModel):
         log_level: Logging level for docker operations.
         image_source: Where first-party service images come from ("auto", "pull",
             or "build"). See :data:`ImageSource` for the full semantics.
+        services: Which optional engine services the run starts. See
+            :class:`EngineServicesConfig`.
 
     Example:
         >>> config = DockerConfig(
@@ -99,6 +148,13 @@ class DockerConfig(BaseModel):
             "Where first-party service images come from. auto = pull on wheel "
             "installs, build on source checkouts; pull = always pull (hard fail "
             "on error); build = always build."
+        ),
+    )
+    services: EngineServicesConfig = Field(
+        default_factory=EngineServicesConfig,
+        description=(
+            "Which optional engine services (rag-service, mock-web) the run starts: "
+            "auto, always or never each."
         ),
     )
 

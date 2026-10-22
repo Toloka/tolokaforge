@@ -18,7 +18,7 @@ Its behaviour:
   the same client and trial, so it searches the index the agent searched.
 
 It declares ``stack_service = RAG_SERVICE_STACK_SERVICE``: the orchestrator starts
-``full_stack`` for its tasks, and the runner builds its index only when it reaches
+rag-service for its tasks, and the runner builds its index only when it reaches
 rag-service, whose handle (:class:`~tolokaforge.core.search.stack_services.RagServiceHandle`)
 it reads with ``context.stack_services.get(RAG_SERVICE)``. It takes no
 ``backend_config``.

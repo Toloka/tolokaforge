@@ -1,8 +1,10 @@
 """Full service stack: Core + RAG service + Mock Web.
 
-Extends the core stack with the two services that browser/mobile/search_kb
-tasks need to reach (mock-web at port 8080, rag-service at 8001). All
-``core_stack`` kwargs are accepted and forwarded so callers can switch
+Extends the core stack with the two optional engine services tasks reach by
+DNS: mock-web (port 8080; browser, mobile, ``http_request``) and rag-service
+(port 8001; the ``rag_service`` search backend). Each is added only when its
+flag is set, so a run that needs one does not build, pull or start the other.
+All ``core_stack`` kwargs are accepted and forwarded so callers can switch
 between ``core_stack`` and ``full_stack`` without losing
 ``enable_playwright``, ``task_pack_mounts``, etc.
 
@@ -44,14 +46,18 @@ def full_stack(
     expose_substrate: bool = False,
     grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
     state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S,
+    rag_service: bool = True,
+    mock_web: bool = True,
 ) -> EngineStack:
-    """Create a full service stack with all services.
+    """Create the core stack plus the optional engine services selected.
 
     Includes:
     - Core stack (db-service + runner) — every ``core_stack`` kwarg is
       accepted and forwarded.
-    - RAG service (hybrid BM25 + FAISS search)
-    - Mock Web service (for browser tasks)
+    - RAG service (hybrid BM25 + FAISS search), when ``rag_service``; the
+      runner gets ``RAG_SERVICE_URL`` only then.
+    - Mock Web service (for browser, mobile and ``http_request`` tasks), when
+      ``mock_web``.
 
     Args:
         config: Optional DockerConfig. Uses defaults if None.
@@ -73,9 +79,11 @@ def full_stack(
         expose_substrate: Forwarded to ``core_stack``.
         grpc_max_message_mb: Forwarded to ``core_stack``.
         state_read_timeout_s: Forwarded to ``core_stack``.
+        rag_service: Add rag-service (default: ``True``).
+        mock_web: Add mock-web (default: ``True``).
 
     Returns:
-        EngineStack configured with all services.
+        EngineStack configured with the core services and the selected ones.
     """
     stack = core_stack(
         config=config,
@@ -91,18 +99,27 @@ def full_stack(
         expose_substrate=expose_substrate,
         grpc_max_message_mb=grpc_max_message_mb,
         state_read_timeout_s=state_read_timeout_s,
-        # The full stack provisions a rag-service below, so the runner's
-        # RAG_SERVICE_URL points at a service that actually runs. Both the
+        # RAG_SERVICE_URL is set only when a rag-service is provisioned below,
+        # so it always points at a service that actually runs. Both the
         # container name and the ``rag-service`` alias resolve on runner-net;
         # keep the container-name form (changing it only churns tests).
-        rag_service_url="http://tolokaforge-rag-service:8001",
+        rag_service_url="http://tolokaforge-rag-service:8001" if rag_service else None,
     )
+    stack.add_services(
+        [
+            *([_rag_service_definition(rag_port)] if rag_service else []),
+            *([_mock_web_definition(mock_web_port)] if mock_web else []),
+        ]
+    )
+    return stack
 
-    # RAG Service — hybrid BM25 + FAISS search. The wheel-free fields
-    # (dockerfile, context) read from the static base; the wheel-dependent
-    # fields (context_files carrying the resolved wheel, the WHEEL_FILENAME
-    # build arg) resolve lazily via build_context_provider, so a run that
-    # pulls the published image never resolves a wheel. On the build path the
+
+def _rag_service_definition(rag_port: int | Literal["auto"]) -> ServiceDefinition:
+    """The rag-service: hybrid BM25 + FAISS search behind the runner."""
+    # The wheel-free fields (dockerfile, context) read from the static base; the
+    # wheel-dependent fields (context_files carrying the resolved wheel, the
+    # WHEEL_FILENAME build arg) resolve lazily via build_context_provider, so a run
+    # that pulls the published image never resolves a wheel. On the build path the
     # provider calls get_image_definition — its ``_rag_definition`` factory
     # resolves the base wheel, sets WHEEL_FILENAME, and remaps the sibling
     # source trees to the packaged ``_subset_build/`` copies on a wheel
@@ -116,7 +133,7 @@ def full_stack(
             build_args=defn["build_args"],
         )
 
-    rag_service = ServiceDefinition(
+    return ServiceDefinition(
         name="rag-service",
         image_name="tolokaforge-rag-service",
         published_image_repo="tolokasoft1/tolokaforge-rag-service",
@@ -146,12 +163,14 @@ def full_stack(
         network_aliases=["rag-service"],
     )
 
-    # Mock Web Service — for browser tasks. Build-context fields come from
-    # get_image_definition (see builder.py); its narrow ``context_files`` (the
-    # service dir only) keeps the build-context hash from churning on unrelated
-    # repo edits.
+
+def _mock_web_definition(mock_web_port: int | Literal["auto"]) -> ServiceDefinition:
+    """The mock-web service: the sites and app APIs browser, mobile and http_request tasks reach."""
+    # Build-context fields come from get_image_definition (see builder.py); its
+    # narrow ``context_files`` (the service dir only) keeps the build-context hash
+    # from churning on unrelated repo edits.
     mock_web_defn = get_image_definition("mock-web")
-    mock_web_service = ServiceDefinition(
+    return ServiceDefinition(
         name="mock-web",
         image_name="tolokaforge-mock-web",
         published_image_repo="tolokasoft1/tolokaforge-mock-web",
@@ -165,6 +184,3 @@ def full_stack(
         profiles=["web"],
         network_aliases=["mock-web"],
     )
-
-    stack.add_services([rag_service, mock_web_service])
-    return stack

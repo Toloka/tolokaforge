@@ -153,6 +153,31 @@ def test_full_stack_includes_db_runner_and_extras():
     assert {"db-service", "runner", "rag-service", "mock-web"}.issubset(services)
 
 
+@pytest.mark.parametrize(
+    ("flags", "extras"),
+    [
+        ({"rag_service": True, "mock_web": False}, {"rag-service"}),
+        ({"rag_service": False, "mock_web": True}, {"mock-web"}),
+        ({"rag_service": False, "mock_web": False}, set()),
+    ],
+)
+def test_full_stack_adds_only_the_services_selected(flags, extras):
+    """A service left out is neither built, pulled nor started: it is not in the stack (#1937)."""
+    stack = full_stack(**flags)
+    assert set(stack.services) == {"db-service", "runner"} | extras
+
+
+def test_full_stack_without_rag_service_names_no_rag_service_url():
+    """The honest absence holds per service: no rag-service, no ``RAG_SERVICE_URL``."""
+    runner = _runner_def(full_stack(rag_service=False))
+    assert "RAG_SERVICE_URL" not in runner.environment
+
+
+def test_full_stack_with_rag_service_alone_still_names_it():
+    runner = _runner_def(full_stack(mock_web=False))
+    assert runner.environment.get("RAG_SERVICE_URL") == "http://tolokaforge-rag-service:8001"
+
+
 def test_full_stack_mock_web_starts_standalone():
     mock_web = full_stack().services["mock-web"]
     assert mock_web.depends_on == []

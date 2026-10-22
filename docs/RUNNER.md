@@ -101,6 +101,46 @@ provisioning them per the manifest's isolation rules. See
 [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md) for
 the backend lifecycle.
 
+### Which engine services start: `docker.services`
+
+With `auto_start_services`, a run that declares no `environment_manifest`
+starts the engine's built-in services: the runner and db-service always, and
+each optional service only when the run needs it
+([ADR-0065](adr/0065-engine-services-per-run.md)):
+
+| Service | Started when |
+| --- | --- |
+| `rag-service` | a task searches with a backend whose `stack_service` is rag-service (the default `rag_service` backend), or the adapter declares `needs_rag_service` |
+| `mock-web` | a task enables `browser` or `mobile`, enables `http_request` with hosts that admit mock-web (its default hosts do), or declares `initial_state.mock_web` |
+
+The run log says which services start and why (`Engine services resolved`). A
+service left out is neither built, pulled nor started, and the runner gets
+`RAG_SERVICE_URL` only when rag-service runs.
+
+`docker.services` overrides the decision, service by service:
+
+```yaml
+docker:
+  services:
+    rag_service: auto   # auto (default) | always | never
+    mock_web: auto
+```
+
+- `auto`: start it when the run needs it.
+- `always`: start it whatever the tasks say, for a task pack that reaches the
+  service in a way the engine cannot see.
+- `never`: never start it. A run that needs it stops before any engine
+  container starts with `EngineServiceConflictError`, naming the adapter or the
+  tasks that need it.
+
+A run whose tasks declare their own `environment_manifest` starts no built-in
+container, so it neither starts nor checks the optional services; only the
+runner and db-service images are built, for the `:local` aliases its compose
+files use.
+
+Write `always` and `never`, not `on` and `off`: YAML reads those as booleans,
+which the config refuses with a message that says so.
+
 ### Image resolution — pull vs build
 
 At `tolokaforge run` time the four first-party service images
