@@ -47,8 +47,8 @@ def calculate_state_diff(
     actual_str = serialize_state(actual_state, sort_keys=True)
 
     # Calculate unified diff
-    expected_lines = expected_str.splitlines(keepends=True)
-    actual_lines = actual_str.splitlines(keepends=True)
+    expected_lines = (expected_str + "\n").splitlines(keepends=True)
+    actual_lines = (actual_str + "\n").splitlines(keepends=True)
 
     diff_lines = list(
         difflib.unified_diff(
@@ -56,7 +56,6 @@ def calculate_state_diff(
             actual_lines,
             fromfile="expected_state",
             tofile="actual_state",
-            lineterm="",
         )
     )
 
@@ -84,7 +83,7 @@ def format_diff_summary(diff_result: dict[str, Any], max_lines: int = 50) -> str
         return "States are identical"
 
     diff_text = diff_result["diff"]
-    diff_lines = diff_text.split("\n")
+    diff_lines = diff_text.splitlines()
 
     if len(diff_lines) <= max_lines:
         return diff_text
@@ -111,7 +110,7 @@ def get_diff_stats(diff_result: dict[str, Any]) -> dict[str, int]:
     if not diff_result["has_diff"]:
         return {"total_lines": 0, "additions": 0, "deletions": 0, "context": 0}
 
-    diff_lines = diff_result["diff"].split("\n")
+    diff_lines = diff_result["diff"].splitlines()
 
     additions = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))
     deletions = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))

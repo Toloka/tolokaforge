@@ -72,6 +72,33 @@ def test_calculate_state_diff_different():
     assert "+" in diff and "d" in diff
 
 
+@pytest.mark.parametrize(
+    ("expected", "actual", "additions", "deletions"),
+    [({}, {"a": 1}, 3, 1), ({"a": 1}, {}, 1, 3), ({"a": 1}, {"a": 2}, 1, 1)],
+)
+def test_generated_diff_preserves_line_boundaries(expected, actual, additions, deletions):
+    result = calculate_state_diff(expected, actual)
+    lines = result["diff"].splitlines()
+
+    assert lines[:2] == ["--- expected_state", "+++ actual_state"]
+    assert lines[2].startswith("@@ ")
+    assert lines[2].endswith(" @@")
+    assert result["diff"].endswith("\n")
+    assert result["diff_lines"] == len(lines)
+    assert get_diff_stats(result) == {
+        "total_lines": len(lines),
+        "additions": additions,
+        "deletions": deletions,
+        "context": len(lines) - additions - deletions,
+    }
+
+
+def test_generated_diff_summary_does_not_count_a_trailing_empty_line():
+    result = calculate_state_diff({}, {"a": 1})
+
+    assert format_diff_summary(result, max_lines=result["diff_lines"]) == result["diff"]
+
+
 def test_format_diff_summary_no_diff():
     """Test formatting when there's no diff"""
     diff_result = {"has_diff": False, "diff": "", "diff_lines": 0}
