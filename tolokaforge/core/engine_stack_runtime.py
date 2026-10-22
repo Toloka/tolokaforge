@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from tolokaforge.adapters import BaseAdapter
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import RunConfig, TaskConfig
+    from tolokaforge.core.models.docker_config import EngineServicesConfig
     from tolokaforge.core.trial import TrialNodeInputs, TrialResult
     from tolokaforge.docker.stack import EngineStack
 
@@ -59,34 +60,38 @@ if TYPE_CHECKING:
 # modules at import time.
 _PLAYWRIGHT_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 
-# Tools / initial-state declarations that require ``full_stack`` (mock-web at
-# port 8080 and rag-service at 8001) on top of the core db-service + runner.
-# ``browser`` and ``mobile`` reach mock-web for app/site URLs, and so does
-# ``http_request`` whenever its hosts admit mock-web, which its default hosts do.
-# A task may also declare ``initial_state.mock_web`` directly without enabling
-# those tools. Knowledge-base search needs rag-service when the task's search backend says
-# so: not by the tool's name, which a task may choose, but by the
-# ``stack_service`` its backend (``initial_state.rag.backend``, default
-# ``rag_service``) declares — for a task that searches at all, i.e. declares a
-# corpus or enables its search tool (``initial_state.rag.tool.name``, default
-# ``search_kb``).
+# The optional engine services, resolved one by one on top of the runner and
+# db-service (:func:`resolve_engine_services`). ``browser`` and ``mobile`` reach
+# mock-web for app/site URLs, and so does ``http_request`` whenever its hosts
+# admit mock-web, which its default hosts do; a task may also declare
+# ``initial_state.mock_web`` without enabling those tools. Knowledge-base search
+# needs rag-service when the task's search backend says so: not by the tool's
+# name, which a task may choose, but by the ``stack_service`` its backend
+# (``initial_state.rag.backend``, default ``rag_service``) declares, for a task
+# that searches at all, i.e. declares a corpus or enables its search tool
+# (``initial_state.rag.tool.name``, default ``search_kb``). An adapter whose search
+# signal no task shows declares ``needs_rag_service``.
 #
-# Routing matrix, over either actor's block:
+# Signals, over either actor's block:
 # +------------------------------------------------------+--------------+
-# | Signal in task config                                | Stack        |
+# | Signal                                               | Service      |
 # +------------------------------------------------------+--------------+
-# | tools.<actor>.enabled ∋ browser                      | full_stack   |
-# | tools.<actor>.enabled ∋ mobile                       | full_stack   |
-# | tools.<actor>.enabled ∋ http_request, and            | full_stack   |
+# | tools.<actor>.enabled ∋ browser                      | mock-web     |
+# | tools.<actor>.enabled ∋ mobile                       | mock-web     |
+# | tools.<actor>.enabled ∋ http_request, and            | mock-web     |
 # |   tools.<actor>.http_request.allowed_hosts (default: |              |
 # |   mock-web, mock-web:8080, localhost:8080) admits    |              |
 # |   mock-web                                           |              |
-# | initial_state.mock_web is truthy                     | full_stack   |
-# | the task searches, and its backend's stack_service   | full_stack   |
+# | initial_state.mock_web is truthy                     | mock-web     |
+# | the task searches, and its backend's stack_service   | rag-service  |
 # |   is rag_service (the default backend's)             |              |
-# | otherwise                                            | core_stack   |
+# | the adapter declares needs_rag_service               | rag-service  |
 # +------------------------------------------------------+--------------+
-_FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
+#
+# ``docker.services.<service>`` starts one ``always`` or forbids it (``never``).
+# A run that starts neither gets ``core_stack``; one that starts either gets
+# ``full_stack`` with only the services it starts.
+_MOCK_WEB_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 
 
 def _tasks_need_playwright(tasks: list[Any]) -> bool:
@@ -146,51 +151,116 @@ def _http_request_reaches_mock_web(task: Any) -> bool:
     return False
 
 
-def _tasks_need_full_stack(tasks: list[Any]) -> bool:
-    """Return True iff any task needs ``full_stack`` (mock-web / rag).
+def _task_needs_mock_web(task: Any) -> bool:
+    """Whether the task reaches mock-web: see the signal table above.
 
-    See ``_FULL_STACK_TOOL_NAMES`` for the routing matrix. Detection works
-    on both ``ToolsConfig`` / ``InitialStateConfig`` Pydantic models and
-    plain dicts (raw YAML), to keep the unit tests simple.
+    Detection works on both ``InitialStateConfig`` Pydantic models and plain
+    dicts (raw YAML), to keep the unit tests simple.
     """
-    for task in tasks:
-        if _FULL_STACK_TOOL_NAMES & declared_tool_names(task):
-            return True
-        if _http_request_reaches_mock_web(task):
-            return True
-        if _search_needs_rag_service(task):
-            return True
-        initial_state = task.initial_state if task.initial_state is not None else None
-        if initial_state is None:
-            continue
-        mock_web = (
-            initial_state.mock_web
-            if hasattr(initial_state, "mock_web")
-            else (initial_state.get("mock_web") if isinstance(initial_state, dict) else None)
-        )
-        if mock_web:
-            return True
-    return False
-
-
-def _run_needs_full_stack(tasks: list[Any], stack_requirements: Any) -> bool:
-    """Return True iff the run needs ``full_stack``.
-
-    Combines the task-level signals (:func:`_tasks_need_full_stack`) with the
-    adapter's declarative stack needs
-    (``DockerStackRequirements.needs_rag_service``). Adapters whose search
-    signal is not visible in task tool names or ``initial_state`` (e.g. a
-    domain-shipped ``docindex/`` knowledge base surfaced as
-    ``TaskDescription.search.enabled``) declare the rag-service need on their
-    :meth:`BaseAdapter.docker_stack_requirements`. The Runner hard-fails
-    ``RegisterTrial`` for search-enabled tasks when no RAG client is
-    configured (``runner/service.py``), so the provisioning decision must
-    follow the same signal the Runner enforces. Duck-typed like its sibling
-    so unit tests can pass lightweight stand-ins.
-    """
-    if stack_requirements is not None and getattr(stack_requirements, "needs_rag_service", False):
+    if _MOCK_WEB_TOOL_NAMES & declared_tool_names(task):
         return True
-    return _tasks_need_full_stack(tasks)
+    if _http_request_reaches_mock_web(task):
+        return True
+    initial_state = task.initial_state
+    if initial_state is None:
+        return False
+    mock_web = (
+        initial_state.mock_web
+        if hasattr(initial_state, "mock_web")
+        else (initial_state.get("mock_web") if isinstance(initial_state, dict) else None)
+    )
+    return bool(mock_web)
+
+
+class EngineServiceConflictError(ValueError):
+    """The run config forbids (``never``) an engine service the run needs."""
+
+
+@dataclass(frozen=True)
+class EngineServiceChoice:
+    """Whether a run starts one optional engine service, and why."""
+
+    start: bool
+    reason: str
+
+
+@dataclass(frozen=True)
+class EngineServicePlan:
+    """The optional engine services a run starts on top of the runner and db-service."""
+
+    rag_service: EngineServiceChoice
+    mock_web: EngineServiceChoice
+
+    @property
+    def starts_any(self) -> bool:
+        """Whether the run needs more than the core stack."""
+        return self.rag_service.start or self.mock_web.start
+
+
+_BESIDE_TASK_DECLARED_STACKS = EngineServiceChoice(
+    start=False, reason="the tasks declare their own stacks, so no built-in service starts"
+)
+_TASK_DECLARED_STACKS_PLAN = EngineServicePlan(
+    rag_service=_BESIDE_TASK_DECLARED_STACKS, mock_web=_BESIDE_TASK_DECLARED_STACKS
+)
+"""The plan of a run whose tasks bring their own stacks: only the runner and
+db-service images are built, for the ``:local`` aliases their compose files use."""
+
+_NEEDERS_NAMED = 3
+"""How many tasks a reason names before it counts the rest."""
+
+
+def _named(needers: list[str]) -> str:
+    shown = ", ".join(needers[:_NEEDERS_NAMED])
+    rest = len(needers) - _NEEDERS_NAMED
+    return f"{shown} and {rest} more" if rest > 0 else shown
+
+
+def _choose(field: str, mode: str, needers: list[str]) -> EngineServiceChoice:
+    """Apply ``docker.services.<field>`` to what the run needs."""
+    if mode == "never":
+        if needers:
+            raise EngineServiceConflictError(
+                f"docker.services.{field} is 'never', but the run needs it: {_named(needers)}. "
+                "Remove the override, or run without what needs the service."
+            )
+        return EngineServiceChoice(start=False, reason=f"docker.services.{field} is 'never'")
+    if mode == "always":
+        return EngineServiceChoice(start=True, reason=f"docker.services.{field} is 'always'")
+    if needers:
+        return EngineServiceChoice(start=True, reason=f"needed by {_named(needers)}")
+    return EngineServiceChoice(start=False, reason="no task or adapter needs it")
+
+
+def resolve_engine_services(
+    tasks: list[Any], stack_requirements: Any, services: EngineServicesConfig
+) -> EngineServicePlan:
+    """Decide which optional engine services the run starts, one by one.
+
+    rag-service: a task searches with a backend that declares the rag-service
+    stack service, or the adapter declares ``needs_rag_service``. Adapters whose
+    search signal is not visible in task tool names or ``initial_state`` (e.g. a
+    domain-shipped ``docindex/`` knowledge base surfaced as
+    ``TaskDescription.search.enabled``) declare it on
+    :meth:`BaseAdapter.docker_stack_requirements`, since the Runner hard-fails
+    ``RegisterTrial`` for a search-enabled task when no RAG client is configured.
+    mock-web: a task reaches it (:func:`_task_needs_mock_web`).
+
+    ``services`` (the run's ``docker.services``) then starts either ``always`` or
+    forbids it; forbidding one the run needs raises
+    :class:`EngineServiceConflictError`, before any engine container work. Duck-typed on
+    ``stack_requirements`` so unit tests can pass lightweight stand-ins.
+    """
+    adapter_needs_rag = stack_requirements is not None and getattr(
+        stack_requirements, "needs_rag_service", False
+    )
+    rag_needers = ["the adapter (needs_rag_service)"] if adapter_needs_rag else []
+    rag_needers += [f"task {task.task_id}" for task in tasks if _search_needs_rag_service(task)]
+    mock_web_needers = [f"task {task.task_id}" for task in tasks if _task_needs_mock_web(task)]
+    return EngineServicePlan(
+        rag_service=_choose("rag_service", services.rag_service, rag_needers),
+        mock_web=_choose("mock_web", services.mock_web, mock_web_needers),
+    )
 
 
 def _declared_engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
@@ -250,24 +320,43 @@ def build_engine_stack(
     grpc_max_message_mb: int,
     state_read_timeout_s: float,
     logger: StructuredLogger,
+    optional_services: bool = True,
 ) -> tuple[EngineStack, Any]:
     """Build (but do not start) the engine stack a run's tasks need.
 
-    Resolves the adapter's declarative stack requirements, enables Playwright /
-    the docker CLI / the search plane as the tasks demand, picks ``core_stack``
-    (db-service + runner) or ``full_stack`` (+ rag-service + mock-web), and
-    constructs the :class:`EngineStack`. Returns the unstarted stack and the
-    adapter's ``DockerStackRequirements`` (``None`` when no adapter is given).
+    Resolves the adapter's declarative stack requirements and the optional
+    engine services the run starts (:func:`resolve_engine_services`, which
+    refuses a ``never`` service the run needs before any engine container work), enables
+    Playwright / the docker CLI / the search plane as the tasks demand, picks
+    ``core_stack`` (db-service + runner) or ``full_stack`` with only the services
+    it starts, and constructs the :class:`EngineStack`. Returns the unstarted
+    stack and the adapter's ``DockerStackRequirements`` (``None`` when no adapter
+    is given).
 
     ``typesense_stack_kwargs`` carries the run's in-network search address when
     one is configured; the caller resolves it (and registers its API key) so the
-    search-server lifecycle stays with the caller.
+    search-server lifecycle stays with the caller. ``optional_services=False``
+    skips the resolution and builds the core stack: for a run whose tasks declare
+    their own stacks, where no built-in container starts.
     """
     from tolokaforge.core.models.docker_config import DockerConfig
     from tolokaforge.docker.stacks import core_stack, full_stack
 
     logger.info("Auto-starting Docker services via EngineStack")
     stack_requirements = adapter.docker_stack_requirements() if adapter is not None else None
+    docker_config = config.docker or DockerConfig()
+    engine_services = (
+        resolve_engine_services(tasks, stack_requirements, docker_config.services)
+        if optional_services
+        else _TASK_DECLARED_STACKS_PLAN
+    )
+    logger.info(
+        "Engine services resolved",
+        rag_service=engine_services.rag_service.start,
+        rag_service_reason=engine_services.rag_service.reason,
+        mock_web=engine_services.mock_web.start,
+        mock_web_reason=engine_services.mock_web.reason,
+    )
     core_stack_kwargs = stack_requirements.to_core_stack_kwargs() if stack_requirements else {}
     # Ensure host-side paths for any extra bind mounts exist so Docker doesn't
     # create them as root-owned at start-up.
@@ -299,33 +388,36 @@ def build_engine_stack(
         from tolokaforge.docker.builder import repo_root
         from tolokaforge.docker.image_source_policy import check_runner_docker_cli_available
 
-        _docker_cfg = config.docker or DockerConfig()
         check_runner_docker_cli_available(
             needs_docker_cli=True,
-            request=_docker_cfg.image_source,
+            request=docker_config.image_source,
             is_wheel_install=not (repo_root() / "pyproject.toml").is_file(),
             engine_version=_engine_pkg.__version__,
         )
-    # Pick full_stack (db-service + runner + rag-service + mock-web) when any
-    # task talks to mock-web or rag OR when the adapter declares a rag-service
-    # need. ``full_stack`` accepts every kwarg ``core_stack`` does, so the
-    # playwright/binds plumbing above still applies.
-    if _run_needs_full_stack(tasks, stack_requirements):
-        logger.info(
-            "Full-stack-dependent run detected (task browser/mobile, an http_request "
-            "whose hosts admit mock-web, initial_state.mock_web, a search backend "
-            "needing rag-service, or adapter-declared rag-service need) "
-            "- using full_stack (db-service + runner + rag-service + mock-web)",
-            adapter_needs_rag_service=bool(
-                stack_requirements is not None
-                and getattr(stack_requirements, "needs_rag_service", False)
-            ),
-        )
+    # ``full_stack`` accepts every kwarg ``core_stack`` does, so the
+    # playwright/binds plumbing above still applies; its two service flags add
+    # only the optional services the run starts.
+    if engine_services.starts_any:
         stack_factory = full_stack
+        optional_services = {
+            "rag_service": engine_services.rag_service.start,
+            "mock_web": engine_services.mock_web.start,
+        }
     else:
-        logger.info("Creating service stack (db-service + runner)")
         stack_factory = core_stack
-    docker_config = config.docker or DockerConfig()
+        optional_services = {}
+    logger.info(
+        "Creating service stack",
+        services=["db-service", "runner"]
+        + [
+            name
+            for name, choice in (
+                ("rag-service", engine_services.rag_service),
+                ("mock-web", engine_services.mock_web),
+            )
+            if choice.start
+        ],
+    )
     # Route ``grader.expose_substrate`` into the runner container so it
     # registers the SubstrateService gRPC servicer alongside RunnerService (same
     # listen port). Absent block == absent field == off.
@@ -335,7 +427,7 @@ def build_engine_stack(
     # use (``compute.grpc_max_message_mb``).
     core_stack_kwargs["grpc_max_message_mb"] = grpc_max_message_mb
     core_stack_kwargs["state_read_timeout_s"] = state_read_timeout_s
-    service_stack = stack_factory(config=docker_config, **core_stack_kwargs)
+    service_stack = stack_factory(config=docker_config, **core_stack_kwargs, **optional_services)
     return service_stack, stack_requirements
 
 

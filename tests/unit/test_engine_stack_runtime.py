@@ -15,7 +15,9 @@ from typing import Any
 
 import pytest
 
+from tolokaforge.adapters.base import DockerStackRequirements
 from tolokaforge.core.engine_stack_runtime import (
+    EngineServiceConflictError,
     StartedEngineStack,
     build_engine_stack,
     run_trial_with_stack,
@@ -28,6 +30,7 @@ from tolokaforge.core.models import (
     RunConfig,
     TaskConfig,
 )
+from tolokaforge.core.models.docker_config import DockerConfig, EngineServicesConfig
 from tolokaforge.docker.stacks.core import TypeSenseAddress
 
 pytestmark = pytest.mark.unit
@@ -133,19 +136,134 @@ def test_build_engine_stack_with_no_search_plane_carries_no_address() -> None:
         assert "TYPESENSE_HOST" not in svc.environment
 
 
-def test_build_engine_stack_picks_full_stack_and_playwright_for_a_browser_task() -> None:
-    """A browser task reaches mock-web and needs Playwright: full_stack + the build arg."""
+def _build(config: RunConfig, tasks: list[TaskConfig], adapter: Any = None) -> Any:
     stack, _ = build_engine_stack(
-        _config(),
+        config,
+        adapter,
+        tasks,
+        grpc_max_message_mb=50,
+        state_read_timeout_s=30.0,
+        logger=_LOGGER,
+    )
+    return stack
+
+
+def test_build_engine_stack_adds_mock_web_and_playwright_for_a_browser_task() -> None:
+    """A browser task reaches mock-web and needs Playwright: mock-web + the build arg.
+
+    It searches nothing, so rag-service is neither in the stack nor named to the
+    runner (#1937).
+    """
+    stack = _build(_config(), [_task(["browser"])])
+
+    assert set(stack.services) == {"db-service", "runner", "mock-web"}
+    assert _runner(stack).build_args.get("INSTALL_PLAYWRIGHT") == "true"
+    assert "RAG_SERVICE_URL" not in _runner(stack).environment
+
+
+def test_build_engine_stack_adds_rag_service_alone_for_a_search_task() -> None:
+    stack = _build(_config(), [_task(["search_kb"])])
+
+    assert set(stack.services) == {"db-service", "runner", "rag-service"}
+    assert _runner(stack).environment["RAG_SERVICE_URL"] == "http://tolokaforge-rag-service:8001"
+
+
+def test_build_engine_stack_adds_both_when_the_tasks_need_both() -> None:
+    stack = _build(_config(), [_task(["browser"]), _task(["search_kb"])])
+
+    assert set(stack.services) == {"db-service", "runner", "rag-service", "mock-web"}
+
+
+def test_build_engine_stack_adds_rag_service_alone_for_an_adapter_declared_need() -> None:
+    adapter = SimpleNamespace(
+        docker_stack_requirements=lambda: DockerStackRequirements(needs_rag_service=True)
+    )
+
+    stack = _build(_config(), [_task(["bash"])], adapter)
+
+    assert set(stack.services) == {"db-service", "runner", "rag-service"}
+
+
+def test_build_engine_stack_starts_a_service_the_config_says_always() -> None:
+    config = _config().model_copy(
+        update={"docker": DockerConfig(services=EngineServicesConfig(mock_web="always"))}
+    )
+
+    stack = _build(config, [_task(["bash"])])
+
+    assert set(stack.services) == {"db-service", "runner", "mock-web"}
+
+
+def test_build_engine_stack_refuses_a_never_service_the_run_needs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refusal comes before any stack is composed, let alone started."""
+
+    def _no_stack(**kwargs: Any) -> Any:
+        raise AssertionError("a stack factory ran despite the refusal")
+
+    monkeypatch.setattr("tolokaforge.docker.stacks.core_stack", _no_stack)
+    monkeypatch.setattr("tolokaforge.docker.stacks.full_stack", _no_stack)
+    config = _config().model_copy(
+        update={"docker": DockerConfig(services=EngineServicesConfig(rag_service="never"))}
+    )
+
+    with pytest.raises(EngineServiceConflictError, match="docker.services.rag_service"):
+        _build(config, [_task(["search_kb"])])
+
+
+def test_build_engine_stack_without_optional_services_builds_the_core_stack_unchecked() -> None:
+    """A run whose tasks declare their own stacks starts no built-in container.
+
+    Its compose files alias the runner and db-service images only, so the
+    optional services are neither built nor checked against ``docker.services``.
+    """
+    config = _config().model_copy(
+        update={"docker": DockerConfig(services=EngineServicesConfig(mock_web="never"))}
+    )
+
+    stack, _ = build_engine_stack(
+        config,
         None,
         [_task(["browser"])],
         grpc_max_message_mb=50,
         state_read_timeout_s=30.0,
         logger=_LOGGER,
+        optional_services=False,
     )
 
-    assert {"db-service", "runner", "rag-service", "mock-web"}.issubset(set(stack.services))
-    assert _runner(stack).build_args.get("INSTALL_PLAYWRIGHT") == "true"
+    assert set(stack.services) == {"db-service", "runner"}
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, dict[str, Any]]] = []
+
+    def info(self, message: str, **fields: Any) -> None:
+        self.records.append((message, fields))
+
+    debug = warning = error = info
+
+
+def test_build_engine_stack_logs_each_service_and_why() -> None:
+    """The line the run log points operators to names each decision and its reason."""
+    logger = _RecordingLogger()
+
+    build_engine_stack(
+        _config(),
+        None,
+        [_task(["browser"])],
+        grpc_max_message_mb=50,
+        state_read_timeout_s=30.0,
+        logger=logger,  # type: ignore[arg-type]
+    )
+
+    assert dict(logger.records)["Engine services resolved"] == {
+        "rag_service": False,
+        "rag_service_reason": "no task or adapter needs it",
+        "mock_web": True,
+        "mock_web_reason": "needed by task t",
+    }
 
 
 class _Recorder:

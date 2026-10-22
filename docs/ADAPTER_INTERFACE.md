@@ -431,9 +431,11 @@ Fields:
 - `enable_dind: bool` — add a Docker-in-Docker sidecar so the runner can
   manage Docker Compose stacks without touching the host daemon.
 - `needs_rag_service: bool` — declare that the adapter emits
-  `TaskDescription.search.enabled=True`, so the orchestrator selects the
-  `full_stack` factory that actually provisions `rag-service`. Not rendered
-  into stack kwargs — it selects the factory.
+  `TaskDescription.search.enabled=True`, so the run starts `rag-service` (and
+  not mock-web, which only tasks that reach it start). Declare it only for
+  search the rag-service serves: a knowledge base served by another plane, such
+  as TypeSense, does not need it. Not rendered into stack kwargs; it feeds the
+  service selection.
 - `image_builds: list[ComposeImageBuild]` — task-declared compose images the
   orchestrator builds once per run, immediately after the engine `:local`
   aliases are in place. Each entry runs

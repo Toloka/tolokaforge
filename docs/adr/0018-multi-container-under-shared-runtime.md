@@ -17,6 +17,7 @@
 - **Superseded by:** —
 - **Amended-by:** #581 (per-service network_access opt-out — 2026-07-22)
 - **Amended-by:** ADR-0044 (backend selection is now plan-shape-driven; §6 replaces the "task-driven" mechanism this amendment introduced)
+- **Amended-by:** [ADR-0065](0065-engine-services-per-run.md) (the built-in stack adds mock-web and rag-service one by one, each only when the run needs it)
 
 ## TL;DR
 
