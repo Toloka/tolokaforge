@@ -46,7 +46,9 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
 - `http_request`: Restricted HTTP client for mock web services. It requests only
   `tools.<actor>.http_request.allowed_hosts` (default `mock-web`, `mock-web:8080`,
   `localhost:8080`) and drops every caller header except `Content-Type`, `Accept`
-  and `User-Agent`, so the agent presents no credential of its own. Under
+  and `User-Agent`, so the agent presents no credential of its own. When those
+  hosts admit mock-web, as the defaults do, the run starts the engine stack that
+  serves mock-web, as it does for `browser` and `mobile`. Under
   `initial_state.app_world` (ADR-0062) the tool is built once per actor and sets
   `Authorization: Bearer <token>` with the token the runner minted for that actor,
   on requests to `app_world.hosts` only, each redirect hop judged by its own url

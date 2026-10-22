@@ -8,13 +8,20 @@ when it asks whether an actor's credential could ever be presented
 (:func:`unreachable_hosts`), so a declaration one accepts the other honours.
 
 A leaf on purpose: ``core.models`` and ``tools.builtin`` both import it, and
-neither may pull the other's package in.
+neither may pull the other's package in. The engine-stack selection reads the
+tool's default hosts here too, without importing the tool.
 """
 
 from __future__ import annotations
 
 from collections.abc import Collection
 from urllib.parse import urlparse
+
+MOCK_WEB_URL = "http://mock-web:8080"
+"""Where the engine's mock-web service answers inside the stack: its network alias and port."""
+
+HTTP_REQUEST_DEFAULT_HOSTS: tuple[str, ...] = ("mock-web", "mock-web:8080", "localhost:8080")
+"""The hosts ``http_request`` reaches when a task configures no ``allowed_hosts``."""
 
 
 def host_listed(url: str, hosts: Collection[str]) -> bool:

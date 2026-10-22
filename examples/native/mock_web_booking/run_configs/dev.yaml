@@ -7,8 +7,9 @@
 # transcript-only (no judge), so no judge model is needed.
 #
 # Requirements:
-#   - Docker daemon running with the standalone stack up (mock-web reachable on
-#     the runner network at mock-web:8080).
+#   - Docker daemon running. The run starts its own engine stack, which includes
+#     mock-web (reachable from the runner at mock-web:8080) because the task's
+#     http_request allow-list names it.
 #   - OPENROUTER_API_KEY in .env.
 #
 # Run:
