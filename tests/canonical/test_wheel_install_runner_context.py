@@ -121,9 +121,8 @@ _EXPECTED_RAG_CONTEXT_ENTRIES: tuple[str, ...] = (
 
 @pytest.fixture(scope="module")
 def built_wheels_dist(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Build the base tolokaforge wheel + every workspace-sibling wheel it
-    depends on (tolokaforge-models, tolokaforge-coding-harnesses) into one
-    directory (returned)."""
+    """Build the base tolokaforge wheel + the tolokaforge-models wheel it
+    depends on into one directory (returned)."""
     return build_workspace_wheels(tmp_path_factory.mktemp("dist"))
 
 

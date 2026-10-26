@@ -721,14 +721,17 @@ class TestShopOrders02McpTransport:
       - State persistence across separate JSON-RPC requests
       - Content parsing: MCP wraps results in [{type: text, text: ...}]
 
-    Test ordering note: tests 3-6 are intentionally sequential — place_order
-    runs before confirm_payment to exercise state persistence within one server
-    process. Pytest runs class methods in definition order.
+    Each test gets its own server process and drives every call it asserts on,
+    so any subset of the class runs in any order.
     """
 
-    @pytest.fixture(scope="class")
-    @classmethod
-    def mcp_server(cls, shop_orders_02_task_dir) -> _McpSubprocess:
+    _REFERENCE_ORDER_ITEMS = [
+        {"product_id": "P-001", "quantity": 1, "unit_price": 89.99},
+        {"product_id": "P-002", "quantity": 2, "unit_price": 34.5},
+    ]
+
+    @pytest.fixture
+    def mcp_server(self, shop_orders_02_task_dir) -> _McpSubprocess:
         """Start mcp_server.py subprocess and inject fresh initial state.
 
         Lifespan does not run when the script is started without file input,
@@ -740,6 +743,13 @@ class TestShopOrders02McpTransport:
         server.reset_state(json.loads((shop_orders_02_task_dir / "initial_state.json").read_text()))
         yield server
         server.stop()
+
+    @classmethod
+    def _place_reference_order(cls, server: _McpSubprocess) -> dict | list:
+        """Place the golden order (creates ``O-001`` on a fresh server)."""
+        return server.call_tool(
+            "place_order", {"customer_id": "C-101", "items": cls._REFERENCE_ORDER_ITEMS}
+        )
 
     # ------------------------------------------------------------------
 
@@ -769,28 +779,20 @@ class TestShopOrders02McpTransport:
         that quantity=1 (integer) is not rejected by Pydantic's ``ge=1``
         constraint after JSON-RPC round-trip (could fail if coerced to float).
         """
-        result = mcp_server.call_tool(
-            "place_order",
-            {
-                "customer_id": "C-101",
-                "items": [
-                    {"product_id": "P-001", "quantity": 1, "unit_price": 89.99},
-                    {"product_id": "P-002", "quantity": 2, "unit_price": 34.5},
-                ],
-            },
-        )
+        result = self._place_reference_order(mcp_server)
         assert "error" not in result, f"place_order failed over JSON-RPC: {result}"
         assert result["id"] == "O-001"
         assert result["status"] == "pending"
         assert abs(result["total"] - 158.99) < 0.001
 
     def test_state_persists_across_jsonrpc_requests(self, mcp_server):
-        """confirm_payment sees the order created by the previous place_order call.
+        """confirm_payment sees the order created by an earlier place_order request.
 
         State must live in a single _STATE dict shared across all JSON-RPC
         requests to the same subprocess. If the server re-loads state on each
         request, confirm_payment would return 'order not found'.
         """
+        self._place_reference_order(mcp_server)
         result = mcp_server.call_tool("confirm_payment", {"order_id": "O-001"})
         message = f"confirm_payment failed — state not persisted across JSON-RPC calls: {result}"
         assert "error" not in result, message
@@ -800,6 +802,8 @@ class TestShopOrders02McpTransport:
         self, mcp_server, shop_orders_02_task_dir
     ):
         """get_state() after place_order + confirm_payment reflects all expected changes."""
+        self._place_reference_order(mcp_server)
+        mcp_server.call_tool("confirm_payment", {"order_id": "O-001"})
         state = mcp_server.get_state()
         expected = {
             jp["path"]: jp["equals"]

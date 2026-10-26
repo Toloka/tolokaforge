@@ -22,7 +22,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SUBSET_WHEEL_GLOB = "tolokaforge_runner_subset-*.whl"
 MODELS_WHEEL_GLOB = "tolokaforge_models-*.whl"
 BASE_WHEEL_GLOB = "tolokaforge-*.whl"
-CODING_HARNESSES_WHEEL_GLOB = "tolokaforge_coding_harnesses-*.whl"
 
 _BUILD_TIMEOUT_S = 180
 
@@ -68,26 +67,15 @@ def build_base_wheel(dist_dir: Path) -> Path:
     )
 
 
-def build_coding_harnesses_wheel(dist_dir: Path) -> Path:
-    """Build ``tolokaforge-coding-harnesses`` from the current tree into *dist_dir*."""
-    return hatchling_build(
-        project_dir=REPO_ROOT / "tolokaforge_coding_harnesses",
-        target="wheel",
-        dist_dir=dist_dir,
-        wheel_glob=CODING_HARNESSES_WHEEL_GLOB,
-        label="tolokaforge-coding-harnesses",
-    )
-
-
 def build_workspace_wheels(dist_dir: Path) -> Path:
-    """Build the base wheel plus the ``tolokaforge-models`` and
-    ``tolokaforge-coding-harnesses`` wheels into *dist_dir* and return it.
+    """Build the base wheel plus the ``tolokaforge-models`` wheel it depends on
+    into *dist_dir* and return it. ``tolokaforge_coding_harnesses`` needs no
+    wheel of its own: the base wheel bundles it as a top-level package.
 
     Use :func:`base_wheel_in` and :func:`models_wheel_in` to pick wheels out of
     the result."""
     build_base_wheel(dist_dir)
     build_models_wheel(dist_dir)
-    build_coding_harnesses_wheel(dist_dir)
     return dist_dir
 
 
@@ -95,7 +83,7 @@ def base_wheel_in(dist_dir: Path) -> Path:
     """The single base ``tolokaforge-<version>`` wheel in *dist_dir*.
 
     Matches the dash after the package name, so a sibling wheel
-    (``tolokaforge_models-*`` / ``tolokaforge_coding_harnesses-*``, underscore)
+    (``tolokaforge_models-*``, underscore)
     is never mistaken for the base distribution."""
     base_wheels = [w for w in dist_dir.glob(BASE_WHEEL_GLOB) if w.name.startswith("tolokaforge-")]
     return _single_wheel(base_wheels, dist_dir, "base tolokaforge")
