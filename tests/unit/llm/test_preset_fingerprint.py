@@ -103,6 +103,37 @@ _PRESET_CASES = [
         },
     ),
     (
+        # Gemini 4 Argon as a gateway names it (litellm's Gemini API prefix):
+        # the generic ``gemini`` preset, with the dict-map pair that keeps
+        # ``path`` / ``query`` maps intact and the ``$ref``-wrapping content.
+        "gemini/gemini-4-argon",
+        "openai",
+        {
+            "schema_sanitizer": "gemini",
+            "prompt_policy": "none",
+            "content_policy": "gemini",
+            "response_policy": "array_dict_map",
+            "reasoning_codec": "gemini",
+            "cache_policy": "none",
+            "message_assembly_policy": "null",
+            "assistant_text_policy": "passthrough",
+        },
+    ),
+    (
+        "gemini/gemini-3.8-flash",
+        "openai",
+        {
+            "schema_sanitizer": "gemini_recursive",
+            "prompt_policy": "none",
+            "content_policy": "gemini",
+            "response_policy": "scalar_array_dict_map",
+            "reasoning_codec": "gemini",
+            "cache_policy": "none",
+            "message_assembly_policy": "null",
+            "assistant_text_policy": "passthrough",
+        },
+    ),
+    (
         "nova-micro-1.0",
         "nova",
         {
@@ -182,6 +213,14 @@ def test_resolve_policy_names_raises_on_unknown_policy() -> None:
         ("qwen/qwen3-coder", "openrouter", "qwen"),
         ("qwen3-32b", "qwen", "qwen"),
         ("nova-micro-1.0", "nova", "aws_nova"),
+        # Gemini under the Gemini API prefix a gateway uses. Argon carries no
+        # ``google/`` segment and no ``3`` / ``2.5`` token, so before
+        # ``gemini/gemini-*`` was listed it fell through to ``default``.
+        ("gemini/gemini-4-argon", "openai", "gemini"),
+        ("litellm_proxy/gemini/gemini-4-argon", "openai", "gemini"),
+        ("google/gemini-4-argon", "openrouter", "gemini"),
+        ("gemini/gemini-3.8-flash", "openai", "gemini_38_flash_recursive"),
+        ("gemini/gemini-2.5-flash", "openai", "gemini"),
         ("some-unknown-model", "", "default"),
         ("gpt-4o", "openai", "default"),
     ],

@@ -1346,7 +1346,7 @@ def resolve_policy_names(capabilities: ModelCapabilities) -> dict[str, str]:
         {
             "schema_sanitizer":        "strict" | "passthrough",
             "prompt_policy":           "dict_map_hints" | "none",
-            "content_policy":          "anthropic" | "openai" | "nova",
+            "content_policy":          "anthropic" | "openai" | "nova" | "gemini",
             "response_policy":         "standard" | "array_dict_map" | "unwrap_input",
             "reasoning_codec":         "anthropic" | "openai"
                                        | "openai_summary_replay" | "gemini" | "none",

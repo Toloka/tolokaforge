@@ -142,7 +142,7 @@ Available policy slots (see
 |---|---|---|
 | `schema_sanitizer` | `passthrough` | `strict`, `gemini`, `gemini_recursive` |
 | `prompt_policy` | `none` | `dict_map_hints`, `dict_map_hints_ref` |
-| `content_policy` | `openai` | `anthropic`, `nova` |
+| `content_policy` | `openai` | `anthropic`, `nova`, `gemini` (models wheel; wraps `$ref`-carrying tool results) |
 | `response_policy` | `standard` | `unwrap_input`, `json_coerce`, `array_dict_map`, `scalar_array_dict_map`, `minimax_m3_tags` |
 | `reasoning_codec` | `none` | `anthropic`, `openai`, `openai_summary_replay`, `gemini` |
 | `cache_policy` | `none` | `anthropic_ephemeral` |

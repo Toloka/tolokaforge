@@ -136,6 +136,7 @@ _PIVOTING_MODELS = [
     "google/gemini-3.8-flash",
     "google/gemini-3.7-flash",
     "google/gemini-3.1-pro-preview",
+    "gemini/gemini-4-argon",
     "x-ai/grok-4.6",
     "x-ai/grok-5",
     "azure_ai/cohere-command-a-plus",
@@ -170,7 +171,9 @@ def test_every_pivoting_preset_round_trips_dict_maps_at_every_depth(model: str) 
     assert recovered == _NATIVE_ARGS
 
 
-@pytest.mark.parametrize("model", ["openai/gpt-6.1-sol", "google/gemini-3.8-flash"])
+@pytest.mark.parametrize(
+    "model", ["openai/gpt-6.1-sol", "google/gemini-3.8-flash", "gemini/gemini-4-argon"]
+)
 def test_native_dict_emission_passes_through_and_value_wrapper_unwraps(model: str) -> None:
     """A model that ignores the wire shape and emits the native dict is left
     alone; the ``{k: {"value": v}}`` wrapper some models emit is unwrapped."""

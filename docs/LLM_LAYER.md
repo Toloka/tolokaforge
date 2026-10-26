@@ -1955,17 +1955,39 @@ class ToolContentPolicy(Protocol):
     def format(self) -> str: ...               # "openai" | "anthropic"
     @property
     def supports_images(self) -> bool: ...
+    @property
+    def wraps_part_reference_tool_results(self) -> bool: ...
 ```
 
-Three implementations, selected via preset:
+Four implementations, selected via preset:
 
 * `OpenAIContent` (default) — text-only tool result blocks;
-  `supports_images=False`. Used by the `default`, `openai_gpt5`, `xai_grok`,
-  `qwen`, and `gemini` presets.
+  `supports_images=False`. Used by the `default`, `openai_gpt5`, `xai_grok`
+  and `qwen` presets.
 * `AnthropicContent` — Anthropic native content with image block support;
   `supports_images=True`. Used by both Anthropic presets.
 * `NovaContent` — OpenAI-shape wire format (no native image blocks on the
   Bedrock OpenAI-passthrough path). Used by `aws_nova`.
+* `GeminiContent` (models wheel, `tolokaforge_models.policies.gemini`) —
+  `OpenAIContent` with `wraps_part_reference_tool_results=True`. Used by every
+  Gemini preset.
+
+`wraps_part_reference_tool_results` is read by `LLMClient._convert_messages`
+on every `role: tool` message. When it is `True` and the message text is a JSON
+object or array that holds a `{"$ref": "<non-empty string>"}` object at any
+depth, the text goes out as `{"content": "<the original text>"}`
+(`wrap_part_reference_tool_result` in `content_policy.py`). The Gemini API reads
+such an object inside `function_response.response` as a reference to one of the
+response's multimodal parts (by `display_name`) and refuses the request with
+HTTP 400 `INVALID_ARGUMENT` when no part carries that name; an OpenAI-format
+converter in front of Gemini (litellm's Gemini translation, and so any gateway
+built on it) parses a JSON tool message into `response` verbatim. A tool whose
+output embeds a JSON Schema fragment (`"$ref": "#/$defs/X"`) therefore ends the
+trial at the next model call. Wrapped, the `$ref` sits inside a string and is
+inert; the model reads the same text. Results without a part reference and
+non-JSON text go out unchanged, so the structured view is kept for every
+ordinary call. The attribute is read with a default of `False`, so an
+out-of-tree policy that predates it keeps working.
 
 ## `message_assembly_policy`
 
@@ -2653,6 +2675,7 @@ false` (§ litellm OpenRouter routing caveat). Keep this table in sync with
 | `qwen`                 | `qwen/*`, `*/qwen/*`, `qwen3*`, `*/qwen3*`                                                                                | `passthrough`      | `json_coerce`     | `dict_map_hints` | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
 | `aws_nova`             | `nova*` (+ provider `nova`)                                                                                               | `passthrough`      | `unwrap_input`    | `none`           | `nova`           | `none`            | `nova`                    | `passthrough`           |
 | `moonshot_kimi_k3`     | `moonshotai/kimi-k3*`, `*kimi-k3*`                                                                                        | `passthrough`      | `standard`        | `none`           | `openai`         | `openai_summary_replay` | `nova` (filler `" "`) | `passthrough`           |
+| `gemini`               | `google/gemini-*`, `*/google/gemini-*`, `gemini/gemini-*`, `*/gemini/gemini-*`, `*gemini-3*`, `*gemini-2.5*`              | `gemini`           | `array_dict_map`  | `none`           | `gemini`         | `gemini`          | `null`                | `passthrough`           |
 
 Order matters — first match wins. `anthropic_claude_4_7` is declared
 *before* the generic `anthropic` preset so Claude 4.7 picks up its
