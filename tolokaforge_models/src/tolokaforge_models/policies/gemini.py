@@ -41,6 +41,32 @@ __all__ = [
 ]
 
 
+def _require_engine_wrap_surface() -> None:
+    """Refuse to load on an engine whose content policies predate
+    ``wraps_part_reference_tool_results``.
+
+    ``minimum_engine_version`` is the install-time gate for this, but it can
+    only name an engine release that exists, so it is raised in the engine
+    release PR after the attribute ships (``docs/RELEASING.md``). In the window
+    before that raise, a newer models wheel on an older engine would register
+    :class:`GeminiContent` without complaint — the old merge has no surface
+    check — and nothing would wrap: the fingerprint would record
+    ``content_policy: gemini`` while every Gemini trial still fails on the
+    first ``$ref``. This check closes that window mechanically.
+    """
+    if not hasattr(OpenAIContent, "wraps_part_reference_tool_results"):
+        raise RuntimeError(
+            "tolokaforge-models' GeminiContent needs an engine whose tool-content "
+            "policies carry `wraps_part_reference_tool_results` (the engine release "
+            "that added the Gemini $ref guard); the installed tolokaforge predates "
+            "it. Upgrade tolokaforge, or install the tolokaforge-models release "
+            "that matches the installed engine."
+        )
+
+
+_require_engine_wrap_surface()
+
+
 class GeminiContent(OpenAIContent):
     """OpenAI-shape tool content that keeps a ``$ref`` out of Gemini's reach.
 

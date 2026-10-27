@@ -14,10 +14,12 @@ The Gemini presets wire ``content_policy: gemini`` (``GeminiContent``):
 
 1. the pure wrap rule (``wrap_part_reference_tool_result``) — what is wrapped,
    what passes through, and that the original text survives verbatim;
-2. the wire: a Gemini client wraps, an OpenAI-preset client does not, on both
-   the plain-text and the content-blocks path; the text-only capability
-   overrides keep the Gemini policy; a registration without the attribute is
-   refused at import;
+2. the wire: a Gemini client wraps, an OpenAI-preset client does not, on the
+   plain-text path, the blocks-flattened path and the image-block path; the
+   text-only capability overrides keep the Gemini policy, an image override
+   that no registered policy can honour together with the wrap is refused, an
+   unknown policy name is left for ``_instantiate_slot`` to refuse; a
+   registration without the attribute is refused at import;
 3. the end-to-end guard through litellm's own converter: the Gemini request
    built from the converted message holds no ``$ref`` key at any depth, and
    the model still receives the original text.
@@ -26,6 +28,7 @@ The Gemini presets wire ``content_policy: gemini`` (``GeminiContent``):
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -34,11 +37,17 @@ from tolokaforge_models.policies.gemini import GeminiContent
 
 from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.llm.content_policy import (
+    AnthropicContent,
     OpenAIContent,
     contains_part_reference,
     wrap_part_reference_tool_result,
 )
-from tolokaforge.core.llm.presets import build_capabilities, resolve_policy_names
+from tolokaforge.core.llm.presets import (
+    _apply_config_overrides,
+    _instantiate_slot,
+    build_capabilities,
+    resolve_policy_names,
+)
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 
 pytestmark = pytest.mark.unit
@@ -123,6 +132,10 @@ def test_a_part_reference_at_any_depth_is_wrapped_verbatim(text: str) -> None:
         "{}",
         "",
         "plain text with no reference",
+        # Deeper than the JSON parser follows: it raises RecursionError, not
+        # ValueError, and the text must still pass through rather than abort
+        # the request.
+        '{"$": ' + "[" * 100_000 + "]" * 100_000 + "}",
     ],
     ids=[
         "no_ref",
@@ -136,6 +149,7 @@ def test_a_part_reference_at_any_depth_is_wrapped_verbatim(text: str) -> None:
         "empty_object",
         "empty",
         "plain",
+        "too_deep_for_the_parser",
     ],
 )
 def test_everything_else_passes_through_unchanged(text: str) -> None:
@@ -238,12 +252,32 @@ def test_text_only_overrides_keep_the_gemini_policy(overrides: dict[str, Any]) -
     assert resolve_policy_names(caps)["content_policy"] == "gemini"
 
 
-def test_image_overrides_still_move_a_gemini_preset_to_anthropic() -> None:
-    caps = build_capabilities("gemini/gemini-4-argon", "openai", {"supports_tool_images": True})
-    assert resolve_policy_names(caps)["content_policy"] == "anthropic"
-    caps = build_capabilities(
-        "gemini/gemini-4-argon", "openai", {"tool_content_format": "anthropic"}
-    )
+@pytest.mark.parametrize(
+    "overrides",
+    [{"supports_tool_images": True}, {"tool_content_format": "anthropic"}],
+    ids=["images", "anthropic_format"],
+)
+def test_an_image_override_on_a_gemini_preset_is_refused_not_applied_without_the_wrap(
+    overrides: dict[str, Any],
+) -> None:
+    """No registered policy sends image blocks *and* wraps a ``$ref``; the
+    override is refused with the gap named, instead of swapping in
+    ``anthropic`` and letting the next ``$ref`` end the trial."""
+    with pytest.raises(ValueError, match="wraps_part_reference_tool_results=True") as info:
+        build_capabilities("gemini/gemini-4-argon", "openai", overrides)
+    assert "'gemini'" in str(info.value)
+    assert "Register a content policy" in str(info.value)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"supports_tool_images": True}, {"tool_content_format": "anthropic"}],
+    ids=["images", "anthropic_format"],
+)
+def test_the_same_image_override_still_moves_an_openai_preset_to_anthropic(
+    overrides: dict[str, Any],
+) -> None:
+    caps = build_capabilities("openai/gpt-5.5", "openai", overrides)
     assert resolve_policy_names(caps)["content_policy"] == "anthropic"
 
 
@@ -252,6 +286,46 @@ def test_text_only_override_still_moves_an_anthropic_preset_to_openai() -> None:
         "anthropic/claude-sonnet-4.6", "anthropic", {"supports_tool_images": False}
     )
     assert resolve_policy_names(caps)["content_policy"] == "openai"
+
+
+def test_an_unknown_content_policy_name_is_left_for_instantiation_to_refuse() -> None:
+    """An override never papers over a name the registry does not know: the
+    slot keeps the name and ``_instantiate_slot`` raises the actionable error."""
+    cfg: dict[str, Any] = {"content_policy": "no_such_policy"}
+    _apply_config_overrides(cfg, {"supports_tool_images": False, "tool_content_format": "openai"})
+    assert cfg["content_policy"] == "no_such_policy"
+    with pytest.raises(ValueError, match="unknown policy 'no_such_policy'"):
+        _instantiate_slot(cfg, "content_policy", "test")
+
+
+class _ImageWrappingContent(AnthropicContent):
+    """What a registered image-capable Gemini policy would look like."""
+
+    @property
+    def wraps_part_reference_tool_results(self) -> bool:
+        return True
+
+
+def test_a_wrapping_policy_with_images_wraps_each_text_block_next_to_the_image() -> None:
+    """The image-block path keeps text blocks as blocks; each one goes through
+    the same wrap, so a policy that enables both is guarded too (litellm's
+    Gemini translation parses the concatenated text blocks as JSON)."""
+    client = LLMClient(ModelConfig(provider="openai", name="gemini/gemini-4-argon"))
+    client.capabilities = replace(client.capabilities, content_policy=_ImageWrappingContent())
+    assert client.supports_tool_image_blocks()
+    image = {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"},
+    }
+    converted = client._convert_messages(
+        system=None,
+        messages=_tool_turn("", blocks=[{"type": "text", "text": _SCHEMA_TEXT}, image]),
+    )
+    content = _tool_content(converted)
+    assert isinstance(content, list)
+    assert [b["type"] for b in content] == ["text", "image"]
+    assert json.loads(content[0]["text"]) == {"content": _SCHEMA_TEXT}
+    assert content[1] == image
 
 
 def test_a_content_policy_without_the_attribute_is_refused_at_registration() -> None:

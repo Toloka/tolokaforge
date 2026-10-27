@@ -137,7 +137,9 @@ def wrap_part_reference_tool_result(text: str) -> str:
     changes. Anything that is not JSON, or JSON without such a ``$ref``, passes
     through untouched. JSON text can spell the key's ``$`` only literally or as
     ``\\u0024``, so the pre-check on those two spellings is exact and keeps every
-    other result (non-ASCII ``\\u`` escapes included) away from the parser.
+    other result (non-ASCII ``\\u`` escapes included) away from the parser. A
+    result nested deeper than the parser can follow is not JSON it can read
+    either (``RecursionError``), and passes through like any other text.
     """
     if "$" not in text and "\\u0024" not in text:
         return text
@@ -145,7 +147,7 @@ def wrap_part_reference_tool_result(text: str) -> str:
         return text
     try:
         parsed = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return text
     if not contains_part_reference(parsed):
         return text

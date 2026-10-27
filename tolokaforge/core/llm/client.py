@@ -1330,8 +1330,11 @@ class LLMClient:
         object as ``{"content": "<the original text>"}``, so a converter in
         front of Gemini never places a part reference into
         ``function_response.response``. Every other policy, and any content
-        that is not a string, passes through unchanged. The attribute is part
-        of the ``ToolContentPolicy`` surface; a registered policy without it is
+        that is not a string, passes through unchanged. Applied on every
+        ``role: tool`` path: the plain text, the blocks flattened to text,
+        and each text block kept as a block next to images
+        (``_adapt_tool_content_blocks``). The attribute is part of the
+        ``ToolContentPolicy`` surface; a registered policy without it is
         refused at import (``_merge_out_of_tree_policy_registrations``).
         """
         if not isinstance(content, str):
@@ -1379,7 +1382,7 @@ class LLMClient:
             if btype == "text":
                 text = block.get("text", "")
                 if isinstance(text, str) and text.strip():
-                    texts.append(text)
+                    texts.append(self._tool_result_text(text))
             elif btype == "image":
                 source = block.get("source", {}) if isinstance(block.get("source"), dict) else {}
                 stype = source.get("type")

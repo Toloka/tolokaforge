@@ -1995,8 +1995,20 @@ converter sits in front of the model. The attribute is part of the
 `content_policy` registration that lacks it (or `format` / `supports_images`)
 at import, so a missing attribute never surfaces as an `AttributeError` on the
 first model call of a trial. The `supports_tool_images` / `tool_content_format`
-capability overrides compare what the preset's policy already does, not its
-name, so `supports_tool_images: false` on a Gemini preset keeps `gemini`.
+capability overrides select by what a policy does, not by name, and keep the
+preset policy's `wraps_part_reference_tool_results`: `supports_tool_images:
+false` on a Gemini preset keeps `gemini`, and `supports_tool_images: true` on
+one is refused with the gap named, since no registered policy sends image
+blocks and wraps (`_select_content_policy` in `presets.py`). A name the
+registry does not know is left alone for `_instantiate_slot` to refuse. The
+wrap is applied on every `role: tool` path, including each text block kept
+next to an image, so a registered image-capable policy that sets the
+attribute is guarded without further engine changes. The models wheel checks
+the other direction at import: `tolokaforge_models.policies.gemini` refuses to
+load on an engine whose `OpenAIContent` lacks the attribute, which covers the
+window before `minimum_engine_version` names the engine release that carries
+it ([`docs/RELEASING.md`](RELEASING.md) § "When the models wheel starts
+needing a newer engine").
 
 ## `message_assembly_policy`
 

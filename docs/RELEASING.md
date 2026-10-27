@@ -132,6 +132,15 @@ Checklist when cutting an engine release that carries a new data-facing key:
 2. Raise `minimum_engine_version` to that version.
 3. Then cut the models release.
 
+Between steps 1 and 2 the floor still admits the previous engine. The engine
+refuses an older *wheel* mechanically (`_merge_out_of_tree_policy_registrations`
+checks each registered class against `_SLOT_SURFACES`), but a newer wheel on an
+older engine has only the floor. So a policy class that depends on an engine
+attribute checks for it where it is imported and raises naming the upgrade:
+`tolokaforge_models.policies.gemini._require_engine_wrap_surface` (the `$ref`
+wrap, `wraps_part_reference_tool_results`) is the pattern. The check is the
+backstop for that window, not a substitute for step 2.
+
 The version and changelog are owned by commitizen. **Do not hand-edit
 `tolokaforge_models/pyproject.toml` `[project].version` or
 `tolokaforge_models/CHANGELOG.md`** — the bump derives both, and manual edits

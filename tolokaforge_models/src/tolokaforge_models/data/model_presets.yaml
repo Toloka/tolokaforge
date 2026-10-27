@@ -1184,6 +1184,17 @@ presets:
   # carried neither the ``google/`` vendor segment nor a ``3`` / ``2.5``
   # version token — Gemini 4 Argon on the gateway — fell through to
   # ``default`` and got none of the family's handling (2026-10-26).
+  #
+  # Argon lands here, on ``schema_sanitizer: gemini`` + ``response_policy:
+  # array_dict_map`` — the pair the field report asked for, the one
+  # ``google/gemini-4-argon`` already had, and the one that keeps dict-map
+  # values on the wire. It is not on the ``gemini_recursive`` +
+  # ``scalar_array_dict_map`` pair the probed 3.x Flash entries carry: a
+  # self-referential tool schema on Argon therefore fails in-engine with
+  # ``GeminiSchema``'s "$ref resolution exceeded depth 16" (where the old
+  # ``default`` fallthrough sent it to the API as is). Argon has not been
+  # probed on the recursive shapes; a model-specific entry declared above
+  # this one is the fix once it is.
   gemini:
     match:
       - "google/gemini-*"
