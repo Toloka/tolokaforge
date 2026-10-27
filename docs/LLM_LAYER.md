@@ -1986,8 +1986,17 @@ output embeds a JSON Schema fragment (`"$ref": "#/$defs/X"`) therefore ends the
 trial at the next model call. Wrapped, the `$ref` sits inside a string and is
 inert; the model reads the same text. Results without a part reference and
 non-JSON text go out unchanged, so the structured view is kept for every
-ordinary call. The attribute is read with a default of `False`, so an
-out-of-tree policy that predates it keeps working.
+ordinary call. The policy is applied by model family, on every route: the
+Gemini API direct (the engine's own pinned litellm carries the converter), an
+OpenAI-format gateway in front of it, and OpenRouter, whose own converter passes
+the raw object today — so a trial's wire shape does not depend on which
+converter sits in front of the model. The attribute is part of the
+`ToolContentPolicy` surface: `_merge_out_of_tree_policy_registrations` refuses a
+`content_policy` registration that lacks it (or `format` / `supports_images`)
+at import, so a missing attribute never surfaces as an `AttributeError` on the
+first model call of a trial. The `supports_tool_images` / `tool_content_format`
+capability overrides compare what the preset's policy already does, not its
+name, so `supports_tool_images: false` on a Gemini preset keeps `gemini`.
 
 ## `message_assembly_policy`
 

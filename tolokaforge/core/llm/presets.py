@@ -256,7 +256,25 @@ def _merge_out_of_tree_policy_registrations() -> None:
                     f"{slot_name}.{policy_name!r} shadows engine class "
                     f"{existing!r} (would-be new: {cls!r})"
                 )
+            missing = sorted(
+                attr for attr in _SLOT_SURFACES.get(slot_name, ()) if not hasattr(cls, attr)
+            )
+            if missing:
+                raise RuntimeError(
+                    f"tolokaforge-models registration {slot_name}.{policy_name!r} "
+                    f"({cls!r}) lacks the slot's attribute(s) {missing}; the engine "
+                    f"reads them on every request, so a class without them would "
+                    f"fail mid-run rather than here"
+                )
             _POLICY_REGISTRIES[slot_name][policy_name] = cls
+
+
+#: Attributes the engine reads on a slot's policy at request time. A
+#: registration that lacks one is refused at import (above) instead of raising
+#: ``AttributeError`` on the first model call of a trial.
+_SLOT_SURFACES: dict[str, tuple[str, ...]] = {
+    "content_policy": ("format", "supports_images", "wraps_part_reference_tool_results"),
+}
 
 
 # Fire the install-time gate FIRST so a version-skewed models wheel dies with
@@ -985,6 +1003,21 @@ def _match_preset(model_name: str, provider: str) -> dict[str, Any]:
     return result
 
 
+def _current_content_policy(cfg: dict[str, Any]) -> ToolContentPolicy | None:
+    """The content policy *cfg* names, instantiated, or ``None`` when the name
+    is not registered (``_instantiate_slot`` then raises the actionable error).
+    """
+    name, params = _normalize_slot_value(
+        cfg.get("content_policy", _SLOT_DEFAULTS["content_policy"]),
+        slot="content_policy",
+        where="<capabilities-override>",
+    )
+    cls = _POLICY_REGISTRIES["content_policy"].get(name)
+    if cls is None:
+        return None
+    return cls(**params)
+
+
 #: Every override key recognised by :func:`_apply_config_overrides`.
 #: Keep synchronised with the body below — the unit-test
 #: ``test_recognised_keys_are_the_documented_set`` asserts every key in this
@@ -1092,17 +1125,23 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
     if overrides.get("unwrap_input_key"):
         cfg["response_policy"] = "unwrap_input"
 
-    # Content format overrides
+    # Content format overrides. Both compare what the preset's policy
+    # already *does* (its ``format`` / ``supports_images``), not its registry
+    # name: a preset whose policy already meets the override keeps it, so
+    # ``supports_tool_images: false`` on a Gemini preset leaves ``gemini``
+    # (OpenAI-shaped, text-only, and the ``$ref`` wrap with it) in place
+    # rather than replacing it with the bare ``openai`` policy.
     fmt = overrides.get("tool_content_format")
     if fmt in ("anthropic", "openai"):
-        cfg["content_policy"] = fmt
+        current_policy = _current_content_policy(cfg)
+        if current_policy is None or current_policy.format != fmt:
+            cfg["content_policy"] = fmt
 
     if "supports_tool_images" in overrides:
-        current = cfg.get("content_policy", "openai")
-        if overrides["supports_tool_images"] and current != "anthropic":
-            cfg["content_policy"] = "anthropic"
-        elif not overrides["supports_tool_images"] and current != "openai":
-            cfg["content_policy"] = "openai"
+        wants_images = bool(overrides["supports_tool_images"])
+        current_policy = _current_content_policy(cfg)
+        if current_policy is None or current_policy.supports_images != wants_images:
+            cfg["content_policy"] = "anthropic" if wants_images else "openai"
 
     # Reasoning-codec constructor kwargs flow through the ordinary
     # ``{name, params}`` slot shape; this reroutes the legacy top-level

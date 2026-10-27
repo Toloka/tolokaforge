@@ -1330,13 +1330,13 @@ class LLMClient:
         object as ``{"content": "<the original text>"}``, so a converter in
         front of Gemini never places a part reference into
         ``function_response.response``. Every other policy, and any content
-        that is not a string, passes through unchanged. Read with a default so
-        an out-of-tree policy that predates the attribute keeps working.
+        that is not a string, passes through unchanged. The attribute is part
+        of the ``ToolContentPolicy`` surface; a registered policy without it is
+        refused at import (``_merge_out_of_tree_policy_registrations``).
         """
         if not isinstance(content, str):
             return content
-        policy = self.capabilities.content_policy
-        if getattr(policy, "wraps_part_reference_tool_results", False):
+        if self.capabilities.content_policy.wraps_part_reference_tool_results:
             return wrap_part_reference_tool_result(content)
         return content
 

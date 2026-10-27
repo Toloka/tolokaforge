@@ -1202,7 +1202,13 @@ presets:
     # that returns a JSON Schema fragment ends the trial at the next
     # call. Verified 2026-10-26 on gemini-3.8-flash, gemini-4-argon and
     # gemini-2.5-flash through the Gemini API. Every Gemini preset
-    # carries the policy (the model-specific entries above included).
+    # carries the policy (the model-specific entries above included), on
+    # every route: the Gemini API direct (the engine's own litellm has the
+    # converter), an OpenAI-format gateway in front of it, and OpenRouter,
+    # whose own converter happens to pass the raw object today. The wrap is
+    # by family rather than by route so a trial's wire shape does not
+    # depend on which converter sits in front of the model, and the only
+    # results it touches are the rare ones that carry such a ``$ref``.
     content_policy: gemini
     # Gemini's tool spec is a JSON-Schema subset (no $defs/$ref, no
     # oneOf/discriminator, dict-maps via additionalProperties not

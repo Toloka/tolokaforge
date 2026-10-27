@@ -135,10 +135,11 @@ def wrap_part_reference_tool_result(text: str) -> str:
     The original text survives verbatim inside the wrapper, so the model reads
     exactly what the tool returned; only the converter's structural view
     changes. Anything that is not JSON, or JSON without such a ``$ref``, passes
-    through untouched. JSON can spell the key with ``\\u`` escapes, so the
-    cheap pre-check lets those through to the parser as well.
+    through untouched. JSON text can spell the key's ``$`` only literally or as
+    ``\\u0024``, so the pre-check on those two spellings is exact and keeps every
+    other result (non-ASCII ``\\u`` escapes included) away from the parser.
     """
-    if "$ref" not in text and "\\u" not in text:
+    if "$" not in text and "\\u0024" not in text:
         return text
     if not text.lstrip().startswith(("{", "[")):
         return text

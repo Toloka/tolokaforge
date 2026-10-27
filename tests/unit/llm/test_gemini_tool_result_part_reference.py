@@ -15,7 +15,9 @@ The Gemini presets wire ``content_policy: gemini`` (``GeminiContent``):
 1. the pure wrap rule (``wrap_part_reference_tool_result``) — what is wrapped,
    what passes through, and that the original text survives verbatim;
 2. the wire: a Gemini client wraps, an OpenAI-preset client does not, on both
-   the plain-text and the content-blocks path;
+   the plain-text and the content-blocks path; the text-only capability
+   overrides keep the Gemini policy; a registration without the attribute is
+   refused at import;
 3. the end-to-end guard through litellm's own converter: the Gemini request
    built from the converted message holds no ``$ref`` key at any depth, and
    the model still receives the original text.
@@ -36,7 +38,7 @@ from tolokaforge.core.llm.content_policy import (
     contains_part_reference,
     wrap_part_reference_tool_result,
 )
-from tolokaforge.core.llm.presets import resolve_policy_names
+from tolokaforge.core.llm.presets import build_capabilities, resolve_policy_names
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 
 pytestmark = pytest.mark.unit
@@ -84,11 +86,20 @@ def _ref_keys(value: object) -> list[str]:
         json.dumps({"$ref": "#/$defs/X"}),
         json.dumps([{"a": {"$ref": "image_0.png"}}]),
         json.dumps({"deep": [[{"$ref": "x"}]]}),
-        # The key spelled with a \u escape — JSON text Gemini reads the same way.
+        # The key spelled with \u escapes — JSON text Gemini reads the same way.
         '{"\\u0024ref": "#/$defs/X"}',
+        '{"$\\u0072ef": "#/$defs/X"}',
         "  \n" + _SCHEMA_TEXT,
     ],
-    ids=["schema", "root", "list_root", "nested_lists", "u_escaped_key", "leading_space"],
+    ids=[
+        "schema",
+        "root",
+        "list_root",
+        "nested_lists",
+        "u_escaped_key",
+        "u_escaped_r",
+        "leading_space",
+    ],
 )
 def test_a_part_reference_at_any_depth_is_wrapped_verbatim(text: str) -> None:
     wrapped = wrap_part_reference_tool_result(text)
@@ -106,6 +117,7 @@ def test_a_part_reference_at_any_depth_is_wrapped_verbatim(text: str) -> None:
         json.dumps({"$ref": 12}),
         json.dumps({"$ref": None}),
         json.dumps({"note": 'see "$ref" in the schema'}),
+        json.dumps({"name": "Ünïcode \u2019 text"}),
         "Error: $ref not resolved",
         '{"not json": $ref}',
         "{}",
@@ -118,6 +130,7 @@ def test_a_part_reference_at_any_depth_is_wrapped_verbatim(text: str) -> None:
         "int_ref",
         "null_ref",
         "ref_inside_string",
+        "non_ascii_escapes",
         "non_json_text",
         "invalid_json",
         "empty_object",
@@ -207,17 +220,61 @@ def test_an_openai_preset_sends_the_result_unchanged() -> None:
     assert _tool_content(converted) == _SCHEMA_TEXT
 
 
-def test_a_policy_without_the_attribute_is_read_as_not_wrapping() -> None:
-    """An out-of-tree content policy that predates the attribute keeps working."""
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"supports_tool_images": False},
+        {"tool_content_format": "openai"},
+        {"supports_tool_images": False, "tool_content_format": "openai"},
+    ],
+    ids=["no_images", "openai_format", "both"],
+)
+def test_text_only_overrides_keep_the_gemini_policy(overrides: dict[str, Any]) -> None:
+    """``supports_tool_images: false`` / ``tool_content_format: openai`` describe
+    what ``GeminiContent`` already does, so they leave it (and the wrap) in
+    place instead of swapping in the bare ``openai`` policy by name."""
+    caps = build_capabilities("gemini/gemini-4-argon", "openai", overrides)
+    assert isinstance(caps.content_policy, GeminiContent)
+    assert resolve_policy_names(caps)["content_policy"] == "gemini"
+
+
+def test_image_overrides_still_move_a_gemini_preset_to_anthropic() -> None:
+    caps = build_capabilities("gemini/gemini-4-argon", "openai", {"supports_tool_images": True})
+    assert resolve_policy_names(caps)["content_policy"] == "anthropic"
+    caps = build_capabilities(
+        "gemini/gemini-4-argon", "openai", {"tool_content_format": "anthropic"}
+    )
+    assert resolve_policy_names(caps)["content_policy"] == "anthropic"
+
+
+def test_text_only_override_still_moves_an_anthropic_preset_to_openai() -> None:
+    caps = build_capabilities(
+        "anthropic/claude-sonnet-4.6", "anthropic", {"supports_tool_images": False}
+    )
+    assert resolve_policy_names(caps)["content_policy"] == "openai"
+
+
+def test_a_content_policy_without_the_attribute_is_refused_at_registration() -> None:
+    """The attribute is read on every request, so a registered policy that
+    lacks it fails at import, not with ``AttributeError`` mid-trial."""
+    from tolokaforge.core.llm import presets
 
     class LegacyContent:
         format = "openai"
         supports_images = False
 
-    client = LLMClient(ModelConfig(provider="openai", name="openai/gpt-5.5"))
-    object.__setattr__(client.capabilities, "content_policy", LegacyContent())
-    converted = client._convert_messages(system=None, messages=_tool_turn(_SCHEMA_TEXT))
-    assert _tool_content(converted) == _SCHEMA_TEXT
+    registries: dict[str, dict[str, type]] = {"content_policy": {}}
+    original_registries = presets._POLICY_REGISTRIES
+    original_loader = presets.load_policy_registrations
+    presets._POLICY_REGISTRIES = registries
+    presets.load_policy_registrations = lambda: {"content_policy": {"legacy": LegacyContent}}
+    try:
+        with pytest.raises(RuntimeError, match="wraps_part_reference_tool_results"):
+            presets._merge_out_of_tree_policy_registrations()
+    finally:
+        presets._POLICY_REGISTRIES = original_registries
+        presets.load_policy_registrations = original_loader
+    assert "legacy" not in registries["content_policy"]
 
 
 # ---------------------------------------------------------------------------
@@ -241,9 +298,8 @@ def test_the_gemini_request_holds_no_ref_key_and_the_model_reads_the_same_text()
 
     function_response = _gemini_function_response(converted)
     assert function_response["name"] == "api_search"
-    assert not _ref_keys(
-        function_response["response"]
-    ), "a $ref key in function_response.response is what the Gemini API refuses"
+    refs = _ref_keys(function_response["response"])
+    assert not refs, "a $ref key in function_response.response is what the Gemini API refuses"
     assert function_response["response"]["content"] == _SCHEMA_TEXT
 
 
