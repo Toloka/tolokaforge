@@ -5,9 +5,9 @@
 # an operations fact and reports it. The task declares a corpus via
 # `initial_state.rag.corpus_dir`; the corpus travels with the task and is
 # indexed into the rag-service per trial. The task declares no
-# `environment_manifest` — the rag-service is reached by Docker DNS on the
-# composed standalone stack (deploy/standalone/docker-compose.yaml), the same
-# way the mock_web_booking pack reaches mock-web.
+# `environment_manifest` — it searches on the rag_service backend, so the run's
+# auto-started engine stack includes the rag-service, reached by Docker DNS on
+# the runner network the same way the mock_web_booking pack reaches mock-web.
 #
 # See docs/PROJECTS.md for the full Project model.
 
