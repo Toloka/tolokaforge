@@ -26,9 +26,6 @@ pip install 'tolokaforge[otel]'      # the engine's extra resolves to this packa
 pip install tolokaforge-langfuse     # or on its own, next to an installed engine
 ```
 
-No release of this package is on PyPI yet (`docs/RELEASING.md`): until the first `langfuse-v*`
-tag, install it from this repository (`subdirectory = "tolokaforge_langfuse"` of a git source).
-
 The engine discovers the observer through the `tolokaforge.trial_observers` entry-point group
 (`langfuse = tolokaforge_langfuse.plugin:build`). Nothing else is registered; a run without
 `observability.tracing.exporter: otlp` and without `LANGFUSE_TRACING_ENABLED` gets no observer.

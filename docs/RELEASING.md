@@ -156,6 +156,12 @@ Publisher backend resolves the workflow's OIDC token against the entry above
 at publish time. No API token is stored in the repository. The TestPyPI
 counterpart follows the same shape under the `testpypi` environment.
 
+The `release` environment deploys only from tags matching its allowlist (Settings →
+Environments → `release` → Deployment branches and tags): `v*`, `models-v*`, `langfuse-v*`,
+`adapter-terminal-bench-v*`, `image-v*` and `image-v*-rc.*`. A publish triggered by a tag
+outside the list is rejected before its job starts ("not allowed to deploy to release due to
+environment protection rules"), so a new tag axis needs its pattern added before its first tag.
+
 ### TestPyPI dry run
 
 To validate the build + publish path without cutting a real release, run
@@ -187,10 +193,10 @@ rewrites `tolokaforge_langfuse/pyproject.toml` `[project].version` and
 [`publish-tolokaforge-langfuse.yml`](../.github/workflows/publish-tolokaforge-langfuse.yml)
 (build with `uv build --package tolokaforge-langfuse`, OIDC trusted publishing, GitHub Release).
 
-One-time setup before the first tag: create the `tolokaforge-langfuse` project on PyPI (and
-TestPyPI) with a trusted publisher pointing at this repository and the
-`publish-tolokaforge-langfuse.yml` workflow (environments `release` / `testpypi`, as for the
-models wheel).
+The PyPI and TestPyPI projects trust `publish-tolokaforge-langfuse.yml` in this repository
+(environments `release` / `testpypi`, as for the models wheel), and the `release` environment
+allows `langfuse-v*` tags (see "Trusted publisher configuration" above). The first release was
+`langfuse-v0.2.0`.
 
 ### The plugin contract version
 
@@ -202,14 +208,6 @@ changes; cut the engine release first, then the plugin's, so a deployment that m
 time sees a clear run-start error naming both versions rather than a mid-run failure. The engine's
 `otel` extra pins `tolokaforge-langfuse>=0.1.0,<1.0.0`: raise the lower bound in the engine
 release that changes the contract.
-
-**No plugin release exists yet.** The engine's `otel` extra is on PyPI (since 0.27.0) while
-`tolokaforge-langfuse` is not: no `langfuse-v*` tag has been cut and the PyPI project does not
-exist, so `pip install 'tolokaforge[otel]'` does not resolve from PyPI alone. Until the first
-release a consumer maps the wheel to this repository through its resolver, e.g. with uv:
-`tolokaforge-langfuse = { git = "https://github.com/Toloka/tolokaforge.git", subdirectory =
-"tolokaforge_langfuse", tag = "langfuse-vX.Y.Z" }` (a branch until a tag exists). The one-time
-PyPI setup above comes before the first tag.
 
 ## Docker images — `image-vX.Y.Z-rc.1` (auto) and `image-vX.Y.Z` (manual)
 
