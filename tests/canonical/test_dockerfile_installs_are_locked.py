@@ -53,7 +53,10 @@ _PLUGIN_WHEEL_RE = re.compile(r"/(?P<stem>tolokaforge_\w+)-\*\.whl")
 _PIP_EXECUTABLE_RE = re.compile(r"^pip(?:3(?:\.\d+)?)?$")
 _PIP_FETCH_SUBCOMMANDS = frozenset({"install", "wheel", "download"})
 _GUARD_SCRIPT = "locked_install_check.py"
-_LOCAL_PATH_PREFIXES = ("/", "./", "$")
+# The only shell variables an install may name: standalone sets both from an
+# ``ls /tmp/...`` of its own wheels in the same RUN. Any other ``$VAR`` could
+# expand to an index requirement the scan cannot see.
+_LOCAL_PATH_PREFIXES = ("/", "./", "${BASE_WHL}", "${PLUGIN_WHEELS}")
 
 
 @dataclass(frozen=True)
@@ -248,7 +251,8 @@ def _requirement_offences(requirement_text: str) -> list[str]:
     try:
         requirement = Requirement(requirement_text)
     except InvalidRequirement:
-        return [f"`{requirement_text}` is neither a local path (/, ./, $) nor a requirement"]
+        prefixes = ", ".join(_LOCAL_PATH_PREFIXES)
+        return [f"`{requirement_text}` is neither a local path ({prefixes}) nor a requirement"]
     name = canonicalize_name(requirement.name)
     if name in _first_party_names():
         return [f"first-party `{requirement_text}` installed by name, not by local wheel path"]
@@ -676,6 +680,13 @@ def test_a_locked_stage_passes() -> None:
             ),
             "is neither a local path",
             id="relative-path-without-dot-slash",
+        ),
+        pytest.param(
+            _LOCKED_STAGE.format(flags=_sdist_only_flags()).replace(
+                '"hatchling>=1.24,<2.0"', "${EXTRA_PKGS}"
+            ),
+            "is neither a local path",
+            id="unknown-shell-variable",
         ),
     ],
 )

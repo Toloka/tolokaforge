@@ -7,7 +7,10 @@ neither a dependency range nor a build backend resolves against live PyPI.
 ``uv add`` re-resolves and rewrites the lock, so it is refused. ``uvx``,
 ``uv tool install`` / ``uv tool run`` and ``uv run --with`` install outside the
 lock and are refused unless an exemption below names why the lock cannot hold
-the package. Every job that runs ``uv sync`` installs the uv version ci.yml
+the package, and so are ``pipx`` and ``uv pip sync``. A bare ``uv run`` locks
+and syncs the project first, so it must pass ``--locked``, ``--frozen``,
+``--no-sync`` or ``--no-project`` unless an earlier step of its job ran
+``uv sync --locked``. Every job that runs ``uv sync`` installs the uv version ci.yml
 pins, and ci.yml runs on every change to a workflow or the external adapter.
 """
 
@@ -33,10 +36,14 @@ _UV_PIP_INSTALL_RE = re.compile(r"\buv\s+pip\s+install\b")
 _UV_BUILD_RE = re.compile(r"\buv\s+build\b")
 _PIP_INSTALL_RE = re.compile(r"(?<!uv )\bpip(?:3(?:\.\d+)?)?\s+install\b")
 _UV_ADD_RE = re.compile(r"\buv\s+add\b")
+_UV_RUN_RE = re.compile(r"\buv\s+run\b")
+_UV_RUN_LOCKED_FLAGS = frozenset({"--locked", "--frozen", "--no-sync", "--no-project"})
 _OUTSIDE_LOCK_RES = (
     ("`uvx`", re.compile(r"\buvx\b")),
     ("`uv tool`", re.compile(r"\buv\s+tool\s+(?:install|run)\b")),
     ("`uv run --with`", re.compile(r"\buv\s+run\b.*\s--with\b")),
+    ("`pipx`", re.compile(r"\bpipx\s+(?:install|run|inject)\b")),
+    ("`uv pip sync`", re.compile(r"\buv\s+pip\s+sync\b")),
 )
 _CI_REQUIRED_TRIGGER_PATHS = frozenset({".github/workflows/**", "external_adapters/**"})
 
@@ -52,6 +59,7 @@ _OUTSIDE_LOCK_EXEMPTIONS: dict[tuple[str, str], str] = {
 class _Command:
     workflow: str
     text: str
+    after_locked_sync: bool = False
 
 
 def _logical_lines(script: str) -> Iterator[str]:
@@ -72,14 +80,22 @@ def _logical_lines(script: str) -> Iterator[str]:
 def _commands(workflow: str, doc: object) -> Iterator[_Command]:
     assert isinstance(doc, dict), f"{workflow}: not a workflow mapping"
     for job in doc.get("jobs", {}).values():
+        after_locked_sync = False
         for step in job.get("steps", []):
             script = step.get("run")
             if not isinstance(script, str):
                 continue
-            for line in _logical_lines(script):
-                for segment in _COMMAND_SEPARATOR_RE.split(line):
-                    if segment.strip():
-                        yield _Command(workflow, segment.strip())
+            step_commands = [
+                segment.strip()
+                for line in _logical_lines(script)
+                for segment in _COMMAND_SEPARATOR_RE.split(line)
+                if segment.strip()
+            ]
+            for text in step_commands:
+                yield _Command(workflow, text, after_locked_sync)
+            after_locked_sync = after_locked_sync or any(
+                _UV_SYNC_RE.search(text) and "--locked" in text.split() for text in step_commands
+            )
 
 
 def _constrained(text: str) -> bool:
@@ -101,6 +117,12 @@ def _unlocked(command: _Command) -> str | None:
     for label, pattern in _OUTSIDE_LOCK_RES:
         if pattern.search(text) and _outside_lock_exemption(command) is None:
             return f"{label} installs outside uv.lock and has no exemption"
+    if (
+        _UV_RUN_RE.search(text)
+        and not command.after_locked_sync
+        and _UV_RUN_LOCKED_FLAGS.isdisjoint(text.split())
+    ):
+        return "`uv run` syncs the project without `--locked` and no earlier `uv sync --locked`"
     return None
 
 
@@ -176,6 +198,10 @@ def test_every_outside_lock_exemption_still_matches_a_command() -> None:
         ("uv tool install ruff", "`uv tool` installs outside"),
         ("uv tool run ruff check", "`uv tool` installs outside"),
         ("uv add litellm", "`uv add` re-resolves"),
+        ("uv run python -c 'print(1)'", "`uv run` syncs the project without `--locked`"),
+        ("pipx install ruff", "`pipx` installs outside"),
+        ("pipx run ruff check", "`pipx` installs outside"),
+        ("uv pip sync requirements.txt", "`uv pip sync` installs outside"),
     ],
 )
 def test_an_unlocked_command_is_rejected(script: str, reason: str) -> None:
@@ -193,9 +219,21 @@ def test_a_locked_command_passes() -> None:
         f"uv build --wheel --build-constraint {_CONSTRAINTS}\n"
         f"python -m pip install -c {_CONSTRAINTS} dist/a.whl\n"
         "uv run --locked pytest\n"
+        "uv run --no-project python -c 1\n"
     )
     workflow = yaml.safe_dump({"jobs": {"build": {"steps": [{"run": script}]}}})
     assert find_unlocked_installs("synthetic.yml", workflow) == []
+
+
+def test_a_bare_uv_run_passes_only_after_a_locked_sync_in_its_job() -> None:
+    sync = {"run": "uv sync --dev --locked"}
+    run = {"run": "uv run pytest"}
+    workflow = yaml.safe_dump(
+        {"jobs": {"synced": {"steps": [sync, run]}, "unsynced": {"steps": [run, sync]}}}
+    )
+    offenders = find_unlocked_installs("synthetic.yml", workflow)
+    assert len(offenders) == 1, offenders
+    assert "`uv run` syncs the project" in offenders[0]
 
 
 def _ci_trigger_paths(event: str) -> frozenset[str]:

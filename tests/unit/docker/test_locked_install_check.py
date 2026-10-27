@@ -73,17 +73,21 @@ def test_committed_file_parses_to_the_same_pins_as_the_lock_reader() -> None:
 @pytest.mark.parametrize(
     ("environment", "installed_version", "expected"),
     [
-        (LINUX, "2.14.1", ["torch 2.14.1: constraints pin 2.14.1+cpu"]),
-        (LINUX, "2.14.1+cpu", []),
-        (DARWIN, "2.14.1", []),
-        (DARWIN, "2.14.1+cpu", ["torch 2.14.1+cpu: constraints pin 2.14.1"]),
+        (LINUX, "9.9.9", ["torch 9.9.9: constraints pin 9.9.9+cpu"]),
+        (LINUX, "9.9.9+cpu", []),
+        (DARWIN, "9.9.9", []),
+        (DARWIN, "9.9.9+cpu", ["torch 9.9.9+cpu: constraints pin 9.9.9"]),
     ],
     ids=["linux-plain", "linux-cpu", "darwin-plain", "darwin-cpu"],
 )
 def test_torch_pin_is_chosen_by_marker(
     environment: dict[str, str], installed_version: str, expected: list[str]
 ) -> None:
-    applicable = guard.applicable_pins(_committed_pins(), environment)
+    """The lock pins torch per platform: plain on macOS, the ``+cpu`` build elsewhere."""
+    pins = guard.parse_constraints(
+        "torch==9.9.9 ; sys_platform == 'darwin'\n" "torch==9.9.9+cpu ; sys_platform != 'darwin'\n"
+    )
+    applicable = guard.applicable_pins(pins, environment)
     assert _offenders([InstalledDist("torch", installed_version, INDEX)], applicable) == expected
 
 

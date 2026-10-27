@@ -67,9 +67,9 @@ The image sets `PIP_CONSTRAINT` and `PIP_BUILD_CONSTRAINT` to
 was built from, so a derived image's `pip install` pins every third-party package
 the lock pins to the version the engine was tested with. First-party plugins —
 `tolokaforge-langfuse` and the terminal-bench adapter — are not in the
-constraints: a derived `pip install 'tolokaforge[adapters]'` takes the adapter
-from an index, unpinned, and `tolokaforge[otel]` finds no `tolokaforge-langfuse`
-on PyPI at all. Build with `TOLOKAFORGE_EXTRAS` below to get them pinned and built
+constraints: a derived `pip install 'tolokaforge[otel]'` or
+`'tolokaforge[adapters]'` takes them from whatever index serves that name,
+unpinned and unchecked. Build with `TOLOKAFORGE_EXTRAS` below to get them pinned and built
 from the image's own source. A package the lock does not
 list still resolves live, and `uv pip` reads neither variable. To install outside
 the lock, clear both for that one command:

@@ -146,7 +146,7 @@ def parse_constraints(text: str) -> list[Pin]:
             marker_text = match.group("marker")
             marker = markers.Marker(marker_text) if marker_text else None
         except (version.InvalidVersion, markers.InvalidMarker) as exc:
-            raise GuardError(f"line {number}: {exc}: {line!r}")
+            raise GuardError(f"line {number}: {exc}: {line!r}") from exc
         pins.append(Pin(normalize_name(match.group("name")), match.group("version"), marker))
     return pins
 
@@ -308,7 +308,7 @@ def _origin(dist: metadata.Distribution, name: str) -> tuple[Origin, str | None]
     try:
         url = json.loads(direct_url)["url"]
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise GuardError(f"{name}: unreadable direct_url.json ({exc!r}): {direct_url!r}")
+        raise GuardError(f"{name}: unreadable direct_url.json ({exc!r}): {direct_url!r}") from exc
     if not isinstance(url, str) or not url.startswith("file://"):
         return Origin.INDEX, None
     return _local_wheel_origin(dist, Path(unquote(urlparse(url).path)))
@@ -342,7 +342,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             text = args.constraints.read_text(encoding="utf-8")
         except OSError as exc:
-            raise GuardError(f"cannot read constraints file {args.constraints}: {exc}")
+            raise GuardError(f"cannot read constraints file {args.constraints}: {exc}") from exc
         environment = _packaging_module("markers").default_environment()
         applicable = applicable_pins(parse_constraints(text), environment)
         installed = installed_distributions()

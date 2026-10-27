@@ -29,8 +29,8 @@
 # PIP_CONSTRAINT and PIP_BUILD_CONSTRAINT pointing at it, so a derived image's
 # `pip install` pins every third-party package the lock pins. The constraints
 # hold no first-party distribution: a derived `pip install` takes the
-# terminal-bench adapter from an index, unpinned, and finds no
-# tolokaforge-langfuse on PyPI at all. A package the lock does not list also
+# langfuse plugin and the terminal-bench adapter from whatever index serves
+# those names, unpinned and unchecked. A package the lock does not list also
 # resolves live, and `uv pip` reads neither variable.
 # Opt out per command with `PIP_CONSTRAINT= PIP_BUILD_CONSTRAINT= pip install ...`.
 #
@@ -142,8 +142,8 @@ COPY --from=wheel-builder /src/external_adapters/tolokaforge-adapter-terminal-be
 
 # Lean-base extras, comma-separated. Override with --build-arg
 # TOLOKAFORGE_EXTRAS=... to add office/adapters/otel: this is how otel and
-# adapters get their first-party wheels from this image's source, which a
-# post-build `pip install` cannot (tolokaforge-langfuse is not on PyPI). Declared
+# adapters get their first-party wheels from this image's source; a
+# post-build `pip install` takes them from an index unpinned. Declared
 # here so the layers above are shared by every extras value.
 ARG TOLOKAFORGE_EXTRAS="dx,server,rag,runner"
 

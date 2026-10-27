@@ -44,7 +44,7 @@ jobs:
           ls -lh dist/
           echo ""
           echo "=== Wheel contents ==="
-          uv run python -c "
+          python3 -c "
           import zipfile
           for f in sorted(__import__('pathlib').Path('dist').glob('*.whl')):
               print(f'--- {f.name} ---')

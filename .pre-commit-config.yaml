@@ -7,19 +7,24 @@
 exclude: ^(contrib/|tests/data/projects/|examples/terminal_bench/)
 
 repos:
-  # Ruff - Fast Python linter (linting only, not formatting)
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.4  # Must match pyproject.toml [project.optional-dependencies.dev]
+  # Ruff (linting only, not formatting) and black run from the uv.lock dev
+  # environment: a hook repo would have pre-commit pip-install them and their
+  # dependencies from live PyPI.
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix, --config, pyproject.toml]
+        name: ruff
+        entry: uv run ruff check --force-exclude --fix --config pyproject.toml
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
 
-  # Black - Python code formatter
-  - repo: https://github.com/psf/black
-    rev: 26.3.1  # Must match pyproject.toml [project.optional-dependencies.dev]
-    hooks:
       - id: black
-        args: [--config, pyproject.toml]
+        name: black
+        entry: uv run black --config pyproject.toml
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
 
   # actionlint - GitHub Actions workflow linter. The only automated pre-merge
   # gate on workflow YAML/expression correctness (publish-images.yml's real push
