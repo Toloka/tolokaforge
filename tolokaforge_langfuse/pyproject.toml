@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge-langfuse"
-version = "0.1.0"
+version = "0.2.0"
 description = "Langfuse live tracing for tolokaforge: the OTLP trial observer, the trial-end projection of a trial bundle and the deployment profile."
 requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
