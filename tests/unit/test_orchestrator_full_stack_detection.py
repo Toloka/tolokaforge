@@ -174,7 +174,7 @@ def _task_with_tool_blocks(agent: dict, user: dict | None = None) -> TaskConfig:
 
 
 class TestAnHttpRequestThatReachesMockWeb:
-    """``http_request`` requests mock-web on its default hosts (#1935).
+    """``http_request`` requests mock-web on its default hosts.
 
     A task that enables it with no ``allowed_hosts``, or with mock-web among them,
     calls ``http://mock-web:8080``; on a core stack that request has no service to
@@ -222,6 +222,29 @@ class TestAnHttpRequestThatReachesMockWeb:
 
     def test_a_user_declared_http_request_triggers_full_stack(self):
         assert _tasks_need_full_stack([_task(user_tools=["http_request"])]) is True
+
+    def test_a_user_on_the_default_hosts_triggers_full_stack_past_an_agent_on_others(self):
+        task = _task_with_tool_blocks(
+            {"enabled": ["http_request"], "http_request": {"allowed_hosts": ["crm:8000"]}},
+            user={"enabled": ["http_request"]},
+        )
+        assert _tasks_need_full_stack([task]) is True
+
+    def test_an_http_request_an_mcp_server_serves_keeps_the_core_stack(self):
+        task = _task_with_tool_blocks({"enabled": ["http_request"], "mcp_server": "server.py"})
+        assert _tasks_need_full_stack([task]) is False
+
+    def test_a_user_http_request_the_agents_mcp_server_serves_keeps_the_core_stack(self):
+        task = _task_with_tool_blocks(
+            {"enabled": ["bash"], "mcp_server": "server.py"},
+            user={"enabled": ["http_request"]},
+        )
+        assert _tasks_need_full_stack([task]) is False
+
+    def test_a_block_that_is_not_a_mapping_is_refused_naming_the_task(self):
+        task = _task_with_tool_blocks({"enabled": ["http_request"], "http_request": "mock-web"})
+        with pytest.raises(ValueError, match=r"tools\.agent\.http_request.*task 't'"):
+            _tasks_need_full_stack([task])
 
     def test_a_host_list_without_the_tool_enabled_keeps_the_core_stack(self):
         task = _task_with_tool_blocks(

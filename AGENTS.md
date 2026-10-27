@@ -140,7 +140,7 @@ tolokaforge validate --tasks "tasks/**/task.yaml"
 
 ### Local Services
 
-Tasks that need environment services start them with Docker. The core stack (`make docker-up`) is db-service + runner only — it serves JSON DB tasks. **Browser and RAG tasks need the full stack** (adds rag-service + mock-web); there is no `make` target for it, so start it with `tolokaforge docker up --profile full`.
+Tasks that need environment services start them with Docker. The core stack (`make docker-up`) is db-service + runner only — it serves JSON DB tasks. **Browser, RAG, and mock-web `http_request` tasks need the full stack** (adds rag-service + mock-web); there is no `make` target for it, so start it with `tolokaforge docker up --profile full`.
 
 ```bash
 make docker-build-core              # Build core images (db-service + runner)

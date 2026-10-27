@@ -18,9 +18,9 @@ agent → search_kb → rag-service  (/trials/{id}/search over the per-trial ind
   (`rag/corpus`). The corpus's `.md` files travel with the task in
   `tool_artifacts` and are indexed into the rag-service per trial; the
   rag-service is reached by Docker DNS on the full standalone stack
-  (`deploy/standalone/docker-compose.yaml`), the same way `mock_web_booking`
-  reaches mock-web — the runner's own network wires the peer, not a per-task
-  manifest.
+  (`deploy/standalone/docker-compose.yaml`) — the runner's own network wires
+  the peer, not a per-task manifest, the same way `mock_web_booking` reaches
+  mock-web.
 - **A retrieval-only fact.** The Halden substation's emergency failover
   authorization code, `HX49-QORVEN-7731`, lives in exactly one corpus document
   and on no agent-visible surface — not the task text, not any initial state.

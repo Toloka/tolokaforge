@@ -51,7 +51,7 @@ def test_task_loads_and_enables_http_request_to_mock_web() -> None:
 
 
 def test_the_run_starts_a_stack_that_serves_mock_web() -> None:
-    """An auto-started run of the pack gets mock-web (#1935).
+    """An auto-started run of the pack gets mock-web.
 
     The pack's only mock-web signal is its ``http_request`` allow-list; a core
     stack would leave every booking request with no service to reach.

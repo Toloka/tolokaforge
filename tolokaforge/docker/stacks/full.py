@@ -146,7 +146,7 @@ def full_stack(
         network_aliases=["rag-service"],
     )
 
-    # Mock Web Service — for browser tasks. Build-context fields come from
+    # Mock Web Service — for browser, mobile and http_request tasks. Build-context fields come from
     # get_image_definition (see builder.py); its narrow ``context_files`` (the
     # service dir only) keeps the build-context hash from churning on unrelated
     # repo edits.
