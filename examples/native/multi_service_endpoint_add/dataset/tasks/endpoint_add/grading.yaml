@@ -1,23 +1,95 @@
 # Three-way weighted grading for endpoint_add.
 #
-#   state_checks     (0.5) — the decisive floor: the real test result. The
-#     testrunner writes `test_result.txt` = PASS only when the whole suite
-#     (including the summary target) passes; FAIL contains no "PASS" substring.
+#   trace_checks     (0.5) — the decisive floor: the real test result, taken from the
+#     testrunner's own POST /run-tests response in the trial trace. The testrunner runs
+#     the suite and returns {"passed": true/false, ...}; the runner records that
+#     response as the http_request tool result, which the agent cannot fabricate or
+#     overwrite. A gate shuts the trial unless a real passing /run-tests exists; a
+#     second gate shuts it if a write_file call targeted tests/ (the task forbids
+#     editing the suite, and an edited suite would report a genuine pass); and a scored
+#     freshness check scores 0 unless that pass is the agent's last /run-tests call (a
+#     later failure, HTTP error or timeout sinks it).
 #   transcript_rules (0.2) — the agent edited code (write_file) and ran the suite
 #     (http_request → /run-tests), within the turn budget.
 #   llm_judge        (0.3) — code quality of the added endpoint.
 #
-# Weight 0.5 on state_checks is decisive: transcript_rules + llm_judge sum to
-# 0.5 < 0.6, so a run whose tests do not pass cannot reach threshold.
+# transcript_rules + llm_judge sum to 0.5 < 0.6, so only trace_checks can carry a run
+# over the threshold. A run with no passing /run-tests, or one with a write_file under
+# tests/, fails a gate outright; a run whose pass was followed by a failing, erroring or
+# timed-out /run-tests keeps the gates but scores 0 on the freshness check. Either way
+# it cannot reach threshold.
+#
+# Why not grade a marker file? The testrunner also writes test_result.txt into the
+# shared `source` volume as a human-readable convenience, but that file lives in the
+# agent's /work tree and the write_file tool can overwrite it, so grading must not
+# trust it: an agent whose suite failed can write PASS into that file and be graded as
+# if it passed. The /run-tests response in the trace carries the same result without
+# that exposure.
+#
+# Limitation: the suite imports and runs the agent's app.py in-process, so code the
+# agent writes there can still influence the run (for example by exiting the process
+# early with status 0, or by writing files itself). These checks close the marker and
+# direct write_file edits under tests/; they do not sandbox the code under test. The
+# llm_judge reviews the final app.py.
+#
+# The result text is the http_request tool's rendering of the JSON body:
+#   Status: <code>\nResponse (JSON):\n{'passed': True, 'returncode': ..., 'output': ...}
+# The verdict matchers are anchored to the start of the result (\A...), not a bare
+# substring, so suite output the agent can influence (a traceback, a printed dict in
+# the `output` field) cannot spoof the verdict.
 combine:
   method: weighted
-  weights: { state_checks: 0.5, transcript_rules: 0.2, llm_judge: 0.3 }
+  weights: { trace_checks: 0.5, transcript_rules: 0.2, llm_judge: 0.3 }
   pass_threshold: 0.6
-state_checks:
-  jsonpaths:
-    - path_glob: "/env/fs/agent-visible/test_result.txt"
-      contains_ci: "PASS"
-      description: "the real test suite passed (testrunner wrote PASS)"
+trace_checks:
+  constraints:
+    - id: a_run_tests_call_reported_the_suite_passed
+      description: "a successful POST /run-tests returned the testrunner's own verdict that the suite passed; the runner records this result and the agent cannot fabricate it"
+      severity: gate
+      require:
+        present:
+          match:
+            kind: tool_call
+            tool: { equals: http_request }
+            status: { equals: success }
+            args:
+              url: { equals: "http://testrunner:8000/run-tests" }
+              method: { equals: "POST" }
+            result: { regex: "\\AStatus: \\d+\\s+Response \\(JSON\\):\\s+\\{'passed': True(,|\\})" }
+    - id: no_write_file_call_under_tests
+      description: "no write_file call targeted a path under tests/: the suite is the contract and runs from the agent's writable tree, so a weakened or added test would report a genuine pass. This sees direct tool writes only, not files written by code the suite runs"
+      severity: gate
+      require:
+        absent:
+          match:
+            kind: tool_call
+            tool: { equals: write_file }
+            args:
+              path: { regex: "(^|[/\\s])tests(/|$)" }
+    - id: no_failing_run_tests_call_followed_the_last_pass
+      description: "the agent's last /run-tests call is the passing one: every /run-tests that did not report a pass (a failing suite, an HTTP error, a timeout) precedes the last passing one, so a transient pass that was later broken scores 0"
+      on_missing: pass
+      require:
+        before:
+          left:
+            quantifier: last
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              args:
+                url: { equals: "http://testrunner:8000/run-tests" }
+                method: { equals: "POST" }
+              result: { not_regex: "\\AStatus: \\d+\\s+Response \\(JSON\\):\\s+\\{'passed': True(,|\\})" }
+          right:
+            quantifier: last
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              status: { equals: success }
+              args:
+                url: { equals: "http://testrunner:8000/run-tests" }
+                method: { equals: "POST" }
+              result: { regex: "\\AStatus: \\d+\\s+Response \\(JSON\\):\\s+\\{'passed': True(,|\\})" }
 transcript_rules:
   max_turns: 25
   required_actions:
