@@ -36,7 +36,7 @@ A real run executes `cz bump`, which:
 1. Bumps `[project].version` in `pyproject.toml`.
 2. Regenerates `CHANGELOG.md` from the Conventional Commit history.
 3. Relocks `uv.lock` to the new version (a commitizen pre-bump hook) and folds it
-   into the release commit.
+   into the release commit (see [Relocking `uv.lock`](#relocking-uvlock)).
 4. Commits `chore(release): bump version to X.Y.Z`.
 5. Creates and pushes the annotated `vX.Y.Z` tag.
 
@@ -47,8 +47,9 @@ desync the two.
 Pushing the `vX.Y.Z` tag then triggers two tag-driven workflows automatically:
 
 - [`publish-tolokaforge.yml`](../.github/workflows/publish-tolokaforge.yml) —
-  builds the wheel + sdist and publishes them to PyPI via OIDC trusted
-  publishing (no stored token), then creates a GitHub Release.
+  builds the wheel + sdist with the locked build backend (see
+  [Relocking `uv.lock`](#relocking-uvlock)) and publishes them to PyPI via
+  OIDC trusted publishing (no stored token), then creates a GitHub Release.
 - [`release-gate.yml`](../.github/workflows/release-gate.yml) — runs lint, task
   validation, and the unit / canonical / integration test lanes against the
   tagged commit.
@@ -155,6 +156,12 @@ Publisher backend resolves the workflow's OIDC token against the entry above
 at publish time. No API token is stored in the repository. The TestPyPI
 counterpart follows the same shape under the `testpypi` environment.
 
+The `release` environment deploys only from tags matching its allowlist (Settings →
+Environments → `release` → Deployment branches and tags): `v*`, `models-v*`, `langfuse-v*`,
+`adapter-terminal-bench-v*`, `image-v*` and `image-v*-rc.*`. A publish triggered by a tag
+outside the list is rejected before its job starts ("not allowed to deploy to release due to
+environment protection rules"), so a new tag axis needs its pattern added before its first tag.
+
 ### TestPyPI dry run
 
 To validate the build + publish path without cutting a real release, run
@@ -186,10 +193,10 @@ rewrites `tolokaforge_langfuse/pyproject.toml` `[project].version` and
 [`publish-tolokaforge-langfuse.yml`](../.github/workflows/publish-tolokaforge-langfuse.yml)
 (build with `uv build --package tolokaforge-langfuse`, OIDC trusted publishing, GitHub Release).
 
-One-time setup before the first tag: create the `tolokaforge-langfuse` project on PyPI (and
-TestPyPI) with a trusted publisher pointing at this repository and the
-`publish-tolokaforge-langfuse.yml` workflow (environments `release` / `testpypi`, as for the
-models wheel).
+The PyPI and TestPyPI projects trust `publish-tolokaforge-langfuse.yml` in this repository
+(environments `release` / `testpypi`, as for the models wheel), and the `release` environment
+allows `langfuse-v*` tags (see "Trusted publisher configuration" above). The first release was
+`langfuse-v0.2.0`.
 
 ### The plugin contract version
 
@@ -201,14 +208,6 @@ changes; cut the engine release first, then the plugin's, so a deployment that m
 time sees a clear run-start error naming both versions rather than a mid-run failure. The engine's
 `otel` extra pins `tolokaforge-langfuse>=0.1.0,<1.0.0`: raise the lower bound in the engine
 release that changes the contract.
-
-**No plugin release exists yet.** The engine's `otel` extra is on PyPI (since 0.27.0) while
-`tolokaforge-langfuse` is not: no `langfuse-v*` tag has been cut and the PyPI project does not
-exist, so `pip install 'tolokaforge[otel]'` does not resolve from PyPI alone. Until the first
-release a consumer maps the wheel to this repository through its resolver, e.g. with uv:
-`tolokaforge-langfuse = { git = "https://github.com/Toloka/tolokaforge.git", subdirectory =
-"tolokaforge_langfuse", tag = "langfuse-vX.Y.Z" }` (a branch until a tag exists). The one-time
-PyPI setup above comes before the first tag.
 
 ## Docker images — `image-vX.Y.Z-rc.1` (auto) and `image-vX.Y.Z` (manual)
 
@@ -292,6 +291,35 @@ multi-arch `standalone` — **without** logging in or pushing: a safe pre-check
 that the Dockerfiles and wheel still build. Set `publish: true` on that same
 dispatch to turn it into the off-cycle real publish described under *Standalone
 publish cadence* above.
+
+## Relocking `uv.lock`
+
+`tolokaforge/docker/image-constraints.txt` is `uv.lock` exported as pip
+constraints; image builds and CI installs run under it. Every workflow
+`uv build` — the five publish workflows and CI's `wheel-install-gate` — passes
+it as `--build-constraint`, so the build backend (`hatchling`, `packaging`) is
+the locked version, and the release workflows install commitizen with
+`uv sync --locked` under uv 0.9.5, the version CI pins. The `image-constraints`
+pre-commit hook regenerates it whenever `uv.lock` changes, and
+`tests/canonical/test_image_constraints_match_lock.py` fails when the two
+disagree. Commit the regenerated file with the lock:
+
+```bash
+uvx uv@0.9.5 lock
+uv run pre-commit run image-constraints --files uv.lock
+```
+
+Relock with uv 0.9.5, the version CI pins: `[tool.uv] required-version` admits
+every 0.9.x, and another uv may write a different lock or export. CI runs the
+hook under 0.9.5, so a diff it reports is the 0.9.5 export.
+
+The commitizen pre-bump relocks of the three release workflows move only
+workspace members' versions, which the export omits, so release commits leave
+the constraints file unchanged.
+
+Every `uv lock`, the release workflows' relocks included, reaches
+`https://download.pytorch.org/whl/cpu`: the `image-services` dependency group
+resolves `torch` from that index.
 
 ## Typical order
 

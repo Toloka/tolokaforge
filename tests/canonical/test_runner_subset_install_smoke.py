@@ -70,6 +70,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils.image_constraints import IMAGE_CONSTRAINTS_PATH
 from tests.utils.wheel_builds import build_models_wheel, build_subset_wheel
 
 pytestmark = pytest.mark.canonical
@@ -151,11 +152,10 @@ def scratch_venv_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
     # ``--no-deps`` would be wrong here — the smoke's whole point is to prove
     # a real install off the subset wheel produces a working runner
-    # environment, including the ``Requires-Dist`` closure. GitHub #829's
-    # symptom (``protobuf==6.x`` resolved instead of the 7.x floor the
-    # generated ``runner_pb2`` requires) reproduces here without the
-    # ``protobuf>=7.35.1`` constraint the same PR adds to
-    # ``[project.dependencies]``. ``uv pip install`` is used for its
+    # environment, including the ``Requires-Dist`` closure. Third-party deps
+    # resolve under the ``uv.lock`` export, so the venv holds the versions the
+    # runner image installs; a ``Requires-Dist`` range the lock's pin does not
+    # satisfy fails the install. ``uv pip install`` is used for its
     # resolver speed (order-of-magnitude faster than ``python -m pip`` cold
     # + warm) so the whole smoke stays inside the canonical lane's
     # ~30s-warm budget; ``uv`` is a project-wide hard dependency (see
@@ -173,6 +173,8 @@ def scratch_venv_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "--python",
             str(venv_python),
             "--quiet",
+            "--constraint",
+            str(IMAGE_CONSTRAINTS_PATH),
             str(wheel),
             str(models_wheel),
         ]
@@ -184,6 +186,8 @@ def scratch_venv_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "install",
             "--quiet",
             "--disable-pip-version-check",
+            "-c",
+            str(IMAGE_CONSTRAINTS_PATH),
             str(wheel),
             str(models_wheel),
         ]

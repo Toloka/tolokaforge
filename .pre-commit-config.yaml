@@ -7,19 +7,24 @@
 exclude: ^(contrib/|tests/data/projects/|examples/terminal_bench/)
 
 repos:
-  # Ruff - Fast Python linter (linting only, not formatting)
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.4  # Must match pyproject.toml [project.optional-dependencies.dev]
+  # Ruff (linting only, not formatting) and black run from the uv.lock dev
+  # environment: a hook repo would have pre-commit pip-install them and their
+  # dependencies from live PyPI.
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix, --config, pyproject.toml]
+        name: ruff
+        entry: uv run ruff check --force-exclude --fix --config pyproject.toml
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
 
-  # Black - Python code formatter
-  - repo: https://github.com/psf/black
-    rev: 26.3.1  # Must match pyproject.toml [project.optional-dependencies.dev]
-    hooks:
       - id: black
-        args: [--config, pyproject.toml]
+        name: black
+        entry: uv run black --config pyproject.toml
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
 
   # actionlint - GitHub Actions workflow linter. The only automated pre-merge
   # gate on workflow YAML/expression correctness (publish-images.yml's real push
@@ -42,3 +47,13 @@ repos:
         pass_filenames: false
         always_run: true
         types: [python]
+
+      # Image and CI installs run under tolokaforge/docker/image-constraints.txt,
+      # the lock exported as pip constraints; this hook is its only generator.
+      # tests/canonical/test_image_constraints_match_lock.py checks it against uv.lock.
+      - id: image-constraints
+        name: Export uv.lock to image constraints
+        entry: uv --quiet export --format requirements.txt --frozen --all-packages --all-extras --all-groups --no-emit-workspace --no-hashes --no-annotate -o tolokaforge/docker/image-constraints.txt
+        language: system
+        files: ^uv\.lock$
+        pass_filenames: false

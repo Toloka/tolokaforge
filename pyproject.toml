@@ -115,10 +115,10 @@ dependencies = [
     # which the recommended task authoring pattern (FastMCP server subprocess)
     # does.
     # Upper-bounded on the major: ``mcp.server.fastmcp``, the one module
-    # ``core/tools_interface.py`` imports, does not exist in 2.x. The runner
-    # image installs the wheel with pip and resolves this range itself rather
-    # than reading uv.lock, so an unbounded range there resolves a version whose
-    # every tool call fails inside the container while the host venv is fine.
+    # ``core/tools_interface.py`` imports, does not exist in 2.x. First-party
+    # images install the uv.lock version, but a plain ``pip install tolokaforge``
+    # resolves this range itself, and an unbounded range there resolves a version
+    # whose every tool call fails.
     "mcp>=1.0,<2",
     # The ``linear`` grading regex engine (RE2) behind
     # :mod:`tolokaforge.core.grading.regex_engine` (ADR-0055). The runner
@@ -495,8 +495,26 @@ packages = [
 # needs a packaged copy on a wheel install where the repo root is absent.
 "tolokaforge_coding_harnesses/pyproject.toml" = "tolokaforge/_subset_build/tolokaforge_coding_harnesses/pyproject.toml"
 "tolokaforge_coding_harnesses/src" = "tolokaforge/_subset_build/tolokaforge_coding_harnesses/src"
+# The standalone Dockerfile builds the langfuse plugin and the terminal-bench
+# adapter wheels in-container for the extras that require them, and every
+# target-wheel build of this pyproject (grader, trial_node, standalone) needs
+# these trees present because this table names them. Force-include is not
+# subject to ``[tool.hatch.build].exclude``, so ``external_adapters/**`` there
+# does not drop the adapter copy.
+"tolokaforge_langfuse/pyproject.toml" = "tolokaforge/_subset_build/tolokaforge_langfuse/pyproject.toml"
+"tolokaforge_langfuse/src" = "tolokaforge/_subset_build/tolokaforge_langfuse/src"
+"external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml" = "tolokaforge/_subset_build/external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml"
+"external_adapters/tolokaforge-adapter-terminal-bench/src" = "tolokaforge/_subset_build/external_adapters/tolokaforge-adapter-terminal-bench/src"
 
 [tool.hatch.build.targets.sdist]
+
+# The release workflows' ``uv build`` makes the wheel from the sdist, so the
+# sdist must carry every tree the wheel force-includes. The shared
+# ``[tool.hatch.build].exclude`` drops ``external_adapters/**`` from the sdist
+# too, so ship back exactly the adapter files the wheel table names.
+[tool.hatch.build.targets.sdist.force-include]
+"external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml" = "external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml"
+"external_adapters/tolokaforge-adapter-terminal-bench/src" = "external_adapters/tolokaforge-adapter-terminal-bench/src"
 
 # =============================================================================
 # Runner-subset wheel — Docker-only build artifact, NEVER published to PyPI.
@@ -833,6 +851,14 @@ dev = [
     "click-repl>=0.3.0",
     "prompt-toolkit>=3.0.51",
 ]
+# Packages first-party Docker images install that no extra declares. Never installed
+# by `uv sync`; listing them puts them in uv.lock, so tolokaforge/docker/image-constraints.txt
+# pins them for image builds.
+image-services = [
+    "sentence-transformers>=2.2.0",
+    "torch",
+    "supervisor>=4.2,<5",
+]
 
 # =============================================================================
 # UV Configuration
@@ -871,8 +897,15 @@ tolokaforge-adapter-terminal-bench = { workspace = true }
 tolokaforge-coding-harnesses = { workspace = true }
 tolokaforge-models = { workspace = true }
 tolokaforge-langfuse = { workspace = true }
+torch = [{ index = "pytorch-cpu" }]
 
 # PyPI as primary index for cross-platform compatibility
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple/"
+
+# CPU torch builds, the variant the rag-service and standalone images install.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

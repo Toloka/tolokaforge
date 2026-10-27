@@ -17,49 +17,9 @@ check_installed uv "Please install uv: https://docs.astral.sh/uv/getting-started
 
 cd "$REPO_DIR"
 
-# Sync Python dependencies with uv
-# doesn't have platform-specific wheels (e.g., macOS ARM64)
-log_info "Syncing Python dependencies with uv..."
-if ! uv sync --index-strategy unsafe-best-match 2>&1 | tee /tmp/uv_sync_output.log; then
-    # Check if the error is about missing platform wheels
-    if grep -q "doesn't have.*wheel for the current platform\|only has wheels for" /tmp/uv_sync_output.log; then
-        log_info "Regenerating lock file to use PyPI fallback for platform-specific packages..."
-        # Remove lock file to force fresh resolution from all indexes
-        LOCK_BACKUP="${REPO_DIR}/uv.lock.backup"
-        if [ -f "${REPO_DIR}/uv.lock" ]; then
-            cp "${REPO_DIR}/uv.lock" "$LOCK_BACKUP"
-            rm "${REPO_DIR}/uv.lock"
-            log_info "Backed up existing lock file"
-        fi
-        if uv lock --index-strategy unsafe-best-match; then
-            log_info "Lock file regenerated, retrying sync..."
-            if uv sync --index-strategy unsafe-best-match; then
-                log_info "Successfully synced dependencies"
-                rm -f "$LOCK_BACKUP" /tmp/uv_sync_output.log
-            else
-                log_error "Sync failed after regenerating lock file"
-                if [ -f "$LOCK_BACKUP" ]; then
-                    mv "$LOCK_BACKUP" "${REPO_DIR}/uv.lock"
-                    log_info "Restored original lock file"
-                fi
-                rm -f /tmp/uv_sync_output.log
-                exit 1
-            fi
-        else
-            if [ -f "$LOCK_BACKUP" ]; then
-                mv "$LOCK_BACKUP" "${REPO_DIR}/uv.lock"
-                log_info "Restored original lock file"
-            fi
-            rm -f /tmp/uv_sync_output.log
-            exit 1
-        fi
-    else
-        log_error "uv sync failed for unknown reason. Check the error messages above."
-        rm -f /tmp/uv_sync_output.log
-        exit 1
-    fi
-fi
-rm -f /tmp/uv_sync_output.log
+# Sync Python dependencies to exactly the versions in uv.lock
+log_info "Syncing Python dependencies from uv.lock..."
+uv sync --locked
 
 # Install playwright system dependencies (required for browser tests)
 log_info "Installing Playwright system dependencies..."

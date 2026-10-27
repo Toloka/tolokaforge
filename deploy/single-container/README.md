@@ -62,9 +62,31 @@ RUN /opt/venv/bin/pip install 'tolokaforge[browser]' && \
     PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers /opt/venv/bin/playwright install --with-deps chromium
 ```
 
+The image sets `PIP_CONSTRAINT` and `PIP_BUILD_CONSTRAINT` to
+`/opt/tolokaforge/image-constraints.txt`, the `uv.lock` export of the release it
+was built from, so a derived image's `pip install` pins every third-party package
+the lock pins to the version the engine was tested with. First-party plugins —
+`tolokaforge-langfuse` and the terminal-bench adapter — are not in the
+constraints: a derived `pip install 'tolokaforge[otel]'` or
+`'tolokaforge[adapters]'` takes them from whatever index serves that name,
+unpinned and unchecked. Build with `TOLOKAFORGE_EXTRAS` below to get them pinned and built
+from the image's own source. A package the lock does not
+list still resolves live, and `uv pip` reads neither variable. To install outside
+the lock, clear both for that one command:
+
+```dockerfile
+RUN PIP_CONSTRAINT= PIP_BUILD_CONSTRAINT= /opt/venv/bin/pip install 'some-package==1.2.3'
+```
+
 Or bake them at build time with the Dockerfile's build args
-(`INSTALL_BROWSER=true`, `INSTALL_DOCKER_CLI=true`, or a custom
-`TOLOKAFORGE_EXTRAS`). Build locally with `make docker-build-standalone`.
+(`INSTALL_BROWSER=true`, `INSTALL_DOCKER_CLI=true`, or a custom comma-separated
+`TOLOKAFORGE_EXTRAS`). Every extra — `otel`, `adapters`, `terminal_bench`,
+`office`, `bundle-store-s3`, `all` — builds pinned to the lock, and the
+first-party wheels an extra requires (the langfuse plugin for `otel`, the
+terminal-bench adapter for `adapters`, `terminal_bench` and `all`) are built from
+the image's own source, never pulled from PyPI. `browser` installs the Python
+package only; Chromium needs `INSTALL_BROWSER=true`. Build locally with
+`make docker-build-standalone`.
 
 ### TypeSense flavor (search-backed tasks)
 

@@ -15,19 +15,20 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils.image_constraints import IMAGE_CONSTRAINTS_PATH
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SUBSET_WHEEL_GLOB = "tolokaforge_runner_subset-*.whl"
 MODELS_WHEEL_GLOB = "tolokaforge_models-*.whl"
 BASE_WHEEL_GLOB = "tolokaforge-*.whl"
-CODING_HARNESSES_WHEEL_GLOB = "tolokaforge_coding_harnesses-*.whl"
 
 _BUILD_TIMEOUT_S = 180
 
 
 def build_subset_wheel(dist_dir: Path) -> Path:
     """Build ``tolokaforge-runner-subset`` from the current tree into *dist_dir*."""
-    return _hatchling_build(
+    return hatchling_build(
         project_dir=REPO_ROOT,
         target="custom",
         dist_dir=dist_dir,
@@ -42,7 +43,7 @@ def build_models_wheel(dist_dir: Path) -> Path:
     The subset wheel's ``Requires-Dist: tolokaforge-models`` cannot resolve from
     PyPI in this repo's dev / CI environment, so a scratch-venv install passes
     this wheel alongside the subset one."""
-    return _hatchling_build(
+    return hatchling_build(
         project_dir=REPO_ROOT / "tolokaforge_models",
         target="wheel",
         dist_dir=dist_dir,
@@ -57,7 +58,7 @@ def build_base_wheel(dist_dir: Path) -> Path:
     This is the wheel a ``pip install tolokaforge`` ships — it carries the
     ``_subset_build/`` force-included sources every first-party image's build
     context needs on a wheel install."""
-    return _hatchling_build(
+    return hatchling_build(
         project_dir=REPO_ROOT,
         target="wheel",
         dist_dir=dist_dir,
@@ -66,27 +67,15 @@ def build_base_wheel(dist_dir: Path) -> Path:
     )
 
 
-def build_coding_harnesses_wheel(dist_dir: Path) -> Path:
-    """Build ``tolokaforge-coding-harnesses`` from the current tree into *dist_dir*."""
-    return _hatchling_build(
-        project_dir=REPO_ROOT / "tolokaforge_coding_harnesses",
-        target="wheel",
-        dist_dir=dist_dir,
-        wheel_glob=CODING_HARNESSES_WHEEL_GLOB,
-        label="tolokaforge-coding-harnesses",
-    )
-
-
 def build_workspace_wheels(dist_dir: Path) -> Path:
-    """Build the base wheel plus every workspace sibling it depends on
-    (``tolokaforge-models``, ``tolokaforge-coding-harnesses``) into *dist_dir*.
+    """Build the base wheel plus the ``tolokaforge-models`` wheel it depends on
+    into *dist_dir* and return it. ``tolokaforge_coding_harnesses`` needs no
+    wheel of its own: the base wheel bundles it as a top-level package.
 
-    Returned so ``uv pip install --find-links <dist_dir> <base_wheel>`` resolves
-    the engine's sibling deps against this directory. Use :func:`base_wheel_in`
-    to pick the base wheel out of the result."""
+    Use :func:`base_wheel_in` and :func:`models_wheel_in` to pick wheels out of
+    the result."""
     build_base_wheel(dist_dir)
     build_models_wheel(dist_dir)
-    build_coding_harnesses_wheel(dist_dir)
     return dist_dir
 
 
@@ -94,28 +83,40 @@ def base_wheel_in(dist_dir: Path) -> Path:
     """The single base ``tolokaforge-<version>`` wheel in *dist_dir*.
 
     Matches the dash after the package name, so a sibling wheel
-    (``tolokaforge_models-*`` / ``tolokaforge_coding_harnesses-*``, underscore)
+    (``tolokaforge_models-*``, underscore)
     is never mistaken for the base distribution."""
     base_wheels = [w for w in dist_dir.glob(BASE_WHEEL_GLOB) if w.name.startswith("tolokaforge-")]
-    if len(base_wheels) != 1:
+    return _single_wheel(base_wheels, dist_dir, "base tolokaforge")
+
+
+def models_wheel_in(dist_dir: Path) -> Path:
+    """The single ``tolokaforge_models-<version>`` wheel in *dist_dir*."""
+    return _single_wheel(list(dist_dir.glob(MODELS_WHEEL_GLOB)), dist_dir, "tolokaforge-models")
+
+
+def _single_wheel(wheels: list[Path], dist_dir: Path, label: str) -> Path:
+    if len(wheels) != 1:
         pytest.fail(
-            f"expected exactly one base tolokaforge wheel in {dist_dir}, got: "
-            f"{[w.name for w in base_wheels]}"
+            f"expected exactly one {label} wheel in {dist_dir}, got: {[w.name for w in wheels]}"
         )
-    return base_wheels[0]
+    return wheels[0]
 
 
 def make_wheel_install_venv(venv_dir: Path, dist_dir: Path, base_wheel: Path) -> Path:
-    """Create a scratch venv, install *base_wheel* (resolving siblings against
-    *dist_dir*), and return the venv's python executable.
+    """Create a scratch venv, install *base_wheel* and the ``tolokaforge-models``
+    wheel from *dist_dir* by path, and return the venv's python executable.
 
-    Prefers ``uv pip install`` for resolver speed (~4s vs ~120s with plain pip
-    over the engine's transitive deps), falling back to the venv's own pip."""
+    Third-party deps resolve under ``tolokaforge/docker/image-constraints.txt``,
+    so the venv carries the ``uv.lock`` versions; ``python -m venv`` seeds pip
+    alongside them. Prefers ``uv pip install`` for resolver speed (~4s vs ~120s
+    with plain pip over the engine's transitive deps), falling back to the venv's
+    own pip."""
     subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True, capture_output=True)
     venv_python = venv_dir / "bin" / "python"
     if not venv_python.exists():
         venv_python = venv_dir / "Scripts" / "python.exe"
 
+    first_party_wheels = [str(base_wheel), str(models_wheel_in(dist_dir))]
     uv_on_path = subprocess.run(["uv", "--version"], capture_output=True, text=True).returncode == 0
     if uv_on_path:
         install_cmd = [
@@ -125,9 +126,9 @@ def make_wheel_install_venv(venv_dir: Path, dist_dir: Path, base_wheel: Path) ->
             "--python",
             str(venv_python),
             "--quiet",
-            "--find-links",
-            str(dist_dir),
-            str(base_wheel),
+            "--constraint",
+            str(IMAGE_CONSTRAINTS_PATH),
+            *first_party_wheels,
         ]
     else:
         install_cmd = [
@@ -136,9 +137,9 @@ def make_wheel_install_venv(venv_dir: Path, dist_dir: Path, base_wheel: Path) ->
             "pip",
             "install",
             "--quiet",
-            "--find-links",
-            str(dist_dir),
-            str(base_wheel),
+            "-c",
+            str(IMAGE_CONSTRAINTS_PATH),
+            *first_party_wheels,
         ]
     result = subprocess.run(install_cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -149,7 +150,7 @@ def make_wheel_install_venv(venv_dir: Path, dist_dir: Path, base_wheel: Path) ->
     return venv_python
 
 
-def _hatchling_build(
+def hatchling_build(
     *,
     project_dir: Path,
     target: str,

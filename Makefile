@@ -7,7 +7,7 @@
 # Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh
 
 install:
-	uv sync
+	uv sync --locked
 
 install-dev: install
 	uv run playwright install --with-deps chromium

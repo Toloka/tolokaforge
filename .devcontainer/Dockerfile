@@ -55,8 +55,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install 'ruff==0.14.4' 'black==25.11.0'
-
 # Set locale
 RUN locale-gen en_US.UTF-8
 

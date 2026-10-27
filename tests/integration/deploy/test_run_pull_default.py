@@ -29,18 +29,17 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
 from tests.utils.docker_helpers import is_docker_daemon_available
+from tests.utils.wheel_builds import base_wheel_in, build_workspace_wheels, make_wheel_install_venv
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
 PUBLISHED_RUNNER_REPO = "tolokasoft1/tolokaforge-runner"
 _SUBPROCESS_TIMEOUT_S = 300  # docker pull on a slow link can be a few minutes
 
@@ -81,85 +80,18 @@ def _skip_if_dev_loop() -> None:
 
 
 @pytest.fixture(scope="module")
-def _built_wheels_dist(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Build the engine + models wheels once for the module.
-
-    Mirrors ``tests/canonical/test_wheel_install_runner_context.py``'s
-    ``built_wheels_dist`` — reusing the exact invocation the base wheel
-    ships with, so this test exercises the same install surface a real
-    ``pip install tolokaforge`` would."""
-    dist_dir = tmp_path_factory.mktemp("integration_pull_dist")
-    for project_dir, label in (
-        (REPO_ROOT, "engine"),
-        (REPO_ROOT / "tolokaforge_models", "models"),
-    ):
-        result = subprocess.run(
-            [sys.executable, "-m", "hatchling", "build", "-t", "wheel", "-d", str(dist_dir)],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            timeout=_SUBPROCESS_TIMEOUT_S,
-        )
-        if result.returncode != 0:
-            pytest.fail(
-                f"{label} wheel build failed (exit {result.returncode}):\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-            )
-    return dist_dir
-
-
-@pytest.fixture(scope="module")
 def _scratch_venv(
     tmp_path_factory: pytest.TempPathFactory,
-    _built_wheels_dist: Path,
     _skip_if_dev_loop: None,
 ) -> Path:
-    """Build a scratch venv with the freshly-built engine wheel installed.
+    """A scratch venv with the freshly-built engine wheel installed at the
+    ``uv.lock`` versions — a faithful ``pip install tolokaforge``.
 
-    Returns the venv's python interpreter path. Session-scoped and
-    resource-heavy (~30–60 s), so downstream tests share it via
-    module scope."""
+    Returns the venv's python interpreter path. Resource-heavy, so the tests
+    share it via module scope."""
+    dist = build_workspace_wheels(tmp_path_factory.mktemp("integration_pull_dist"))
     venv_dir = tmp_path_factory.mktemp("integration_pull_venv")
-    subprocess.run(
-        [sys.executable, "-m", "venv", str(venv_dir)],
-        check=True,
-        capture_output=True,
-        timeout=_SUBPROCESS_TIMEOUT_S,
-    )
-    venv_python = venv_dir / "bin" / "python"
-
-    # Find the engine wheel — it's the only one matching ``tolokaforge-*``
-    # (the models sibling is ``tolokaforge_models-*``).
-    wheels = list(_built_wheels_dist.glob("*.whl"))
-    base_wheels = [w for w in wheels if w.name.startswith("tolokaforge-")]
-    assert len(base_wheels) == 1, (
-        f"expected exactly one base tolokaforge wheel in {_built_wheels_dist}, "
-        f"got: {[w.name for w in wheels]}"
-    )
-    base_wheel = base_wheels[0]
-
-    install_cmd = [
-        str(venv_python),
-        "-m",
-        "pip",
-        "install",
-        "--quiet",
-        "--find-links",
-        str(_built_wheels_dist),
-        str(base_wheel),
-    ]
-    result = subprocess.run(
-        install_cmd,
-        capture_output=True,
-        text=True,
-        timeout=_SUBPROCESS_TIMEOUT_S,
-    )
-    if result.returncode != 0:
-        pytest.fail(
-            f"wheel install into scratch venv failed (exit {result.returncode}):\n"
-            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
-    return venv_python
+    return make_wheel_install_venv(venv_dir, dist, base_wheel_in(dist))
 
 
 def _resolved_engine_version(venv_python: Path) -> str:

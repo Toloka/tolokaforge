@@ -137,13 +137,56 @@ build` to skip pull entirely. A 429 in `auto` mode surfaces as a
 **Building on a wheel install.** `build` — and the `auto` fallback — work
 identically whether the engine is a source checkout or a `pip install`. On a
 wheel install `repo_root()` is `site-packages`, so an image whose Dockerfile
-compiles the workspace sources in-container (`runner`, `rag-service`, and the
-standalone `grader`) assembles its build context from the copies the base wheel
-force-includes under `tolokaforge/_subset_build/` — both workspace siblings'
-`pyproject.toml` + `src/` ride along there. All three resolve their sibling
-sources through the same packaged-copy mapping, so none depends on a repo
-checkout being present; a wheel missing those force-included inputs fails loud
-at build-context assembly, naming `_subset_build`.
+compiles the workspace sources in-container (`runner`, `rag-service`, `grader`,
+`trial_node` and `standalone`) assembles its build context from the copies the
+base wheel force-includes under `tolokaforge/_subset_build/` — both workspace
+siblings' `pyproject.toml` + `src/` ride along there, and so do the
+`tolokaforge_langfuse` and `external_adapters/tolokaforge-adapter-terminal-bench`
+trees that `grader`, `trial_node` and `standalone` need: the base wheel's
+force-include table names them, so its in-container build fails without them, and
+`standalone` builds the langfuse and adapter wheels from them for the extras that
+require them. Every image resolves these sources through the same packaged-copy
+mapping, so none depends on a repo checkout being present; a wheel missing those
+force-included inputs fails loud at build-context assembly, naming
+`_subset_build`.
+
+**Every first-party image installs at `uv.lock` versions.** Each Dockerfile stage
+that runs `pip install` copies `tolokaforge/docker/image-constraints.txt` (the
+lock's pip export, shipped in the base wheel) to
+`/opt/tolokaforge/image-constraints.txt` and points `PIP_CONSTRAINT` and
+`PIP_BUILD_CONSTRAINT` at it, so every third-party package and the build backend
+of any sdist pip builds resolve to the lock's version. Installs are wheel-only
+except the lock's Linux sdist-only packages (`--only-binary :all: --no-binary
+sly`, in that order). First-party distributions are installed by wheel path, so
+pip never takes them from an index. Every image builds them in its own
+wheel-builder stage, except rag-service's base `tolokaforge` wheel: the host-side
+`resolve_wheel()` provides it (built from a source checkout, or on a wheel install
+found in the pip/uv cache, rebuilt from the install's origin, or fetched with
+`pip download --no-deps` at the exact installed version); only its
+`tolokaforge-models` and `tolokaforge-coding-harnesses` sibling wheels are built
+in-container. Every `RUN` that installs runs
+`tolokaforge/docker/dockerfiles/locked_install_check.py` after its last install,
+so no later step (such as a model bake) runs on an unchecked environment. The
+guard fails the build when an installed distribution is not
+at a version the lock pins for that platform, or a first-party one's
+`direct_url.json` does not name a local wheel that still exists and whose
+`RECORD` lists exactly the installed files. rag-service and standalone install
+CPU torch from the PyTorch CPU index at the locked `+cpu` version.
+`tests/canonical/test_dockerfile_installs_are_locked.py` holds the Dockerfiles to
+this.
+
+The published rag-service, db-service, mock-web and standalone images keep pip in
+their runtime, along with `/opt/tolokaforge/image-constraints.txt` and
+`PIP_CONSTRAINT` / `PIP_BUILD_CONSTRAINT` pointing at it. A derived image's
+`pip install` on top of them therefore pins every third-party package the lock
+pins to the release's version, including the build backend of any sdist it
+builds. First-party plugins (`tolokaforge-langfuse`, the terminal-bench adapter)
+are not in the constraints, packages the lock does not list still resolve live,
+and `uv pip` reads neither variable. To install outside the lock, clear both for
+one command — the recipe is in
+[`deploy/single-container/README.md`](../deploy/single-container/README.md#add-ons-like-pypi-extras).
+The runner, grader and trial-node runtimes ship neither pip nor the constraints
+file.
 
 The build-context spec for every first-party service — its Dockerfile, context,
 `context_files`, and `build_args` — has one source of truth: the builder's image
@@ -398,14 +441,13 @@ the engine first leaves you inside the one window this gate cannot close, and �
 any pack bearing `state_checks` or `transcript_rules` — inside a registration failure
 the JSON payload will raise anyway.
 
-**The image's own dependency resolution is a second, unversioned skew, and no gate sees it.**
-The image installs the wheel with **pip**, which resolves each declared range itself rather
-than reading `uv.lock`, so a range loose enough to admit two majors gives the container a
-different library than the host venv — with no protocol version to disagree about. The failure
-lands at run time inside the container: see
+**The image's dependencies are the lock's, so they skew only with the tree it was built from.**
+The image installs every third-party package at its `uv.lock` version (see § Building on a
+wheel install), so a runner built from a tree carries that tree's libraries. An image built
+from an older tree carries that tree's lock, with no protocol version to disagree about; the
+failure then lands at run time inside the container: see
 [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#every-tool-call-fails-mcp-server-closed-connection)
-§ Every Tool Call Fails. `make docker-build-core` is the fix, and an upper bound on the major
-is what keeps the resolution honest.
+§ Every Tool Call Fails. Rebuilding with `make docker-build-core` is the fix.
 
 That is what an engine upgrade needs: rebuild the image from the same tree
 (`make docker-build-core`) or pin an image tag that matches. The gate sits at

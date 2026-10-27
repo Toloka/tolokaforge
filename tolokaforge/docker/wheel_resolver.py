@@ -28,6 +28,10 @@ Four providers are tried in priority order:
    :meth:`ReinstallWheelProvider._materialize_by_version` so both
    providers share one implementation of the download path.
 
+Both build paths pin the build backend to ``uv.lock`` through the packaged
+``image-constraints.txt`` next to this module, and raise
+:class:`WheelResolverError` when that file is missing.
+
 The resolver stops at the first successful provider. When every
 provider returns ``None``, :class:`NoWheelError` is raised with per-
 provider failure reasons included so the root cause is visible.
@@ -382,8 +386,10 @@ def _run(
     return False, _stderr_tail(result.stderr or result.stdout)
 
 
-def _run_pip(args: list[str], *, timeout: int = 300) -> tuple[bool, str]:
-    """Run ``python -m pip <args>``.
+def _run_pip(
+    args: list[str], *, timeout: int = 300, env: dict[str, str] | None = None
+) -> tuple[bool, str]:
+    """Run ``python -m pip <args>``, in *env* when given.
 
     If pip is missing (as in ``uv``-created virtualenvs that omit pip by
     default), the first attempt fails with ``ModuleNotFoundError: No
@@ -392,7 +398,7 @@ def _run_pip(args: list[str], *, timeout: int = 300) -> tuple[bool, str]:
     is preserved on failure.
     """
     for attempt in (1, 2):
-        ok, err = _run([sys.executable, "-m", "pip", *args], timeout=timeout)
+        ok, err = _run([sys.executable, "-m", "pip", *args], timeout=timeout, env=env)
         if ok:
             return True, ""
         # Detect missing-pip and bootstrap once via ensurepip.
@@ -418,6 +424,51 @@ def _run_uv(args: list[str], *, timeout: int = 300) -> tuple[bool, str]:
     if shutil.which("uv") is None:
         return False, "uv not on PATH"
     return _run(["uv", *args], timeout=timeout)
+
+
+def _packaged_build_constraints() -> Path:
+    """The ``uv.lock`` pip export shipped in the installed package; raises when it is missing."""
+    constraints = Path(__file__).with_name("image-constraints.txt")
+    if not constraints.is_file():
+        raise WheelResolverError(
+            f"the packaged build constraints {constraints} are missing — every engine wheel "
+            "build pins its build backend with them; reinstall tolokaforge"
+        )
+    return constraints
+
+
+def _build_wheel_locked(source: Path, out_dir: Path) -> tuple[bool, str]:
+    """Build a wheel from *source* into *out_dir* with the build backend pinned to ``uv.lock``.
+
+    ``uv build`` first, then ``pip wheel --no-deps`` (with ``ensurepip``
+    recovery). pip releases without build-constraint support pin their isolated
+    build env from ``PIP_CONSTRAINT``, newer ones from ``PIP_BUILD_CONSTRAINT``,
+    so both are set. Returns ``(ok, "uv build: …; pip wheel: …")``.
+    """
+    constraints = str(_packaged_build_constraints())
+    ok, uv_err = _run_uv(
+        [
+            "build",
+            "--wheel",
+            "--build-constraint",
+            constraints,
+            "--out-dir",
+            str(out_dir),
+            str(source),
+        ],
+        timeout=300,
+    )
+    if ok:
+        return True, ""
+    pip_env = {**os.environ, "PIP_CONSTRAINT": constraints, "PIP_BUILD_CONSTRAINT": constraints}
+    ok, pip_err = _run_pip(
+        ["wheel", "--no-deps", "--wheel-dir", str(out_dir), str(source)],
+        timeout=300,
+        env=pip_env,
+    )
+    if ok:
+        return True, ""
+    return False, f"uv build: {uv_err}; pip wheel: {pip_err}"
 
 
 # ---------------------------------------------------------------------------
@@ -655,26 +706,11 @@ class LocalSourceWheelProvider(WheelProvider):
         )
 
     def _build_wheel(self, source_root: Path, out_dir: Path) -> None:
-        """Build a wheel from *source_root* into *out_dir*.
-
-        Tries ``uv build`` first (handles build isolation internally),
-        then falls back to ``pip wheel`` (with ``ensurepip`` recovery
-        when pip is missing). Records the reason on ``self.last_failure``
-        when both paths fail.
-        """
-        ok, uv_err = _run_uv(
-            ["build", "--wheel", "--out-dir", str(out_dir), str(source_root)],
-            timeout=300,
-        )
-        if ok:
-            return
-        ok, pip_err = _run_pip(
-            ["wheel", "--no-deps", "--wheel-dir", str(out_dir), str(source_root)],
-            timeout=300,
-        )
-        if ok:
-            return
-        self.last_failure = f"uv build: {uv_err}; pip wheel: {pip_err}"
+        """Build a wheel from *source_root* into *out_dir* via :func:`_build_wheel_locked`;
+        records the reason on ``self.last_failure`` when both builders fail."""
+        ok, err = _build_wheel_locked(source_root, out_dir)
+        if not ok:
+            self.last_failure = err
 
 
 class PipCacheWheelProvider(WheelProvider):
@@ -755,8 +791,7 @@ class ReinstallWheelProvider(WheelProvider):
     and dispatches on install origin:
 
     * ``vcs_info`` present (git-installed): clone the same git URL at
-      the pinned commit and build a wheel via ``uv build --wheel`` or
-      ``pip wheel`` (with ``ensurepip`` fallback if pip is missing).
+      the pinned commit and build a wheel via :func:`_build_wheel_locked`.
     * ``archive_info`` present (URL-installed wheel/sdist): download
       the same URL directly.
     * No direct_url (plain PyPI install): ``pip download`` for the
@@ -926,20 +961,7 @@ class ReinstallWheelProvider(WheelProvider):
                 if not ok:
                     return False, f"clone --branch {commit}: {err}"
 
-            # Build the wheel — uv first, pip fallback.
-            ok, uv_err = _run_uv(
-                ["build", "--wheel", "--out-dir", str(cache_dir), str(src)],
-                timeout=300,
-            )
-            if ok:
-                return True, ""
-            ok, pip_err = _run_pip(
-                ["wheel", str(src), "--no-deps", "-w", str(cache_dir)],
-                timeout=300,
-            )
-            if ok:
-                return True, ""
-            return False, f"uv build: {uv_err}; pip wheel: {pip_err}"
+            return _build_wheel_locked(src, cache_dir)
 
     @staticmethod
     def _materialize_archive(url: str, cache_dir: Path) -> tuple[bool, str]:
