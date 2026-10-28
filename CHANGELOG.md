@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.1 (2026-10-28)
+
+### BREAKING CHANGE
+
+- ToolContentPolicy implementations registered through the
+tolokaforge.policies entry-point group must declare
+wraps_part_reference_tool_results (and format, supports_images); a
+registration without them is refused at engine import.
+
+### Feat
+
+- **llm**: keep a $ref in a tool result out of Gemini's function_response; claim gemini/gemini-* for the Gemini preset (#1940)
+
+### Fix
+
+- **docker**: start mock-web for an http_request that reaches it (#1936)
+
 ## v0.34.0 (2026-10-27)
 
 ### Fix
