@@ -20,6 +20,7 @@ pytestmark = pytest.mark.unit
 MOVED_CLASSES: Final[tuple[tuple[str, str], ...]] = (
     ("tolokaforge_models.policies.gemini", "GeminiSchema"),
     ("tolokaforge_models.policies.gemini", "GeminiRecursiveSchema"),
+    ("tolokaforge_models.policies.gemini", "GeminiContent"),
     ("tolokaforge_models.policies.gemini", "ScalarArrayDictMapResponse"),
     ("tolokaforge_models.policies.inkling", "RefResolvingDictMapHints"),
     ("tolokaforge_models.policies.minimax", "JsonRecursiveCoerceResponse"),

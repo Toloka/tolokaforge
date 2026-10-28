@@ -256,7 +256,25 @@ def _merge_out_of_tree_policy_registrations() -> None:
                     f"{slot_name}.{policy_name!r} shadows engine class "
                     f"{existing!r} (would-be new: {cls!r})"
                 )
+            missing = sorted(
+                attr for attr in _SLOT_SURFACES.get(slot_name, ()) if not hasattr(cls, attr)
+            )
+            if missing:
+                raise RuntimeError(
+                    f"tolokaforge-models registration {slot_name}.{policy_name!r} "
+                    f"({cls!r}) lacks the slot's attribute(s) {missing}; the engine "
+                    f"reads them on every request, so a class without them would "
+                    f"fail mid-run rather than here"
+                )
             _POLICY_REGISTRIES[slot_name][policy_name] = cls
+
+
+#: Attributes the engine reads on a slot's policy at request time. A
+#: registration that lacks one is refused at import (above) instead of raising
+#: ``AttributeError`` on the first model call of a trial.
+_SLOT_SURFACES: dict[str, tuple[str, ...]] = {
+    "content_policy": ("format", "supports_images", "wraps_part_reference_tool_results"),
+}
 
 
 # Fire the install-time gate FIRST so a version-skewed models wheel dies with
@@ -985,6 +1003,67 @@ def _match_preset(model_name: str, provider: str) -> dict[str, Any]:
     return result
 
 
+def _current_content_policy(cfg: dict[str, Any]) -> tuple[str, ToolContentPolicy | None]:
+    """The name *cfg* gives the content policy and that policy instantiated, or
+    ``None`` in its place when the name is not registered. The override logic
+    then leaves the slot alone, so ``_instantiate_slot`` raises its actionable
+    "unknown policy" error at capability build instead of an override quietly
+    replacing a name that was wrong to begin with.
+    """
+    name, params = _normalize_slot_value(
+        cfg.get("content_policy", _SLOT_DEFAULTS["content_policy"]),
+        slot="content_policy",
+        where="<capabilities-override>",
+    )
+    cls = _POLICY_REGISTRIES["content_policy"].get(name)
+    if cls is None:
+        return name, None
+    return name, cls(**params)
+
+
+def _select_content_policy(cfg: dict[str, Any], *, override: str, **wanted: object) -> None:
+    """Point ``cfg["content_policy"]`` at a registered policy whose surface
+    carries *wanted* (``format`` and/or ``supports_images``) while keeping the
+    current policy's ``wraps_part_reference_tool_results``.
+
+    The current policy stays when it already matches, so ``supports_tool_images:
+    false`` on a Gemini preset keeps ``gemini`` and its ``$ref`` wrap. Otherwise
+    the first registered policy that matches is named — engine classes in
+    declaration order, then the models wheel's. When none matches, the override
+    is refused: ``supports_tool_images: true`` on a Gemini preset asks for image
+    blocks *and* the wrap, and no registered policy offers both, so applying it
+    would silently drop the guard the preset relies on (AGENTS.md rule #1).
+    """
+    current_name, current = _current_content_policy(cfg)
+    if current is None:
+        return
+    wanted["wraps_part_reference_tool_results"] = current.wraps_part_reference_tool_results
+
+    def _matches(policy: ToolContentPolicy) -> bool:
+        return all(getattr(policy, attr) == value for attr, value in wanted.items())
+
+    if _matches(current):
+        return
+    for name, cls in _POLICY_REGISTRIES["content_policy"].items():
+        try:
+            candidate = cls()
+        except TypeError:
+            # Needs constructor params; a bare name could not select it anyway.
+            continue
+        if _matches(candidate):
+            cfg["content_policy"] = name
+            return
+    surface = ", ".join(f"{attr}={value!r}" for attr, value in wanted.items())
+    raise ValueError(
+        f"capabilities override {override}: no registered content_policy offers "
+        f"{surface}; the preset's {current_name!r} policy carries "
+        f"wraps_part_reference_tool_results="
+        f"{current.wraps_part_reference_tool_results!r}, and applying the override "
+        f"would drop it. Register a content policy with that surface (the models "
+        f"wheel's tolokaforge.policies entry points) or drop the override."
+    )
+
+
 #: Every override key recognised by :func:`_apply_config_overrides`.
 #: Keep synchronised with the body below — the unit-test
 #: ``test_recognised_keys_are_the_documented_set`` asserts every key in this
@@ -1092,17 +1171,23 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
     if overrides.get("unwrap_input_key"):
         cfg["response_policy"] = "unwrap_input"
 
-    # Content format overrides
+    # Content format overrides. Both select by what a policy *does* (its
+    # ``format`` / ``supports_images``), never by registry name, and keep the
+    # preset policy's ``$ref`` wrap: ``supports_tool_images: false`` on a
+    # Gemini preset leaves ``gemini`` in place, and an override no registered
+    # policy can satisfy together with the wrap is refused rather than
+    # applied without it. See ``_select_content_policy``.
     fmt = overrides.get("tool_content_format")
     if fmt in ("anthropic", "openai"):
-        cfg["content_policy"] = fmt
+        _select_content_policy(cfg, override=f"tool_content_format: {fmt}", format=fmt)
 
     if "supports_tool_images" in overrides:
-        current = cfg.get("content_policy", "openai")
-        if overrides["supports_tool_images"] and current != "anthropic":
-            cfg["content_policy"] = "anthropic"
-        elif not overrides["supports_tool_images"] and current != "openai":
-            cfg["content_policy"] = "openai"
+        wants_images = bool(overrides["supports_tool_images"])
+        _select_content_policy(
+            cfg,
+            override=f"supports_tool_images: {str(wants_images).lower()}",
+            supports_images=wants_images,
+        )
 
     # Reasoning-codec constructor kwargs flow through the ordinary
     # ``{name, params}`` slot shape; this reroutes the legacy top-level
@@ -1346,7 +1431,7 @@ def resolve_policy_names(capabilities: ModelCapabilities) -> dict[str, str]:
         {
             "schema_sanitizer":        "strict" | "passthrough",
             "prompt_policy":           "dict_map_hints" | "none",
-            "content_policy":          "anthropic" | "openai" | "nova",
+            "content_policy":          "anthropic" | "openai" | "nova" | "gemini",
             "response_policy":         "standard" | "array_dict_map" | "unwrap_input",
             "reasoning_codec":         "anthropic" | "openai"
                                        | "openai_summary_replay" | "gemini" | "none",

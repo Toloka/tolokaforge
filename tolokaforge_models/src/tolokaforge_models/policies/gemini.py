@@ -1,6 +1,6 @@
 """Per-model policy subclasses for the Google Gemini family.
 
-Three classes ship in this module:
+Four classes ship in this module:
 
 * :class:`GeminiSchema` — schema sanitiser tuned for the Gemini
   JSON-Schema subset (``$defs`` inlining, ``oneOf`` + ``discriminator``
@@ -10,6 +10,10 @@ Three classes ship in this module:
   ``$ref`` by substituting a permissive open-object schema at the point
   of re-entry (scalar dict-map value carriage is the ``StrictSchema``
   default since the engine's schema-driven reverse pivot landed).
+* :class:`GeminiContent` — tool-result content policy that sends a JSON
+  result carrying a ``{"$ref": "…"}`` object as ``{"content": "<text>"}``,
+  so a converter in front of Gemini never puts a part reference into
+  ``function_response.response``.
 * :class:`ScalarArrayDictMapResponse` — response policy kept for the
   ``scalar_array_dict_map`` registry name: with the engine's ``param_schema``
   it is exactly ``ArrayDictMapResponse``; without it (an older engine) it
@@ -25,14 +29,72 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from tolokaforge.core.llm.content_policy import OpenAIContent
 from tolokaforge.core.llm.response_policy import ArrayDictMapResponse
 from tolokaforge.core.llm.schema_sanitizer import StrictSchema
 
 __all__ = [
+    "GeminiContent",
     "GeminiRecursiveSchema",
     "GeminiSchema",
     "ScalarArrayDictMapResponse",
 ]
+
+
+def _require_engine_wrap_surface() -> None:
+    """Refuse to load on an engine whose content policies predate
+    ``wraps_part_reference_tool_results``.
+
+    ``minimum_engine_version`` is the install-time gate for this, but it can
+    only name an engine release that exists, so it is raised in the engine
+    release PR after the attribute ships (``docs/RELEASING.md``). In the window
+    before that raise, a newer models wheel on an older engine would register
+    :class:`GeminiContent` without complaint — the old merge has no surface
+    check — and nothing would wrap: the fingerprint would record
+    ``content_policy: gemini`` while every Gemini trial still fails on the
+    first ``$ref``. This check closes that window mechanically.
+    """
+    if not hasattr(OpenAIContent, "wraps_part_reference_tool_results"):
+        raise RuntimeError(
+            "tolokaforge-models' GeminiContent needs an engine whose tool-content "
+            "policies carry `wraps_part_reference_tool_results` (the engine release "
+            "that added the Gemini $ref guard); the installed tolokaforge predates "
+            "it. Upgrade tolokaforge, or install the tolokaforge-models release "
+            "that matches the installed engine."
+        )
+
+
+_require_engine_wrap_surface()
+
+
+class GeminiContent(OpenAIContent):
+    """OpenAI-shape tool content that keeps a ``$ref`` out of Gemini's reach.
+
+    The Gemini API reads a ``{"$ref": "<name>"}`` object anywhere inside
+    ``function_response.response`` as a reference to one of the response's
+    multimodal parts (by ``display_name``) and refuses the request with HTTP
+    400 ``INVALID_ARGUMENT`` when no part carries that name. An OpenAI-format
+    converter in front of Gemini — litellm's own Gemini translation, and so
+    any gateway built on it — parses a JSON tool message and places the object
+    into ``response`` verbatim. A tool whose output embeds a JSON Schema
+    (``"$ref": "#/$defs/X"``) therefore ends the trial at the next model call,
+    on every Gemini model reached that way (verified 2026-10-26 on
+    ``gemini-3.8-flash``, ``gemini-4-argon`` and ``gemini-2.5-flash`` through
+    the Gemini API; the same request through OpenRouter passes).
+
+    With ``wraps_part_reference_tool_results`` on, the engine sends such a
+    result as ``{"content": "<the original text>"}``: the converter keeps the
+    wrapper, the ``$ref`` sits inside a string and is inert, and the model
+    reads the same text. Results without a part reference, and non-JSON text,
+    go out unchanged, so the model keeps the structured view for every
+    ordinary call. litellm's own guard for this (its Gemini translation,
+    ``$ref`` wrapped the same way) is on its main branch and not in a release
+    as of 1.106.4; this policy holds whether or not the converter has it.
+    """
+
+    @property
+    def wraps_part_reference_tool_results(self) -> bool:
+        return True
 
 
 class GeminiSchema(StrictSchema):
