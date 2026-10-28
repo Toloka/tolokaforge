@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.2 (2026-10-28)
+
+### Fix
+
+- **models**: models wheel requires engine >=0.34.1 — GeminiContent needs wraps_part_reference_tool_results (#1951)
+
 ## v0.34.1 (2026-10-28)
 
 ### BREAKING CHANGE
