@@ -24,13 +24,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge.adapters._task_loader import (
+    ToolActor,
     declared_search_backend,
     declared_tool_names,
+    effective_mcp_server,
+    enabled_tool_names,
     search_declaration,
+    tool_configs,
     uses_search,
 )
 from tolokaforge.core.compose_materialisation import run_needs_docker_cli
 from tolokaforge.core.env_var import parse_env_positive_float
+from tolokaforge.core.hosts import HTTP_REQUEST_DEFAULT_HOSTS, MOCK_WEB_URL, host_listed
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import ComputeConfig
 from tolokaforge.core.plugin_registry import RAG_SERVICE_STACK_SERVICE
@@ -58,10 +63,11 @@ _PLAYWRIGHT_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 
 # Tools / initial-state declarations that require ``full_stack`` (mock-web at
 # port 8080 and rag-service at 8001) on top of the core db-service + runner.
-# ``browser`` and ``mobile`` reach mock-web for app/site URLs. A task may also
-# declare ``initial_state.mock_web`` directly without enabling those tools.
-# Knowledge-base search needs rag-service when the task's search backend says
-# so: not by the tool's name, which a task may choose, but by the
+# ``browser`` and ``mobile`` reach mock-web for app/site URLs, and so does
+# ``http_request`` whenever its hosts admit mock-web, which its default hosts do.
+# A task may also declare ``initial_state.mock_web`` directly without enabling
+# those tools. Knowledge-base search needs rag-service when the task's search
+# backend says so: not by the tool's name, which a task may choose, but by the
 # ``stack_service`` its backend (``initial_state.rag.backend``, default
 # ``rag_service``) declares — for a task that searches at all, i.e. declares a
 # corpus or enables its search tool (``initial_state.rag.tool.name``, default
@@ -73,6 +79,10 @@ _PLAYWRIGHT_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 # +------------------------------------------------------+--------------+
 # | tools.<actor>.enabled ∋ browser                      | full_stack   |
 # | tools.<actor>.enabled ∋ mobile                       | full_stack   |
+# | tools.<actor>.enabled ∋ the builtin http_request,    | full_stack   |
+# |   and tools.<actor>.http_request.allowed_hosts       |              |
+# |   (default: HTTP_REQUEST_DEFAULT_HOSTS) admits       |              |
+# |   mock-web                                           |              |
 # | initial_state.mock_web is truthy                     | full_stack   |
 # | the task searches, and its backend's stack_service   | full_stack   |
 # |   is rag_service (the default backend's)             |              |
@@ -119,6 +129,27 @@ def _search_needs_rag_service(task: Any) -> bool:
     return declared_search_backend(search).stack_service == RAG_SERVICE_STACK_SERVICE
 
 
+def _http_request_reaches_mock_web(task: Any) -> bool:
+    """Whether an actor's ``http_request`` may request mock-web.
+
+    The tool reads its hosts as the task lists them, or its default hosts when the
+    task lists none, and those admit mock-web. A task that points ``http_request``
+    at other hosts only, an app world's for one, does not need mock-web. An
+    ``http_request`` an ``mcp_server`` serves is that server's tool, which the
+    builtin's default hosts say nothing about.
+    """
+    for actor in ToolActor:
+        if "http_request" not in enabled_tool_names(task, actor):
+            continue
+        if effective_mcp_server(task, actor) is not None:
+            continue
+        kwargs = tool_configs(task, actor).get("http_request", {})
+        allowed = kwargs.get("allowed_hosts") or HTTP_REQUEST_DEFAULT_HOSTS
+        if host_listed(MOCK_WEB_URL, allowed):
+            return True
+    return False
+
+
 def _tasks_need_full_stack(tasks: list[Any]) -> bool:
     """Return True iff any task needs ``full_stack`` (mock-web / rag).
 
@@ -128,6 +159,8 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
     """
     for task in tasks:
         if _FULL_STACK_TOOL_NAMES & declared_tool_names(task):
+            return True
+        if _http_request_reaches_mock_web(task):
             return True
         if _search_needs_rag_service(task):
             return True
@@ -283,9 +316,9 @@ def build_engine_stack(
     # playwright/binds plumbing above still applies.
     if _run_needs_full_stack(tasks, stack_requirements):
         logger.info(
-            "Full-stack-dependent run detected (task browser/mobile, "
-            "initial_state.mock_web, a search backend needing rag-service, or "
-            "adapter-declared rag-service need) "
+            "Full-stack-dependent run detected (task browser/mobile, an http_request "
+            "whose hosts admit mock-web, initial_state.mock_web, a search backend "
+            "needing rag-service, or adapter-declared rag-service need) "
             "- using full_stack (db-service + runner + rag-service + mock-web)",
             adapter_needs_rag_service=bool(
                 stack_requirements is not None

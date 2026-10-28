@@ -3,9 +3,10 @@
 # A single native task that drives the first-party mock-web service over the
 # `http_request` builtin: the agent GETs a booking form, POSTs the booking as
 # form data, and reports the confirmation number mock-web issues. The task
-# declares no `environment_manifest` — mock-web is reached by Docker DNS on the
-# composed standalone stack (deploy/standalone/docker-compose.yaml), the same
-# way the bundled `tool_use` pack reaches db-service.
+# declares no `environment_manifest` — its http_request allow-list names
+# mock-web, so the run's auto-started engine stack includes mock-web, reached by
+# Docker DNS on the runner network the same way the bundled `tool_use` pack
+# reaches db-service.
 #
 # See docs/PROJECTS.md for the full Project model.
 

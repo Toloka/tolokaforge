@@ -14,10 +14,11 @@ agent → http_request → mock-web:8080  (/booking form → POST /booking/confi
 
 - **`http_request` against a composed peer, no `environment_manifest`.** The
   task enables only `http_request` (allow-listed to `mock-web:8080`) and
-  declares no environment manifest. mock-web is reached by Docker DNS on the
-  standalone stack (`deploy/standalone/docker-compose.yaml`), exactly the way
-  the bundled `tool_use` pack reaches db-service — the runner's own network
-  wires the peer, not a per-task manifest.
+  declares no environment manifest. The allow-list naming mock-web makes the
+  run's auto-started engine stack the full one, and mock-web is reached by
+  Docker DNS on the runner network, exactly the way the bundled `tool_use` pack
+  reaches db-service — the runner's own network wires the peer, not a per-task
+  manifest.
 - **A form round-trip, not a JSON API.** `/booking/confirm` reads an HTML form
   submission (`request.form()`), so the agent must GET `/booking` to learn the
   fields (`name`, `hotel`, `checkin`, `checkout`) and POST them as **form
@@ -50,8 +51,9 @@ uv run tolokaforge validate --tasks "examples/native/mock_web_booking/dataset/**
 scripts/with_env.sh uv run tolokaforge run --config examples/native/mock_web_booking/run_configs/dev.yaml
 ```
 
-Needs a running Docker daemon with the standalone stack up (so `mock-web:8080`
-is reachable on the runner network) and `OPENROUTER_API_KEY` in `.env`.
+Needs a running Docker daemon and `OPENROUTER_API_KEY` in `.env`. The run starts
+its own engine stack, and the task's `http_request` allow-list makes that stack
+include mock-web, so `mock-web:8080` is reachable from the runner.
 
 ## Layout
 
@@ -71,5 +73,5 @@ examples/native/mock_web_booking/
   `transcript_rules.required_actions` and `must_contain`
 - [`../tool_use/README.md`](../tool_use/README.md) — structured tool-call
   grading without a Docker substrate
-- [`docs/STANDALONE_RUNNER.md`](../../../docs/STANDALONE_RUNNER.md) — the
-  composed standalone stack this pack runs against
+- [`docs/STANDALONE_RUNNER.md`](../../../docs/STANDALONE_RUNNER.md) — running
+  against a composed standalone stack instead of an auto-started one
