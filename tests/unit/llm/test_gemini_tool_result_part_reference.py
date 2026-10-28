@@ -16,10 +16,11 @@ The Gemini presets wire ``content_policy: gemini`` (``GeminiContent``):
    what passes through, and that the original text survives verbatim;
 2. the wire: a Gemini client wraps, an OpenAI-preset client does not, on the
    plain-text path, the blocks-flattened path and the image-block path; the
-   text-only capability overrides keep the Gemini policy, an image override
-   that no registered policy can honour together with the wrap is refused, an
-   unknown policy name is left for ``_instantiate_slot`` to refuse; a
-   registration without the attribute is refused at import;
+   text-only capability overrides keep the Gemini policy and an image override
+   that no registered policy can honour together with the wrap is refused
+   (the override contract for the other presets is in
+   ``test_preset_overrides.py``); a registration without the attribute is
+   refused at import;
 3. the end-to-end guard through litellm's own converter: the Gemini request
    built from the converted message holds no ``$ref`` key at any depth, and
    the model still receives the original text.
@@ -35,19 +36,14 @@ import pytest
 from litellm.litellm_core_utils.prompt_templates import factory
 from tolokaforge_models.policies.gemini import GeminiContent
 
-from tolokaforge.core.llm import LLMClient
+from tolokaforge.core.llm import LLMClient, presets
 from tolokaforge.core.llm.content_policy import (
     AnthropicContent,
     OpenAIContent,
     contains_part_reference,
     wrap_part_reference_tool_result,
 )
-from tolokaforge.core.llm.presets import (
-    _apply_config_overrides,
-    _instantiate_slot,
-    build_capabilities,
-    resolve_policy_names,
-)
+from tolokaforge.core.llm.presets import build_capabilities, resolve_policy_names
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 
 pytestmark = pytest.mark.unit
@@ -269,35 +265,6 @@ def test_an_image_override_on_a_gemini_preset_is_refused_not_applied_without_the
     assert "Register a content policy" in str(info.value)
 
 
-@pytest.mark.parametrize(
-    "overrides",
-    [{"supports_tool_images": True}, {"tool_content_format": "anthropic"}],
-    ids=["images", "anthropic_format"],
-)
-def test_the_same_image_override_still_moves_an_openai_preset_to_anthropic(
-    overrides: dict[str, Any],
-) -> None:
-    caps = build_capabilities("openai/gpt-5.5", "openai", overrides)
-    assert resolve_policy_names(caps)["content_policy"] == "anthropic"
-
-
-def test_text_only_override_still_moves_an_anthropic_preset_to_openai() -> None:
-    caps = build_capabilities(
-        "anthropic/claude-sonnet-4.6", "anthropic", {"supports_tool_images": False}
-    )
-    assert resolve_policy_names(caps)["content_policy"] == "openai"
-
-
-def test_an_unknown_content_policy_name_is_left_for_instantiation_to_refuse() -> None:
-    """An override never papers over a name the registry does not know: the
-    slot keeps the name and ``_instantiate_slot`` raises the actionable error."""
-    cfg: dict[str, Any] = {"content_policy": "no_such_policy"}
-    _apply_config_overrides(cfg, {"supports_tool_images": False, "tool_content_format": "openai"})
-    assert cfg["content_policy"] == "no_such_policy"
-    with pytest.raises(ValueError, match="unknown policy 'no_such_policy'"):
-        _instantiate_slot(cfg, "content_policy", "test")
-
-
 class _ImageWrappingContent(AnthropicContent):
     """What a registered image-capable Gemini policy would look like."""
 
@@ -328,26 +295,25 @@ def test_a_wrapping_policy_with_images_wraps_each_text_block_next_to_the_image()
     assert content[1] == image
 
 
-def test_a_content_policy_without_the_attribute_is_refused_at_registration() -> None:
+def test_a_content_policy_without_the_attribute_is_refused_at_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The attribute is read on every request, so a registered policy that
     lacks it fails at import, not with ``AttributeError`` mid-trial."""
-    from tolokaforge.core.llm import presets
 
     class LegacyContent:
         format = "openai"
         supports_images = False
 
     registries: dict[str, dict[str, type]] = {"content_policy": {}}
-    original_registries = presets._POLICY_REGISTRIES
-    original_loader = presets.load_policy_registrations
-    presets._POLICY_REGISTRIES = registries
-    presets.load_policy_registrations = lambda: {"content_policy": {"legacy": LegacyContent}}
-    try:
-        with pytest.raises(RuntimeError, match="wraps_part_reference_tool_results"):
-            presets._merge_out_of_tree_policy_registrations()
-    finally:
-        presets._POLICY_REGISTRIES = original_registries
-        presets.load_policy_registrations = original_loader
+    monkeypatch.setattr(presets, "_POLICY_REGISTRIES", registries)
+    monkeypatch.setattr(
+        presets,
+        "load_policy_registrations",
+        lambda: {"content_policy": {"legacy": LegacyContent}},
+    )
+    with pytest.raises(RuntimeError, match="wraps_part_reference_tool_results"):
+        presets._merge_out_of_tree_policy_registrations()
     assert "legacy" not in registries["content_policy"]
 
 

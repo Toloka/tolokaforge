@@ -136,7 +136,6 @@ _PIVOTING_MODELS = [
     "google/gemini-3.8-flash",
     "google/gemini-3.7-flash",
     "google/gemini-3.1-pro-preview",
-    "gemini/gemini-4-argon",
     "x-ai/grok-4.6",
     "x-ai/grok-5",
     "azure_ai/cohere-command-a-plus",

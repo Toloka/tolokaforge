@@ -12,6 +12,15 @@ config, fallbacks included, as an ERROR at ``<path>.capabilities``, and ``run`` 
 drifting apart: every key in :data:`_RECOGNISED_OVERRIDE_KEYS` must appear as a
 literal inside the function body, so a key cannot join the allowlist without the
 function learning how to translate it.
+
+``TestContentOverridesSelectBySurface`` is the contract of the two content
+overrides, ``tool_content_format`` and ``supports_tool_images``: they select a
+registered policy by what it does (``format`` / ``supports_images``) while
+keeping the preset policy's ``wraps_part_reference_tool_results``, the current
+policy stays when it already matches, and a name the registry does not know is
+left for ``_instantiate_slot`` to refuse. The Gemini-specific half (the wrap
+kept, an image override refused) is in
+``test_gemini_tool_result_part_reference.py``.
 """
 
 from __future__ import annotations
@@ -30,6 +39,9 @@ from tolokaforge.core.llm.presets import (
     _RECOGNISED_OVERRIDE_KEYS,
     CapabilityOverrideError,
     _apply_config_overrides,
+    _instantiate_slot,
+    build_capabilities,
+    resolve_policy_names,
 )
 from tolokaforge.dx.cli.main import cli
 
@@ -201,3 +213,52 @@ class TestEveryConfigsOverridesAreChecked:
             "models.agent.capabilities",
             "unknown keys",
         )
+
+
+class TestContentOverridesSelectBySurface:
+    @pytest.mark.parametrize(
+        "overrides",
+        [{"supports_tool_images": True}, {"tool_content_format": "anthropic"}],
+        ids=["images", "anthropic_format"],
+    )
+    def test_an_image_override_moves_an_openai_preset_to_anthropic(
+        self, overrides: dict[str, Any]
+    ) -> None:
+        caps = build_capabilities("openai/gpt-5.5", "openai", overrides)
+        assert resolve_policy_names(caps)["content_policy"] == "anthropic"
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [{"supports_tool_images": False}, {"tool_content_format": "openai"}],
+        ids=["no_images", "openai_format"],
+    )
+    def test_a_text_only_override_moves_an_anthropic_preset_to_openai(
+        self, overrides: dict[str, Any]
+    ) -> None:
+        caps = build_capabilities("anthropic/claude-sonnet-4.6", "anthropic", overrides)
+        assert resolve_policy_names(caps)["content_policy"] == "openai"
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [{"supports_tool_images": False}, {"tool_content_format": "openai"}],
+        ids=["no_images", "openai_format"],
+    )
+    def test_a_text_only_override_keeps_nova_on_the_nova_preset(
+        self, overrides: dict[str, Any]
+    ) -> None:
+        """``NovaContent`` already is OpenAI-shaped and text-only, so the
+        override changes nothing and the recorded name stays ``nova`` (it used
+        to be replaced by ``openai`` by name; the wire shape is the same)."""
+        caps = build_capabilities("nova-micro-1.0", "nova", overrides)
+        assert resolve_policy_names(caps)["content_policy"] == "nova"
+
+    def test_an_unknown_content_policy_name_is_left_for_instantiation_to_refuse(self) -> None:
+        """An override never papers over a name the registry does not know: the
+        slot keeps the name and ``_instantiate_slot`` raises the actionable error."""
+        cfg: dict[str, Any] = {"content_policy": "no_such_policy"}
+        _apply_config_overrides(
+            cfg, {"supports_tool_images": False, "tool_content_format": "openai"}
+        )
+        assert cfg["content_policy"] == "no_such_policy"
+        with pytest.raises(ValueError, match="unknown policy 'no_such_policy'"):
+            _instantiate_slot(cfg, "content_policy", "test")

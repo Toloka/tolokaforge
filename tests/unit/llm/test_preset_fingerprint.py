@@ -214,8 +214,8 @@ def test_resolve_policy_names_raises_on_unknown_policy() -> None:
         ("qwen3-32b", "qwen", "qwen"),
         ("nova-micro-1.0", "nova", "aws_nova"),
         # Gemini under the Gemini API prefix a gateway uses. Argon carries no
-        # ``google/`` segment and no ``3`` / ``2.5`` token, so before
-        # ``gemini/gemini-*`` was listed it fell through to ``default``.
+        # ``google/`` segment and no ``3`` / ``2.5`` token; ``gemini/gemini-*``
+        # is the glob that claims it.
         ("gemini/gemini-4-argon", "openai", "gemini"),
         ("litellm_proxy/gemini/gemini-4-argon", "openai", "gemini"),
         ("google/gemini-4-argon", "openrouter", "gemini"),

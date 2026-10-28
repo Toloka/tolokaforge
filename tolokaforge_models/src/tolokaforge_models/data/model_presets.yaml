@@ -1179,11 +1179,9 @@ presets:
   # across the trial.
   #
   # ``gemini/gemini-*`` is the name under litellm's Gemini API provider
-  # prefix, as a gateway serves the family (``gemini/gemini-4-argon``,
-  # ``gemini/gemini-3.8-flash``). Before it was listed, a name that
-  # carried neither the ``google/`` vendor segment nor a ``3`` / ``2.5``
-  # version token — Gemini 4 Argon on the gateway — fell through to
-  # ``default`` and got none of the family's handling (2026-10-26).
+  # prefix, as a gateway serves the family (``gemini/gemini-4-argon``).
+  # It is what claims a name carrying neither the ``google/`` vendor
+  # segment nor a ``3`` / ``2.5`` version token.
   #
   # Argon lands here, on ``schema_sanitizer: gemini`` + ``response_policy:
   # array_dict_map`` — the pair the field report asked for, the one
