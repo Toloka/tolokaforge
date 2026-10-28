@@ -29,11 +29,12 @@ __api_version__: Final[int] = 1
 engine. Bumped whenever the engine-side loader must change to keep
 reading this wheel's registrations."""
 
-minimum_engine_version: Final[str] = ">=0.28,<1.0"
+minimum_engine_version: Final[str] = ">=0.34.1,<1.0"
 """PEP 440 specifier naming the engine range this wheel targets. The
 engine consults this string at import time to refuse to boot against
 an incompatible pair (see :mod:`tolokaforge.core.model_data`).
 
-The floor is 0.28 because the bundled presets set the
-``supports_sampling_params`` params key, which engines up to 0.27.5 cannot
-construct."""
+The floor is 0.34.1 because the bundled Gemini presets set
+``content_policy: gemini``, whose ``GeminiContent`` needs the engine's
+``wraps_part_reference_tool_results`` tool-content attribute, which engines
+up to 0.34.0 lack."""
