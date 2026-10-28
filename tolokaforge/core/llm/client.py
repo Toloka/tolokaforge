@@ -51,6 +51,7 @@ from tolokaforge.core.actors.tool_turns import shared_view, simulator_view
 from tolokaforge.core.actors.user_simulator import UserSimulatorContext
 from tolokaforge.core.env_var import parse_env_non_negative_int, parse_env_positive_float
 from tolokaforge.core.llm.capabilities import ModelCapabilities
+from tolokaforge.core.llm.content_policy import wrap_part_reference_tool_result
 from tolokaforge.core.llm.gateway_route import (
     ResolvedGatewayRoute,
     RouteKind,
@@ -1321,6 +1322,27 @@ class LLMClient:
         """Whether tool-result image blocks are supported by the target model."""
         return self.capabilities.content_policy.supports_images
 
+    def _tool_result_text(self, content: Any) -> Any:
+        """The text of a ``role: tool`` message as the content policy sends it.
+
+        A policy whose ``wraps_part_reference_tool_results`` is ``True`` (the
+        Gemini presets) sends a JSON result that carries a ``{"$ref": "…"}``
+        object as ``{"content": "<the original text>"}``, so a converter in
+        front of Gemini never places a part reference into
+        ``function_response.response``. Every other policy, and any content
+        that is not a string, passes through unchanged. Applied on every
+        ``role: tool`` path: the plain text, the blocks flattened to text,
+        and each text block kept as a block next to images
+        (``_adapt_tool_content_blocks``). The attribute is part of the
+        ``ToolContentPolicy`` surface; a registered policy without it is
+        refused at import (``_merge_out_of_tree_policy_registrations``).
+        """
+        if not isinstance(content, str):
+            return content
+        if self.capabilities.content_policy.wraps_part_reference_tool_results:
+            return wrap_part_reference_tool_result(content)
+        return content
+
     def _tool_blocks_to_text(self, blocks: list[dict[str, Any]]) -> str:
         """Flatten content blocks into a text-only summary."""
         texts: list[str] = []
@@ -1360,7 +1382,7 @@ class LLMClient:
             if btype == "text":
                 text = block.get("text", "")
                 if isinstance(text, str) and text.strip():
-                    texts.append(text)
+                    texts.append(self._tool_result_text(text))
             elif btype == "image":
                 source = block.get("source", {}) if isinstance(block.get("source"), dict) else {}
                 stype = source.get("type")
@@ -1560,12 +1582,12 @@ class LLMClient:
                         litellm_msg["content"] = self._adapt_tool_content_blocks(msg.content_blocks)
                     else:
                         content = self._tool_blocks_to_text(msg.content_blocks)
-                        litellm_msg["content"] = content or "{}"
+                        litellm_msg["content"] = self._tool_result_text(content or "{}")
                 else:
                     content = msg.content
                     if not content or (isinstance(content, str) and content.strip() == ""):
                         content = "{}"
-                    litellm_msg["content"] = content
+                    litellm_msg["content"] = self._tool_result_text(content)
                 litellm_msg["tool_call_id"] = msg.tool_call_id
             elif msg.role == MessageRole.ASSISTANT and msg.tool_calls:
                 content = msg.content or ""

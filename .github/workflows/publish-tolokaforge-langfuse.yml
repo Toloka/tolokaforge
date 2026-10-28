@@ -36,7 +36,7 @@ jobs:
         run: uv python install "$(cat .python-version)"
 
       - name: Build package
-        run: uv build --package tolokaforge-langfuse
+        run: uv build --package tolokaforge-langfuse --build-constraint tolokaforge/docker/image-constraints.txt
 
       - name: Verify package contents
         run: |
@@ -44,7 +44,7 @@ jobs:
           ls -lh dist/
           echo ""
           echo "=== Wheel contents ==="
-          uv run python -c "
+          python3 -c "
           import zipfile
           for f in sorted(__import__('pathlib').Path('dist').glob('*.whl')):
               print(f'--- {f.name} ---')

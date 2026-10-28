@@ -4,9 +4,17 @@ FROM python:${PYTHON_VERSION}-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies under image-constraints.txt, the uv.lock export, and check
+# the result against it (see the runner.Dockerfile header). The image keeps
+# PIP_CONSTRAINT and PIP_BUILD_CONSTRAINT pointing at it, so a derived image's
+# `pip install` pins every package the lock lists.
+COPY tolokaforge/docker/image-constraints.txt tolokaforge/docker/dockerfiles/locked_install_check.py /opt/tolokaforge/
+ENV PIP_CONSTRAINT=/opt/tolokaforge/image-constraints.txt \
+    PIP_BUILD_CONSTRAINT=/opt/tolokaforge/image-constraints.txt
 COPY tolokaforge/env/mock_web_service/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --only-binary :all: --no-binary sly -r requirements.txt \
+    && python /opt/tolokaforge/locked_install_check.py \
+        --constraints /opt/tolokaforge/image-constraints.txt --exempt pip
 
 # Copy service code
 COPY tolokaforge/env/mock_web_service/ .

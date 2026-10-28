@@ -14,7 +14,7 @@ from typing import Final
 
 __all__ = ["__api_version__", "__version__"]
 
-__version__: Final[str] = "0.1.0"
+__version__: Final[str] = "0.2.0"
 """PEP 440 version of this wheel."""
 
 __api_version__: Final[int] = 4

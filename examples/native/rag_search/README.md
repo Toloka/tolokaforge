@@ -16,11 +16,11 @@ agent → search_kb → rag-service  (/trials/{id}/search over the per-trial ind
 - **`search_kb` against a composed peer, no `environment_manifest`.** The task
   enables `search_kb` and declares its corpus via `initial_state.rag.corpus_dir`
   (`rag/corpus`). The corpus's `.md` files travel with the task in
-  `tool_artifacts` and are indexed into the rag-service per trial; the
-  rag-service is reached by Docker DNS on the full standalone stack
-  (`deploy/standalone/docker-compose.yaml`), the same way `mock_web_booking`
-  reaches mock-web — the runner's own network wires the peer, not a per-task
-  manifest.
+  `tool_artifacts` and are indexed into the rag-service per trial. Searching on
+  the default `rag_service` backend makes the run's auto-started engine stack
+  the full one, and the rag-service is reached by Docker DNS on the runner
+  network, the same way `mock_web_booking` reaches mock-web — the runner's own
+  network wires the peer, not a per-task manifest.
 - **A retrieval-only fact.** The Halden substation's emergency failover
   authorization code, `HX49-QORVEN-7731`, lives in exactly one corpus document
   and on no agent-visible surface — not the task text, not any initial state.
@@ -50,9 +50,9 @@ uv run tolokaforge validate --tasks "examples/native/rag_search/dataset/**/task.
 scripts/with_env.sh uv run tolokaforge run --config examples/native/rag_search/run_configs/dev.yaml
 ```
 
-Needs a running Docker daemon with the standalone stack up on the full profile
-(so the rag-service is reachable on the runner network) and `OPENROUTER_API_KEY`
-in `.env`.
+Needs a running Docker daemon and `OPENROUTER_API_KEY` in `.env`. The run starts
+its own engine stack, and the task's search on the `rag_service` backend makes
+that stack include the rag-service, so it is reachable from the runner.
 
 ## Layout
 
@@ -73,5 +73,5 @@ examples/native/rag_search/
   `transcript_rules.required_actions` and `must_contain`
 - [`docs/TASKS.md`](../../../docs/TASKS.md) — `initial_state.rag.corpus_dir` and
   per-trial RAG indexing
-- [`docs/STANDALONE_RUNNER.md`](../../../docs/STANDALONE_RUNNER.md) — the
-  composed standalone stack this pack runs against
+- [`docs/STANDALONE_RUNNER.md`](../../../docs/STANDALONE_RUNNER.md) — running
+  against a composed standalone stack instead of an auto-started one

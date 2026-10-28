@@ -52,7 +52,7 @@ def test_task_loads_and_enables_http_request_to_mock_web() -> None:
 
 
 def test_the_run_starts_mock_web_and_no_rag_service() -> None:
-    """An auto-started run of the pack gets mock-web (#1935), and only mock-web (#1937).
+    """An auto-started run of the pack gets mock-web, and only mock-web.
 
     The pack's only mock-web signal is its ``http_request`` allow-list; a core
     stack would leave every booking request with no service to reach. It searches

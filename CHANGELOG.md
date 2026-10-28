@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.0 (2026-10-27)
+
+### Fix
+
+- **docker**: pin every CI, publish and image install to uv.lock (#1930)
+
 ## v0.33.1 (2026-10-21)
 
 ### Fix

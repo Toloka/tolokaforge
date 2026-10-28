@@ -42,6 +42,7 @@ dependencies = []
 "assistant_text_policy.cohere_markers" = "tolokaforge_models.policies.cohere:CohereMarkerAssistantText"
 "schema_sanitizer.gemini" = "tolokaforge_models.policies.gemini:GeminiSchema"
 "schema_sanitizer.gemini_recursive" = "tolokaforge_models.policies.gemini:GeminiRecursiveSchema"
+"content_policy.gemini" = "tolokaforge_models.policies.gemini:GeminiContent"
 "schema_sanitizer.xai_grok_recursive" = "tolokaforge_models.policies.xai:XaiGrokRecursiveSchema"
 "prompt_policy.dict_map_hints_ref" = "tolokaforge_models.policies.inkling:RefResolvingDictMapHints"
 "response_policy.scalar_array_dict_map" = "tolokaforge_models.policies.gemini:ScalarArrayDictMapResponse"

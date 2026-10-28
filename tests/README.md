@@ -7,7 +7,7 @@ The test suite is organized into **3 categories**: unit, canonical, and integrat
 | Category | Directory | Speed | External deps | Marker |
 |----------|-----------|-------|---------------|--------|
 | Unit | `tests/unit/`, `tolokaforge_models/tests/unit/`, `tolokaforge_coding_harnesses/tests/unit/` | Fast (< 1s each) | None | `@pytest.mark.unit` |
-| Canonical | `tests/canonical/` | Fast (< 5s each), except the packaging tests that build a wheel from the current tree — the subset partition audit builds one per module, and the packaging/entry-point smoke tests build one per session and install it into a scratch venv (~10–25s) | Golden snapshots; the packaging/entry-point smoke tests also require the `uv` CLI (they skip loud without it) | `@pytest.mark.canonical` |
+| Canonical | `tests/canonical/` | Fast (< 5s each), except the packaging tests that build a wheel from the current tree — the subset partition audit builds one per module, and the packaging/entry-point smoke tests build one per session and install it into a scratch venv (~10–25s). Those builds pin their build backend, and those installs pin every third-party package, to `uv.lock` through `tolokaforge/docker/image-constraints.txt` | Golden snapshots; the packaging/entry-point smoke tests also require the `uv` CLI (they skip loud without it) | `@pytest.mark.canonical` |
 | Integration | `tests/integration/`, `tolokaforge_models/tests/integration/` | Slow (5-60s each) | Docker, API keys | `@pytest.mark.integration` |
 
 Each workspace package that owns a contract keeps its own test root beside its source, so
@@ -140,7 +140,8 @@ tests/
     ├── fixtures.py           # Common fixtures (mock_env_state, test_task_path, etc.)
     ├── validators.py         # Output validation helpers
     ├── doc_anchors.py        # GitHub-style anchor + section extraction for the canonical doc locks
-    ├── wheel_builds.py       # Subset / models wheels built from the tree under test, into a caller-supplied dir
+    ├── wheel_builds.py       # Subset / models wheels built from the tree under test, into a caller-supplied dir; scratch-venv installs under the uv.lock constraints
+    ├── image_constraints.py  # Readers for uv.lock and its pip export, tolokaforge/docker/image-constraints.txt
     ├── mock_clients.py       # MockAsyncClient — canonical source
     ├── loopback_asgi.py      # A real ASGI app under uvicorn on an ephemeral loopback port, for requests that must cross a real httpx transport
     ├── networks.py           # Docker network/volume fixtures

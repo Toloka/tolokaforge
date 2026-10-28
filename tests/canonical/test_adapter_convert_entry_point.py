@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils.image_constraints import IMAGE_CONSTRAINTS_PATH
+
 pytestmark = pytest.mark.canonical
 
 _FIXTURE_PKG = Path(__file__).parent / "fixtures" / "tolokaforge-adapter-demo"
@@ -56,7 +58,8 @@ def test_entry_point_adapter_convert_smoke(
     venv_dir = tmp_path / "venv"
     _run(["uv", "venv", str(venv_dir)])
     # ``--find-links`` points at the shared wheel dir so the engine wheel's
-    # ``tolokaforge-models`` dep resolves against the sibling wheel there.
+    # ``tolokaforge-models`` dep resolves against the sibling wheel there;
+    # third-party deps resolve at their ``uv.lock`` versions.
     _run(
         [
             "uv",
@@ -66,10 +69,24 @@ def test_entry_point_adapter_convert_smoke(
             str(venv_dir),
             "--find-links",
             str(built_wheels_dir),
+            "--constraint",
+            str(IMAGE_CONSTRAINTS_PATH),
             str(built_wheel),
         ]
     )
-    _run(["uv", "pip", "install", "--python", str(venv_dir), "--no-deps", str(_FIXTURE_PKG)])
+    _run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(venv_dir),
+            "--no-deps",
+            "--build-constraint",
+            str(IMAGE_CONSTRAINTS_PATH),
+            str(_FIXTURE_PKG),
+        ]
+    )
 
     tolokaforge_bin = venv_dir / "bin" / "tolokaforge"
     python_bin = venv_dir / "bin" / "python"

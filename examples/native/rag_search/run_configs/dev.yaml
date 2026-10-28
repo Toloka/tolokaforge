@@ -7,8 +7,9 @@
 # transcript-only (no judge), so no judge model is needed.
 #
 # Requirements:
-#   - Docker daemon running with the standalone stack up on the full profile
-#     (rag-service reachable on the runner network).
+#   - Docker daemon running. The run starts its own engine stack, which includes
+#     the rag-service (reachable from the runner) because the task searches on
+#     the rag_service backend.
 #   - OPENROUTER_API_KEY in .env.
 #
 # Run:

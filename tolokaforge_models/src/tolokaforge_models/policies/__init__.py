@@ -22,6 +22,7 @@ from tolokaforge_models.policies.cohere import (
 )
 from tolokaforge_models.policies.deepseek import OpenAISummaryReplayReasoningCodec
 from tolokaforge_models.policies.gemini import (
+    GeminiContent,
     GeminiRecursiveSchema,
     GeminiSchema,
     ScalarArrayDictMapResponse,
@@ -37,6 +38,7 @@ from tolokaforge_models.policies.xai import XaiGrokRecursiveSchema
 __all__ = [
     "CohereMarkerAssistantText",
     "CohereRecursiveSchema",
+    "GeminiContent",
     "GeminiRecursiveSchema",
     "GeminiSchema",
     "ItemRecursiveUnwrapResponse",

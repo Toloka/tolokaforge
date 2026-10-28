@@ -344,7 +344,7 @@ Computed by the orchestrator at trial-start via
 | `effective_preset` | preset name from [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) (e.g. `anthropic_claude_4_7`) or `"default"` on fallthrough | `resolve_effective_preset` |
 | `schema_sanitizer` | `passthrough` \| `strict` | policy registry |
 | `prompt_policy` | `none` \| `dict_map_hints` | policy registry |
-| `content_policy` | `openai` \| `anthropic` | policy registry |
+| `content_policy` | `openai` \| `anthropic` \| `nova` \| `gemini` (every Gemini preset; wraps `$ref`-carrying tool results) | policy registry |
 | `response_policy` | `standard` \| `unwrap_input` \| `array_dict_map` | policy registry |
 | `reasoning_codec` | `none` \| `anthropic` \| `openai` \| `openai_summary_replay` \| `gemini` | policy registry |
 | `cache_policy` | `none` \| `anthropic_ephemeral` | policy registry |

@@ -25,10 +25,12 @@ from typing import TYPE_CHECKING, Any
 
 from tolokaforge.adapters._task_loader import (
     ToolActor,
-    actor_tool_block,
     declared_search_backend,
     declared_tool_names,
+    effective_mcp_server,
+    enabled_tool_names,
     search_declaration,
+    tool_configs,
     uses_search,
 )
 from tolokaforge.core.compose_materialisation import run_needs_docker_cli
@@ -78,9 +80,9 @@ _PLAYWRIGHT_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 # +------------------------------------------------------+--------------+
 # | tools.<actor>.enabled ∋ browser                      | mock-web     |
 # | tools.<actor>.enabled ∋ mobile                       | mock-web     |
-# | tools.<actor>.enabled ∋ http_request, and            | mock-web     |
-# |   tools.<actor>.http_request.allowed_hosts (default: |              |
-# |   mock-web, mock-web:8080, localhost:8080) admits    |              |
+# | tools.<actor>.enabled ∋ the builtin http_request,    | mock-web     |
+# |   and tools.<actor>.http_request.allowed_hosts       |              |
+# |   (default: HTTP_REQUEST_DEFAULT_HOSTS) admits       |              |
 # |   mock-web                                           |              |
 # | initial_state.mock_web is truthy                     | mock-web     |
 # | the task searches, and its backend's stack_service   | rag-service  |
@@ -137,15 +139,17 @@ def _http_request_reaches_mock_web(task: Any) -> bool:
 
     The tool reads its hosts as the task lists them, or its default hosts when the
     task lists none, and those admit mock-web. A task that points ``http_request``
-    at other hosts only, an app world's for one, does not need mock-web.
+    at other hosts only, an app world's for one, does not need mock-web. An
+    ``http_request`` an ``mcp_server`` serves is that server's tool, which the
+    builtin's default hosts say nothing about.
     """
     for actor in ToolActor:
-        block = actor_tool_block(task, actor)
-        if "http_request" not in block.get("enabled", []):
+        if "http_request" not in enabled_tool_names(task, actor):
             continue
-        allowed = (block.get("http_request") or {}).get("allowed_hosts") or (
-            HTTP_REQUEST_DEFAULT_HOSTS
-        )
+        if effective_mcp_server(task, actor) is not None:
+            continue
+        kwargs = tool_configs(task, actor).get("http_request", {})
+        allowed = kwargs.get("allowed_hosts") or HTTP_REQUEST_DEFAULT_HOSTS
         if host_listed(MOCK_WEB_URL, allowed):
             return True
     return False

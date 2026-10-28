@@ -11,7 +11,7 @@
 #   schema_sanitizer:        passthrough | strict | gemini | gemini_recursive
 #                             | xai_grok_recursive
 #   prompt_policy:            none | dict_map_hints | dict_map_hints_ref
-#   content_policy:           openai | anthropic | nova
+#   content_policy:           openai | anthropic | nova | gemini
 #   response_policy:          standard | unwrap_input | json_coerce
 #                             | array_dict_map | scalar_array_dict_map
 #                             | minimax_m3_tags
@@ -1068,6 +1068,7 @@ presets:
       - "gemini-3.5-flash"
       - "*/gemini-3.5-flash"
     reasoning_codec: gemini
+    content_policy: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
 
@@ -1085,6 +1086,7 @@ presets:
       - "gemini-3.6-flash"
       - "*/gemini-3.6-flash"
     reasoning_codec: gemini
+    content_policy: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
 
@@ -1105,6 +1107,7 @@ presets:
       - "gemini-3.7-flash"
       - "*/gemini-3.7-flash"
     reasoning_codec: gemini
+    content_policy: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
 
@@ -1127,6 +1130,7 @@ presets:
       - "gemini-3.8-flash"
       - "*/gemini-3.8-flash"
     reasoning_codec: gemini
+    content_policy: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
 
@@ -1160,11 +1164,12 @@ presets:
       - "gemini-3.1-pro-preview"
       - "*/gemini-3.1-pro-preview"
     reasoning_codec: gemini
+    content_policy: gemini
     schema_sanitizer: gemini
     response_policy: array_dict_map
     default_max_turns: 90
 
-  # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
+  # Google Gemini family (4.x + 3.x preview + 3.x GA + 2.5 backstop).
   # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
   # ``provider_specific_fields.reasoning_details`` envelope: handles
   # both ``reasoning.text`` (Pro lineage, readable thinking) and
@@ -1172,13 +1177,48 @@ presets:
   # preserves bytes verbatim so subsequent turns can replay
   # reasoning_details and keep the model's reasoning context intact
   # across the trial.
+  #
+  # ``gemini/gemini-*`` is the name under litellm's Gemini API provider
+  # prefix, as a gateway serves the family (``gemini/gemini-4-argon``).
+  # It is what claims a name carrying neither the ``google/`` vendor
+  # segment nor a ``3`` / ``2.5`` version token.
+  #
+  # Argon lands here, on ``schema_sanitizer: gemini`` + ``response_policy:
+  # array_dict_map`` — the pair the field report asked for, the one
+  # ``google/gemini-4-argon`` already had, and the one that keeps dict-map
+  # values on the wire. It is not on the ``gemini_recursive`` +
+  # ``scalar_array_dict_map`` pair the probed 3.x Flash entries carry: a
+  # self-referential tool schema on Argon therefore fails in-engine with
+  # ``GeminiSchema``'s "$ref resolution exceeded depth 16" (where the old
+  # ``default`` fallthrough sent it to the API as is). Argon has not been
+  # probed on the recursive shapes; a model-specific entry declared above
+  # this one is the fix once it is.
   gemini:
     match:
       - "google/gemini-*"
       - "*/google/gemini-*"
+      - "gemini/gemini-*"
+      - "*/gemini/gemini-*"
       - "*gemini-3*"
       - "*gemini-2.5*"
     reasoning_codec: gemini
+    # ``GeminiContent``: a JSON tool result that carries a ``{"$ref": "…"}``
+    # object goes out as ``{"content": "<text>"}``. The Gemini API reads
+    # such an object in ``function_response.response`` as a reference to
+    # a multimodal part and refuses the request (HTTP 400) when no part
+    # carries that name; an OpenAI-format converter in front of Gemini
+    # parses a JSON tool message into ``response`` verbatim, so a tool
+    # that returns a JSON Schema fragment ends the trial at the next
+    # call. Verified 2026-10-26 on gemini-3.8-flash, gemini-4-argon and
+    # gemini-2.5-flash through the Gemini API. Every Gemini preset
+    # carries the policy (the model-specific entries above included), on
+    # every route: the Gemini API direct (the engine's own litellm has the
+    # converter), an OpenAI-format gateway in front of it, and OpenRouter,
+    # whose own converter happens to pass the raw object today. The wrap is
+    # by family rather than by route so a trial's wire shape does not
+    # depend on which converter sits in front of the model, and the only
+    # results it touches are the rare ones that carry such a ``$ref``.
+    content_policy: gemini
     # Gemini's tool spec is a JSON-Schema subset (no $defs/$ref, no
     # oneOf/discriminator, dict-maps via additionalProperties not
     # robust). ``GeminiSchema`` does StrictSchema's $ref-inlining +

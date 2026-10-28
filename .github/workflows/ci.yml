@@ -9,12 +9,13 @@ on:
       - 'tolokaforge_models/**'
       - 'tolokaforge_langfuse/**'
       - 'tolokaforge_coding_harnesses/**'
+      - 'external_adapters/**'
       - 'tests/**'
       - 'scripts/**'
       - 'tools/**'
       - 'pyproject.toml'
       - 'uv.lock'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/**'
       - '.pre-commit-config.yaml'
   pull_request:
     types: [opened, synchronize, reopened, labeled]
@@ -23,12 +24,13 @@ on:
       - 'tolokaforge_models/**'
       - 'tolokaforge_langfuse/**'
       - 'tolokaforge_coding_harnesses/**'
+      - 'external_adapters/**'
       - 'tests/**'
       - 'scripts/**'
       - 'tools/**'
       - 'pyproject.toml'
       - 'uv.lock'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/**'
       - '.pre-commit-config.yaml'
   schedule:
     - cron: '0 6 * * *'
@@ -99,23 +101,30 @@ jobs:
 
     - name: Build engine + sibling wheels (models, coding-harnesses, langfuse)
       run: |
-        uv build --wheel --package tolokaforge
-        uv build --wheel --package tolokaforge-models
-        uv build --wheel --package tolokaforge-coding-harnesses
-        uv build --wheel --package tolokaforge-langfuse
+        uv build --wheel --package tolokaforge --build-constraint tolokaforge/docker/image-constraints.txt
+        uv build --wheel --package tolokaforge-models --build-constraint tolokaforge/docker/image-constraints.txt
+        uv build --wheel --package tolokaforge-coding-harnesses --build-constraint tolokaforge/docker/image-constraints.txt
+        uv build --wheel --package tolokaforge-langfuse --build-constraint tolokaforge/docker/image-constraints.txt
 
     - name: Install the engine wheel into a clean venv (no source tree on the path)
-      # Use --find-links so uv resolves `tolokaforge-models` against the
-      # local dist/ directory rather than fetching from PyPI. Post-milestone
-      # merge + first models-v1.0.0 publish, `uv pip install tolokaforge`
-      # alone will resolve `tolokaforge-models` transitively from PyPI —
-      # but during the milestone-integration branch we ship both from
-      # the workspace.
+      # Third-party deps are pinned to uv.lock. The models wheel is passed by
+      # path so it installs from this tree and records a local-file origin.
       run: |
         uv venv /tmp/wheelenv
         VIRTUAL_ENV=/tmp/wheelenv uv pip install \
-          --find-links dist/ \
-          dist/tolokaforge-*.whl
+          --constraint tolokaforge/docker/image-constraints.txt \
+          dist/tolokaforge-*.whl dist/tolokaforge_models-*.whl
+
+    - name: Installed distributions must match uv.lock
+      # cd / so the source checkout cannot be picked up via CWD; the
+      # constraints file is read from the installed package.
+      run: |
+        cd /
+        constraints="$(/tmp/wheelenv/bin/python -c 'import pathlib, tolokaforge; print(pathlib.Path(tolokaforge.__file__).parent / "docker" / "image-constraints.txt")')"
+        /tmp/wheelenv/bin/python -m tolokaforge.docker.dockerfiles.locked_install_check \
+          --constraints "$constraints" \
+          --first-party tolokaforge \
+          --first-party tolokaforge-models
 
     - name: Runner build context must assemble from the installed wheel
       # cd / so the source checkout cannot be picked up via CWD.
@@ -136,6 +145,7 @@ jobs:
         required = [
             "pyproject.toml", "README.md", "LICENSE",
             ".python-version", "scripts/hatch", "tolokaforge",
+            "tolokaforge/docker/image-constraints.txt",
         ]
         missing = [n for n in required if not (build_dir / n).exists()]
         assert not missing, f"assembled runner context is missing {missing}"

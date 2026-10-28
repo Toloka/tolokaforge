@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils.image_constraints import IMAGE_CONSTRAINTS_PATH
 from tests.utils.recording_gateway import RecordingGateway, serving_recording_gateway
 from tolokaforge.core.llm import gateway_route
 
@@ -109,7 +110,8 @@ def built_wheels_dir(tmp_path_factory) -> Path:
 
     A scratch-venv install of the engine wheel resolves its workspace-member
     deps against this same directory (via ``uv pip install --find-links``), so
-    every workspace dep the engine declares must ship a wheel here. Skips loud
+    every workspace dep the engine declares must ship a wheel here. Each build
+    pins its build backend to ``uv.lock``. Skips loud
     if the ``uv`` CLI is unavailable; hard-fails with captured build output on
     any build failure.
     """
@@ -124,7 +126,15 @@ def built_wheels_dir(tmp_path_factory) -> Path:
     )
     for label, source in _WORKSPACE_MEMBERS:
         result = subprocess.run(
-            ["uv", "build", "--wheel", "--out-dir", str(out_dir)],
+            [
+                "uv",
+                "build",
+                "--wheel",
+                "--build-constraint",
+                str(IMAGE_CONSTRAINTS_PATH),
+                "--out-dir",
+                str(out_dir),
+            ],
             cwd=source,
             capture_output=True,
             text=True,

@@ -43,6 +43,12 @@ EXPECTED_REGISTRATIONS: tuple[tuple[str, str, str, str], ...] = (
         "GeminiRecursiveSchema",
     ),
     (
+        "content_policy",
+        "gemini",
+        "tolokaforge_models.policies.gemini",
+        "GeminiContent",
+    ),
+    (
         "schema_sanitizer",
         "xai_grok_recursive",
         "tolokaforge_models.policies.xai",
