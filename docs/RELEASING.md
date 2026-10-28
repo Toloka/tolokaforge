@@ -131,7 +131,12 @@ Checklist when cutting an engine release that carries a new data-facing key:
 
 1. Cut the engine release first, so the version exists.
 2. Raise `minimum_engine_version` to that version.
-3. Then cut the models release.
+3. Then cut the models release, with `bump` chosen explicitly (`minor` for new
+   data) and checked with `dry_run: true` first. The PR that introduced the
+   key is often an engine-side `feat!:`, which `auto` reads as `major` (see
+   [commitizen scope limitation](#commitizen-scope-limitation)); the engine
+   pins `tolokaforge-models>=1.0.0,<2.0.0`, so a `models-v2.0.0` cut that way
+   cannot be installed next to any released engine.
 
 Between steps 1 and 2 the floor still admits the previous engine. The engine
 refuses an older *wheel* mechanically (`_merge_out_of_tree_policy_registrations`
@@ -387,9 +392,10 @@ Every conventional commit reachable from `HEAD` since the last
 `models-v*` tag participates in the increment derivation. In practice
 this rarely matters — Milestone 29's split is why per-tree cadence
 exists — but if an engine-only PR lands a `feat!:` between two models
-releases, the next `models-v*` bump reads it as `major`. Override with
-`--increment=patch` / `minor` / `major` on `workflow_dispatch` when
-that mismatch shows up.
+releases, the next `models-v*` bump reads it as `major`, and the engine's
+`tolokaforge-models<2.0.0` pin then refuses the wheel. Set the
+`workflow_dispatch` `bump` input to `patch` / `minor` explicitly whenever
+an engine `feat!:` has landed since the last `models-v*` tag.
 
 ## Downstream data-resource consumers
 
