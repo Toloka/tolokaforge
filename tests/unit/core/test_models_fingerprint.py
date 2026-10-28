@@ -64,17 +64,18 @@ def test_field_shape_reflects_installed_models_wheel() -> None:
 def test_minimum_engine_version_parses_as_pep440_specifier() -> None:
     spec = SpecifierSet(tolokaforge_models.minimum_engine_version)
 
-    # The range accepts any engine >= 0.28 up to (but not including) 1.0.0.
+    # The range accepts any engine >= 0.34.1 up to (but not including) 1.0.0.
     # The upper bound stays wide so a future engine minor bump does not
     # automatically become a coordinated two-wheel release. The floor is the
-    # first engine that constructs the ``supports_sampling_params`` params key
-    # the bundled presets set; 0.27.5 boots with this data and then raises
-    # TypeError at the first capability build.
-    assert "0.28.0" in spec
-    assert "0.28.5" in spec
+    # first engine whose tool-content policies carry
+    # ``wraps_part_reference_tool_results``, which the bundled Gemini presets'
+    # ``content_policy: gemini`` needs; on 0.34.0 the models wheel's Gemini
+    # policy module refuses to import.
+    assert "0.34.1" in spec
+    assert "0.35.0" in spec
     assert "0.99.0" in spec
     assert "1.0.0" not in spec
-    assert "0.27.5" not in spec
+    assert "0.34.0" not in spec
 
 
 def test_determinism_same_state_same_digest() -> None:
