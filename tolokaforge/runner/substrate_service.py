@@ -345,6 +345,8 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
             reward_read_timeout,
             trial_id=request.trial_id,
             service=request.service or None,
+            user=request.user or None,
+            require_reward=request.require_reward,
         )
         return pb2.RunTestSuiteResponse(
             exit_code=result.exit_code,

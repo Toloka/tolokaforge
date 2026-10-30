@@ -580,7 +580,13 @@ class TestSingleContainerTaskIsRunnable:
         """
         td = adapter.to_task_description("echo-hello-single")
         assert td.grading.grading_method == "test_execution"
-        assert td.grading.grading_method_config == {"timeout_s": 45.0}
+        assert td.grading.grading_method_config == {
+            "timeout_s": 45.0,
+            # Every terminal-bench task grades as root unless it names another
+            # user, and refuses a trial whose verifier wrote no reward.
+            "user": "root",
+            "require_reward": True,
+        }
 
     def test_verifier_timeout_multiplier_scales_the_grading_budget(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
@@ -595,7 +601,11 @@ class TestSingleContainerTaskIsRunnable:
             }
         )
         td = adapter.to_task_description("echo-hello-single")
-        assert td.grading.grading_method_config == {"timeout_s": 135.0}
+        assert td.grading.grading_method_config == {
+            "timeout_s": 135.0,
+            "user": "root",
+            "require_reward": True,
+        }
         assert td.metadata["verifier_timeout_sec"] == 45.0
         assert td.metadata["verifier_timeout_budget_sec"] == 135.0
 

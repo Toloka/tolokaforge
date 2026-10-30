@@ -235,6 +235,8 @@ class GradingSubstrate(Protocol):
         timeout_s: float,
         reward_read_timeout_s: float,
         service: str | None = None,
+        user: str | None = None,
+        require_reward: bool = False,
     ) -> RunTestSuiteResult:
         """Execute the pack-declared verifier and return its outcome.
 
@@ -525,6 +527,8 @@ class InProcessGradingSubstrate:
         timeout_s: float,
         reward_read_timeout_s: float,
         service: str | None = None,
+        user: str | None = None,
+        require_reward: bool = False,
     ) -> RunTestSuiteResult:
         # The impl callback is invoked with keyword arguments only. Callers
         # bind trial-scoped state (e.g. ``trial_id``) via
@@ -543,6 +547,8 @@ class InProcessGradingSubstrate:
             timeout_s=timeout_s,
             reward_read_timeout_s=reward_read_timeout_s,
             service=service,
+            user=user,
+            require_reward=require_reward,
         )
 
     def materialise_path(
@@ -788,6 +794,8 @@ class SnapshotGradingSubstrate:
         timeout_s: float,  # noqa: ARG002
         reward_read_timeout_s: float,  # noqa: ARG002
         service: str | None = None,  # noqa: ARG002
+        user: str | None = None,  # noqa: ARG002
+        require_reward: bool = False,  # noqa: ARG002
     ) -> RunTestSuiteResult:
         raise SubstrateUnreachableError(
             f"SnapshotGradingSubstrate cannot run a test suite offline "

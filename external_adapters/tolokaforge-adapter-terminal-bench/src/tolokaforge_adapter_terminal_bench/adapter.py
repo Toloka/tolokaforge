@@ -588,12 +588,39 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         ``compose_project_prefix`` is what resolves the per-trial container
         name — the same two values the one-shot tool carries on
         ``ToolSource.extra``, so both tools exec into the same container.
+
+        ``user`` is carried only when the task declares ``[agent] user``. A task
+        that names one is drawing a privilege boundary, and an agent left on the
+        image's default ``USER`` can sit on the wrong side of it — with root it
+        was never granted, on an image whose default is root.
         """
-        return {
+        config: dict[str, Any] = {
             "service": self._environment(task_id).agent_service,
             "compose_project_prefix": PROJECT_PREFIX,
             "timeout_s": self._agent_tool_timeout_s(task_id),
         }
+        agent_user = self._agent_user(task_id)
+        if agent_user is not None:
+            config["user"] = agent_user
+        return config
+
+    def _agent_user(self, task_id: str) -> str | None:
+        """``[agent] user``, or ``None`` when the task declares none."""
+        self._ensure_discovered()
+        return self._tasks[task_id].agent_user
+
+    def _verifier_user(self, task_id: str) -> str:
+        """The user the task's verifier runs as.
+
+        Defaults to ``root`` when the task declares no ``[verifier] user``,
+        which is the terminal-bench contract: a suite reads an oracle and
+        writes a reward into a directory the agent is not meant to reach, and
+        every task that grades correctly today is one whose verifier already
+        ends up as root. Inheriting the agent's user instead is what silently
+        zeroes a task whose image drops to an unprivileged ``USER``.
+        """
+        self._ensure_discovered()
+        return self._tasks[task_id].verifier_user or "root"
 
     def agent_tool_block(self, task_id: str) -> dict[str, Any]:
         """The ``tools.agent`` block naming this run's agent tools.
@@ -668,6 +695,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     compose_project_prefix=PROJECT_PREFIX,
                     timeout_s=self._agent_tool_timeout_s(task_id),
                     toolset="terminal_bench",
+                    user=self._agent_user(task_id),
                 )
             )
         if self.agent_tool == AGENT_TOOL_BASH:
@@ -681,6 +709,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     # completion inside a single exec.
                     timeout_s=self._agent_tool_timeout_s(task_id),
                     toolset="terminal_bench",
+                    user=self._agent_user(task_id),
                 )
             )
         tool_config = self._persistent_shell_tool_config(task_id)
@@ -783,6 +812,16 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 **self.emit_test_execution_grading(
                     self._verifier_budget_sec(meta),
                     service=env.verifier_service,
+                    # The pack declares who grades it. Running the suite as the
+                    # agent instead is not a privilege nicety: on a pack that
+                    # seals its reward directory against the agent, the reward
+                    # write fails and the task scores zero however well the
+                    # agent did. Measured 2026-10-30 on the TBench Arena board,
+                    # where 77 of 100 tasks could not be scored at all.
+                    user=self._verifier_user(task_id),
+                    # And if the reward still does not land, refuse the trial
+                    # rather than report the zero that hid the above for a week.
+                    require_reward=True,
                     artifacts=(
                         [
                             {

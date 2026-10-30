@@ -901,6 +901,17 @@ message RunTestSuiteRequest {
   // container (the single-container shape). A name runs the suite in that
   // sibling container — the separate-verifier shape.
   string service = 6;
+  // Unix user the suite runs as (``docker exec --user``). Empty → inherit the
+  // container's default user, which is the behaviour every caller had before
+  // this field existed. A pack whose verifier must outrank the agent — to read
+  // an oracle, or to write a reward into a directory the agent cannot touch —
+  // names that user here.
+  string user = 7;
+  // When true the reward is read with a plain ``cat`` instead of
+  // ``cat ... || echo 0.0``, so a reward the verifier never wrote arrives as
+  // empty bytes rather than a convincing ``0.0``. The caller then refuses the
+  // trial as ungradeable. Default false preserves the fallback.
+  bool require_reward = 8;
 }
 
 message RunTestSuiteResponse {

@@ -218,6 +218,7 @@ class CodingHarnessAdapterMixin:
         compose_project_prefix: str,
         timeout_s: float,
         toolset: str = "coding_harness",
+        user: str | None = None,
     ) -> dict[str, Any]:
         """Payload the adapter passes to :class:`~tolokaforge.runner.models.ToolSchema`.
 
@@ -237,6 +238,10 @@ class CodingHarnessAdapterMixin:
 
         The adapter constructs the engine type with ``ToolSchema(**payload)``;
         pydantic v2 instantiates the nested ``ToolSource`` from the sub-dict.
+
+        *user* is the Unix user the tool execs as (``docker exec --user``).
+        ``None`` inherits the image's ``USER``, which is what every caller got
+        before this parameter existed.
         """
         return {
             "name": "bash",
@@ -261,6 +266,7 @@ class CodingHarnessAdapterMixin:
                 "extra": {
                     "service": service,
                     "compose_project_prefix": compose_project_prefix,
+                    **({"user": user} if user is not None else {}),
                 },
             },
         }
@@ -272,6 +278,7 @@ class CodingHarnessAdapterMixin:
         compose_project_prefix: str,
         timeout_s: float,
         toolset: str = "coding_harness",
+        user: str | None = None,
     ) -> dict[str, Any]:
         """Batching sibling of :meth:`emit_harness_tool_schema`.
 
@@ -346,6 +353,7 @@ class CodingHarnessAdapterMixin:
                 "extra": {
                     "service": service,
                     "compose_project_prefix": compose_project_prefix,
+                    **({"user": user} if user is not None else {}),
                 },
             },
         }
@@ -357,6 +365,8 @@ class CodingHarnessAdapterMixin:
         service: str | None = None,
         artifacts: list[dict[str, Any]] | None = None,
         collect: list[dict[str, Any]] | None = None,
+        user: str | None = None,
+        require_reward: bool = False,
     ) -> dict[str, Any]:
         """Payload the adapter passes to :class:`~tolokaforge.runner.models.RunnerGradingConfig`.
 
@@ -381,6 +391,15 @@ class CodingHarnessAdapterMixin:
         "timeout_s"}``) runs before that to snapshot a sidecar to a file an
         artifact then carries across. All omitted leaves the single-container
         behaviour untouched.
+
+        *user* is the Unix user the verifier runs as. A pack whose suite must
+        outrank its agent — reading an oracle, or writing a reward the agent
+        must not be able to forge — names that user; without it the suite
+        inherits the agent's identity. *require_reward* makes a reward the
+        verifier never wrote refuse the trial as ungradeable instead of scoring
+        it 0.0, which is otherwise indistinguishable from a model that failed.
+        Both default to the pre-existing behaviour, so an adapter that names
+        neither is unaffected.
         """
         payload: dict[str, Any] = {
             "combine_method": "weighted",
@@ -397,6 +416,10 @@ class CodingHarnessAdapterMixin:
             config["artifacts"] = artifacts
         if collect:
             config["collect"] = collect
+        if user is not None:
+            config["user"] = user
+        if require_reward:
+            config["require_reward"] = True
         if config:
             payload["grading_method_config"] = config
         return payload
