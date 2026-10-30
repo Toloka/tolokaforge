@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.3 (2026-10-30)
+
+### Fix
+
+- **terminal-bench**: red tests on main, and a skewed runner that resurrects the bug (#1954)
+- **terminal-bench**: the verifier ran as the agent, so 77 of 100 tasks could not score (#1953)
+
 ## v0.34.2 (2026-10-28)
 
 ### Fix
