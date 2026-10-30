@@ -33,8 +33,8 @@ grade.
   `filesystem_dir` recipe restores a *service* container's `/workspace`. The
   named `source` volume is mounted into **both** — `runner:/work` and
   `testrunner:/workspace` — so the seed lands in the agent's workspace, the
-  agent's edits are visible to the test-runner, and the marker the test-runner
-  writes syncs back into logical filesystem state for grading.
+  agent's edits are visible to the test-runner, and the test-runner writes a
+  human-readable `PASS`/`FAIL` marker back into the shared volume.
 
 - **A real failing test, from turn 1.** The seeded `tests/test_summary.py`
   demands `GET /orders/{id}/summary` (an order joined with its customer). The
@@ -45,19 +45,24 @@ grade.
 
 - **The real test result is the grading floor.** `testrunner`'s
   `POST /run-tests` runs `unittest discover` against the agent's edited source
-  and writes `/workspace/test_result.txt` = `PASS` (all tests green) or `FAIL`.
-  That marker syncs to `/env/fs/agent-visible/test_result.txt`, which
-  `state_checks` reads:
+  and returns `{"passed": true/false, ...}`. The runner records that response as
+  the `http_request` tool result, which the agent cannot fabricate, so
+  `trace_checks` reads the real verdict from the trace rather than from a file the
+  agent can write:
 
   | Component | Weight | What it checks |
   |---|---|---|
-  | `state_checks` | 0.50 | the real suite passed — `test_result.txt` contains `PASS` |
+  | `trace_checks` | 0.50 | the agent's last `/run-tests` response reported the suite passed: gates that a real passing run exists and that no `write_file` call targeted `tests/`, and a scored check that the pass was the last run |
   | `transcript_rules` | 0.20 | the agent edited code (`write_file`) and ran the suite (`http_request` → `/run-tests`), within 25 turns |
   | `llm_judge` | 0.30 | code quality: correct join, follows existing patterns, no unused imports or debug prints |
 
-  Weight `0.5` on `state_checks` is **decisive**: `transcript_rules` +
-  `llm_judge` sum to `0.5 < 0.6`, so a run whose tests do not pass cannot reach
-  the `0.6` threshold.
+  The real suite result is **decisive**: `transcript_rules` + `llm_judge` sum to
+  `0.5 < 0.6`, so a run whose last `/run-tests` did not pass cannot reach the
+  `0.6` threshold (no passing run, or a `write_file` under `tests/`, fails a gate;
+  a later failure zeroes the scored check). `testrunner` still writes
+  `/workspace/test_result.txt` as a human-readable marker, but grading no longer
+  trusts it — the file lives in the agent's `/work` tree and `write_file` can
+  overwrite it.
 
 - **The unittest runner (not pytest).** The `tolokaforge-runner:local` image
   ships no `pytest`, so the suite uses the stdlib `unittest` runner with
@@ -73,11 +78,19 @@ applies reset recipes.
 
 ## Agent-attested freshness
 
-`state_checks` reads the marker from the agent's **last** `/run-tests` call. An
-edit made after the final run would leave a stale marker, so the task guidance
-and a `transcript_rules` action both push the agent to re-run the suite after its
-final edit, and the `llm_judge` reviews the final synced `app.py`. This is
-inherent to agent-driven verification and acceptable for an example.
+`trace_checks` reads the agent's **last** `/run-tests` call from the trace: a
+transient pass followed by a failing, erroring or timed-out run scores 0 on the
+freshness check and cannot reach the threshold. An edit made after
+the final run would still leave the final `app.py` ungraded by the suite, so the
+task guidance and a `transcript_rules` action both push the agent to re-run the
+suite after its final edit, and the `llm_judge` reviews the final synced `app.py`.
+This is inherent to agent-driven verification and acceptable for an example.
+
+The suite also imports and runs the agent's `app.py` in-process, so code the agent
+writes there can still steer a run (for example by exiting early with status 0).
+Such code can also write files itself, including under `tests/`. The trace checks
+close the marker and direct `write_file` edits under `tests/`, not that; the
+`llm_judge` reviews the final `app.py`.
 
 ## Regenerating the seed
 
@@ -124,7 +137,7 @@ examples/native/multi_service_endpoint_add/
 │   └── app-db/init.sql                 # orders + customers substrate
 └── dataset/tasks/endpoint_add/
     ├── task.yaml                       # inherits the project default_environment whole; no environment_manifest
-    └── grading.yaml                    # three-way weighted: state_checks (decisive) + transcript_rules + llm_judge
+    └── grading.yaml                    # three-way weighted: trace_checks (decisive gate) + transcript_rules + llm_judge
 ```
 
 ## Related

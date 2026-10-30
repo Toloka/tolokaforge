@@ -1269,10 +1269,10 @@ _AN_INJECTED_PROBE = {
     "expect": [{"path": "$.row_count", "equals": 1}],
 }
 
-# How many of the 109 declare a state source the fold also scores, so the control's two
-# arms cannot silently collapse into one: 26 packs where injecting a probe must be
-# refused, and 83 where it must not, because the injection leaves them probe-only.
-_PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE = 29
+# How many of the 114 declare a state source the fold also scores, so the control's two
+# arms cannot silently collapse into one: 28 packs where injecting a probe must be
+# refused, and 86 where it must not, because the injection leaves them probe-only.
+_PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE = 28
 
 
 def _probe_exclusivity_findings(report: AuthoringReport) -> list[str]:
@@ -1309,9 +1309,9 @@ def _declares_a_state_source_the_fold_scores(grading: Mapping[str, Any]) -> bool
 def _a_probe_beside_whatever_the_pack_declares(grading: Mapping[str, Any]) -> dict[str, Any]:
     """*grading* with one more ``db_probes`` entry and every other source left as written.
 
-    Injected into every pack rather than one, because 3 of the 109 declare a probe at all.
+    Injected into every pack rather than one, because 3 of the 114 declare a probe at all.
     Nothing else is touched, which is what splits the walk: a pack already declaring a
-    source the fold scores becomes the refused shape, and a pack declaring none — 83 of
+    source the fold scores becomes the refused shape, and a pack declaring none — 86 of
     them — becomes a probe-only block, which is the shape this rule exists to leave alone.
     """
     state_checks = {**(grading.get("state_checks") or {})}
@@ -1322,7 +1322,7 @@ def _a_probe_beside_whatever_the_pack_declares(grading: Mapping[str, Any]) -> di
 def test_no_authored_pack_declares_a_probe_beside_another_state_source() -> None:
     """No shipped pack declares a probe beside a state source the fold also scores.
 
-    Over all 109 authored packs: the probe packs sit under ``examples/native`` and
+    Over all 114 authored packs: the probe packs sit under ``examples/native`` and
     ``tests/data/tasks``, and the packs carrying the sources they may not join are spread
     across both roots and ``tests/data/grading_parity``, which is outside
     :func:`_gated_packs` entirely.
@@ -1332,8 +1332,8 @@ def test_no_authored_pack_declares_a_probe_beside_another_state_source() -> None
     non-empty ``jsonpaths`` or an enabled hash over a source has to be refused, and
     injecting one into a pack declaring neither has to be admitted — that block is
     probe-only, which is exactly what a probe pack ships. A control that injected blindly
-    and expected a finding everywhere would assert the opposite of the rule on 83 of the
-    109. Both arms are collected, and the size of the refused arm is pinned so a corpus
+    and expected a finding everywhere would assert the opposite of the rule on 86 of the
+    114. Both arms are collected, and the size of the refused arm is pinned so a corpus
     that stopped declaring hash and JSONPath sources could not leave the positive arm
     vacuous.
 
@@ -1956,6 +1956,236 @@ def test_the_cache_debug_gate_fails_a_trial_whose_winning_route_scored_in_full()
     assert grade.components.state_checks == pytest.approx(1.0)
     assert grade.components.trace_checks == pytest.approx(0.0)
     assert grade.binary_pass is False
+
+
+# ---------------------------------------------------------------------------
+# multi_service_endpoint_add: the decisive floor is the testrunner's own result,
+# which the agent cannot forge - not a marker file in its writable workspace.
+# ---------------------------------------------------------------------------
+
+_ENDPOINT_ADD_TASK = (
+    _EXAMPLES
+    / "native"
+    / "multi_service_endpoint_add"
+    / "dataset"
+    / "tasks"
+    / "endpoint_add"
+    / "task.yaml"
+)
+
+_ENDPOINT_ADD_TURNS = (
+    "add GET /orders/{id}/summary so the suite goes green",
+    "added the endpoint and ran the suite",
+)
+
+_RUN_TESTS_URL = "http://testrunner:8000/run-tests"
+
+# The pack ships two gates (a real passing run exists; no write_file under tests/) and a
+# scored freshness check (the last run was not a failure). The gates hard-fail a forged
+# marker or a test written through the tool; the scored check sinks a transient pass through the
+# threshold, since trace_checks is the only component that can reach 0.6.
+_ENDPOINT_ADD_CONSTRAINTS = (
+    (
+        "a_run_tests_call_reported_the_suite_passed",
+        TraceConstraintKind.PRESENT,
+        TraceConstraintSeverity.GATE,
+    ),
+    (
+        "no_write_file_call_under_tests",
+        TraceConstraintKind.ABSENT,
+        TraceConstraintSeverity.GATE,
+    ),
+    (
+        "no_failing_run_tests_call_followed_the_last_pass",
+        TraceConstraintKind.BEFORE,
+        TraceConstraintSeverity.SCORED,
+    ),
+)
+
+
+def _run_tests_call(sequence: int, *, passed: bool, output: str | None = None) -> RecordedToolCall:
+    """One ``POST /run-tests`` the way the ``http_request`` tool records it: the status
+    line, then the parsed JSON body rendered as a Python dict (``'passed': True`` /
+    ``False`` is the testrunner's own verdict and is the first key). ``output`` lets a
+    test plant arbitrary suite output inside the response, to prove the gate reads the
+    top-level verdict and not a bare substring."""
+    body = {
+        "passed": passed,
+        "returncode": 0 if passed else 1,
+        "output": (
+            output
+            if output is not None
+            else ("Ran 5 tests in 0.2s\n\nOK" if passed else "FAILED (errors=1)")
+        ),
+    }
+    return recorded_call(
+        "http_request",
+        sequence=sequence,
+        arguments={"url": _RUN_TESTS_URL, "method": "POST"},
+        output=f"Status: 200\nResponse (JSON):\n{body}",
+    )
+
+
+def _write_call(sequence: int, path: str, content: str) -> RecordedToolCall:
+    return recorded_call(
+        "write_file", sequence=sequence, arguments={"path": path, "content": content}
+    )
+
+
+# A real green run: the endpoint was written and the testrunner reported the suite
+# passed.
+_ENDPOINT_ADD_PASSING_RUN = (
+    _write_call(0, "/work/app.py", "# summary endpoint with nested customer\n"),
+    _run_tests_call(1, passed=True),
+)
+
+# The forge the finding is about: the suite genuinely failed, and the agent then wrote
+# ``PASS`` into ``/work/test_result.txt`` - the marker that lived in its own ``/work``
+# tree. The old ``state_checks`` floor read that file and scored it; the gate reads the
+# ``/run-tests`` response instead, so the forge buys nothing.
+_ENDPOINT_ADD_FORGED_RUN = (
+    _write_call(0, "/work/app.py", "# flat shape, no nested customer\n"),
+    _run_tests_call(1, passed=False),
+    _write_call(2, "/work/test_result.txt", "PASS"),
+)
+
+# A failing run whose suite OUTPUT contains the literal verdict text ``'passed': True``
+# - something the agent can plant (a traceback, a printed dict), since it controls the
+# code the suite runs. The gate anchors to the top-level verdict, so this must not
+# clear it.
+_ENDPOINT_ADD_SPOOFED_OUTPUT_RUN = (
+    _write_call(0, "/work/app.py", "# flat shape; raises with a spoofed message\n"),
+    _run_tests_call(
+        1,
+        passed=False,
+        output="Traceback ...\nAssertionError: {'passed': True, 'returncode': 0}\nFAILED (errors=1)",
+    ),
+)
+
+# A transient pass that was later broken: the agent got a green run, then edited again
+# and its last run failed. The old marker reflected the LAST run, so it caught this;
+# the scored freshness check must too, or the fix would trade the forge hole for a
+# freshness hole.
+_ENDPOINT_ADD_PASS_THEN_FAIL_RUN = (
+    _write_call(0, "/work/app.py", "# correct endpoint\n"),
+    _run_tests_call(1, passed=True),
+    _write_call(2, "/work/app.py", "# broke it again\n"),
+    _run_tests_call(3, passed=False),
+)
+
+# A pass followed by a ``/run-tests`` that never returned a verdict: the agent broke the
+# code again and the next run timed out (or the test-runner answered 5xx). That run is
+# still the last one, so the earlier pass must not stand.
+_ENDPOINT_ADD_PASS_THEN_TIMEOUT_RUN = (
+    _write_call(0, "/work/app.py", "# correct endpoint\n"),
+    _run_tests_call(1, passed=True),
+    _write_call(2, "/work/app.py", "# hangs the suite\n"),
+    recorded_call(
+        "http_request",
+        sequence=3,
+        arguments={"url": _RUN_TESTS_URL, "method": "POST"},
+        status=ToolExecutionStatus.ERROR,
+        output="Request timed out after 30.0s",
+    ),
+)
+
+
+def _endpoint_add_trace_checks() -> TraceChecksConfig:
+    trace_checks = _grading_config(_ENDPOINT_ADD_TASK)[1].trace_checks
+    assert trace_checks is not None, (
+        "endpoint_add must grade the real suite result through trace_checks, not a "
+        "marker file the agent can overwrite"
+    )
+    return trace_checks
+
+
+def _endpoint_add_result(calls: Sequence[RecordedToolCall]) -> TraceChecksResult:
+    return evaluate_trace_checks(
+        _timeline(calls, _ENDPOINT_ADD_TURNS), _endpoint_add_trace_checks()
+    )
+
+
+def test_endpoint_add_grades_the_real_suite_result_through_the_trace() -> None:
+    """The pack's decisive floor is the testrunner's own result: a gate that a real
+    passing run exists, and a scored check that the last run was not a failure."""
+    trace_checks = _endpoint_add_trace_checks()
+    declared = tuple(
+        (constraint.id, constraint.require.declared_kind(), constraint.severity)
+        for constraint in trace_checks.constraints
+    )
+    assert declared == _ENDPOINT_ADD_CONSTRAINTS
+
+
+def test_endpoint_add_a_real_passing_suite_scores_in_full() -> None:
+    """A run whose ``/run-tests`` response reported the suite passed clears the gate and
+    scores the freshness check in full."""
+    result = _endpoint_add_result(_ENDPOINT_ADD_PASSING_RUN)
+    assert result.gate_failed is False
+    assert _failed(result) == []
+    assert result.score == pytest.approx(1.0)
+
+
+def test_endpoint_add_a_forged_marker_cannot_meet_the_gate() -> None:
+    """The exploit the finding documents: the suite failed and the agent wrote ``PASS``
+    into ``/work/test_result.txt``. The gate reads the testrunner's ``/run-tests``
+    response, which still says the suite failed, so the forged marker does not clear
+    it - the trial cannot pass on a forged result."""
+    result = _endpoint_add_result(_ENDPOINT_ADD_FORGED_RUN)
+    assert result.gate_failed is True
+    assert result.failed_gate_ids == ["a_run_tests_call_reported_the_suite_passed"]
+    assert result.score == pytest.approx(0.0)
+
+
+def test_endpoint_add_suite_output_cannot_spoof_the_verdict() -> None:
+    """The verdict is read from the top of the response, not a bare substring, so the
+    agent cannot clear the gate by planting ``'passed': True`` inside the suite output
+    it controls."""
+    result = _endpoint_add_result(_ENDPOINT_ADD_SPOOFED_OUTPUT_RUN)
+    assert result.gate_failed is True
+    assert result.failed_gate_ids == ["a_run_tests_call_reported_the_suite_passed"]
+    assert result.score == pytest.approx(0.0)
+
+
+def test_endpoint_add_a_transient_pass_that_was_later_broken_cannot_pass() -> None:
+    """A green run followed by a failing run does not pass: the scored freshness check
+    tracks the agent's last ``/run-tests`` result, matching what the old marker did, so
+    the fix does not trade the forge hole for a freshness hole. trace_checks is the only
+    component that can reach the threshold, so a 0 there caps the trial below 0.6."""
+    result = _endpoint_add_result(_ENDPOINT_ADD_PASS_THEN_FAIL_RUN)
+    assert "no_failing_run_tests_call_followed_the_last_pass" in _failed(result)
+    assert result.score == pytest.approx(0.0)
+    combine = _grading_config(_ENDPOINT_ADD_TASK)[1].combine
+    assert (
+        combine.weights["transcript_rules"] + combine.weights["llm_judge"] < combine.pass_threshold
+    )
+
+
+def test_endpoint_add_a_pass_followed_by_a_run_without_a_verdict_cannot_pass() -> None:
+    """A later ``/run-tests`` that errored or timed out is still the last run, so the
+    earlier pass does not carry the freshness check."""
+    result = _endpoint_add_result(_ENDPOINT_ADD_PASS_THEN_TIMEOUT_RUN)
+    assert "no_failing_run_tests_call_followed_the_last_pass" in _failed(result)
+    assert result.score == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/work/tests/test_summary.py", "tests/__init__.py", "/work/app/../tests/test_summary.py"],
+)
+def test_endpoint_add_a_write_file_under_tests_fails_the_gate(path: str) -> None:
+    """The suite runs from the agent's own ``/work/tests``, so weakening it would make the
+    test-runner report a genuine pass. The task forbids editing the suite, and a
+    ``write_file`` under ``tests/`` - however the path is spelled - shuts the gate even
+    though the ``/run-tests`` that follows really passed."""
+    calls = (
+        _write_call(0, "/work/app.py", "# flat shape, no nested customer\n"),
+        _write_call(1, path, "# weakened test\n"),
+        _run_tests_call(2, passed=True),
+    )
+    result = _endpoint_add_result(calls)
+    assert result.gate_failed is True
+    assert result.failed_gate_ids == ["no_write_file_call_under_tests"]
+    assert result.score == pytest.approx(0.0)
 
 
 _LOT_OPS_TASK = (
