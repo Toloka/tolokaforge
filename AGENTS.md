@@ -140,7 +140,7 @@ tolokaforge validate --tasks "tasks/**/task.yaml"
 
 ### Local Services
 
-`tolokaforge run` starts the services its tasks need by itself: the runner and db-service, plus rag-service and mock-web, each only when a task needs it ([docs/RUNNER.md](docs/RUNNER.md#which-engine-services-start-dockerservices)). The rest of this section is for starting them by hand.
+`tolokaforge run` starts the services its tasks need by itself: the runner and db-service, plus rag-service and mock-web, each only when a task or the adapter needs it ([docs/RUNNER.md](docs/RUNNER.md#which-engine-services-start-dockerservices)). The rest of this section is for starting them by hand.
 
 Tasks that need environment services start them with Docker. The core stack (`make docker-up`) is db-service + runner only — it serves JSON DB tasks. **Browser, RAG, and mock-web `http_request` tasks need the full stack** (adds rag-service + mock-web); there is no `make` target for it, so start it with `tolokaforge docker up --profile full`.
 

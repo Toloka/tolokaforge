@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, assert_never
 
 from tolokaforge.adapters._task_loader import (
     ToolActor,
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     from tolokaforge.adapters import BaseAdapter
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import RunConfig, TaskConfig
-    from tolokaforge.core.models.docker_config import EngineServicesConfig
+    from tolokaforge.core.models.docker_config import EngineServiceMode, EngineServicesConfig
     from tolokaforge.core.trial import TrialNodeInputs, TrialResult
     from tolokaforge.docker.stack import EngineStack
 
@@ -220,7 +220,7 @@ def _named(needers: list[str]) -> str:
     return f"{shown} and {rest} more" if rest > 0 else shown
 
 
-def _choose(field: str, mode: str, needers: list[str]) -> EngineServiceChoice:
+def _choose(field: str, mode: EngineServiceMode, needers: list[str]) -> EngineServiceChoice:
     """Apply ``docker.services.<field>`` to what the run needs."""
     if mode == "never":
         if needers:
@@ -231,9 +231,11 @@ def _choose(field: str, mode: str, needers: list[str]) -> EngineServiceChoice:
         return EngineServiceChoice(start=False, reason=f"docker.services.{field} is 'never'")
     if mode == "always":
         return EngineServiceChoice(start=True, reason=f"docker.services.{field} is 'always'")
-    if needers:
-        return EngineServiceChoice(start=True, reason=f"needed by {_named(needers)}")
-    return EngineServiceChoice(start=False, reason="no task or adapter needs it")
+    if mode == "auto":
+        if needers:
+            return EngineServiceChoice(start=True, reason=f"needed by {_named(needers)}")
+        return EngineServiceChoice(start=False, reason="no task or adapter needs it")
+    assert_never(mode)
 
 
 def resolve_engine_services(
@@ -343,17 +345,22 @@ def build_engine_stack(
     skips the resolution and builds the core stack: for a run whose tasks declare
     their own stacks, where no built-in container starts.
     """
-    from tolokaforge.core.models.docker_config import DockerConfig
+    from tolokaforge.core.models.docker_config import DockerConfig, EngineServicesConfig
     from tolokaforge.docker.stacks import core_stack, full_stack
 
     logger.info("Auto-starting Docker services via EngineStack")
     stack_requirements = adapter.docker_stack_requirements() if adapter is not None else None
     docker_config = config.docker or DockerConfig()
-    engine_services = (
-        resolve_engine_services(tasks, stack_requirements, docker_config.services)
-        if optional_services
-        else _TASK_DECLARED_STACKS_PLAN
-    )
+    if optional_services:
+        engine_services = resolve_engine_services(tasks, stack_requirements, docker_config.services)
+    else:
+        engine_services = _TASK_DECLARED_STACKS_PLAN
+        if docker_config.services != EngineServicesConfig():
+            logger.warning(
+                "docker.services is ignored: the tasks declare their own stacks",
+                rag_service=docker_config.services.rag_service,
+                mock_web=docker_config.services.mock_web,
+            )
     logger.info(
         "Engine services resolved",
         rag_service=engine_services.rag_service.start,
@@ -403,13 +410,13 @@ def build_engine_stack(
     # only the optional services the run starts.
     if engine_services.starts_any:
         stack_factory = full_stack
-        optional_services = {
+        service_flags = {
             "rag_service": engine_services.rag_service.start,
             "mock_web": engine_services.mock_web.start,
         }
     else:
         stack_factory = core_stack
-        optional_services = {}
+        service_flags = {}
     logger.info(
         "Creating service stack",
         services=["db-service", "runner"]
@@ -431,7 +438,7 @@ def build_engine_stack(
     # use (``compute.grpc_max_message_mb``).
     core_stack_kwargs["grpc_max_message_mb"] = grpc_max_message_mb
     core_stack_kwargs["state_read_timeout_s"] = state_read_timeout_s
-    service_stack = stack_factory(config=docker_config, **core_stack_kwargs, **optional_services)
+    service_stack = stack_factory(config=docker_config, **core_stack_kwargs, **service_flags)
     return service_stack, stack_requirements
 
 

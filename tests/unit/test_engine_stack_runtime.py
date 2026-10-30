@@ -20,6 +20,7 @@ from tolokaforge.core.engine_stack_runtime import (
     EngineServiceConflictError,
     StartedEngineStack,
     build_engine_stack,
+    resolve_engine_services,
     run_trial_with_stack,
 )
 from tolokaforge.core.logging import get_logger
@@ -31,6 +32,7 @@ from tolokaforge.core.models import (
     TaskConfig,
 )
 from tolokaforge.core.models.docker_config import DockerConfig, EngineServicesConfig
+from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.docker.stacks.core import TypeSenseAddress
 
 pytestmark = pytest.mark.unit
@@ -151,21 +153,18 @@ def _build(config: RunConfig, tasks: list[TaskConfig], adapter: Any = None) -> A
 def test_build_engine_stack_adds_mock_web_and_playwright_for_a_browser_task() -> None:
     """A browser task reaches mock-web and needs Playwright: mock-web + the build arg.
 
-    It searches nothing, so rag-service is neither in the stack nor named to the
-    runner (#1937).
+    It searches nothing, so rag-service is not in the stack.
     """
     stack = _build(_config(), [_task(["browser"])])
 
     assert set(stack.services) == {"db-service", "runner", "mock-web"}
     assert _runner(stack).build_args.get("INSTALL_PLAYWRIGHT") == "true"
-    assert "RAG_SERVICE_URL" not in _runner(stack).environment
 
 
 def test_build_engine_stack_adds_rag_service_alone_for_a_search_task() -> None:
     stack = _build(_config(), [_task(["search_kb"])])
 
     assert set(stack.services) == {"db-service", "runner", "rag-service"}
-    assert _runner(stack).environment["RAG_SERVICE_URL"] == "http://tolokaforge-rag-service:8001"
 
 
 def test_build_engine_stack_adds_both_when_the_tasks_need_both() -> None:
@@ -212,6 +211,16 @@ def test_build_engine_stack_refuses_a_never_service_the_run_needs(
         _build(config, [_task(["search_kb"])])
 
 
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, dict[str, Any]]] = []
+
+    def info(self, message: str, **fields: Any) -> None:
+        self.records.append((message, fields))
+
+    debug = warning = error = info
+
+
 def test_build_engine_stack_without_optional_services_builds_the_core_stack_unchecked() -> None:
     """A run whose tasks declare their own stacks starts no built-in container.
 
@@ -222,27 +231,59 @@ def test_build_engine_stack_without_optional_services_builds_the_core_stack_unch
         update={"docker": DockerConfig(services=EngineServicesConfig(mock_web="never"))}
     )
 
+    logger = _RecordingLogger()
+
     stack, _ = build_engine_stack(
         config,
         None,
         [_task(["browser"])],
         grpc_max_message_mb=50,
         state_read_timeout_s=30.0,
-        logger=_LOGGER,
+        logger=logger,  # type: ignore[arg-type]
         optional_services=False,
     )
 
     assert set(stack.services) == {"db-service", "runner"}
+    assert dict(logger.records)[
+        "docker.services is ignored: the tasks declare their own stacks"
+    ] == {
+        "rag_service": "auto",
+        "mock_web": "never",
+    }
 
 
-class _RecordingLogger:
-    def __init__(self) -> None:
-        self.records: list[tuple[str, dict[str, Any]]] = []
+@pytest.mark.parametrize(
+    ("manifest", "services"),
+    [(None, {"db-service", "runner", "mock-web"}), ("environment.yaml", {"db-service", "runner"})],
+    ids=["built-in stack", "task-declared stack"],
+)
+def test_the_orchestrator_builds_optional_services_only_for_the_built_in_stack(
+    monkeypatch: pytest.MonkeyPatch, manifest: str | None, services: set[str]
+) -> None:
+    """A task-declared stack skips the optional services, and with them ``docker.services``.
 
-    def info(self, message: str, **fields: Any) -> None:
-        self.records.append((message, fields))
+    The built-in stack starts mock-web for the browser task and rag-service for
+    ``always``; tasks that bring their own stack start no built-in container, so
+    the run builds neither image.
+    """
+    config = _config().model_copy(
+        update={"docker": DockerConfig(services=EngineServicesConfig(rag_service="always"))}
+    )
+    orchestrator = Orchestrator(config)
+    orchestrator.tasks = [_task(["browser"])]
+    orchestrator.adapter = SimpleNamespace(  # type: ignore[assignment]
+        docker_stack_requirements=lambda: DockerStackRequirements()
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_task_description",
+        lambda task_id: SimpleNamespace(environment_manifest=manifest),
+    )
 
-    debug = warning = error = info
+    stack, _, task_stack_mode = orchestrator._build_run_engine_stack()
+
+    assert task_stack_mode is (manifest is not None)
+    assert set(stack.services) == services | ({"rag-service"} if manifest is None else set())
 
 
 def test_build_engine_stack_logs_each_service_and_why() -> None:
@@ -258,11 +299,12 @@ def test_build_engine_stack_logs_each_service_and_why() -> None:
         logger=logger,  # type: ignore[arg-type]
     )
 
+    plan = resolve_engine_services([_task(["browser"])], None, EngineServicesConfig())
     assert dict(logger.records)["Engine services resolved"] == {
-        "rag_service": False,
-        "rag_service_reason": "no task or adapter needs it",
-        "mock_web": True,
-        "mock_web_reason": "needed by task t",
+        "rag_service": plan.rag_service.start,
+        "rag_service_reason": plan.rag_service.reason,
+        "mock_web": plan.mock_web.start,
+        "mock_web_reason": plan.mock_web.reason,
     }
 
 

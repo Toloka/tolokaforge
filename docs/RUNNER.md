@@ -128,15 +128,19 @@ docker:
 
 - `auto`: start it when the run needs it.
 - `always`: start it whatever the tasks say, for a task pack that reaches the
-  service in a way the engine cannot see.
+  service in a way the engine cannot see. One such way: the `http_request` tool
+  admits `http://mock-web…` and `http://localhost:8080` URLs whatever its
+  `allowed_hosts` say, but the run starts mock-web only for the hosts the task
+  lists, so a task that calls mock-web with `allowed_hosts` that leave it out
+  needs `mock_web: always`.
 - `never`: never start it. A run that needs it stops before any engine
   container starts with `EngineServiceConflictError`, naming the adapter or the
   tasks that need it.
 
 A run whose tasks declare their own `environment_manifest` starts no built-in
-container, so it neither starts nor checks the optional services; only the
-runner and db-service images are built, for the `:local` aliases its compose
-files use.
+container, so it neither starts nor checks the optional services, and logs a
+warning when `docker.services` sets either one; only the runner and db-service
+images are built, for the `:local` aliases its compose files use.
 
 Write `always` and `never`, not `on` and `off`: YAML reads those as booleans,
 which the config refuses with a message that says so.

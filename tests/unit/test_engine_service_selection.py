@@ -1,4 +1,4 @@
-"""The run starts each optional engine service its tasks need, and only those (#125, #1937).
+"""The run starts each optional engine service its tasks need, and only those.
 
 ``core_stack`` only starts ``db-service`` + ``runner``. Tasks that resolve
 ``http://mock-web:8080/...`` (browser, mobile, an ``http_request`` whose hosts
