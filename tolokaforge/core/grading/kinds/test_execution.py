@@ -154,6 +154,18 @@ class TestExecutionKindConfig(BaseModel):
         return self
 
 
+def _looks_like_a_missing_file(raw: str) -> bool:
+    """Whether *raw* is ``cat`` reporting the reward file does not exist.
+
+    Under ``require_reward`` the reward is read with a bare ``cat``, so an
+    absent file arrives as that command's own error text rather than as empty
+    bytes. Matching it is what keeps the wrong-user hint reachable: without
+    this the commonest failure of all falls through to "not a finite number".
+    """
+    lowered = raw.lower()
+    return "no such file" in lowered or "cannot open" in lowered
+
+
 class TestExecutionGraderKind:
     """Grade a trial by running the pack's ``test.sh`` and reading the reward."""
 
@@ -231,6 +243,7 @@ class TestExecutionGraderKind:
                 # exactly that message was emitted for a container the daemon
                 # had already stopped.
                 lowered = raw.lower()
+                suite_out = (result.stdout or "").lower()
                 if (
                     "is not running" in lowered
                     or "no such container" in lowered
@@ -241,10 +254,29 @@ class TestExecutionGraderKind:
                         "nothing was measured. This is lost infrastructure, not "
                         f"a failed attempt. Daemon said: {raw!r}"
                     )
-                elif "[exit code: 137]" in raw or "[exit code: 143]" in raw:
+                elif result.exit_code in (137, 143) or (
+                    "[exit code: 137]" in suite_out or "[exit code: 143]" in suite_out
+                ):
+                    # The SIGNAL lands on the SUITE's exit, not on the reward
+                    # read: by the time we cat the reward the verifier is
+                    # already dead and the cat exits 1 on its own. Testing the
+                    # cat's output for 137 never fires, which is how the four
+                    # sweep()-class tasks would have been mislabelled.
                     reason = (
-                        "the verifier was killed by a signal before it could "
-                        f"write a verdict. Read: {raw!r}"
+                        f"the verifier was killed by signal (exit {result.exit_code}) "
+                        "before it could write a verdict."
+                    )
+                elif _looks_like_a_missing_file(raw):
+                    # `require_reward` drops the `2>/dev/null || echo 0.0`
+                    # fallback, so an ABSENT reward comes back as the cat's own
+                    # error, not as empty bytes. That is the single most common
+                    # shape -- the one #1953 exists for -- so it must be matched
+                    # before the generic "not a number" branch, or the wrong-user
+                    # hint becomes unreachable in practice.
+                    reason = (
+                        f"the verifier wrote no reward at {cfg.reward_path!r}. "
+                        "Common cause: it could not write there because it ran "
+                        "as the wrong user — see this kind's 'user' setting."
                     )
                 elif raw:
                     reason = (
@@ -253,9 +285,10 @@ class TestExecutionGraderKind:
                     )
                 else:
                     reason = (
-                        f"the verifier wrote no reward at {cfg.reward_path!r}. "
-                        "Common cause: it could not write there because it ran "
-                        "as the wrong user — see this kind's 'user' setting."
+                        f"the verifier wrote no reward at {cfg.reward_path!r} "
+                        "(the file was empty). Common cause: it could not write "
+                        "there because it ran as the wrong user — see this "
+                        "kind's 'user' setting."
                     )
                 raise GraderKindRefusedError(
                     f"test-execution produced no usable verdict: {reason}"

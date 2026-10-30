@@ -253,7 +253,9 @@ def materialise_task_environment(
             declares a service named ``runner`` or ``db-service`` (collision
             with the injected engine services) or one colliding with the
             harness base service; if the task's ``services:`` mapping
-            declares more than one service and none is named ``main``.
+            declares more than one service, none is named ``main``, more than one
+        declares a build, and no ``environment/Dockerfile`` exists to inject
+        one from.
     """
     if image_tag.lower() in _FLOATING_IMAGE_TAGS:
         raise ValueError(
@@ -670,6 +672,25 @@ def _agent_dockerfile(meta: TerminalBenchTask, agent_body: Mapping[str, Any]) ->
     return meta.task_dir / rel
 
 
+def _stage_name(head: list[str]) -> str:
+    """The ``AS <name>`` a ``FROM`` line declares, lowercased, or ``""``."""
+    parts = (head[1] if len(head) > 1 else "").split()
+    for i, token in enumerate(parts):
+        if token.upper() == "AS" and i + 1 < len(parts):
+            return parts[i + 1].lower()
+    return ""
+
+
+def _inherits_a_declared_stage(head: list[str], stages: set[str]) -> bool:
+    """Whether this ``FROM`` builds on an earlier stage of the same file.
+
+    ``FROM base`` carries that stage's image config forward, ``CMD`` and
+    ``ENTRYPOINT`` included; ``FROM python:3.12-slim`` does not.
+    """
+    parts = (head[1] if len(head) > 1 else "").split()
+    return bool(parts) and parts[0].lower() in stages
+
+
 def _dockerfile_declares_a_command(dockerfile: Path) -> bool:
     """Whether *dockerfile* gives its image a default process.
 
@@ -688,18 +709,27 @@ def _dockerfile_declares_a_command(dockerfile: Path) -> bool:
     except OSError:
         return True
     declared = False
+    stages: set[str] = set()
     for line in text.splitlines():
         head = line.strip().split(maxsplit=1)
         if not head:
             continue
         token = head[0].upper()
-        if token == "FROM":
+        if token == "FROM" and not _inherits_a_declared_stage(head, stages):
+            stages.add(_stage_name(head))
             # A new stage starts with nothing inherited: a CMD in an earlier
             # stage does not reach the final image. Multi-stage is the normal
             # shape for the Go and Rust base images in this corpus, and
             # counting an earlier stage's CMD would re-open exactly the bug
             # the keep-alive injection exists to close.
+            #
+            # `FROM <earlier-stage>` is the exception: it DOES inherit that
+            # stage's image config, CMD included, so the guard above leaves
+            # `declared` alone for it. Resetting there would bury the task's
+            # own command, which is the regression this function prevents.
             declared = False
+        elif token == "FROM":
+            stages.add(_stage_name(head))
         elif token in {"CMD", "ENTRYPOINT"}:
             declared = True
     return declared
@@ -785,7 +815,13 @@ def _resolve_agent_service(
                 }
             )
             if networks:
-                body["networks"] = networks
+                # Keep `default` as well. Declaring `networks:` at all makes
+                # compose STOP attaching the implicit default network, so an
+                # agent given only the sidecars' network loses egress -- on a
+                # task whose sidecars sit on an `internal: true` network a
+                # coding-harness CLI could then not reach its provider API at
+                # all, and every trial would die in the agent phase.
+                body["networks"] = [*networks, "default"]
             services[AGENT_SERVICE_DEFAULT] = body
             injected.add(AGENT_SERVICE_DEFAULT)
             return AGENT_SERVICE_DEFAULT
@@ -1284,6 +1320,51 @@ def _namespace_volume_refs(volumes: Any, named: set[str]) -> list[Any]:
     return out
 
 
+def _reroot_verifier_mount(mount: Any) -> Any:
+    """A verifier sidecar's relative bind source, re-rooted onto ``./tests``.
+
+    The same defect :func:`_reroot_mount_source` fixes for the agent stack: a
+    sidecar's compose is authored beside ``tests/`` and read in place upstream,
+    but we emit one merged file at the staging root, so ``./schema.sql`` has to
+    become ``./tests/schema.sql``. Re-rooting only ``build`` leaves docker to
+    create an empty DIRECTORY at the staging root and mount it over the file
+    the container expected, which is how a postgres init exits 1.
+
+    Named volumes, absolute sources and ``${...}`` are left alone, exactly as
+    on the agent side.
+    """
+    if isinstance(mount, str):
+        source, separator, rest = mount.partition(":")
+        if not separator or not source.startswith(".") or "${" in source:
+            return mount
+        if not rest.startswith(("/", "${")):
+            return mount
+        return f"{_reroot_verifier_context(source)}:{rest}"
+    if isinstance(mount, Mapping):
+        if mount.get("type") not in (None, "bind"):
+            return mount
+        source = mount.get("source")
+        if not isinstance(source, str) or not source.startswith(".") or "${" in source:
+            return mount
+        rerooted = dict(mount)
+        rerooted["source"] = _reroot_verifier_context(source)
+        return rerooted
+    return mount
+
+
+def _reroot_verifier_context(ctx: str) -> str:
+    """``ctx`` relative to the staged ``tests/`` directory."""
+    if ctx.startswith("/") or ctx == "./tests" or ctx.startswith("./tests/"):
+        return ctx
+    if ctx in (".", "./"):
+        return "./tests"
+    if ctx.startswith("./"):
+        return f"./tests/{ctx[2:]}"
+    if ctx.startswith("../"):
+        return ctx
+    return f"./tests/{ctx}"
+
+
 def _reroot_verifier_build(build: Any) -> Any:
     """Reroot a verifier sidecar's ``build`` (string or table) onto the staged ``tests/``.
 
@@ -1374,7 +1455,10 @@ def _merge_verifier_stack(
         if "build" in new_body:
             new_body["build"] = _reroot_verifier_build(new_body["build"])
         if "volumes" in new_body:
-            new_body["volumes"] = _namespace_volume_refs(new_body["volumes"], named_volumes)
+            new_body["volumes"] = [
+                _reroot_verifier_mount(m)
+                for m in _namespace_volume_refs(new_body["volumes"], named_volumes)
+            ]
         new_body["networks"] = {_VERIFIER_NETWORK: {"aliases": [name]}}
         services[f"{_VERIFIER_SERVICE_PREFIX}{name}"] = new_body
 

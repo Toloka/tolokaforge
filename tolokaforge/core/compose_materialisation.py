@@ -742,18 +742,18 @@ def _reference_safe_segment(slug_source: str) -> str:
     return stripped if stripped else _SUFFIX_FILLER
 
 
-#: What an edge ``_`` in the random suffix is replaced with. Inside
-#: ``tempfile``'s own alphabet, so the basename keeps the shape every caller
-#: and canonical test pins; alphanumeric, so no separator ends up adjacent to
-#: another one.
+#: Stands in for a slug segment that sanitises away to nothing, so two
+#: separators never end up adjacent. Alphanumeric and inside ``tempfile``'s own
+#: alphabet, so the basename keeps the shape every caller and canonical test
+#: pins. Used only by :func:`_reference_safe_segment`; the random suffix is
+#: redrawn rather than patched.
 _SUFFIX_FILLER = "0"
 
-#: How many times a draw may be repeated when the repaired name is already
-#: taken. Each draw is ~94.7% likely to need no repair at all, and a repaired
-#: name collides only with a live directory that drew the repaired form
-#: itself, so the budget is never reached in practice; exhausting it returns
-#: the unrepaired directory, which is the pre-fix behaviour rather than a new
-#: failure mode.
+#: How many times a draw may be repeated when it carries an edge ``_``. Each
+#: draw is ~94.7% likely to be usable as-is, so two rejections running is
+#: already unlikely and the budget is never reached in practice; exhausting it
+#: returns a directory with an awkward name, which is the pre-2026-10-30
+#: behaviour rather than a new failure mode.
 _SUFFIX_REPAIR_ATTEMPTS = 8
 
 
