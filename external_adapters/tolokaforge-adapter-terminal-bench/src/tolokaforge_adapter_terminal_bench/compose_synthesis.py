@@ -47,7 +47,7 @@ import re
 import shlex
 import shutil
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -253,7 +253,9 @@ def materialise_task_environment(
             declares a service named ``runner`` or ``db-service`` (collision
             with the injected engine services) or one colliding with the
             harness base service; if the task's ``services:`` mapping
-            declares more than one service and none is named ``main``.
+            declares more than one service, none is named ``main``, more than one
+        declares a build, and no ``environment/Dockerfile`` exists to inject
+        one from.
     """
     if image_tag.lower() in _FLOATING_IMAGE_TAGS:
         raise ValueError(
@@ -274,7 +276,8 @@ def materialise_task_environment(
     else:
         original = _single_container_compose(meta)
         task_services = original["services"]
-    agent_service = _resolve_agent_service(meta.task_id, task_services)
+    injected_services: set[str] = set()
+    agent_service = _resolve_agent_service(meta, task_services, injected_services)
     base_service = f"{agent_service}{_HARNESS_BASE_SERVICE_SUFFIX}"
     # The base service exists only under harness mode and the verifier service
     # only for the separate-verifier shape, so each is reserved only when the
@@ -359,6 +362,7 @@ def materialise_task_environment(
         original=original,
         meta=meta,
         agent_service=agent_service,
+        injected_services=injected_services,
         base_service=base_service,
         image_registry=image_registry,
         image_tag=image_tag,
@@ -431,8 +435,9 @@ _HARBOR_LOG_PATHS = {
 }
 
 
-def _reroot_build_contexts(doc: dict[str, Any]) -> None:
-    """Re-root each service's relative build context onto ``environment/``.
+def _reroot_relative_paths(doc: dict[str, Any], skip: Collection[str] = ()) -> None:
+    """Re-root each service's relative build context and bind source onto
+    ``environment/``.
 
     A compose file under ``environment/`` is read *in place* by the upstream
     harness, so a context of ``.`` in it means that directory. We emit one
@@ -440,12 +445,30 @@ def _reroot_build_contexts(doc: dict[str, Any]) -> None:
     same ``.`` would mean the task root — a different directory, usually
     without a Dockerfile in it.
 
+    ``volumes:`` carries the same relative paths and the same mistake is
+    worse there, because docker does not refuse an unresolvable bind source:
+    it creates it. ``fix_resident_fund_liability_ledger`` mounts
+    ``./schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro`` on its
+    ``db`` service; left unmoved, docker makes an empty *directory* at the
+    staging root, mounts it over postgres's init file, and the service exits
+    1, taking the agent service down behind ``dependency failed to start``.
+
     Only literal paths move. A value still carrying ``${...}`` is left for
     substitution, which resolves ``CONTEXT_DIR`` to the staging-relative
-    environment directory directly.
+    environment directory directly, and a named volume (``pgdata:/var/lib``)
+    is not a path at all — only a source starting with ``.`` is re-rooted.
+
+    Runs before :func:`_agent_volumes` appends our own ``./tests`` and
+    ``./_logs``: those are authored against the staging root already, and
+    moving them under ``environment/`` would point the agent at nothing.
     """
-    for body in (doc.get("services") or {}).values():
-        if not isinstance(body, dict):
+    for name, body in (doc.get("services") or {}).items():
+        if not isinstance(body, dict) or name in skip:
+            # A service this adapter injected is already written relative to
+            # the staging root the merged compose is emitted at, not to the
+            # task's own compose directory. Re-rooting it would send
+            # ``./environment`` to ``./environment/environment`` and the build
+            # would fail on a path nobody wrote.
             continue
         build = body.get("build")
         if isinstance(build, str):
@@ -458,6 +481,78 @@ def _reroot_build_contexts(doc: dict[str, Any]) -> None:
                 moved = _reroot_context(context)
                 if moved is not None:
                     build["context"] = moved
+        volumes = body.get("volumes")
+        if isinstance(volumes, list):
+            body["volumes"] = [_reroot_mount_source(mount) for mount in volumes]
+
+
+def _as_host_path(path: str) -> str:
+    """*path* in a form compose can only read as a host path.
+
+    ``posixpath.normpath`` strips a leading ``./``, which is harmless for a
+    build context but changes the MEANING of a short-form mount source:
+    compose reads a source as a host path only when it starts with ``.``,
+    ``/`` or ``~``, or contains a slash. A task mounting ``.:/app`` would
+    normalise to ``environment``, which compose then parses as a *named*
+    volume nothing declares, and the whole project is rejected with
+    ``refers to undefined volume``.
+    """
+    return path if path.startswith(("./", "../", "/", "~")) else f"./{path}"
+
+
+def _declared_networks(service: Mapping[str, Any]) -> list[str]:
+    """Network names a service body attaches to, in either compose spelling."""
+    networks = service.get("networks")
+    if isinstance(networks, Mapping):
+        return [str(name) for name in networks]
+    if isinstance(networks, (list, tuple)):
+        return [str(name) for name in networks if isinstance(name, str)]
+    return []
+
+
+def _reroot_mount_source(mount: Any) -> Any:
+    """*mount* with a relative bind source re-rooted, in either spelling.
+
+    Short form is ``"<source>:<target>[:<mode>]"``, split on the first ``:``
+    and only when what precedes it starts with ``.`` — that is what tells a
+    relative path from a named volume, whose name is bare and must be left
+    alone or compose would start reading it as a path. The target always
+    starts with ``/``, which is the second half of the same check.
+
+    The target normally starts with ``/``, but this runs BEFORE
+    :func:`_substitute_tree`, so a harbor-dialect mount is still spelled
+    ``./fixtures:${TEST_DIR}/fixtures`` here. A target left as ``${...}`` is
+    accepted too — refusing it would leave the source pointing at the staging
+    root, which is the same empty-directory mount this function exists to
+    prevent.
+
+    Long form is rewritten only for a bind: ``type: volume`` names a volume
+    in ``source`` too, and ``type`` absent with a path-like source defaults
+    to bind.
+
+    The result keeps its leading ``./`` — see :func:`_as_host_path`.
+    """
+    if isinstance(mount, str):
+        source, separator, rest = mount.partition(":")
+        if not separator or not source.startswith("."):
+            return mount
+        if not rest.startswith(("/", "${")):
+            return mount
+        moved = _reroot_context(source)
+        return mount if moved is None else f"{_as_host_path(moved)}:{rest}"
+    if isinstance(mount, Mapping):
+        if mount.get("type") not in (None, "bind"):
+            return mount
+        source = mount.get("source")
+        if not isinstance(source, str) or not source.startswith("."):
+            return mount
+        moved = _reroot_context(source)
+        if moved is None:
+            return mount
+        rerooted = dict(mount)
+        rerooted["source"] = _as_host_path(moved)
+        return rerooted
+    return mount
 
 
 def _agent_volumes(declared: Any, *, include_tests_mount: bool = True) -> list[Any]:
@@ -552,6 +647,94 @@ def _single_container_compose(meta: TerminalBenchTask) -> dict[str, Any]:
     }
 
 
+def _agent_dockerfile(meta: TerminalBenchTask, agent_body: Mapping[str, Any]) -> Path:
+    """The Dockerfile the agent service actually builds.
+
+    ``environment/Dockerfile`` is the convention, but a service may name its
+    own (``build: {context: ., dockerfile: Dockerfile.app}``). Probing the
+    conventional file instead would answer for the wrong image: a task whose
+    real Dockerfile declares an ``ENTRYPOINT`` would be told it has none, and
+    the keep-alive command we then inject reaches that entrypoint as
+    *arguments* rather than replacing it.
+    """
+    build = agent_body.get("build")
+    context = _ENVIRONMENT_BUILD_CONTEXT
+    name = "Dockerfile"
+    if isinstance(build, str):
+        context = build
+    elif isinstance(build, Mapping):
+        context = str(build.get("context") or context)
+        name = str(build.get("dockerfile") or name)
+    if "${" in context or "${" in name:
+        # Still unsubstituted; the convention is the best answer available.
+        return meta.task_dir / "environment" / "Dockerfile"
+    rel = posixpath.normpath(posixpath.join(context.lstrip("/"), name))
+    return meta.task_dir / rel
+
+
+def _stage_name(head: list[str]) -> str:
+    """The ``AS <name>`` a ``FROM`` line declares, lowercased, or ``""``."""
+    parts = (head[1] if len(head) > 1 else "").split()
+    for i, token in enumerate(parts):
+        if token.upper() == "AS" and i + 1 < len(parts):
+            return parts[i + 1].lower()
+    return ""
+
+
+def _inherits_a_declared_stage(head: list[str], stages: set[str]) -> bool:
+    """Whether this ``FROM`` builds on an earlier stage of the same file.
+
+    ``FROM base`` carries that stage's image config forward, ``CMD`` and
+    ``ENTRYPOINT`` included; ``FROM python:3.12-slim`` does not.
+    """
+    parts = (head[1] if len(head) > 1 else "").split()
+    return bool(parts) and parts[0].lower() in stages
+
+
+def _dockerfile_declares_a_command(dockerfile: Path) -> bool:
+    """Whether *dockerfile* gives its image a default process.
+
+    Read one line at a time, first token only, case-folded: ``CMD`` and
+    ``ENTRYPOINT`` are the only two instructions that leave the image with
+    something to run. Line continuations are deliberately not followed, so a
+    ``CMD`` spelled inside a backslash-continued ``RUN`` reads as a command
+    the image already has — the harmless direction. The caller only ever *adds* a
+    keep-alive command when this is ``False``: over-reporting leaves the
+    pre-2026-10-30 behaviour of injecting nothing, while under-reporting
+    would bury the task's own entrypoint under ``sleep infinity``. An
+    unreadable file answers the same conservative way.
+    """
+    try:
+        text = dockerfile.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    declared = False
+    stages: set[str] = set()
+    for line in text.splitlines():
+        head = line.strip().split(maxsplit=1)
+        if not head:
+            continue
+        token = head[0].upper()
+        if token == "FROM" and not _inherits_a_declared_stage(head, stages):
+            stages.add(_stage_name(head))
+            # A new stage starts with nothing inherited: a CMD in an earlier
+            # stage does not reach the final image. Multi-stage is the normal
+            # shape for the Go and Rust base images in this corpus, and
+            # counting an earlier stage's CMD would re-open exactly the bug
+            # the keep-alive injection exists to close.
+            #
+            # `FROM <earlier-stage>` is the exception: it DOES inherit that
+            # stage's image config, CMD included, so the guard above leaves
+            # `declared` alone for it. Resetting there would bury the task's
+            # own command, which is the regression this function prevents.
+            declared = False
+        elif token == "FROM":
+            stages.add(_stage_name(head))
+        elif token in {"CMD", "ENTRYPOINT"}:
+            declared = True
+    return declared
+
+
 def _load_compose(path: Path) -> dict[str, Any]:
     with path.open() as f:
         content = yaml.safe_load(f)
@@ -563,11 +746,13 @@ def _load_compose(path: Path) -> dict[str, Any]:
     return content
 
 
-def _resolve_agent_service(task_id: str, services: dict[str, Any]) -> str:
-    """Which service the agent works inside.
+def _resolve_agent_service(
+    meta: TerminalBenchTask, services: dict[str, Any], injected: set[str]
+) -> str:
+    """Which service the agent works inside, injecting ``main`` if the task has none.
 
     ``main`` by name first — the convention 186 of the corpus's 197 canonical
-    compose files follow. Then the sole service, if there is only one.
+    compose files follow.
 
     Then the sole service that declares ``build``: a task's supporting
     containers are stock images (``postgres:16-alpine``, ``redis``), and the
@@ -575,19 +760,83 @@ def _resolve_agent_service(task_id: str, services: dict[str, Any]) -> str:
     repair. That rule is what lets a task keep its own service names — the
     alternative is telling the benchmark to rename things to suit us, and a
     task edited to fit the harness is no longer the task the score refers to.
+
+    When NO service declares a build, the task's compose names only its
+    sidecars: upstream supplies the agent's container from a base compose
+    layer the task never repeats. We have no base layer, so the agent service
+    is injected here from ``environment/Dockerfile``, exactly as
+    :func:`_single_container_compose` does for a task that ships no compose at
+    all.
+
+    The alternative — falling through to "the sole service, if there is only
+    one" — is how six tasks on the TBench Arena board came to run with their
+    *postgres sidecar* as the agent container: its image was overwritten with
+    the task's, its ``healthcheck:`` was left in place, and ``pg_isready``
+    could never pass against a Python image, so ``docker compose up --wait``
+    blocked until the retries expired and every trial died in provisioning.
+    A seventh task had the same shape with no healthcheck, so it came up with
+    no database at all and scored 0.0 in every trial — a silent zero rather
+    than a visible failure. Measured 2026-10-30.
     """
     if AGENT_SERVICE_DEFAULT in services:
         return AGENT_SERVICE_DEFAULT
-    if len(services) == 1:
-        return next(iter(services))
     built = [name for name, body in services.items() if isinstance(body, dict) and "build" in body]
     if len(built) == 1:
         return built[0]
+    if not built:
+        dockerfile = meta.task_dir / "environment" / "Dockerfile"
+        if dockerfile.is_file():
+            body: dict[str, Any] = {
+                # Written relative to the STAGING ROOT, where the merged
+                # compose is emitted — not to the task's compose directory —
+                # so this service is exempt from `_reroot_relative_paths`.
+                "build": {"context": _ENVIRONMENT_BUILD_CONTEXT},
+            }
+            # Only when the image has no default process of its own. Three of
+            # the seven tasks this injection serves ship a CMD that boots their
+            # whole stack (`supervisord -n`, `stack.sh start`), and writing a
+            # keep-alive over it hands the agent an empty container it has to
+            # boot by hand — a measurement change, on `fix-jcl-batch-restart`
+            # a task about restart behaviour. Same guard the other injection
+            # site uses; omitting it here was an oversight.
+            if not _dockerfile_declares_a_command(meta.task_dir / "environment" / "Dockerfile"):
+                body["command"] = ["sh", "-c", "sleep infinity"]
+            # A task that puts its sidecars on an explicit network declares no
+            # `default`, so an agent left off it joins compose's own `default`
+            # alone and cannot resolve `db` or `redis` by name — the task would
+            # come up and score zero, the same silent shape this injection
+            # exists to end.
+            networks = sorted(
+                {
+                    network
+                    for sidecar in services.values()
+                    if isinstance(sidecar, dict)
+                    for network in _declared_networks(sidecar)
+                }
+            )
+            if networks:
+                # Keep `default` as well. Declaring `networks:` at all makes
+                # compose STOP attaching the implicit default network, so an
+                # agent given only the sidecars' network loses egress -- on a
+                # task whose sidecars sit on an `internal: true` network a
+                # coding-harness CLI could then not reach its provider API at
+                # all, and every trial would die in the agent phase.
+                body["networks"] = [*networks, "default"]
+            services[AGENT_SERVICE_DEFAULT] = body
+            injected.add(AGENT_SERVICE_DEFAULT)
+            return AGENT_SERVICE_DEFAULT
+        if len(services) == 1:
+            # Nothing to build and nothing named: the sole service is all the
+            # task gives us. Pre-2026-10-30 behaviour, kept for a task that
+            # genuinely ships one prebuilt container.
+            return next(iter(services))
     raise ValueError(
-        f"terminal-bench task {task_id!r}: cannot resolve the agent service — "
+        f"terminal-bench task {meta.task_id!r}: cannot resolve the agent service — "
         f"the compose file declares {sorted(services)!r}, none is named "
         f"{AGENT_SERVICE_DEFAULT!r}, and {len(built)} of them declare a build "
-        f"context, so which one holds the task's own code is ambiguous."
+        f"context"
+        + (", with no environment/Dockerfile to build one from" if not built else "")
+        + ", so which one holds the task's own code is ambiguous."
     )
 
 
@@ -840,6 +1089,7 @@ def _build_synthesised_compose(
     original: dict[str, Any],
     meta: TerminalBenchTask,
     agent_service: str,
+    injected_services: Collection[str],
     base_service: str,
     image_registry: str | None,
     image_tag: str,
@@ -899,7 +1149,7 @@ def _build_synthesised_compose(
     }
     staged = deepcopy(original)
     if meta.compose_file is not None and meta.compose_file.parent.name == "environment":
-        _reroot_build_contexts(staged)
+        _reroot_relative_paths(staged, skip=injected_services)
     task_doc = _substitute_tree(staged, resolved_vars)
 
     services: dict[str, Any] = task_doc["services"]
@@ -911,6 +1161,22 @@ def _build_synthesised_compose(
         # canonical compose files rely on that and name no build at all; without
         # it they inherit an image tag that nothing in the stack ever builds.
         agent_body["build"] = {"context": _ENVIRONMENT_BUILD_CONTEXT}
+    if (
+        "command" not in agent_body
+        and "entrypoint" not in agent_body
+        and not _dockerfile_declares_a_command(_agent_dockerfile(meta, agent_body))
+    ):
+        # Same keep-alive :func:`_single_container_compose` gives a task that
+        # ships no compose file, for the case it cannot see: a task that ships
+        # one, declares no command in it, and builds from a Dockerfile that
+        # declares no CMD and no ENTRYPOINT either. Upstream's base compose
+        # layer supplies the command those tasks leave out —
+        # ``fix-delivery-convergence-lite`` says so in its own compose comment,
+        # "given its command by Harbor" — and we have no base layer, so the
+        # container runs the base image's default (``bash`` for
+        # ``golang:1.22-bookworm``), exits the moment it is started, and
+        # ``docker compose up --wait`` fails the trial in provisioning.
+        agent_body["command"] = ["sh", "-c", "sleep infinity"]
     task_build = agent_body.get("build")
     agent_body["image"] = agent_image
     if image_registry:
@@ -1054,6 +1320,51 @@ def _namespace_volume_refs(volumes: Any, named: set[str]) -> list[Any]:
     return out
 
 
+def _reroot_verifier_mount(mount: Any) -> Any:
+    """A verifier sidecar's relative bind source, re-rooted onto ``./tests``.
+
+    The same defect :func:`_reroot_mount_source` fixes for the agent stack: a
+    sidecar's compose is authored beside ``tests/`` and read in place upstream,
+    but we emit one merged file at the staging root, so ``./schema.sql`` has to
+    become ``./tests/schema.sql``. Re-rooting only ``build`` leaves docker to
+    create an empty DIRECTORY at the staging root and mount it over the file
+    the container expected, which is how a postgres init exits 1.
+
+    Named volumes, absolute sources and ``${...}`` are left alone, exactly as
+    on the agent side.
+    """
+    if isinstance(mount, str):
+        source, separator, rest = mount.partition(":")
+        if not separator or not source.startswith(".") or "${" in source:
+            return mount
+        if not rest.startswith(("/", "${")):
+            return mount
+        return f"{_reroot_verifier_context(source)}:{rest}"
+    if isinstance(mount, Mapping):
+        if mount.get("type") not in (None, "bind"):
+            return mount
+        source = mount.get("source")
+        if not isinstance(source, str) or not source.startswith(".") or "${" in source:
+            return mount
+        rerooted = dict(mount)
+        rerooted["source"] = _reroot_verifier_context(source)
+        return rerooted
+    return mount
+
+
+def _reroot_verifier_context(ctx: str) -> str:
+    """``ctx`` relative to the staged ``tests/`` directory."""
+    if ctx.startswith("/") or ctx == "./tests" or ctx.startswith("./tests/"):
+        return ctx
+    if ctx in (".", "./"):
+        return "./tests"
+    if ctx.startswith("./"):
+        return f"./tests/{ctx[2:]}"
+    if ctx.startswith("../"):
+        return ctx
+    return f"./tests/{ctx}"
+
+
 def _reroot_verifier_build(build: Any) -> Any:
     """Reroot a verifier sidecar's ``build`` (string or table) onto the staged ``tests/``.
 
@@ -1144,7 +1455,10 @@ def _merge_verifier_stack(
         if "build" in new_body:
             new_body["build"] = _reroot_verifier_build(new_body["build"])
         if "volumes" in new_body:
-            new_body["volumes"] = _namespace_volume_refs(new_body["volumes"], named_volumes)
+            new_body["volumes"] = [
+                _reroot_verifier_mount(m)
+                for m in _namespace_volume_refs(new_body["volumes"], named_volumes)
+            ]
         new_body["networks"] = {_VERIFIER_NETWORK: {"aliases": [name]}}
         services[f"{_VERIFIER_SERVICE_PREFIX}{name}"] = new_body
 

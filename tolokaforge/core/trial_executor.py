@@ -262,8 +262,11 @@ class ProvisioningTrialExecutor:
         (``ERROR`` / ``TIMEOUT``) or runs to completion but grades red
         (``COMPLETED`` with ``grade.binary_pass is False``) — the case where a
         task author needs service output to diagnose why the agent's mutations
-        did not land. A completed trial that passes, or one with no grade, is
-        not capture-worthy. The backend gates the actual write on this verdict
+        did not land. A completed trial that passes is not capture-worthy. One
+        with NO grade is, when grading refused it: that is the only outcome
+        where the container's own logs are the sole evidence of what went
+        wrong, and it is how a container that vanished between the agent's
+        last command and grading went unexplained on 2026-10-30. The backend gates the actual write on this verdict
         plus its on-success policy. When the backend returns a non-empty byte
         map, emit the aggregate summary line and amend the trial's
         ``metrics.yaml`` with ``captured_service_logs``. Best-effort
@@ -271,8 +274,15 @@ class ProvisioningTrialExecutor:
         changes control flow.
         """
         trajectory = result.trajectory
-        capture_worthy = trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT) or (
-            trajectory.grade is not None and trajectory.grade.binary_pass is False
+        capture_worthy = (
+            trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT)
+            or (trajectory.grade is not None and trajectory.grade.binary_pass is False)
+            # A refused trial is COMPLETED with no grade, so neither clause
+            # above caught it — and it is the one outcome where the container's
+            # own logs are the only evidence of what happened. On 2026-10-30 a
+            # trial's container vanished between the agent's last command and
+            # grading, and nothing was captured, so the cause is still unknown.
+            or (trajectory.grade is None and trajectory.grading_error is not None)
         )
         byte_map = self.runtime_backend.capture_service_logs(handle, capture_worthy=capture_worthy)
         if not byte_map:

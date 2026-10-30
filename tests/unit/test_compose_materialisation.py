@@ -72,6 +72,105 @@ class TestMakeProjectTempDir:
         finally:
             d.rmdir()
 
+    def test_random_suffix_never_sits_against_a_separator(self) -> None:
+        """``tempfile``'s suffix alphabet includes ``_``, and compose names
+        built images ``<project>-<service>`` off this basename. A suffix
+        drawn with a leading ``_`` lands against the prefix's ``-`` and one
+        with a trailing ``_`` against the ``-`` compose prepends to the
+        service name; docker's reference grammar allows ``_`` only between
+        alphanumerics, so either one fails the stack with ``invalid
+        reference format``. 1 - (36/37)^2 ~ 5.3% of draws, i.e. once every
+        ~19 materialisations, board-wide."""
+        made = [make_project_temp_dir("run-x") for _ in range(200)]
+        try:
+            for d in made:
+                suffix = d.name[len("tolokaforge-run-x-") :]
+                assert not suffix.startswith("_"), d.name
+                assert not suffix.endswith("_"), d.name
+        finally:
+            for d in made:
+                d.rmdir()
+
+    def test_a_draw_with_an_edge_underscore_is_discarded_and_redrawn(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An unusable draw is thrown away, not renamed.
+
+        Renaming onto a repaired name would be check-then-act: that name is
+        one ``mkdtemp`` could draw directly, so a concurrent materialisation
+        could create it between the check and the rename and have it replaced,
+        handing two parallel trials one compose project. A redraw has no such
+        window. The discarded directory must not be left behind.
+        """
+        import tempfile as _tempfile
+
+        draws = iter(["_bcdefg_", "mnopqrst"])
+
+        def fake_mkdtemp(prefix: str) -> str:
+            made = tmp_path / f"{prefix}{next(draws)}"
+            made.mkdir()
+            return str(made)
+
+        monkeypatch.setattr(_tempfile, "mkdtemp", fake_mkdtemp)
+        d = make_project_temp_dir("run-x")
+        try:
+            assert d.name == "tolokaforge-run-x-mnopqrst"
+            assert d.is_dir()
+            assert not (tmp_path / "tolokaforge-run-x-_bcdefg_").exists()
+        finally:
+            d.rmdir()
+
+    def test_unaffected_suffix_is_not_renamed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A suffix with no edge underscore — 94.7% of draws — is returned
+        exactly as ``mkdtemp`` made it, so the fix costs nothing on the
+        common path."""
+        import tempfile as _tempfile
+
+        def fake_mkdtemp(prefix: str) -> str:
+            made = tmp_path / f"{prefix}ab_defgh"
+            made.mkdir()
+            return str(made)
+
+        monkeypatch.setattr(_tempfile, "mkdtemp", fake_mkdtemp)
+        d = make_project_temp_dir("run-x")
+        try:
+            # An interior ``_`` is between alphanumerics and legal in a
+            # docker reference, so it is left where it is.
+            assert d.name == "tolokaforge-run-x-ab_defgh"
+        finally:
+            d.rmdir()
+
+    def test_a_live_directory_is_never_replaced(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Nothing this function does can touch a directory it did not create.
+
+        The earlier implementation renamed an unusable draw onto a repaired
+        name, which on POSIX silently replaces an empty directory — a live
+        trial's compose project among them.
+        """
+        import tempfile as _tempfile
+
+        occupied = tmp_path / "tolokaforge-run-x-0bcdefg0"
+        occupied.mkdir()
+        draws = iter(["_bcdefg_", "mnopqrst"])
+
+        def fake_mkdtemp(prefix: str) -> str:
+            made = tmp_path / f"{prefix}{next(draws)}"
+            made.mkdir()
+            return str(made)
+
+        monkeypatch.setattr(_tempfile, "mkdtemp", fake_mkdtemp)
+        d = make_project_temp_dir("run-x")
+        try:
+            assert d != occupied
+            assert occupied.is_dir()
+        finally:
+            d.rmdir()
+            occupied.rmdir()
+
 
 class TestCopyComposeContext:
     def test_copies_file_and_sibling_directories(self, tmp_path: Path) -> None:
@@ -1376,3 +1475,51 @@ def test_a_service_without_aliases_joins_plainly(policy: NetworkPolicy) -> None:
     result = _enforce(doc, policy)
     assert result["services"]["api"]["networks"][NETPOLICY_INTERNAL_NETWORK] is None
     assert NETPOLICY_INTERNAL_NETWORK in result["services"]["worker"]["networks"]
+
+
+class TestReferenceSafeSegment:
+    """A slug segment must not put ``_`` against the ``-`` that joins it.
+
+    ``compose_trial_slug`` maps everything it does not keep to ``_``, so a
+    caller id ending in ``:`` or ``/`` yields a segment ending in ``_``. Joined
+    with the next segment that is ``_-``, and compose names built images
+    ``<project>-<service>``, which docker then rejects with
+    ``invalid reference format``. Unlike the random-suffix case (~5.3%) this is
+    deterministic for the caller that hits it.
+
+    The fix lives at assembly, not in ``compose_trial_slug``: the host-side
+    materialiser and the runner-side container resolver both compute that slug
+    and must agree byte for byte.
+    """
+
+    def test_an_edge_underscore_is_stripped(self) -> None:
+        from tolokaforge.core.compose_materialisation import _reference_safe_segment
+
+        assert _reference_safe_segment("run:") == "run"
+        assert _reference_safe_segment(":run") == "run"
+        assert _reference_safe_segment("/run/") == "run"
+
+    def test_interior_underscores_survive(self) -> None:
+        """A valid segment comes back byte-identical, so no name shape moves."""
+        from tolokaforge.core.compose_materialisation import _reference_safe_segment
+
+        for already_valid in ("run-x", "task_id-0", "a_b_c", "trial0"):
+            assert _reference_safe_segment(already_valid) == already_valid
+
+    def test_an_all_underscore_segment_does_not_vanish(self) -> None:
+        """Stripping to empty would merge two separators into ``--``."""
+        from tolokaforge.core.compose_materialisation import _reference_safe_segment
+
+        assert _reference_safe_segment("://") == "0"
+
+    def test_no_separator_adjacency_survives_into_the_basename(self) -> None:
+        from tolokaforge.core.compose_materialisation import make_project_temp_dir
+
+        for slug, stack in (("run:", None), (":run", "stack:"), ("://", "x")):
+            made = make_project_temp_dir(slug, stack)
+            try:
+                assert "-_" not in made.name, made.name
+                assert "_-" not in made.name, made.name
+                assert "--" not in made.name, made.name
+            finally:
+                made.rmdir()
