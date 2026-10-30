@@ -30,7 +30,7 @@ from tolokaforge.core.models import TerminationReason
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.tools.registry import ToolExecutionStatus
 
-ENGINE_PROTOCOL_VERSION = 5
+ENGINE_PROTOCOL_VERSION = 6
 
 # EXECUTION_STATUS_TRIAL_NOT_FOUND is absent because the client raises
 # TrialNotRegisteredError on it, and EXECUTION_STATUS_UNSPECIFIED because it names

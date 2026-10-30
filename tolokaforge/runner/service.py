@@ -2192,7 +2192,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 type(exc).__name__,
                 exc,
             )
-            reward_bytes = b"" if require_reward else b"0.0\n"
+            # Under require_reward the caller refuses on unparseable bytes, so
+            # carry the real cause: a read that timed out or lost its container
+            # is not the same failure as a verifier that wrote nothing, and
+            # blaming the user would send the operator after a permissions
+            # problem that does not exist.
+            reward_bytes = (
+                f"reward read failed: {type(exc).__name__}: {exc}".encode()
+                if require_reward
+                else b"0.0\n"
+            )
 
         return RunTestSuiteResult(
             exit_code=exit_code,

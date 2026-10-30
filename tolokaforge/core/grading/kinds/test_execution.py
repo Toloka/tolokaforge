@@ -32,6 +32,7 @@ script timeout, 10s reward-cat timeout, 65536-char output truncation.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -133,6 +134,17 @@ class TestExecutionKindConfig(BaseModel):
     """
 
     @model_validator(mode="after")
+    def _blank_user_means_unset(self) -> TestExecutionKindConfig:
+        # The gRPC lane cannot distinguish "" from unset (proto3 string default),
+        # so it maps "" -> None. Normalising here keeps the in-process lane from
+        # issuing ``docker exec --user ''`` for the same config.
+        if self.user is not None and not self.user.strip():
+            self.user = None
+        elif self.user is not None:
+            self.user = self.user.strip()
+        return self
+
+    @model_validator(mode="after")
     def _artifacts_and_collect_need_a_service(self) -> TestExecutionKindConfig:
         if (self.artifacts or self.collect) and self.service is None:
             raise ValueError(
@@ -198,6 +210,12 @@ class TestExecutionGraderKind:
         raw = result.reward_bytes.decode(errors="ignore").strip()
         try:
             reward = float(raw.split("\n")[-1])
+            if not math.isfinite(reward):
+                # nan and inf are not scores. Clamping them silently awards a
+                # PERFECT 1.0 -- every comparison with nan is False, so
+                # ``max(0.0, min(1.0, nan))`` returns 1.0 -- which would turn a
+                # corrupt reward file into a full pass.
+                raise ValueError(f"reward is not a finite number: {reward!r}")
             reward = max(0.0, min(1.0, reward))
         except (ValueError, IndexError):
             if cfg.require_reward:

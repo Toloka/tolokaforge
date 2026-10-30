@@ -276,7 +276,9 @@ def _parse_user(task_id: str, section: Mapping[str, Any], section_name: str) -> 
             f"terminal-bench task {task_id!r}: {section_name}.user must be a non-empty "
             f"string; got {user!r}."
         )
-    return user
+    # Returned stripped: surrounding whitespace is a typo, and ``--user ' root '``
+    # is refused by docker with an error that names neither the task nor the key.
+    return user.strip()
 
 
 def _parse_artifacts(task_id: str, toml_data: Mapping[str, Any]) -> list[TerminalBenchArtifact]:
