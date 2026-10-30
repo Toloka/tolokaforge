@@ -72,6 +72,94 @@ class TestMakeProjectTempDir:
         finally:
             d.rmdir()
 
+    def test_random_suffix_never_sits_against_a_separator(self) -> None:
+        """``tempfile``'s suffix alphabet includes ``_``, and compose names
+        built images ``<project>-<service>`` off this basename. A suffix
+        drawn with a leading ``_`` lands against the prefix's ``-`` and one
+        with a trailing ``_`` against the ``-`` compose prepends to the
+        service name; docker's reference grammar allows ``_`` only between
+        alphanumerics, so either one fails the stack with ``invalid
+        reference format``. 1 - (36/37)^2 ~ 5.3% of draws, i.e. once every
+        ~19 materialisations, board-wide."""
+        made = [make_project_temp_dir("run-x") for _ in range(200)]
+        try:
+            for d in made:
+                suffix = d.name[len("tolokaforge-run-x-") :]
+                assert not suffix.startswith("_"), d.name
+                assert not suffix.endswith("_"), d.name
+        finally:
+            for d in made:
+                d.rmdir()
+
+    def test_edge_underscores_are_replaced_in_place(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The repair is a substitution inside ``mkdtemp``'s own alphabet, so
+        the basename keeps the shape (prefix, slug segments, 8-character
+        suffix) that the canonical naming tests pin."""
+        import tempfile as _tempfile
+
+        def fake_mkdtemp(prefix: str) -> str:
+            made = tmp_path / f"{prefix}_bcdefg_"
+            made.mkdir()
+            return str(made)
+
+        monkeypatch.setattr(_tempfile, "mkdtemp", fake_mkdtemp)
+        d = make_project_temp_dir("run-x")
+        try:
+            assert d.name == "tolokaforge-run-x-0bcdefg0"
+            assert d.is_dir()
+        finally:
+            d.rmdir()
+
+    def test_unaffected_suffix_is_not_renamed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A suffix with no edge underscore — 94.7% of draws — is returned
+        exactly as ``mkdtemp`` made it, so the fix costs nothing on the
+        common path."""
+        import tempfile as _tempfile
+
+        def fake_mkdtemp(prefix: str) -> str:
+            made = tmp_path / f"{prefix}ab_defgh"
+            made.mkdir()
+            return str(made)
+
+        monkeypatch.setattr(_tempfile, "mkdtemp", fake_mkdtemp)
+        d = make_project_temp_dir("run-x")
+        try:
+            # An interior ``_`` is between alphanumerics and legal in a
+            # docker reference, so it is left where it is.
+            assert d.name == "tolokaforge-run-x-ab_defgh"
+        finally:
+            d.rmdir()
+
+    def test_taken_repair_target_is_not_renamed_over(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The repaired name is one ``mkdtemp`` could have drawn directly, so
+        another live materialisation may already own it. Renaming onto an
+        empty directory succeeds silently on POSIX, which would hand two
+        trials one compose project; the draw is repeated instead."""
+        import tempfile as _tempfile
+
+        (tmp_path / "tolokaforge-run-x-0bcdefg0").mkdir()
+        draws = iter(["_bcdefg_", "mnopqrst"])
+
+        def fake_mkdtemp(prefix: str) -> str:
+            made = tmp_path / f"{prefix}{next(draws)}"
+            made.mkdir()
+            return str(made)
+
+        monkeypatch.setattr(_tempfile, "mkdtemp", fake_mkdtemp)
+        d = make_project_temp_dir("run-x")
+        try:
+            assert d.name == "tolokaforge-run-x-mnopqrst"
+            assert (tmp_path / "tolokaforge-run-x-0bcdefg0").is_dir()
+        finally:
+            d.rmdir()
+            (tmp_path / "tolokaforge-run-x-0bcdefg0").rmdir()
+
 
 class TestCopyComposeContext:
     def test_copies_file_and_sibling_directories(self, tmp_path: Path) -> None:

@@ -695,16 +695,78 @@ def make_project_temp_dir(prefix_slug: str, stack_id: str | None = None) -> Path
     ``"default"`` yield the single-segment basename that pre-composition
     plans use, so the byte-identical basename shape survives for every
     caller that has not opted into multi-stack plans.
+
+    The random suffix ``tempfile`` appends is repaired where it would make an
+    invalid docker reference — see
+    :func:`_mkdtemp_with_reference_safe_suffix`. Nothing else about the
+    basename moves.
     """
     if stack_id is None or stack_id == "default":
-        return Path(tempfile.mkdtemp(prefix=f"tolokaforge-{compose_trial_slug(prefix_slug)}-"))
-    return Path(
-        tempfile.mkdtemp(
-            prefix=(
-                f"tolokaforge-{compose_trial_slug(prefix_slug)}-{compose_trial_slug(stack_id)}-"
-            )
-        )
-    )
+        prefix = f"tolokaforge-{compose_trial_slug(prefix_slug)}-"
+    else:
+        prefix = f"tolokaforge-{compose_trial_slug(prefix_slug)}-{compose_trial_slug(stack_id)}-"
+    return _mkdtemp_with_reference_safe_suffix(prefix)
+
+
+#: What an edge ``_`` in the random suffix is replaced with. Inside
+#: ``tempfile``'s own alphabet, so the basename keeps the shape every caller
+#: and canonical test pins; alphanumeric, so no separator ends up adjacent to
+#: another one.
+_SUFFIX_FILLER = "0"
+
+#: How many times a draw may be repeated when the repaired name is already
+#: taken. Each draw is ~94.7% likely to need no repair at all, and a repaired
+#: name collides only with a live directory that drew the repaired form
+#: itself, so the budget is never reached in practice; exhausting it returns
+#: the unrepaired directory, which is the pre-fix behaviour rather than a new
+#: failure mode.
+_SUFFIX_REPAIR_ATTEMPTS = 8
+
+
+def _mkdtemp_with_reference_safe_suffix(prefix: str) -> Path:
+    """``tempfile.mkdtemp(prefix=prefix)`` whose random suffix neither begins
+    nor ends with ``_``.
+
+    ``tempfile``'s suffix alphabet is ``abcdefghijklmnopqrstuvwxyz0123456789_``
+    — it includes ``_``. Compose derives the project name from this basename
+    and auto-names every image built by a service with no explicit ``image:``
+    ``<project>-<service>``. *prefix* ends in ``-`` and compose appends
+    ``-<service>``, so a suffix drawn with a leading ``_`` produces ``-_`` and
+    one with a trailing ``_`` produces ``_-``. Docker's reference grammar
+    permits ``_`` only between alphanumerics, so either adjacency fails the
+    whole stack at image-resolution time::
+
+        unable to get image 'tolokaforge-fix_resident_fund_liability_ledger_0
+        -task-_d1aj35c-setup': invalid reference format
+
+    at 1 - (36/37)^2 ~ 5.3% of materialisations, for every adapter, and only
+    for services that build — which is why it reads as an unattributable
+    board-wide flake rather than a bug. Confirmed in job logs 2026-10-30.
+
+    Only the random suffix is touched: the prefix, the slugs inside it, the
+    uniqueness guarantee and the return type are exactly as ``mkdtemp`` left
+    them.
+    """
+    created = Path(tempfile.mkdtemp(prefix=prefix))
+    for _ in range(_SUFFIX_REPAIR_ATTEMPTS):
+        suffix = created.name[len(prefix) :]
+        repaired = suffix
+        if repaired.startswith("_"):
+            repaired = _SUFFIX_FILLER + repaired[1:]
+        if repaired.endswith("_"):
+            repaired = repaired[:-1] + _SUFFIX_FILLER
+        if repaired == suffix:
+            return created
+        target = created.parent / f"{prefix}{repaired}"
+        if not target.exists():
+            created.rename(target)
+            return target
+        # The repaired name is a name ``mkdtemp`` could have drawn directly,
+        # so a live directory may already hold it. Draw again rather than
+        # rename over someone else's project directory.
+        created.rmdir()
+        created = Path(tempfile.mkdtemp(prefix=prefix))
+    return created
 
 
 # ---------------------------------------------------------------------------

@@ -274,7 +274,7 @@ def materialise_task_environment(
     else:
         original = _single_container_compose(meta)
         task_services = original["services"]
-    agent_service = _resolve_agent_service(meta.task_id, task_services)
+    agent_service = _resolve_agent_service(meta, task_services)
     base_service = f"{agent_service}{_HARNESS_BASE_SERVICE_SUFFIX}"
     # The base service exists only under harness mode and the verifier service
     # only for the separate-verifier shape, so each is reserved only when the
@@ -431,8 +431,9 @@ _HARBOR_LOG_PATHS = {
 }
 
 
-def _reroot_build_contexts(doc: dict[str, Any]) -> None:
-    """Re-root each service's relative build context onto ``environment/``.
+def _reroot_relative_paths(doc: dict[str, Any]) -> None:
+    """Re-root each service's relative build context and bind source onto
+    ``environment/``.
 
     A compose file under ``environment/`` is read *in place* by the upstream
     harness, so a context of ``.`` in it means that directory. We emit one
@@ -440,9 +441,22 @@ def _reroot_build_contexts(doc: dict[str, Any]) -> None:
     same ``.`` would mean the task root — a different directory, usually
     without a Dockerfile in it.
 
+    ``volumes:`` carries the same relative paths and the same mistake is
+    worse there, because docker does not refuse an unresolvable bind source:
+    it creates it. ``fix_resident_fund_liability_ledger`` mounts
+    ``./schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro`` on its
+    ``db`` service; left unmoved, docker makes an empty *directory* at the
+    staging root, mounts it over postgres's init file, and the service exits
+    1, taking the agent service down behind ``dependency failed to start``.
+
     Only literal paths move. A value still carrying ``${...}`` is left for
     substitution, which resolves ``CONTEXT_DIR`` to the staging-relative
-    environment directory directly.
+    environment directory directly, and a named volume (``pgdata:/var/lib``)
+    is not a path at all — only a source starting with ``.`` is re-rooted.
+
+    Runs before :func:`_agent_volumes` appends our own ``./tests`` and
+    ``./_logs``: those are authored against the staging root already, and
+    moving them under ``environment/`` would point the agent at nothing.
     """
     for body in (doc.get("services") or {}).values():
         if not isinstance(body, dict):
@@ -458,6 +472,43 @@ def _reroot_build_contexts(doc: dict[str, Any]) -> None:
                 moved = _reroot_context(context)
                 if moved is not None:
                     build["context"] = moved
+        volumes = body.get("volumes")
+        if isinstance(volumes, list):
+            body["volumes"] = [_reroot_mount_source(mount) for mount in volumes]
+
+
+def _reroot_mount_source(mount: Any) -> Any:
+    """*mount* with a relative bind source re-rooted, in either spelling.
+
+    Short form is ``"<source>:<target>[:<mode>]"``, split on the first ``:``
+    and only when what precedes it starts with ``.`` — that is what tells a
+    relative path from a named volume, whose name is bare and must be left
+    alone or compose would start reading it as a path. The target always
+    starts with ``/``, which is the second half of the same check.
+
+    Long form is rewritten only for a bind: ``type: volume`` names a volume
+    in ``source`` too, and ``type`` absent with a path-like source defaults
+    to bind.
+    """
+    if isinstance(mount, str):
+        source, separator, rest = mount.partition(":")
+        if not separator or not source.startswith(".") or not rest.startswith("/"):
+            return mount
+        moved = _reroot_context(source)
+        return mount if moved is None else f"{moved}:{rest}"
+    if isinstance(mount, Mapping):
+        if mount.get("type") not in (None, "bind"):
+            return mount
+        source = mount.get("source")
+        if not isinstance(source, str) or not source.startswith("."):
+            return mount
+        moved = _reroot_context(source)
+        if moved is None:
+            return mount
+        rerooted = dict(mount)
+        rerooted["source"] = moved
+        return rerooted
+    return mount
 
 
 def _agent_volumes(declared: Any, *, include_tests_mount: bool = True) -> list[Any]:
@@ -552,6 +603,30 @@ def _single_container_compose(meta: TerminalBenchTask) -> dict[str, Any]:
     }
 
 
+def _dockerfile_declares_a_command(dockerfile: Path) -> bool:
+    """Whether *dockerfile* gives its image a default process.
+
+    Read one line at a time, first token only, case-folded: ``CMD`` and
+    ``ENTRYPOINT`` are the only two instructions that leave the image with
+    something to run. Line continuations are deliberately not followed, so a
+    ``CMD`` spelled inside a backslash-continued ``RUN`` reads as a command
+    the image already has — the harmless direction. The caller only ever *adds* a
+    keep-alive command when this is ``False``: over-reporting leaves the
+    pre-2026-10-30 behaviour of injecting nothing, while under-reporting
+    would bury the task's own entrypoint under ``sleep infinity``. An
+    unreadable file answers the same conservative way.
+    """
+    try:
+        text = dockerfile.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    for line in text.splitlines():
+        head = line.strip().split(maxsplit=1)
+        if head and head[0].upper() in {"CMD", "ENTRYPOINT"}:
+            return True
+    return False
+
+
 def _load_compose(path: Path) -> dict[str, Any]:
     with path.open() as f:
         content = yaml.safe_load(f)
@@ -563,11 +638,11 @@ def _load_compose(path: Path) -> dict[str, Any]:
     return content
 
 
-def _resolve_agent_service(task_id: str, services: dict[str, Any]) -> str:
-    """Which service the agent works inside.
+def _resolve_agent_service(meta: TerminalBenchTask, services: dict[str, Any]) -> str:
+    """Which service the agent works inside, injecting ``main`` if the task has none.
 
     ``main`` by name first — the convention 186 of the corpus's 197 canonical
-    compose files follow. Then the sole service, if there is only one.
+    compose files follow.
 
     Then the sole service that declares ``build``: a task's supporting
     containers are stock images (``postgres:16-alpine``, ``redis``), and the
@@ -575,19 +650,48 @@ def _resolve_agent_service(task_id: str, services: dict[str, Any]) -> str:
     repair. That rule is what lets a task keep its own service names — the
     alternative is telling the benchmark to rename things to suit us, and a
     task edited to fit the harness is no longer the task the score refers to.
+
+    When NO service declares a build, the task's compose names only its
+    sidecars: upstream supplies the agent's container from a base compose
+    layer the task never repeats. We have no base layer, so the agent service
+    is injected here from ``environment/Dockerfile``, exactly as
+    :func:`_single_container_compose` does for a task that ships no compose at
+    all.
+
+    The alternative — falling through to "the sole service, if there is only
+    one" — is how six tasks on the TBench Arena board came to run with their
+    *postgres sidecar* as the agent container: its image was overwritten with
+    the task's, its ``healthcheck:`` was left in place, and ``pg_isready``
+    could never pass against a Python image, so ``docker compose up --wait``
+    blocked until the retries expired and every trial died in provisioning.
+    A seventh task had the same shape with no healthcheck, so it came up with
+    no database at all and scored 0.0 in every trial — a silent zero rather
+    than a visible failure. Measured 2026-10-30.
     """
     if AGENT_SERVICE_DEFAULT in services:
         return AGENT_SERVICE_DEFAULT
-    if len(services) == 1:
-        return next(iter(services))
     built = [name for name, body in services.items() if isinstance(body, dict) and "build" in body]
     if len(built) == 1:
         return built[0]
+    if not built:
+        dockerfile = meta.task_dir / "environment" / "Dockerfile"
+        if dockerfile.is_file():
+            services[AGENT_SERVICE_DEFAULT] = {
+                "build": {"context": _ENVIRONMENT_BUILD_CONTEXT},
+                "command": ["sh", "-c", "sleep infinity"],
+            }
+            return AGENT_SERVICE_DEFAULT
+        if len(services) == 1:
+            # Nothing to build and nothing named: the sole service is all the
+            # task gives us. Pre-2026-10-30 behaviour, kept for a task that
+            # genuinely ships one prebuilt container.
+            return next(iter(services))
     raise ValueError(
-        f"terminal-bench task {task_id!r}: cannot resolve the agent service — "
+        f"terminal-bench task {meta.task_id!r}: cannot resolve the agent service — "
         f"the compose file declares {sorted(services)!r}, none is named "
-        f"{AGENT_SERVICE_DEFAULT!r}, and {len(built)} of them declare a build "
-        f"context, so which one holds the task's own code is ambiguous."
+        f"{AGENT_SERVICE_DEFAULT!r}, {len(built)} of them declare a build "
+        f"context, and there is no environment/Dockerfile to build one from, "
+        f"so which one holds the task's own code is ambiguous."
     )
 
 
@@ -899,7 +1003,7 @@ def _build_synthesised_compose(
     }
     staged = deepcopy(original)
     if meta.compose_file is not None and meta.compose_file.parent.name == "environment":
-        _reroot_build_contexts(staged)
+        _reroot_relative_paths(staged)
     task_doc = _substitute_tree(staged, resolved_vars)
 
     services: dict[str, Any] = task_doc["services"]
@@ -911,6 +1015,22 @@ def _build_synthesised_compose(
         # canonical compose files rely on that and name no build at all; without
         # it they inherit an image tag that nothing in the stack ever builds.
         agent_body["build"] = {"context": _ENVIRONMENT_BUILD_CONTEXT}
+    if (
+        "command" not in agent_body
+        and "entrypoint" not in agent_body
+        and not _dockerfile_declares_a_command(meta.task_dir / "environment" / "Dockerfile")
+    ):
+        # Same keep-alive :func:`_single_container_compose` gives a task that
+        # ships no compose file, for the case it cannot see: a task that ships
+        # one, declares no command in it, and builds from a Dockerfile that
+        # declares no CMD and no ENTRYPOINT either. Upstream's base compose
+        # layer supplies the command those tasks leave out —
+        # ``fix-delivery-convergence-lite`` says so in its own compose comment,
+        # "given its command by Harbor" — and we have no base layer, so the
+        # container runs the base image's default (``bash`` for
+        # ``golang:1.22-bookworm``), exits the moment it is started, and
+        # ``docker compose up --wait`` fails the trial in provisioning.
+        agent_body["command"] = ["sh", "-c", "sleep infinity"]
     task_build = agent_body.get("build")
     agent_body["image"] = agent_image
     if image_registry:

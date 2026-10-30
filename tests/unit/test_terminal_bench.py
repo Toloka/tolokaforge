@@ -1256,6 +1256,242 @@ class TestComposeSynthesisAgentServiceResolution:
             materialise_task_environment(meta, staging_root=tmp_path / "staging")
 
 
+class TestComposeSynthesisKeepAliveCommand:
+    """A compose-bearing task whose image has no default process stays up.
+
+    Provisioning waits on ``docker compose up --wait``. A container whose
+    image was never given a CMD runs the base image's own default —
+    ``bash`` for ``golang:1.22-bookworm`` — which exits the instant it
+    starts, so the stack never comes up and every trial dies before the
+    agent connects. Upstream supplies the command from a base compose layer
+    the task never repeats; ``fix-delivery-convergence-lite`` says so in its
+    own compose file ("given its command by Harbor") and was the measured
+    casualty. :func:`_single_container_compose` already covers the 691 tasks
+    that ship no compose file at all; these cover the ones that do.
+    """
+
+    def test_command_injected_when_dockerfile_declares_none(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "no-cmd",
+            {"services": {"main": {"build": {"context": "."}}}},
+            extras={"environment/Dockerfile": "FROM golang:1.22-bookworm\nWORKDIR /app\n"},
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        compose = _load_synthesised(env)
+        assert compose["services"]["main"]["command"] == ["sh", "-c", "sleep infinity"]
+
+    def test_dockerfile_cmd_is_left_to_run(self, tmp_path):
+        """An image that already has a default process keeps it — overriding a
+        real CMD with ``sleep infinity`` would silently stop the task's own
+        service from ever starting."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "has-cmd",
+            {"services": {"main": {"build": {"context": "."}}}},
+            extras={
+                "environment/Dockerfile": (
+                    "FROM golang:1.22-bookworm\n# CMD in a comment does not count\n"
+                    'CMD ["sleep", "infinity"]\n'
+                )
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        assert "command" not in _load_synthesised(env)["services"]["main"]
+
+    def test_dockerfile_entrypoint_is_left_to_run(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "has-entrypoint",
+            {"services": {"main": {"build": {"context": "."}}}},
+            extras={
+                "environment/Dockerfile": (
+                    'FROM golang:1.22-bookworm\nentrypoint ["/entrypoint.sh"]\n'
+                )
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        assert "command" not in _load_synthesised(env)["services"]["main"]
+
+    def test_compose_declared_command_is_not_replaced(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "compose-cmd",
+            {
+                "services": {
+                    "main": {"build": {"context": "."}, "command": ["tail", "-f", "/dev/null"]}
+                }
+            },
+            extras={"environment/Dockerfile": "FROM golang:1.22-bookworm\n"},
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        assert _load_synthesised(env)["services"]["main"]["command"] == [
+            "tail",
+            "-f",
+            "/dev/null",
+        ]
+
+    def test_compose_declared_entrypoint_is_not_joined_by_a_command(self, tmp_path):
+        """A service with an ``entrypoint:`` and no ``command:`` is already
+        told what to run; appending ``sleep infinity`` would be passed to it
+        as arguments."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "compose-entrypoint",
+            {"services": {"main": {"build": {"context": "."}, "entrypoint": "/entrypoint.sh"}}},
+            extras={"environment/Dockerfile": "FROM golang:1.22-bookworm\n"},
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        assert "command" not in _load_synthesised(env)["services"]["main"]
+
+
+class TestComposeSynthesisRelativeBindSources:
+    """Bind sources in an ``environment/`` compose file move with the file.
+
+    Upstream reads that compose file in place, so ``./schema.sql`` in it
+    means ``environment/schema.sql``; we emit one merged file at the staging
+    root, one level up. Docker does not refuse a bind source that does not
+    exist — it creates an empty *directory* and mounts it. That is how
+    ``fix_resident_fund_liability_ledger`` came to mount a directory over
+    postgres's ``/docker-entrypoint-initdb.d/10-schema.sql``, exit 1, and
+    take the agent service down behind ``dependency failed to start``.
+    """
+
+    def _db_volumes(self, tmp_path, task_id, volumes):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            task_id,
+            {
+                "services": {
+                    "main": {"build": {"context": "."}, "command": ["sleep", "infinity"]},
+                    "db": {"image": "postgres:16-alpine", "volumes": volumes},
+                }
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+        return _load_synthesised(env)["services"]["db"]["volumes"]
+
+    def test_relative_bind_source_is_rerooted(self, tmp_path):
+        assert self._db_volumes(
+            tmp_path,
+            "ledger",
+            ["./schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro"],
+        ) == ["environment/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro"]
+
+    def test_named_volume_is_left_alone(self, tmp_path):
+        """``pgdata`` is a volume name, not a path. Re-rooting it would turn
+        postgres's data volume into a bind mount of a directory we invent."""
+        assert self._db_volumes(tmp_path, "named", ["pgdata:/var/lib/postgresql/data"]) == [
+            "pgdata:/var/lib/postgresql/data"
+        ]
+
+    def test_absolute_source_is_left_alone(self, tmp_path):
+        assert self._db_volumes(tmp_path, "abs", ["/var/run/docker.sock:/var/run/docker.sock"]) == [
+            "/var/run/docker.sock:/var/run/docker.sock"
+        ]
+
+    def test_unsubstituted_variable_source_is_left_alone(self, tmp_path):
+        """``${CONTEXT_DIR}`` resolves to the staging-relative environment
+        directory on its own; re-rooting it first would double the segment."""
+        assert self._db_volumes(tmp_path, "var", ["${CONTEXT_DIR}/seed.sql:/seed.sql"]) == [
+            "./environment/seed.sql:/seed.sql"
+        ]
+
+    def test_long_form_bind_source_is_rerooted(self, tmp_path):
+        assert self._db_volumes(
+            tmp_path,
+            "long",
+            [{"type": "bind", "source": "./seed", "target": "/seed"}],
+        ) == [{"type": "bind", "source": "environment/seed", "target": "/seed"}]
+
+    def test_long_form_named_volume_is_left_alone(self, tmp_path):
+        assert self._db_volumes(
+            tmp_path,
+            "long-named",
+            [{"type": "volume", "source": "pgdata", "target": "/var/lib/postgresql/data"}],
+        ) == [{"type": "volume", "source": "pgdata", "target": "/var/lib/postgresql/data"}]
+
+    def test_agent_mounts_we_append_are_not_rerooted(self, tmp_path):
+        """``./tests`` and ``./_logs`` are authored against the staging root,
+        not the task's compose file, so they must survive the pass that moves
+        the task's own paths."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "agent-mounts",
+            {
+                "services": {
+                    "main": {
+                        "build": {"context": "."},
+                        "command": ["sleep", "infinity"],
+                        "volumes": ["./fixtures:/fixtures"],
+                    }
+                }
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        assert _load_synthesised(env)["services"]["main"]["volumes"] == [
+            "environment/fixtures:/fixtures",
+            "./tests:/tests",
+            "./_logs:/logs",
+        ]
+
+    def test_root_compose_file_paths_are_not_moved(self, tmp_path):
+        """A task whose compose file sits at the task root is already
+        authored against the directory the merged file is staged from."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "root-compose",
+            {
+                "services": {
+                    "main": {"image": "python:3.11-slim", "command": ["sleep", "infinity"]},
+                    "db": {"image": "postgres:16-alpine", "volumes": ["./schema.sql:/schema.sql"]},
+                }
+            },
+            extras={"schema.sql": "SELECT 1;\n"},
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        assert _load_synthesised(env)["services"]["db"]["volumes"] == ["./schema.sql:/schema.sql"]
+
+
 class TestComposeSynthesisResourceLimits:
     """Regression lock for the M3 CPUS/MEMORY resolution."""
 
