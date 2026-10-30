@@ -1405,7 +1405,7 @@ class TestComposeSynthesisRelativeBindSources:
             tmp_path,
             "ledger",
             ["./schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro"],
-        ) == ["environment/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro"]
+        ) == ["./environment/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro"]
 
     def test_named_volume_is_left_alone(self, tmp_path):
         """``pgdata`` is a volume name, not a path. Re-rooting it would turn
@@ -1431,7 +1431,7 @@ class TestComposeSynthesisRelativeBindSources:
             tmp_path,
             "long",
             [{"type": "bind", "source": "./seed", "target": "/seed"}],
-        ) == [{"type": "bind", "source": "environment/seed", "target": "/seed"}]
+        ) == [{"type": "bind", "source": "./environment/seed", "target": "/seed"}]
 
     def test_long_form_named_volume_is_left_alone(self, tmp_path):
         assert self._db_volumes(
@@ -1464,7 +1464,7 @@ class TestComposeSynthesisRelativeBindSources:
         env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
 
         assert _load_synthesised(env)["services"]["main"]["volumes"] == [
-            "environment/fixtures:/fixtures",
+            "./environment/fixtures:/fixtures",
             "./tests:/tests",
             "./_logs:/logs",
         ]

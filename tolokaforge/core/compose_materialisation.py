@@ -780,27 +780,27 @@ def _mkdtemp_with_reference_safe_suffix(prefix: str) -> Path:
     Only the random suffix is touched: the prefix, the slugs inside it, the
     uniqueness guarantee and the return type are exactly as ``mkdtemp`` left
     them.
+
+    An unusable draw is DISCARDED and redrawn rather than renamed onto a
+    repaired name. Renaming would be check-then-act: the repaired name is one
+    ``mkdtemp`` could have drawn directly, so between the existence check and
+    the rename a concurrent materialisation could create it and have it
+    replaced — handing two parallel trials one compose project, which is the
+    collision this whole naming scheme exists to prevent. Trials do run in
+    parallel. A redraw has no such window, and at ~5.3% per draw it almost
+    never happens twice.
     """
-    created = Path(tempfile.mkdtemp(prefix=prefix))
     for _ in range(_SUFFIX_REPAIR_ATTEMPTS):
-        suffix = created.name[len(prefix) :]
-        repaired = suffix
-        if repaired.startswith("_"):
-            repaired = _SUFFIX_FILLER + repaired[1:]
-        if repaired.endswith("_"):
-            repaired = repaired[:-1] + _SUFFIX_FILLER
-        if repaired == suffix:
-            return created
-        target = created.parent / f"{prefix}{repaired}"
-        if not target.exists():
-            created.rename(target)
-            return target
-        # The repaired name is a name ``mkdtemp`` could have drawn directly,
-        # so a live directory may already hold it. Draw again rather than
-        # rename over someone else's project directory.
-        created.rmdir()
         created = Path(tempfile.mkdtemp(prefix=prefix))
-    return created
+        suffix = created.name[len(prefix) :]
+        if not suffix.startswith("_") and not suffix.endswith("_"):
+            return created
+        created.rmdir()
+    # Every draw in the budget carried an edge underscore (~5.3% each, so
+    # about 1 in 10^10 for the default budget). Returning a usable directory
+    # with an awkward name beats raising: the caller has a trial to run, and
+    # the pre-2026-10-30 behaviour was this name every time.
+    return Path(tempfile.mkdtemp(prefix=prefix))
 
 
 # ---------------------------------------------------------------------------

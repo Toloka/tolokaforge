@@ -484,6 +484,30 @@ def _reroot_relative_paths(doc: dict[str, Any], skip: Collection[str] = ()) -> N
             body["volumes"] = [_reroot_mount_source(mount) for mount in volumes]
 
 
+def _as_host_path(path: str) -> str:
+    """*path* in a form compose can only read as a host path.
+
+    ``posixpath.normpath`` strips a leading ``./``, which is harmless for a
+    build context but changes the MEANING of a short-form mount source:
+    compose reads a source as a host path only when it starts with ``.``,
+    ``/`` or ``~``, or contains a slash. A task mounting ``.:/app`` would
+    normalise to ``environment``, which compose then parses as a *named*
+    volume nothing declares, and the whole project is rejected with
+    ``refers to undefined volume``.
+    """
+    return path if path.startswith(("./", "../", "/", "~")) else f"./{path}"
+
+
+def _declared_networks(service: Mapping[str, Any]) -> list[str]:
+    """Network names a service body attaches to, in either compose spelling."""
+    networks = service.get("networks")
+    if isinstance(networks, Mapping):
+        return [str(name) for name in networks]
+    if isinstance(networks, (list, tuple)):
+        return [str(name) for name in networks if isinstance(name, str)]
+    return []
+
+
 def _reroot_mount_source(mount: Any) -> Any:
     """*mount* with a relative bind source re-rooted, in either spelling.
 
@@ -493,16 +517,27 @@ def _reroot_mount_source(mount: Any) -> Any:
     alone or compose would start reading it as a path. The target always
     starts with ``/``, which is the second half of the same check.
 
+    The target normally starts with ``/``, but this runs BEFORE
+    :func:`_substitute_tree`, so a harbor-dialect mount is still spelled
+    ``./fixtures:${TEST_DIR}/fixtures`` here. A target left as ``${...}`` is
+    accepted too — refusing it would leave the source pointing at the staging
+    root, which is the same empty-directory mount this function exists to
+    prevent.
+
     Long form is rewritten only for a bind: ``type: volume`` names a volume
     in ``source`` too, and ``type`` absent with a path-like source defaults
     to bind.
+
+    The result keeps its leading ``./`` — see :func:`_as_host_path`.
     """
     if isinstance(mount, str):
         source, separator, rest = mount.partition(":")
-        if not separator or not source.startswith(".") or not rest.startswith("/"):
+        if not separator or not source.startswith("."):
+            return mount
+        if not rest.startswith(("/", "${")):
             return mount
         moved = _reroot_context(source)
-        return mount if moved is None else f"{moved}:{rest}"
+        return mount if moved is None else f"{_as_host_path(moved)}:{rest}"
     if isinstance(mount, Mapping):
         if mount.get("type") not in (None, "bind"):
             return mount
@@ -513,7 +548,7 @@ def _reroot_mount_source(mount: Any) -> Any:
         if moved is None:
             return mount
         rerooted = dict(mount)
-        rerooted["source"] = moved
+        rerooted["source"] = _as_host_path(moved)
         return rerooted
     return mount
 
@@ -610,6 +645,31 @@ def _single_container_compose(meta: TerminalBenchTask) -> dict[str, Any]:
     }
 
 
+def _agent_dockerfile(meta: TerminalBenchTask, agent_body: Mapping[str, Any]) -> Path:
+    """The Dockerfile the agent service actually builds.
+
+    ``environment/Dockerfile`` is the convention, but a service may name its
+    own (``build: {context: ., dockerfile: Dockerfile.app}``). Probing the
+    conventional file instead would answer for the wrong image: a task whose
+    real Dockerfile declares an ``ENTRYPOINT`` would be told it has none, and
+    the keep-alive command we then inject reaches that entrypoint as
+    *arguments* rather than replacing it.
+    """
+    build = agent_body.get("build")
+    context = _ENVIRONMENT_BUILD_CONTEXT
+    name = "Dockerfile"
+    if isinstance(build, str):
+        context = build
+    elif isinstance(build, Mapping):
+        context = str(build.get("context") or context)
+        name = str(build.get("dockerfile") or name)
+    if "${" in context or "${" in name:
+        # Still unsubstituted; the convention is the best answer available.
+        return meta.task_dir / "environment" / "Dockerfile"
+    rel = posixpath.normpath(posixpath.join(context.lstrip("/"), name))
+    return meta.task_dir / rel
+
+
 def _dockerfile_declares_a_command(dockerfile: Path) -> bool:
     """Whether *dockerfile* gives its image a default process.
 
@@ -627,11 +687,22 @@ def _dockerfile_declares_a_command(dockerfile: Path) -> bool:
         text = dockerfile.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return True
+    declared = False
     for line in text.splitlines():
         head = line.strip().split(maxsplit=1)
-        if head and head[0].upper() in {"CMD", "ENTRYPOINT"}:
-            return True
-    return False
+        if not head:
+            continue
+        token = head[0].upper()
+        if token == "FROM":
+            # A new stage starts with nothing inherited: a CMD in an earlier
+            # stage does not reach the final image. Multi-stage is the normal
+            # shape for the Go and Rust base images in this corpus, and
+            # counting an earlier stage's CMD would re-open exactly the bug
+            # the keep-alive injection exists to close.
+            declared = False
+        elif token in {"CMD", "ENTRYPOINT"}:
+            declared = True
+    return declared
 
 
 def _load_compose(path: Path) -> dict[str, Any]:
@@ -685,13 +756,29 @@ def _resolve_agent_service(
     if not built:
         dockerfile = meta.task_dir / "environment" / "Dockerfile"
         if dockerfile.is_file():
-            services[AGENT_SERVICE_DEFAULT] = {
+            body: dict[str, Any] = {
                 # Written relative to the STAGING ROOT, where the merged
                 # compose is emitted — not to the task's compose directory —
                 # so this service is exempt from `_reroot_relative_paths`.
                 "build": {"context": _ENVIRONMENT_BUILD_CONTEXT},
                 "command": ["sh", "-c", "sleep infinity"],
             }
+            # A task that puts its sidecars on an explicit network declares no
+            # `default`, so an agent left off it joins compose's own `default`
+            # alone and cannot resolve `db` or `redis` by name — the task would
+            # come up and score zero, the same silent shape this injection
+            # exists to end.
+            networks = sorted(
+                {
+                    network
+                    for sidecar in services.values()
+                    if isinstance(sidecar, dict)
+                    for network in _declared_networks(sidecar)
+                }
+            )
+            if networks:
+                body["networks"] = networks
+            services[AGENT_SERVICE_DEFAULT] = body
             injected.add(AGENT_SERVICE_DEFAULT)
             return AGENT_SERVICE_DEFAULT
         if len(services) == 1:
@@ -702,9 +789,10 @@ def _resolve_agent_service(
     raise ValueError(
         f"terminal-bench task {meta.task_id!r}: cannot resolve the agent service — "
         f"the compose file declares {sorted(services)!r}, none is named "
-        f"{AGENT_SERVICE_DEFAULT!r}, {len(built)} of them declare a build "
-        f"context, and there is no environment/Dockerfile to build one from, "
-        f"so which one holds the task's own code is ambiguous."
+        f"{AGENT_SERVICE_DEFAULT!r}, and {len(built)} of them declare a build "
+        f"context"
+        + (", with no environment/Dockerfile to build one from" if not built else "")
+        + ", so which one holds the task's own code is ambiguous."
     )
 
 
@@ -1032,7 +1120,7 @@ def _build_synthesised_compose(
     if (
         "command" not in agent_body
         and "entrypoint" not in agent_body
-        and not _dockerfile_declares_a_command(meta.task_dir / "environment" / "Dockerfile")
+        and not _dockerfile_declares_a_command(_agent_dockerfile(meta, agent_body))
     ):
         # Same keep-alive :func:`_single_container_compose` gives a task that
         # ships no compose file, for the case it cannot see: a task that ships

@@ -91,24 +91,32 @@ class TestMakeProjectTempDir:
             for d in made:
                 d.rmdir()
 
-    def test_edge_underscores_are_replaced_in_place(
+    def test_a_draw_with_an_edge_underscore_is_discarded_and_redrawn(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """The repair is a substitution inside ``mkdtemp``'s own alphabet, so
-        the basename keeps the shape (prefix, slug segments, 8-character
-        suffix) that the canonical naming tests pin."""
+        """An unusable draw is thrown away, not renamed.
+
+        Renaming onto a repaired name would be check-then-act: that name is
+        one ``mkdtemp`` could draw directly, so a concurrent materialisation
+        could create it between the check and the rename and have it replaced,
+        handing two parallel trials one compose project. A redraw has no such
+        window. The discarded directory must not be left behind.
+        """
         import tempfile as _tempfile
 
+        draws = iter(["_bcdefg_", "mnopqrst"])
+
         def fake_mkdtemp(prefix: str) -> str:
-            made = tmp_path / f"{prefix}_bcdefg_"
+            made = tmp_path / f"{prefix}{next(draws)}"
             made.mkdir()
             return str(made)
 
         monkeypatch.setattr(_tempfile, "mkdtemp", fake_mkdtemp)
         d = make_project_temp_dir("run-x")
         try:
-            assert d.name == "tolokaforge-run-x-0bcdefg0"
+            assert d.name == "tolokaforge-run-x-mnopqrst"
             assert d.is_dir()
+            assert not (tmp_path / "tolokaforge-run-x-_bcdefg_").exists()
         finally:
             d.rmdir()
 
@@ -134,16 +142,19 @@ class TestMakeProjectTempDir:
         finally:
             d.rmdir()
 
-    def test_taken_repair_target_is_not_renamed_over(
+    def test_a_live_directory_is_never_replaced(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """The repaired name is one ``mkdtemp`` could have drawn directly, so
-        another live materialisation may already own it. Renaming onto an
-        empty directory succeeds silently on POSIX, which would hand two
-        trials one compose project; the draw is repeated instead."""
+        """Nothing this function does can touch a directory it did not create.
+
+        The earlier implementation renamed an unusable draw onto a repaired
+        name, which on POSIX silently replaces an empty directory — a live
+        trial's compose project among them.
+        """
         import tempfile as _tempfile
 
-        (tmp_path / "tolokaforge-run-x-0bcdefg0").mkdir()
+        occupied = tmp_path / "tolokaforge-run-x-0bcdefg0"
+        occupied.mkdir()
         draws = iter(["_bcdefg_", "mnopqrst"])
 
         def fake_mkdtemp(prefix: str) -> str:
@@ -154,11 +165,11 @@ class TestMakeProjectTempDir:
         monkeypatch.setattr(_tempfile, "mkdtemp", fake_mkdtemp)
         d = make_project_temp_dir("run-x")
         try:
-            assert d.name == "tolokaforge-run-x-mnopqrst"
-            assert (tmp_path / "tolokaforge-run-x-0bcdefg0").is_dir()
+            assert d != occupied
+            assert occupied.is_dir()
         finally:
             d.rmdir()
-            (tmp_path / "tolokaforge-run-x-0bcdefg0").rmdir()
+            occupied.rmdir()
 
 
 class TestCopyComposeContext:
@@ -1505,7 +1516,10 @@ class TestReferenceSafeSegment:
         from tolokaforge.core.compose_materialisation import make_project_temp_dir
 
         for slug, stack in (("run:", None), (":run", "stack:"), ("://", "x")):
-            name = make_project_temp_dir(slug, stack).name
-            assert "-_" not in name, name
-            assert "_-" not in name, name
-            assert "--" not in name, name
+            made = make_project_temp_dir(slug, stack)
+            try:
+                assert "-_" not in made.name, made.name
+                assert "_-" not in made.name, made.name
+                assert "--" not in made.name, made.name
+            finally:
+                made.rmdir()
