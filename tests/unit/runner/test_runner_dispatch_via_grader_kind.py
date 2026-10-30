@@ -102,6 +102,8 @@ def _script_run_test_suite(service: RunnerServiceImpl, result: RunTestSuiteResul
         *,
         trial_id: str,
         service: str | None = None,
+        user: str | None = None,
+        require_reward: bool = False,
     ) -> RunTestSuiteResult:  # noqa: ARG001
         return result
 
@@ -199,6 +201,8 @@ def test_substrate_unreachable_maps_to_success_false_with_reason(
         *,
         trial_id: str,  # noqa: ARG001
         service: str | None = None,  # noqa: ARG001
+        user: str | None = None,  # noqa: ARG001
+        require_reward: bool = False,  # noqa: ARG001
     ) -> RunTestSuiteResult:
         raise SubstrateUnreachableError(message)
 
@@ -314,6 +318,8 @@ def _capture_run_test_suite(service: RunnerServiceImpl, seen: dict[str, Any]) ->
         *,
         trial_id: str,  # noqa: ARG001
         service: str | None = None,  # noqa: ARG001
+        user: str | None = None,  # noqa: ARG001
+        require_reward: bool = False,  # noqa: ARG001
     ) -> RunTestSuiteResult:
         seen.update(
             script_path=script_path,

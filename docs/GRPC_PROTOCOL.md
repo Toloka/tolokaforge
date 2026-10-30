@@ -683,6 +683,8 @@ Version 4 is the first whose grading regexes run on RE2 by default and whose gra
 
 Version 5 is the first that records an MCP tool's typed refusal of its arguments — the JSON-RPC error `-32602`, or an `isError: true` reply whose `_meta` carries `tolokaforge/error_category: invalid_arguments` — as `EXECUTION_STATUS_INVALID_ARGUMENTS` instead of `EXECUTION_STATUS_ENVIRONMENT_ERROR`. An older image would record those calls as environment errors, so a model's correctable input mistake would spend the trial's environment-error budget and could end it as `too_many_errors`; the host refuses such an image before a trial starts.
 
+Version 6 is the first that carries `RunTestSuiteRequest.user` and `RunTestSuiteRequest.require_reward`, so a task pack can say which Unix user grades it and refuse a trial whose verifier wrote no reward. An older image drops both fields silently (proto3 discards unknown fields): the verifier runs as the agent's user, the reward read keeps its `|| echo 0.0` fallback, and a pack that seals its reward directory against the agent scores every trial `0.0` while reporting them complete. That is indistinguishable from a model that failed — it zeroed 77 of 100 tasks on the TBench Arena board before anyone noticed — so the host refuses such an image before a trial starts rather than let the silence recur.
+
 The runner's request gate is a lower bound, not an equality: a newer engine still sends `call_id`. From version 3 onward the host also checks `runner_protocol_version` in the successful registration response, so an older image cannot silently omit a newer outcome or grading field.
 
 #### Trial spec payload

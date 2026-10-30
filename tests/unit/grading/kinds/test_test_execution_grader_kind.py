@@ -492,3 +492,54 @@ def test_without_require_reward_an_empty_reward_still_scores_zero() -> None:
     assert grade is not None
     assert grade.score == pytest.approx(0.0)
     assert grade.binary_pass is False
+
+
+def test_a_non_finite_reward_is_not_a_perfect_score() -> None:
+    """``nan`` must not clamp to 1.0.
+
+    Every comparison with nan is False, so ``max(0.0, min(1.0, nan))`` returns
+    ``1.0`` -- a corrupt reward file would otherwise be a full pass. Without
+    ``require_reward`` it folds to 0.0 like any other unparseable value.
+    """
+    for blob in (b"nan\n", b"inf\n", b"-inf\n"):
+        grade = _evaluate(_ScriptedSubstrate(_result(reward_bytes=blob)))
+        assert grade is not None
+        assert grade.score == pytest.approx(0.0), blob
+        assert grade.binary_pass is False, blob
+
+    with pytest.raises(GraderKindRefusedError):
+        _evaluate(
+            _ScriptedSubstrate(_result(reward_bytes=b"nan\n")),
+            kind_config={"require_reward": True},
+        )
+
+
+def test_a_blank_user_means_unset_on_every_lane() -> None:
+    """``""`` normalises to ``None``.
+
+    proto3 cannot tell ``""`` from unset, so the wire lane already maps it to
+    ``None``; the in-process lane must agree rather than exec ``--user ''``.
+    """
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1.0\n"))
+    _evaluate(substrate, kind_config={"user": "   "})
+    assert substrate.calls[0]["user"] is None
+
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1.0\n"))
+    _evaluate(substrate, kind_config={"user": " root "})
+    assert substrate.calls[0]["user"] == "root"
+
+
+def test_a_legitimate_zero_reward_is_still_scored_under_require_reward() -> None:
+    """Refusing must catch absence, never a real 0.0.
+
+    A verifier that ran and awarded nothing is a result; conflating it with one
+    that never wrote would turn genuine failures into ungradeable trials and
+    quietly shrink the denominator.
+    """
+    for blob in (b"0.0\n", b"0.000000\n", b"0\n", b"0.0\r\n"):
+        grade = _evaluate(
+            _ScriptedSubstrate(_result(reward_bytes=blob)),
+            kind_config={"require_reward": True},
+        )
+        assert grade is not None, blob
+        assert grade.score == pytest.approx(0.0), blob
