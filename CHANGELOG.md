@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.4 (2026-10-30)
+
+### Fix
+
+- **terminal-bench**: nine tasks that could never be scored, and a 5% board-wide flake (#1958)
+
 ## v0.34.3 (2026-10-30)
 
 ### Fix
