@@ -271,8 +271,15 @@ class ProvisioningTrialExecutor:
         changes control flow.
         """
         trajectory = result.trajectory
-        capture_worthy = trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT) or (
-            trajectory.grade is not None and trajectory.grade.binary_pass is False
+        capture_worthy = (
+            trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT)
+            or (trajectory.grade is not None and trajectory.grade.binary_pass is False)
+            # A refused trial is COMPLETED with no grade, so neither clause
+            # above caught it — and it is the one outcome where the container's
+            # own logs are the only evidence of what happened. On 2026-10-30 a
+            # trial's container vanished between the agent's last command and
+            # grading, and nothing was captured, so the cause is still unknown.
+            or (trajectory.grade is None and trajectory.grading_error is not None)
         )
         byte_map = self.runtime_backend.capture_service_logs(handle, capture_worthy=capture_worthy)
         if not byte_map:

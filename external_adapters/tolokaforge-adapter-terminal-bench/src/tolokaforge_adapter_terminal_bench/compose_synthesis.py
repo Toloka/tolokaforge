@@ -761,8 +761,16 @@ def _resolve_agent_service(
                 # compose is emitted — not to the task's compose directory —
                 # so this service is exempt from `_reroot_relative_paths`.
                 "build": {"context": _ENVIRONMENT_BUILD_CONTEXT},
-                "command": ["sh", "-c", "sleep infinity"],
             }
+            # Only when the image has no default process of its own. Three of
+            # the seven tasks this injection serves ship a CMD that boots their
+            # whole stack (`supervisord -n`, `stack.sh start`), and writing a
+            # keep-alive over it hands the agent an empty container it has to
+            # boot by hand — a measurement change, on `fix-jcl-batch-restart`
+            # a task about restart behaviour. Same guard the other injection
+            # site uses; omitting it here was an oversight.
+            if not _dockerfile_declares_a_command(meta.task_dir / "environment" / "Dockerfile"):
+                body["command"] = ["sh", "-c", "sleep infinity"]
             # A task that puts its sidecars on an explicit network declares no
             # `default`, so an agent left off it joins compose's own `default`
             # alone and cannot resolve `db` or `redis` by name — the task would

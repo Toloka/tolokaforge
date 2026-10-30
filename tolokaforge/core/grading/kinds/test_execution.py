@@ -223,12 +223,42 @@ class TestExecutionGraderKind:
                 # reports a number for a measurement that never happened, and
                 # reads as a model failure. Refuse it instead, as an exec
                 # failure already is.
+                # Name the failure that actually happened. These are four
+                # different problems with four different owners, and the first
+                # two have nothing to do with users: pointing every one of them
+                # at the 'user' setting sends whoever reads it after a
+                # permissions bug that is not there. Measured 2026-10-30, when
+                # exactly that message was emitted for a container the daemon
+                # had already stopped.
+                lowered = raw.lower()
+                if (
+                    "is not running" in lowered
+                    or "no such container" in lowered
+                    or "oci runtime exec failed" in lowered
+                ):
+                    reason = (
+                        "the trial's container was gone when grading ran, so "
+                        "nothing was measured. This is lost infrastructure, not "
+                        f"a failed attempt. Daemon said: {raw!r}"
+                    )
+                elif "[exit code: 137]" in raw or "[exit code: 143]" in raw:
+                    reason = (
+                        "the verifier was killed by a signal before it could "
+                        f"write a verdict. Read: {raw!r}"
+                    )
+                elif raw:
+                    reason = (
+                        f"the reward at {cfg.reward_path!r} is not a finite "
+                        f"number. Read: {raw!r}"
+                    )
+                else:
+                    reason = (
+                        f"the verifier wrote no reward at {cfg.reward_path!r}. "
+                        "Common cause: it could not write there because it ran "
+                        "as the wrong user — see this kind's 'user' setting."
+                    )
                 raise GraderKindRefusedError(
-                    "test-execution reward is missing or unparseable at "
-                    f"{cfg.reward_path!r} (read {raw!r}); the verifier produced no "
-                    "verdict, so this trial is ungradeable. Common cause: the "
-                    "verifier could not write the reward because it ran as the "
-                    "wrong user — see the kind's 'user' setting."
+                    f"test-execution produced no usable verdict: {reason}"
                 ) from None
             reward = 0.0
         return Grade(
