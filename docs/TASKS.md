@@ -157,10 +157,9 @@ read the full result. The native adapter applies these keys; see
   a `.json` file being one `{id, title, content}` document). Declaring
   `corpus_dir` requires the search tool (`rag.tool.name`,
   default `search_kb`) in an actor's `tools.<actor>.enabled`; that tool queries
-  the index. With the default backend the runner indexes into the rag-service,
-  so the run needs the full stack (reached by DNS, like `db-service`/`mock-web`),
-  which the orchestrator selects for such a task; `bm25` runs in the runner
-  process and keeps the core stack. Declaring `corpus_dir` without
+  the index. With the default backend the runner indexes into the rag-service
+  (reached by DNS, like `db-service`/`mock-web`), which the orchestrator starts
+  for such a task; `bm25` runs in the runner process and starts no rag-service. Declaring `corpus_dir` without
   the search tool, or pointing it at a directory that does not exist, is
   rejected at validation time. `rag.backend_config` and `rag.tool.description`
   are described in [CONFIG.md § `initial_state.rag:`](CONFIG.md#initial_staterag--the-knowledge-base-its-search-backend-and-the-agents-tool).
@@ -170,8 +169,8 @@ read the full result. The native adapter applies these keys; see
 Optional. A task declares `environment_manifest` when it needs its own
 docker-compose stack — extra services beyond the engine's built-in
 `runner` + `db-service`. If omitted, the engine wires up its default
-stack (extended to include mock-web / rag-service if the task uses their
-tools).
+stack (extended with mock-web and rag-service, each only if the task needs it;
+see [RUNNER.md § Which engine services start](RUNNER.md#which-engine-services-start-dockerservices)).
 
 The manifest is authored as one of two shapes (ADR-0044 § 3):
 

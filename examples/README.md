@@ -30,7 +30,7 @@ by adapter type.
   not count and keys a generated id by its record's content before the hash.
 - **Knowledge-base retrieval**: see `native/rag_search/` — `search_kb` retrieves
   a planted fact from a per-trial rag-service index and grading locks that
-  retrieval-only token (needs Docker with the full stack for the rag-service).
+  retrieval-only token (needs Docker; the run starts the rag-service for it).
 - **Browser tasks**: see `native/browser_task/` (needs Docker for mock-web).
 - **Terminal-bench tasks** (Docker compose + `tests/test.sh`): see
   `terminal_bench/`.

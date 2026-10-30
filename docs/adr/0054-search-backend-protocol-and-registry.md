@@ -5,6 +5,7 @@
 - **Deciders:** @CiroGamboa, @rsmtnn
 - **Supersedes:** none
 - **Realizes:** [ADR-0011](0011-seam-and-declaration-conventions.md) § Pattern A
+- **Amended-by:** [ADR-0065](0065-engine-services-per-run.md) (a rag-service search starts rag-service alone, not the full stack)
 
 ## Context and Problem Statement
 

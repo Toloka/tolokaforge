@@ -74,15 +74,16 @@ class DockerStackRequirements:
         enable_dind: Add a Docker-in-Docker sidecar so the Runner can manage
             Docker Compose stacks without touching the host daemon.
         needs_rag_service: The adapter emits search-enabled TaskDescriptions
-            (``TaskDescription.search.enabled``), so the run must use the
-            stack that actually provisions ``rag-service`` (``full_stack``).
-            The Runner hard-fails ``RegisterTrial`` for search-enabled tasks
+            (``TaskDescription.search.enabled``), so the run must start
+            ``rag-service`` (and only that: mock-web follows the tasks' own
+            signals). The Runner hard-fails ``RegisterTrial`` for search-enabled tasks
             when no RAG client is configured, and ``core_stack`` deliberately
             omits ``RAG_SERVICE_URL`` (issue #95: "env present" ==
             "rag-service running") - so adapters whose search signal is not
             visible in task tool names or ``initial_state`` (e.g. a
             domain-shipped ``docindex/`` knowledge base) must declare the
-            need here for the orchestrator's stack selection.
+            need here for the orchestrator's service selection. A knowledge
+            base another plane serves (TypeSense) does not need it.
         image_builds: Task-declared compose images the orchestrator builds
             once per run, immediately after the engine ``:local`` aliases are
             in place. Adapters emit these when a task's compose stack has a
@@ -110,9 +111,9 @@ class DockerStackRequirements:
         unchanged.
 
         ``needs_rag_service`` and ``image_builds`` are deliberately NOT
-        rendered: the first selects the stack factory (``core_stack`` vs
-        ``full_stack``), the second is the orchestrator's declarative
-        pre-build seam. Neither stack factory accepts them.
+        rendered: the first feeds the service selection
+        (``resolve_engine_services``), the second is the orchestrator's
+        declarative pre-build seam. Neither stack factory accepts them.
         """
         kwargs: dict[str, Any] = {}
         if self.task_pack_mounts:

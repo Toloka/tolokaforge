@@ -17,8 +17,8 @@ agent → search_kb → rag-service  (/trials/{id}/search over the per-trial ind
   enables `search_kb` and declares its corpus via `initial_state.rag.corpus_dir`
   (`rag/corpus`). The corpus's `.md` files travel with the task in
   `tool_artifacts` and are indexed into the rag-service per trial. Searching on
-  the default `rag_service` backend makes the run's auto-started engine stack
-  the full one, and the rag-service is reached by Docker DNS on the runner
+  the default `rag_service` backend makes the run start the rag-service (and
+  not mock-web), and the rag-service is reached by Docker DNS on the runner
   network, the same way `mock_web_booking` reaches mock-web — the runner's own
   network wires the peer, not a per-task manifest.
 - **A retrieval-only fact.** The Halden substation's emergency failover

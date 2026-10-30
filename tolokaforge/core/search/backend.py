@@ -105,7 +105,7 @@ class SearchBackend(Protocol):
     the stack service the backend needs — one of
     :data:`~tolokaforge.core.search.stack_services.DECLARED_STACK_SERVICES` — or is
     ``None`` for a backend that runs in the runner process alone. The orchestrator
-    starts ``full_stack`` for a task whose backend declares ``"rag_service"``, and
+    starts rag-service for a task whose backend declares ``"rag_service"``, and
     the runner builds the trial's index only when it reaches the declared service,
     whose handle the backend reads from :attr:`SearchBackendContext.stack_services`.
     A name outside the declared ones is refused at load and at ``RegisterTrial``.

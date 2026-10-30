@@ -65,7 +65,7 @@ Version 1 declares ``rag_service`` with :class:`RagServiceHandle`: ``base_url``,
 RAG_SERVICE_STACK_SERVICE = "rag_service"
 """The rag-service stack service, as a backend names it in ``stack_service``.
 
-The orchestrator starts ``full_stack`` for a task whose backend declares it, and the
+The orchestrator starts rag-service for a task whose backend declares it, and the
 wire's ``search.enabled`` says whether a task's backend declares it. It names a stack
 service, not a backend: the ``rag_service`` backend shares the spelling.
 """
@@ -128,9 +128,10 @@ RAG_SERVICE: StackService[RagServiceHandle] = StackService(
     name=RAG_SERVICE_STACK_SERVICE,
     protocol=RagServiceHandle,
     reached_by=(
-        "the runner reads rag-service's address from RAG_SERVICE_URL, which the full "
-        "stack sets (`tolokaforge docker up --profile full`, or a run whose task needs "
-        "it), and none was set when this runner started"
+        "the runner reads rag-service's address from RAG_SERVICE_URL, which is set "
+        "where rag-service runs (`tolokaforge docker up --profile full`, a run whose "
+        "task or adapter needs it, or the run config's `docker.services.rag_service: "
+        "always`), and none was set when this runner started"
     ),
 )
 """rag-service, the hybrid BM25 + dense service (``tolokaforge/env/rag_service``)."""

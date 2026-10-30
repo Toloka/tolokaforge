@@ -230,9 +230,10 @@ RUN mkdir -p /work && chmod 755 /work
 #     default for bare/local runs (a missing/wrong DB URL fails loud on first
 #     call, so a default is safe here — unlike RAG).
 #   * RAG_SERVICE_URL — intentionally absent: it must be present iff a
-#     rag-service is actually running. Only the full stack injects it
-#     (docker/stacks/full.py); the core stack leaves it unset so the runner
-#     builds no RAG client and the judge is offered no unreachable search_kb.
+#     rag-service is actually running. Only full_stack(rag_service=True)
+#     injects it (docker/stacks/full.py); every other stack leaves it unset so
+#     the runner builds no RAG client and the judge is offered no unreachable
+#     search_kb.
 
 # gRPC port
 EXPOSE 50051

@@ -8,7 +8,7 @@ Tolokaforge runs all tool execution inside Docker containers. The orchestrator r
 
 ### Built-in stack (Case A — the default)
 
-When a run declares no `environment_manifest`, the orchestrator brings up the engine's built-in services with `EngineStack` (`tolokaforge/docker/stack.py`): `core_stack` = runner + db-service, or `full_stack` = runner + db-service + mock-web + rag-service. Every built-in service is attached to `runner-net`, a bridge network that is **not** `internal`.
+When a run declares no `environment_manifest`, the orchestrator brings up the engine's built-in services with `EngineStack` (`tolokaforge/docker/stack.py`): `core_stack` = runner + db-service, or `full_stack` = runner + db-service plus mock-web and/or rag-service, each only when the run needs it. Every built-in service is attached to `runner-net`, a bridge network that is **not** `internal`.
 
 - The **runner** runs with `cap_drop: ALL`, `cap_add: NET_BIND_SERVICE`, and `no-new-privileges` (its default `ResourcePolicy`; relaxed only on the Docker-socket / Docker-in-Docker terminal-bench paths).
 - `runner-net` has **full egress by construction**. The runner needs it: when a task declares an `llm_judge` grading component, `RunnerService.GradeTrial` runs the rubric judge *inside* the runner container and must reach the LLM provider to grade. The runner's published gRPC port must also stay host-reachable so the orchestrator can connect to it.

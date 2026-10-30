@@ -89,8 +89,9 @@ def core_stack(
             container as ``RAG_SERVICE_URL``. ``None`` (the default) leaves it
             unset — the core stack has no rag-service, so the runner builds no
             RAG client and the judge is offered no unreachable ``search_kb``.
-            Only ``full_stack`` (which actually starts a rag-service) passes a
-            value, keeping "env present" == "rag-service running".
+            Only ``full_stack(rag_service=True)`` (which actually starts a
+            rag-service) passes a value, keeping "env present" == "rag-service
+            running".
         typesense_address: In-network address of the run's TypeSense server,
             injected into the runner container as ``TYPESENSE_HOST`` /
             ``TYPESENSE_PORT``. ``None`` (the default) leaves both unset —
@@ -165,7 +166,7 @@ def core_stack(
         ),
     }
     # Inject RAG_SERVICE_URL only when a rag-service is actually provisioned
-    # (full stack). Absent on the core stack so the runner builds no RAG
+    # (full_stack(rag_service=True)). Absent otherwise so the runner builds no RAG
     # client and the judge is not offered an unreachable search_kb tool.
     if rag_service_url is not None:
         runner_env["RAG_SERVICE_URL"] = rag_service_url

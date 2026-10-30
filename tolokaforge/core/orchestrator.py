@@ -161,6 +161,7 @@ from tolokaforge_coding_harnesses import ENGINE_LOOP
 
 if TYPE_CHECKING:
     from tolokaforge.core.search.typesense_server import TypeSenseServerManager
+    from tolokaforge.docker.stack import EngineStack
     from tolokaforge.docker.stacks import TypeSenseAddress
 
 # Where a bridged local TypeSense server answers from inside ``runner-net``.
@@ -1235,6 +1236,32 @@ class Orchestrator:
             if self._task_description(task.task_id).environment_manifest is not None:
                 return True
         return False
+
+    def _build_run_engine_stack(self) -> tuple["EngineStack", Any, bool]:
+        """Build (not start) the run's engine stack; also say whether tasks bring their own.
+
+        Any task-declared manifest hands the substrate to the composer: the
+        task-declared compose owns the runner + db-service, so the built-in
+        engine containers go unused. The engine images still need to be BUILT so
+        task compose files can reference the ``:local`` aliases, but the
+        container-start is skipped, and so are the optional services, whose
+        images no alias names. Otherwise the shared factory resolves the
+        adapter's stack requirements, the playwright/docker-cli signals, and the
+        optional services the run starts; the library route builds the same way
+        through the same function.
+        """
+        task_stack_mode = self._any_task_declares_environment_manifest()
+        service_stack, stack_requirements = build_engine_stack(
+            self.config,
+            self.adapter,
+            self.tasks,
+            typesense_stack_kwargs=self._typesense_stack_kwargs(),
+            grpc_max_message_mb=self._grpc_max_message_mb(),
+            state_read_timeout_s=self._state_read_timeout_s(),
+            logger=self.logger,
+            optional_services=not task_stack_mode,
+        )
+        return service_stack, stack_requirements, task_stack_mode
 
     def _dispatch_config(self) -> DispatchConfig | None:
         """The run's dispatch config, or ``None`` for the single-box substrate path.
@@ -3123,27 +3150,7 @@ class Orchestrator:
         service_stack = None
         if self.config.orchestrator.auto_start_services and not self._is_dispatch_run():
             try:
-                # Build the stack the run's tasks need (runner + db-service,
-                # plus the search plane when a task needs one). The shared
-                # factory resolves the adapter's stack requirements, the
-                # playwright/docker-cli signals, and core-vs-full selection; the
-                # library route builds the same way through the same function.
-                service_stack, stack_requirements = build_engine_stack(
-                    self.config,
-                    self.adapter,
-                    self.tasks,
-                    typesense_stack_kwargs=self._typesense_stack_kwargs(),
-                    grpc_max_message_mb=self._grpc_max_message_mb(),
-                    state_read_timeout_s=self._state_read_timeout_s(),
-                    logger=self.logger,
-                )
-                # Any task-declared manifest hands the substrate to the
-                # composer — the task-declared compose owns the runner +
-                # db-service, so the built-in engine containers go unused.
-                # The engine images still need to be BUILT so task compose
-                # files can reference the ``:local`` aliases, but the
-                # container-start is skipped.
-                task_stack_mode = self._any_task_declares_environment_manifest()
+                service_stack, stack_requirements, task_stack_mode = self._build_run_engine_stack()
                 if task_stack_mode:
                     self.logger.info(
                         "Preparing Docker engine images (task-declared-stack mode: "

@@ -50,12 +50,19 @@ def test_core_stack_runner_omits_rag_service_url():
     assert "RAG_SERVICE_URL" not in runner.environment
 
 
-def test_full_stack_runner_injects_rag_service_url():
-    """The full stack DOES run a rag-service, so the runner container carries
-    ``RAG_SERVICE_URL`` pointing at it. This is what makes the agent's
-    full-stack RAG client non-None and the judge's search_kb reachable."""
-    runner = _runner_def(full_stack())
+@pytest.mark.parametrize("mock_web", [True, False])
+def test_full_stack_runner_injects_rag_service_url(mock_web):
+    """A stack with rag-service names it to the runner as ``RAG_SERVICE_URL``,
+    with or without mock-web beside it. This is what makes the agent's RAG
+    client non-None and the judge's search_kb reachable."""
+    runner = _runner_def(full_stack(mock_web=mock_web))
     assert runner.environment.get("RAG_SERVICE_URL") == "http://tolokaforge-rag-service:8001"
+
+
+def test_full_stack_without_rag_service_names_no_rag_service_url():
+    """The honest absence holds per service: no rag-service, no ``RAG_SERVICE_URL``."""
+    runner = _runner_def(full_stack(rag_service=False))
+    assert "RAG_SERVICE_URL" not in runner.environment
 
 
 @pytest.mark.parametrize("factory", [core_stack, full_stack], ids=["core_stack", "full_stack"])
@@ -151,6 +158,20 @@ def test_full_stack_includes_db_runner_and_extras():
     stack = full_stack()
     services = set(stack.services.keys())
     assert {"db-service", "runner", "rag-service", "mock-web"}.issubset(services)
+
+
+@pytest.mark.parametrize(
+    ("flags", "extras"),
+    [
+        ({"rag_service": True, "mock_web": False}, {"rag-service"}),
+        ({"rag_service": False, "mock_web": True}, {"mock-web"}),
+        ({"rag_service": False, "mock_web": False}, set()),
+    ],
+)
+def test_full_stack_adds_only_the_services_selected(flags, extras):
+    """A service left out is neither built, pulled nor started: it is not in the stack."""
+    stack = full_stack(**flags)
+    assert set(stack.services) == {"db-service", "runner"} | extras
 
 
 def test_full_stack_mock_web_starts_standalone():
