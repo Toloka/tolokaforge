@@ -138,9 +138,10 @@ docker:
   tasks that need it.
 
 A run whose tasks declare their own `environment_manifest` starts no built-in
-container, so it neither starts nor checks the optional services, and logs a
-warning when `docker.services` sets either one; only the runner and db-service
-images are built, for the `:local` aliases its compose files use.
+container, so it starts no optional service: `always` on either one stops the
+run with `EngineServiceConflictError`, and `never` holds by itself. Only the
+runner and db-service images are built, for the `:local` aliases its compose
+files use.
 
 Write `always` and `never`, not `on` and `off`: YAML reads those as booleans,
 which the config refuses with a message that says so.

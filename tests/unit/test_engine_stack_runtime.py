@@ -211,27 +211,15 @@ def test_build_engine_stack_refuses_a_never_service_the_run_needs(
         _build(config, [_task(["search_kb"])])
 
 
-class _RecordingLogger:
-    def __init__(self) -> None:
-        self.records: list[tuple[str, dict[str, Any]]] = []
-
-    def info(self, message: str, **fields: Any) -> None:
-        self.records.append((message, fields))
-
-    debug = warning = error = info
-
-
 def test_build_engine_stack_without_optional_services_builds_the_core_stack_unchecked() -> None:
     """A run whose tasks declare their own stacks starts no built-in container.
 
     Its compose files alias the runner and db-service images only, so the
-    optional services are neither built nor checked against ``docker.services``.
+    optional services are not built, and ``never`` holds by itself.
     """
     config = _config().model_copy(
         update={"docker": DockerConfig(services=EngineServicesConfig(mock_web="never"))}
     )
-
-    logger = _RecordingLogger()
 
     stack, _ = build_engine_stack(
         config,
@@ -239,17 +227,29 @@ def test_build_engine_stack_without_optional_services_builds_the_core_stack_unch
         [_task(["browser"])],
         grpc_max_message_mb=50,
         state_read_timeout_s=30.0,
-        logger=logger,  # type: ignore[arg-type]
+        logger=_LOGGER,
         optional_services=False,
     )
 
     assert set(stack.services) == {"db-service", "runner"}
-    assert dict(logger.records)[
-        "docker.services is ignored: the tasks declare their own stacks"
-    ] == {
-        "rag_service": "auto",
-        "mock_web": "never",
-    }
+
+
+def test_build_engine_stack_without_optional_services_refuses_an_always_service() -> None:
+    """``always`` asks for a service that tasks bringing their own stacks never get."""
+    config = _config().model_copy(
+        update={"docker": DockerConfig(services=EngineServicesConfig(rag_service="always"))}
+    )
+
+    with pytest.raises(EngineServiceConflictError, match="docker.services.rag_service"):
+        build_engine_stack(
+            config,
+            None,
+            [_task(["bash"])],
+            grpc_max_message_mb=50,
+            state_read_timeout_s=30.0,
+            logger=_LOGGER,
+            optional_services=False,
+        )
 
 
 @pytest.mark.parametrize(
@@ -260,17 +260,11 @@ def test_build_engine_stack_without_optional_services_builds_the_core_stack_unch
 def test_the_orchestrator_builds_optional_services_only_for_the_built_in_stack(
     monkeypatch: pytest.MonkeyPatch, manifest: str | None, services: set[str]
 ) -> None:
-    """A task-declared stack skips the optional services, and with them ``docker.services``.
-
-    The built-in stack starts mock-web for the browser task and rag-service for
-    ``always``; tasks that bring their own stack start no built-in container, so
-    the run builds neither image.
-    """
-    config = _config().model_copy(
-        update={"docker": DockerConfig(services=EngineServicesConfig(rag_service="always"))}
-    )
-    orchestrator = Orchestrator(config)
+    """The built-in stack starts mock-web for a browser task; tasks that bring
+    their own stack start no built-in container, so the run does not build it."""
+    orchestrator = Orchestrator(_config())
     orchestrator.tasks = [_task(["browser"])]
+    # Only docker_stack_requirements is read on this path.
     orchestrator.adapter = SimpleNamespace(  # type: ignore[assignment]
         docker_stack_requirements=lambda: DockerStackRequirements()
     )
@@ -283,7 +277,17 @@ def test_the_orchestrator_builds_optional_services_only_for_the_built_in_stack(
     stack, _, task_stack_mode = orchestrator._build_run_engine_stack()
 
     assert task_stack_mode is (manifest is not None)
-    assert set(stack.services) == services | ({"rag-service"} if manifest is None else set())
+    assert set(stack.services) == services
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, dict[str, Any]]] = []
+
+    def info(self, message: str, **fields: Any) -> None:
+        self.records.append((message, fields))
+
+    debug = warning = error = info
 
 
 def test_build_engine_stack_logs_each_service_and_why() -> None:
@@ -296,7 +300,7 @@ def test_build_engine_stack_logs_each_service_and_why() -> None:
         [_task(["browser"])],
         grpc_max_message_mb=50,
         state_read_timeout_s=30.0,
-        logger=logger,  # type: ignore[arg-type]
+        logger=logger,  # type: ignore[arg-type]  # duck-typed recording stand-in
     )
 
     plan = resolve_engine_services([_task(["browser"])], None, EngineServicesConfig())

@@ -124,9 +124,8 @@ def _run_uses_coding_harness(config: RunConfig) -> bool:
 def _search_needs_rag_service(task: Any) -> bool:
     """Whether the task searches with a backend that declares the rag-service stack service.
 
-    A typed ``rag: {}`` block declares no corpus, so it searches only if an actor
-    enables its search tool — as the empty dict it replaced never selected the
-    full stack on its own.
+    A typed ``rag: {}`` block declares no corpus, so it needs rag-service only if
+    an actor enables its search tool.
     """
     search = search_declaration(task)
     if not uses_search(task, search):
@@ -343,9 +342,10 @@ def build_engine_stack(
     one is configured; the caller resolves it (and registers its API key) so the
     search-server lifecycle stays with the caller. ``optional_services=False``
     skips the resolution and builds the core stack: for a run whose tasks declare
-    their own stacks, where no built-in container starts.
+    their own stacks, where no built-in container starts, so a service
+    ``docker.services`` says ``always`` is refused.
     """
-    from tolokaforge.core.models.docker_config import DockerConfig, EngineServicesConfig
+    from tolokaforge.core.models.docker_config import DockerConfig
     from tolokaforge.docker.stacks import core_stack, full_stack
 
     logger.info("Auto-starting Docker services via EngineStack")
@@ -355,11 +355,15 @@ def build_engine_stack(
         engine_services = resolve_engine_services(tasks, stack_requirements, docker_config.services)
     else:
         engine_services = _TASK_DECLARED_STACKS_PLAN
-        if docker_config.services != EngineServicesConfig():
-            logger.warning(
-                "docker.services is ignored: the tasks declare their own stacks",
-                rag_service=docker_config.services.rag_service,
-                mock_web=docker_config.services.mock_web,
+        forced = [
+            field
+            for field in ("rag_service", "mock_web")
+            if getattr(docker_config.services, field) == "always"
+        ]
+        if forced:
+            raise EngineServiceConflictError(
+                f"docker.services.{forced[0]} is 'always', but the tasks declare their own "
+                "stacks, where no built-in service starts. Remove the override."
             )
     logger.info(
         "Engine services resolved",

@@ -5,7 +5,7 @@ for common deployment scenarios.
 
 Available stacks:
     - core_stack: DB service + Runner (minimum for integration tests)
-    - full_stack: Core + RAG service + Mock Web
+    - full_stack: Core + RAG service and/or Mock Web, one flag each
     - test_stack: Core with auto-allocated ports (for CI/testing)
 
 Individual service definitions:
