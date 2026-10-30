@@ -1464,3 +1464,48 @@ def test_a_service_without_aliases_joins_plainly(policy: NetworkPolicy) -> None:
     result = _enforce(doc, policy)
     assert result["services"]["api"]["networks"][NETPOLICY_INTERNAL_NETWORK] is None
     assert NETPOLICY_INTERNAL_NETWORK in result["services"]["worker"]["networks"]
+
+
+class TestReferenceSafeSegment:
+    """A slug segment must not put ``_`` against the ``-`` that joins it.
+
+    ``compose_trial_slug`` maps everything it does not keep to ``_``, so a
+    caller id ending in ``:`` or ``/`` yields a segment ending in ``_``. Joined
+    with the next segment that is ``_-``, and compose names built images
+    ``<project>-<service>``, which docker then rejects with
+    ``invalid reference format``. Unlike the random-suffix case (~5.3%) this is
+    deterministic for the caller that hits it.
+
+    The fix lives at assembly, not in ``compose_trial_slug``: the host-side
+    materialiser and the runner-side container resolver both compute that slug
+    and must agree byte for byte.
+    """
+
+    def test_an_edge_underscore_is_stripped(self) -> None:
+        from tolokaforge.core.compose_materialisation import _reference_safe_segment
+
+        assert _reference_safe_segment("run:") == "run"
+        assert _reference_safe_segment(":run") == "run"
+        assert _reference_safe_segment("/run/") == "run"
+
+    def test_interior_underscores_survive(self) -> None:
+        """A valid segment comes back byte-identical, so no name shape moves."""
+        from tolokaforge.core.compose_materialisation import _reference_safe_segment
+
+        for already_valid in ("run-x", "task_id-0", "a_b_c", "trial0"):
+            assert _reference_safe_segment(already_valid) == already_valid
+
+    def test_an_all_underscore_segment_does_not_vanish(self) -> None:
+        """Stripping to empty would merge two separators into ``--``."""
+        from tolokaforge.core.compose_materialisation import _reference_safe_segment
+
+        assert _reference_safe_segment("://") == "0"
+
+    def test_no_separator_adjacency_survives_into_the_basename(self) -> None:
+        from tolokaforge.core.compose_materialisation import make_project_temp_dir
+
+        for slug, stack in (("run:", None), (":run", "stack:"), ("://", "x")):
+            name = make_project_temp_dir(slug, stack).name
+            assert "-_" not in name, name
+            assert "_-" not in name, name
+            assert "--" not in name, name

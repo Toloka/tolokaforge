@@ -47,7 +47,7 @@ import re
 import shlex
 import shutil
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -274,7 +274,8 @@ def materialise_task_environment(
     else:
         original = _single_container_compose(meta)
         task_services = original["services"]
-    agent_service = _resolve_agent_service(meta, task_services)
+    injected_services: set[str] = set()
+    agent_service = _resolve_agent_service(meta, task_services, injected_services)
     base_service = f"{agent_service}{_HARNESS_BASE_SERVICE_SUFFIX}"
     # The base service exists only under harness mode and the verifier service
     # only for the separate-verifier shape, so each is reserved only when the
@@ -359,6 +360,7 @@ def materialise_task_environment(
         original=original,
         meta=meta,
         agent_service=agent_service,
+        injected_services=injected_services,
         base_service=base_service,
         image_registry=image_registry,
         image_tag=image_tag,
@@ -431,7 +433,7 @@ _HARBOR_LOG_PATHS = {
 }
 
 
-def _reroot_relative_paths(doc: dict[str, Any]) -> None:
+def _reroot_relative_paths(doc: dict[str, Any], skip: Collection[str] = ()) -> None:
     """Re-root each service's relative build context and bind source onto
     ``environment/``.
 
@@ -458,8 +460,13 @@ def _reroot_relative_paths(doc: dict[str, Any]) -> None:
     ``./_logs``: those are authored against the staging root already, and
     moving them under ``environment/`` would point the agent at nothing.
     """
-    for body in (doc.get("services") or {}).values():
-        if not isinstance(body, dict):
+    for name, body in (doc.get("services") or {}).items():
+        if not isinstance(body, dict) or name in skip:
+            # A service this adapter injected is already written relative to
+            # the staging root the merged compose is emitted at, not to the
+            # task's own compose directory. Re-rooting it would send
+            # ``./environment`` to ``./environment/environment`` and the build
+            # would fail on a path nobody wrote.
             continue
         build = body.get("build")
         if isinstance(build, str):
@@ -638,7 +645,9 @@ def _load_compose(path: Path) -> dict[str, Any]:
     return content
 
 
-def _resolve_agent_service(meta: TerminalBenchTask, services: dict[str, Any]) -> str:
+def _resolve_agent_service(
+    meta: TerminalBenchTask, services: dict[str, Any], injected: set[str]
+) -> str:
     """Which service the agent works inside, injecting ``main`` if the task has none.
 
     ``main`` by name first — the convention 186 of the corpus's 197 canonical
@@ -677,9 +686,13 @@ def _resolve_agent_service(meta: TerminalBenchTask, services: dict[str, Any]) ->
         dockerfile = meta.task_dir / "environment" / "Dockerfile"
         if dockerfile.is_file():
             services[AGENT_SERVICE_DEFAULT] = {
+                # Written relative to the STAGING ROOT, where the merged
+                # compose is emitted — not to the task's compose directory —
+                # so this service is exempt from `_reroot_relative_paths`.
                 "build": {"context": _ENVIRONMENT_BUILD_CONTEXT},
                 "command": ["sh", "-c", "sleep infinity"],
             }
+            injected.add(AGENT_SERVICE_DEFAULT)
             return AGENT_SERVICE_DEFAULT
         if len(services) == 1:
             # Nothing to build and nothing named: the sole service is all the
@@ -944,6 +957,7 @@ def _build_synthesised_compose(
     original: dict[str, Any],
     meta: TerminalBenchTask,
     agent_service: str,
+    injected_services: Collection[str],
     base_service: str,
     image_registry: str | None,
     image_tag: str,
@@ -1003,7 +1017,7 @@ def _build_synthesised_compose(
     }
     staged = deepcopy(original)
     if meta.compose_file is not None and meta.compose_file.parent.name == "environment":
-        _reroot_relative_paths(staged)
+        _reroot_relative_paths(staged, skip=injected_services)
     task_doc = _substitute_tree(staged, resolved_vars)
 
     services: dict[str, Any] = task_doc["services"]

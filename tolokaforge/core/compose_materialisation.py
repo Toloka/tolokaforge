@@ -696,16 +696,50 @@ def make_project_temp_dir(prefix_slug: str, stack_id: str | None = None) -> Path
     plans use, so the byte-identical basename shape survives for every
     caller that has not opted into multi-stack plans.
 
-    The random suffix ``tempfile`` appends is repaired where it would make an
-    invalid docker reference — see
-    :func:`_mkdtemp_with_reference_safe_suffix`. Nothing else about the
-    basename moves.
+    Two separate places can put a ``_`` next to the ``-`` that joins the
+    segments, and either one makes ``<project>-<service>`` an invalid docker
+    reference that fails the build with ``invalid reference format``:
+
+    * the random suffix ``tempfile`` appends, whose alphabet includes ``_`` —
+      ~5.3% of materialisations, repaired by
+      :func:`_mkdtemp_with_reference_safe_suffix`;
+    * a slug segment, because :func:`compose_trial_slug` maps every character
+      it does not keep to ``_``, so a caller id ending in ``:`` or ``/``
+      produces a segment ending in ``_`` — deterministic for that caller
+      rather than occasional.
+
+    The slug function itself is deliberately NOT changed: the host-side
+    materialiser and the runner-side container resolver both compute it and
+    must agree byte for byte, so a different sanitisation there would rename
+    live containers. The adjacency is a property of the assembled basename,
+    so it is repaired here, at assembly.
     """
     if stack_id is None or stack_id == "default":
-        prefix = f"tolokaforge-{compose_trial_slug(prefix_slug)}-"
+        prefix = f"tolokaforge-{_reference_safe_segment(prefix_slug)}-"
     else:
-        prefix = f"tolokaforge-{compose_trial_slug(prefix_slug)}-{compose_trial_slug(stack_id)}-"
+        prefix = (
+            f"tolokaforge-{_reference_safe_segment(prefix_slug)}-"
+            f"{_reference_safe_segment(stack_id)}-"
+        )
     return _mkdtemp_with_reference_safe_suffix(prefix)
+
+
+def _reference_safe_segment(slug_source: str) -> str:
+    """``compose_trial_slug(slug_source)`` with no ``_`` on either edge.
+
+    An edge ``_`` lands against the ``-`` this segment is joined with, and
+    ``-_`` / ``_-`` is what docker's reference grammar rejects. Interior
+    underscores are untouched, so a segment that is already valid — every one
+    in the corpus measured to date — comes back byte-identical and the
+    basename shape every canonical test pins is preserved.
+
+    An all-``_`` segment (a caller id of, say, ``"://"``) would otherwise
+    strip to nothing and silently merge two separators, so it collapses to a
+    single filler character instead of an empty string.
+    """
+    slug = compose_trial_slug(slug_source)
+    stripped = slug.strip("_")
+    return stripped if stripped else _SUFFIX_FILLER
 
 
 #: What an edge ``_`` in the random suffix is replaced with. Inside
