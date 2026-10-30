@@ -1667,6 +1667,35 @@ class _ComposeServiceResolutionMixin:
             self._trial_id, self._service, self._project_prefix, self._run_id
         )
 
+    def for_user(self, user: str) -> "DockerComposeExecToolWrapper":
+        """A sibling exec wrapper on this same container, running as *user*.
+
+        Grading needs this because a pack may run its verifier as a different
+        user than the agent: the suite reads an oracle and writes a reward into
+        a directory the agent deliberately cannot touch. The two identities
+        cannot both ride one wrapper, and the suite must not silently inherit
+        the agent's, so grading asks for its own executor rather than mutating
+        this one — the agent's session keeps whatever privileges it was given.
+
+        Mirrors :meth:`for_service`, but holds the service fixed and changes the
+        user; chain them (``for_service(v).for_user(u)``) for a separate
+        verifier that also needs its own identity.
+        """
+        if self._trial_id is None or self._service is None or not self._project_prefix:
+            raise RuntimeError(
+                f"{type(self).__name__}.for_user() called before start(), or on a "
+                "non-compose backend: no container can be resolved to exec into."
+            )
+        sibling = DockerComposeExecToolWrapper(
+            self.tool_schema, self._service, self._project_prefix, user=user
+        )
+        sibling._trial_id = self._trial_id
+        sibling._run_id = self._run_id
+        sibling._container = compose_container_name(
+            self._trial_id, self._service, self._project_prefix, self._run_id
+        )
+        return sibling
+
     def for_service(self, service: str) -> "DockerComposeExecToolWrapper":
         """A sibling exec wrapper bound to another service of the same trial stack.
 
@@ -1720,6 +1749,7 @@ class DockerComposeExecToolWrapper(_ComposeServiceResolutionMixin, ToolWrapper):
         tool_schema: ToolSchemaModel,
         service: str,
         compose_project_prefix: str,
+        user: str | None = None,
     ):
         super().__init__(tool_schema)
         self._service = service
@@ -1727,6 +1757,9 @@ class DockerComposeExecToolWrapper(_ComposeServiceResolutionMixin, ToolWrapper):
         self._trial_id: str | None = None
         self._run_id: str = ""
         self._container: str | None = None
+        # ``docker exec --user``; ``None`` inherits the image's ``USER``, which
+        # is what every caller got before this parameter existed.
+        self._user: str | None = user
 
     def start(self, ctx: "ToolLifecycleContext") -> None:
         self._trial_id = ctx.trial_id
@@ -1836,7 +1869,7 @@ class DockerComposeExecToolWrapper(_ComposeServiceResolutionMixin, ToolWrapper):
                 self.name,
                 "docker_compose_exec tool executed before start() — container name unresolved",
             )
-        return _docker_exec_plan(self._container, command)
+        return _docker_exec_plan(self._container, command, user=self._user)
 
 
 # =============================================================================
@@ -2694,6 +2727,7 @@ class ToolFactory:
             tool_schema=schema,
             service=service,
             compose_project_prefix=compose_project_prefix,
+            user=extra.get("user"),
         )
 
     def _create_search_wrapper(self, schema: ToolSchemaModel) -> SearchToolWrapper:

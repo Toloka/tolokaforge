@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.3 (2026-10-30)
+
+### Fix
+
+- **terminal-bench**: red tests on main, and a skewed runner that resurrects the bug (#1954)
+- **terminal-bench**: the verifier ran as the agent, so 77 of 100 tasks could not score (#1953)
+
+## v0.34.2 (2026-10-28)
+
+### Fix
+
+- **models**: models wheel requires engine >=0.34.1 — GeminiContent needs wraps_part_reference_tool_results (#1951)
+
+## v0.34.1 (2026-10-28)
+
+### BREAKING CHANGE
+
+- ToolContentPolicy implementations registered through the
+tolokaforge.policies entry-point group must declare
+wraps_part_reference_tool_results (and format, supports_images); a
+registration without them is refused at engine import.
+
+### Feat
+
+- **llm**: keep a $ref in a tool result out of Gemini's function_response; claim gemini/gemini-* for the Gemini preset (#1940)
+
+### Fix
+
+- **docker**: start mock-web for an http_request that reaches it (#1936)
+
 ## v0.34.0 (2026-10-27)
 
 ### Fix

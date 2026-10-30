@@ -47,6 +47,8 @@ class _FakeRunner:
         *,
         trial_id: str,
         service: str | None = None,
+        user: str | None = None,
+        require_reward: bool = False,
     ) -> RunTestSuiteResult:
         self.calls.append(
             {
@@ -56,6 +58,8 @@ class _FakeRunner:
                 "reward_read_timeout_s": reward_read_timeout_s,
                 "trial_id": trial_id,
                 "service": service,
+                "user": user,
+                "require_reward": require_reward,
             }
         )
         return self._result
@@ -95,6 +99,10 @@ def test_delegates_with_threaded_params_and_default_timeouts() -> None:
     assert call["reward_read_timeout_s"] == 10.0  # 0.0 → servicer default
     assert call["trial_id"] == "trial-1"
     assert call["service"] == "verifier"
+    # Unset on the wire → the helper's pre-existing defaults, so a caller that
+    # knows nothing of these fields behaves exactly as it did before they existed.
+    assert call["user"] is None
+    assert call["require_reward"] is False
     context.set_code.assert_not_called()
 
 
@@ -189,3 +197,26 @@ def test_unregistered_trial_is_not_found_and_does_not_delegate() -> None:
     assert runner.calls == []
     assert response.exit_code == 0
     assert response.reward_bytes == b""
+
+
+def test_verifier_user_and_require_reward_cross_the_wire() -> None:
+    """Both new request fields reach the shared helper.
+
+    The detached lane has to carry them or a wire-graded trial silently falls
+    back to the agent's user — the exact failure the fields exist to end, just
+    one process further away.
+    """
+    runner = _FakeRunner(_ok_result())
+    servicer = SubstrateServicer(runner)  # type: ignore[arg-type]
+    request = pb2.RunTestSuiteRequest(
+        trial_id="trial-1",
+        script_path="/tests/test.sh",
+        reward_path="/logs/verifier/reward.txt",
+        user="root",
+        require_reward=True,
+    )
+
+    servicer.RunTestSuite(request, MagicMock())
+
+    assert runner.calls[0]["user"] == "root"
+    assert runner.calls[0]["require_reward"] is True

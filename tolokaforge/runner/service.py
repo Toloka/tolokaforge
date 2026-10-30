@@ -143,6 +143,7 @@ from tolokaforge.runner.db_client import (
 )
 from tolokaforge.runner.env_exec import (
     SupportsServiceResolution,
+    SupportsUserOverride,
     exec_tool_for_service,
     first_env_exec_tool,
 )
@@ -2053,6 +2054,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         *,
         trial_id: str,
         service: str | None = None,
+        user: str | None = None,
+        require_reward: bool = False,
     ) -> RunTestSuiteResult:
         """Run ``bash <script_path>`` inside a trial container.
 
@@ -2062,6 +2065,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         ``partial(m, trial_id=<id>)`` at construction (see
         :meth:`_build_grading_substrate`) without colliding with a positional
         value for the same argument.
+
+        ``user`` runs the suite as that Unix user instead of the container's
+        default. A pack whose verifier must outrank its agent declares this, and
+        without it the suite inherits the agent's identity — which silently
+        fails any pack that writes its reward somewhere the agent cannot. The
+        executor must offer
+        :class:`~tolokaforge.runner.env_exec.SupportsUserOverride`; one that
+        does not is reported as ``tool_absent`` rather than graded as the wrong
+        user. ``None`` keeps the container's default user.
+
+        ``require_reward`` reads the reward with a bare ``cat``, dropping the
+        ``|| echo 0.0`` fallback, so a reward the verifier never wrote arrives
+        as empty bytes instead of a convincing zero. The caller refuses such a
+        trial as ungradeable.
 
         ``service`` of ``None`` runs the suite in the agent's own container.
         A service name runs it in that sibling container of the per-trial
@@ -2116,6 +2133,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
         assert exec_tool is not None  # service_reason is None ⇒ a tool was resolved
 
+        if user is not None:
+            # Never fall back to the agent's identity: a suite graded as the
+            # wrong user produces a number that looks like a result and is not
+            # one. An executor that cannot honour the request is an absent
+            # tool, which the caller renders as a refusal.
+            if not isinstance(exec_tool, SupportsUserOverride):
+                return RunTestSuiteResult(
+                    exit_code=0,
+                    reward_bytes=b"",
+                    stdout="",
+                    tool_absent=True,
+                    tool_absent_reason=(
+                        f"the task asks for its verifier to run as {user!r}, but this "
+                        f"trial's exec tool ({type(exec_tool).__name__}) cannot select a "
+                        "user. Grading as the agent's user instead would score the "
+                        "trial under a contract the task did not write."
+                    ),
+                    script_exec_error="",
+                )
+            exec_tool = exec_tool.for_user(user)
+
         try:
             exit_code, stdout = exec_tool.exec_in_env_with_exit_code(
                 f"cd $(dirname {script_path}) && bash {script_path} 2>&1",
@@ -2131,9 +2169,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 script_exec_error=str(exc),
             )
 
+        # With ``require_reward`` the ``|| echo 0.0`` fallback is exactly what
+        # has to go: it makes "the verifier wrote no verdict" indistinguishable
+        # from "the agent scored zero", and the caller cannot refuse what it
+        # cannot see.
+        reward_cmd = (
+            f"cat {reward_path}" if require_reward else f"cat {reward_path} 2>/dev/null || echo 0.0"
+        )
         try:
             _rc, reward_str = exec_tool.exec_in_env_with_exit_code(
-                f"cat {reward_path} 2>/dev/null || echo 0.0",
+                reward_cmd,
                 reward_read_timeout_s,
             )
             reward_bytes = reward_str.encode()
@@ -2147,7 +2192,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 type(exc).__name__,
                 exc,
             )
-            reward_bytes = b"0.0\n"
+            # Under require_reward the caller refuses on unparseable bytes, so
+            # carry the real cause: a read that timed out or lost its container
+            # is not the same failure as a verifier that wrote nothing, and
+            # blaming the user would send the operator after a permissions
+            # problem that does not exist.
+            reward_bytes = (
+                f"reward read failed: {type(exc).__name__}: {exc}".encode()
+                if require_reward
+                else b"0.0\n"
+            )
 
         return RunTestSuiteResult(
             exit_code=exit_code,

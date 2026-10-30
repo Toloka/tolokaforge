@@ -72,6 +72,8 @@ class _ScriptedSubstrate:
         timeout_s: float,
         reward_read_timeout_s: float,
         service: str | None = None,
+        user: str | None = None,
+        require_reward: bool = False,
     ) -> RunTestSuiteResult:
         self.calls.append(
             {
@@ -80,6 +82,8 @@ class _ScriptedSubstrate:
                 "timeout_s": timeout_s,
                 "reward_read_timeout_s": reward_read_timeout_s,
                 "service": service,
+                "user": user,
+                "require_reward": require_reward,
             }
         )
         self.events.append("run")
@@ -278,6 +282,8 @@ def test_kind_config_overrides_reach_substrate_and_extra_keys_are_refused() -> N
         "timeout_s": 60.0,
         "reward_read_timeout_s": 5.0,
         "service": None,
+        "user": None,
+        "require_reward": False,
     }
 
     with pytest.raises(ValidationError):
@@ -293,6 +299,10 @@ def test_kind_config_defaults_map_to_standard_verifier_paths() -> None:
         "timeout_s": 300.0,
         "reward_read_timeout_s": 10.0,
         "service": None,
+        # Unset by default, so a pack that says nothing about users keeps
+        # inheriting the container's USER and the `|| echo 0.0` reward read.
+        "user": None,
+        "require_reward": False,
     }
 
 
@@ -407,3 +417,129 @@ def test_nonzero_collect_is_refused() -> None:
 def test_collect_requires_a_verifier_service() -> None:
     with pytest.raises(ValidationError):
         TestExecutionKindConfig(collect=[{"command": "snapshot"}])
+
+
+# ---------------------------------------------------------------------------
+# Verifier user + require_reward
+#
+# Regression cover for the 2026-10-30 terminal-bench finding: a pack whose
+# verifier must run as root (``task.toml [verifier] user = "root"``) had its
+# suite executed as the agent's unprivileged user, so the reward write to a
+# root-only directory failed with EACCES. The empty reward was then folded to
+# ``0.0`` by the servicer's ``|| echo 0.0`` fallback and this kind's parse
+# guard, making a broken verifier byte-identical to a model that scored zero.
+# 77 of 100 tasks on the TBench Arena board were unscoreable and nothing in
+# the artifacts said so.
+#
+# Both knobs are opt-in: ``user`` defaults to ``None`` and ``require_reward``
+# to ``False``, so every adapter that does not set them is unaffected.
+# ---------------------------------------------------------------------------
+
+
+def test_verifier_user_reaches_the_substrate() -> None:
+    """``user`` rides kind_config to the substrate, which execs as that user."""
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1.0\n"))
+    _evaluate(substrate, kind_config={"user": "root"})
+
+    assert substrate.calls[0]["user"] == "root"
+
+
+def test_user_and_require_reward_default_to_the_pre_fix_behaviour() -> None:
+    """Unset, the substrate is called exactly as it was before this change.
+
+    This is the whole no-regression guarantee for every other adapter: an
+    adapter that names neither key sends ``user=None`` / ``require_reward=False``
+    and keeps the ``|| echo 0.0`` reward read.
+    """
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"0.5\n"))
+    _evaluate(substrate)
+
+    assert substrate.calls[0]["user"] is None
+    assert substrate.calls[0]["require_reward"] is False
+
+
+def test_require_reward_refuses_a_trial_whose_verifier_wrote_no_reward() -> None:
+    """An empty reward is ungradeable, not a zero — the defect this prevents.
+
+    With ``require_reward`` the servicer drops its ``|| echo 0.0`` fallback, so
+    a verifier that could not write leaves ``reward_bytes`` empty. Scoring that
+    0.0 is what hid the permission failure across 804 trials; refusing it
+    surfaces the trial the same way ``script_exec_error`` already does.
+    """
+    substrate = _ScriptedSubstrate(
+        _result(exit_code=0, reward_bytes=b"", stdout="reward: 9/14"),
+    )
+
+    with pytest.raises(GraderKindRefusedError) as excinfo:
+        _evaluate(substrate, kind_config={"require_reward": True})
+
+    assert "reward" in str(excinfo.value).lower()
+
+
+def test_require_reward_refuses_an_unparseable_reward() -> None:
+    """Garbage in the reward file is ungradeable too, not a zero."""
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"Permission denied\n"))
+
+    with pytest.raises(GraderKindRefusedError):
+        _evaluate(substrate, kind_config={"require_reward": True})
+
+
+def test_without_require_reward_an_empty_reward_still_scores_zero() -> None:
+    """The pre-fix fold is preserved for callers that do not opt in."""
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b""))
+    grade = _evaluate(substrate)
+
+    assert grade is not None
+    assert grade.score == pytest.approx(0.0)
+    assert grade.binary_pass is False
+
+
+def test_a_non_finite_reward_is_not_a_perfect_score() -> None:
+    """``nan`` must not clamp to 1.0.
+
+    Every comparison with nan is False, so ``max(0.0, min(1.0, nan))`` returns
+    ``1.0`` -- a corrupt reward file would otherwise be a full pass. Without
+    ``require_reward`` it folds to 0.0 like any other unparseable value.
+    """
+    for blob in (b"nan\n", b"inf\n", b"-inf\n"):
+        grade = _evaluate(_ScriptedSubstrate(_result(reward_bytes=blob)))
+        assert grade is not None
+        assert grade.score == pytest.approx(0.0), blob
+        assert grade.binary_pass is False, blob
+
+    with pytest.raises(GraderKindRefusedError):
+        _evaluate(
+            _ScriptedSubstrate(_result(reward_bytes=b"nan\n")),
+            kind_config={"require_reward": True},
+        )
+
+
+def test_a_blank_user_means_unset_on_every_lane() -> None:
+    """``""`` normalises to ``None``.
+
+    proto3 cannot tell ``""`` from unset, so the wire lane already maps it to
+    ``None``; the in-process lane must agree rather than exec ``--user ''``.
+    """
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1.0\n"))
+    _evaluate(substrate, kind_config={"user": "   "})
+    assert substrate.calls[0]["user"] is None
+
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1.0\n"))
+    _evaluate(substrate, kind_config={"user": " root "})
+    assert substrate.calls[0]["user"] == "root"
+
+
+def test_a_legitimate_zero_reward_is_still_scored_under_require_reward() -> None:
+    """Refusing must catch absence, never a real 0.0.
+
+    A verifier that ran and awarded nothing is a result; conflating it with one
+    that never wrote would turn genuine failures into ungradeable trials and
+    quietly shrink the denominator.
+    """
+    for blob in (b"0.0\n", b"0.000000\n", b"0\n", b"0.0\r\n"):
+        grade = _evaluate(
+            _ScriptedSubstrate(_result(reward_bytes=blob)),
+            kind_config={"require_reward": True},
+        )
+        assert grade is not None, blob
+        assert grade.score == pytest.approx(0.0), blob

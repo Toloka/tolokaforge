@@ -228,6 +228,8 @@ class GrpcSubstrateClient:
         timeout_s: float,
         reward_read_timeout_s: float,
         service: str | None = None,
+        user: str | None = None,
+        require_reward: bool = False,
     ) -> RunTestSuiteResult:
         try:
             response = self._stub.RunTestSuite(
@@ -238,6 +240,8 @@ class GrpcSubstrateClient:
                     timeout_s=timeout_s,
                     reward_read_timeout_s=reward_read_timeout_s,
                     service=service or "",
+                    user=user or "",
+                    require_reward=require_reward,
                 )
             )
         except grpc.RpcError as err:

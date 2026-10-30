@@ -6,6 +6,27 @@ its release cadence is orthogonal to the `tolokaforge` engine wheel's own
 `vX.Y.Z` tag axis. See
 [`docs/RELEASING.md`](https://github.com/Toloka/tolokaforge/blob/main/docs/RELEASING.md#pypi-package--tolokaforge-models-models-vxyz-automated).
 
+## models-v1.9.0 (2026-10-28)
+
+### BREAKING CHANGE
+
+- ToolContentPolicy implementations registered through the
+tolokaforge.policies entry-point group must declare
+wraps_part_reference_tool_results (and format, supports_images); a
+registration without them is refused at engine import.
+
+### Feat
+
+- **llm**: keep a $ref in a tool result out of Gemini's function_response; claim gemini/gemini-* for the Gemini preset (#1940)
+
+### Fix
+
+- **models**: models wheel requires engine >=0.34.1 — GeminiContent needs wraps_part_reference_tool_results (#1951)
+- **docker**: start mock-web for an http_request that reaches it (#1936)
+- **docker**: pin every CI, publish and image install to uv.lock (#1930)
+- **deps**: cap litellm below 1.103 — it requires mcp 2, which our mcp<2 pin excludes (#1931)
+- **deps**: exclude compromised litellm 1.107.0 (#1927)
+
 ## models-v1.8.1 (2026-10-20)
 
 ### BREAKING CHANGE

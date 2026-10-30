@@ -32,6 +32,7 @@ script timeout, 10s reward-cat timeout, 65536-char output truncation.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -113,6 +114,35 @@ class TestExecutionKindConfig(BaseModel):
     service: str | None = None
     artifacts: list[ArtifactSpec] = Field(default_factory=list)
     collect: list[CollectSpec] = Field(default_factory=list)
+    user: str | None = None
+    """Unix user the verifier runs as, or ``None`` to inherit the container's
+    default user.
+
+    A task pack may run its suite as a different user than the agent — commonly
+    ``root``, so the suite can read an oracle and write a reward into a
+    directory the agent cannot touch. Nothing infers this: an adapter that
+    knows its pack's contract passes the user, and every adapter that does not
+    keeps the pre-existing behaviour of inheriting the image's ``USER``.
+    """
+    require_reward: bool = False
+    """Treat a missing or unparseable reward as ungradeable instead of 0.0.
+
+    Off, an absent reward folds to a score of zero, which is indistinguishable
+    from a verifier that ran and failed the agent. On, the trial is refused the
+    way ``script_exec_error`` already is, because a suite whose verdict never
+    landed has not scored the agent at all.
+    """
+
+    @model_validator(mode="after")
+    def _blank_user_means_unset(self) -> TestExecutionKindConfig:
+        # The gRPC lane cannot distinguish "" from unset (proto3 string default),
+        # so it maps "" -> None. Normalising here keeps the in-process lane from
+        # issuing ``docker exec --user ''`` for the same config.
+        if self.user is not None and not self.user.strip():
+            self.user = None
+        elif self.user is not None:
+            self.user = self.user.strip()
+        return self
 
     @model_validator(mode="after")
     def _artifacts_and_collect_need_a_service(self) -> TestExecutionKindConfig:
@@ -170,15 +200,36 @@ class TestExecutionGraderKind:
             timeout_s=cfg.timeout_s,
             reward_read_timeout_s=cfg.reward_read_timeout_s,
             service=cfg.service,
+            user=cfg.user,
+            require_reward=cfg.require_reward,
         )
         if result.tool_absent:
             raise GraderKindRefusedError(result.tool_absent_reason)
         if result.script_exec_error:
             raise GraderKindRefusedError(f"test.sh execution failed: {result.script_exec_error}")
+        raw = result.reward_bytes.decode(errors="ignore").strip()
         try:
-            reward = float(result.reward_bytes.decode(errors="ignore").strip().split("\n")[-1])
+            reward = float(raw.split("\n")[-1])
+            if not math.isfinite(reward):
+                # nan and inf are not scores. Clamping them silently awards a
+                # PERFECT 1.0 -- every comparison with nan is False, so
+                # ``max(0.0, min(1.0, nan))`` returns 1.0 -- which would turn a
+                # corrupt reward file into a full pass.
+                raise ValueError(f"reward is not a finite number: {reward!r}")
             reward = max(0.0, min(1.0, reward))
         except (ValueError, IndexError):
+            if cfg.require_reward:
+                # The suite ran; its verdict did not land. Scoring that 0.0
+                # reports a number for a measurement that never happened, and
+                # reads as a model failure. Refuse it instead, as an exec
+                # failure already is.
+                raise GraderKindRefusedError(
+                    "test-execution reward is missing or unparseable at "
+                    f"{cfg.reward_path!r} (read {raw!r}); the verifier produced no "
+                    "verdict, so this trial is ungradeable. Common cause: the "
+                    "verifier could not write the reward because it ran as the "
+                    "wrong user — see the kind's 'user' setting."
+                ) from None
             reward = 0.0
         return Grade(
             binary_pass=(reward >= 0.5),

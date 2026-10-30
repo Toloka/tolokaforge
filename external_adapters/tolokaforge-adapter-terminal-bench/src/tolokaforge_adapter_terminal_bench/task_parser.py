@@ -109,6 +109,23 @@ class TerminalBenchTask:
     :class:`~tolokaforge.core.grading.kinds.TestExecutionKindConfig` only when
     the task actually asked for it.
     """
+    agent_user: str | None = None
+    """Unix user the agent's shell runs as, from ``[agent] user``.
+
+    ``None`` means the task declared none and the agent keeps the image's
+    ``USER``. A task that names one is drawing a privilege boundary — it
+    expects the agent to be unable to reach what that user cannot.
+    """
+    verifier_user: str | None = None
+    """Unix user the verifier runs as, from ``[verifier] user``.
+
+    ``None`` means the task declared none. A task that names one — almost
+    always ``root`` — needs its suite to outrank the agent, so it can read an
+    oracle the agent must not see and write a reward the agent must not be able
+    to forge. Dropping this field is not cosmetic: the suite then runs as the
+    agent, and on a pack that seals its reward directory the write fails and
+    every trial of that task scores zero no matter what the agent did.
+    """
     cpus: float = 2
     memory_mb: int = 4096
     environment_mode: str | None = None
@@ -242,6 +259,26 @@ def _parse_verifier_timeout(task_id: str, data: Mapping[str, Any]) -> float | No
             f"than zero; got {declared!r}."
         )
     return float(declared)
+
+
+def _parse_user(task_id: str, section: Mapping[str, Any], section_name: str) -> str | None:
+    """The ``user`` a ``[agent]`` / ``[verifier]`` section declares, if any.
+
+    Refused unless it is a non-empty string: a user that cannot be rendered
+    into ``docker exec --user`` would otherwise be dropped silently, which is
+    the failure mode this field exists to end.
+    """
+    user = section.get("user")
+    if user is None:
+        return None
+    if not isinstance(user, str) or not user.strip():
+        raise ValueError(
+            f"terminal-bench task {task_id!r}: {section_name}.user must be a non-empty "
+            f"string; got {user!r}."
+        )
+    # Returned stripped: surrounding whitespace is a typo, and ``--user ' root '``
+    # is refused by docker with an error that names neither the task nor the key.
+    return user.strip()
 
 
 def _parse_artifacts(task_id: str, toml_data: Mapping[str, Any]) -> list[TerminalBenchArtifact]:
@@ -430,6 +467,8 @@ def parse_task_dir(task_dir: Path) -> TerminalBenchTask:
         tags=metadata.get("tags", []),
         agent_timeout_sec=agent.get("timeout_sec", 1800.0),
         verifier_timeout_sec=_parse_verifier_timeout(task_id, verifier),
+        agent_user=_parse_user(task_id, agent, "agent"),
+        verifier_user=_parse_user(task_id, verifier, "verifier"),
         cpus=environment.get("cpus", 2),
         memory_mb=environment.get("memory_mb", 4096),
         environment_mode=environment_mode,
