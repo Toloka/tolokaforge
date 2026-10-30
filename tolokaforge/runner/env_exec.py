@@ -21,6 +21,7 @@ from typing import Any, Protocol, runtime_checkable
 __all__ = [
     "SupportsEnvExec",
     "SupportsServiceResolution",
+    "SupportsUserOverride",
     "exec_tool_for_service",
     "first_env_exec_tool",
 ]
@@ -78,6 +79,27 @@ class SupportsServiceResolution(SupportsEnvExec, Protocol):
 
     def for_service(self, service: str) -> SupportsServiceResolution:
         """A sibling executor bound to another service of the same per-trial stack."""
+        ...
+
+
+@runtime_checkable
+class SupportsUserOverride(SupportsEnvExec, Protocol):
+    """A per-trial executor that can mint a sibling running as a chosen user.
+
+    A pack may declare that its verifier runs as a different user than its
+    agent — typically ``root``, so the suite can read an oracle the agent must
+    not see and write a reward the agent must not be able to forge. Grading
+    needs an executor with that identity without disturbing the agent's own
+    session, so the capability is a sibling-minting seam, like
+    :class:`SupportsServiceResolution`, rather than a setter.
+
+    Offered structurally: grading accepts any implementer, and a tool that does
+    not implement it simply cannot honour a user request — which the caller
+    reports rather than silently grading as the wrong user.
+    """
+
+    def for_user(self, user: str) -> SupportsUserOverride:
+        """A sibling executor on the same container, running as *user*."""
         ...
 
 

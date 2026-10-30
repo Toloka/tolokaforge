@@ -179,6 +179,8 @@ class LiveRunnerCallbackGradingSubstrate:
         timeout_s: float,
         reward_read_timeout_s: float,
         service: str | None = None,
+        user: str | None = None,
+        require_reward: bool = False,
     ) -> RunTestSuiteResult:
         return self._client.run_test_suite(
             script_path=script_path,
@@ -186,6 +188,8 @@ class LiveRunnerCallbackGradingSubstrate:
             timeout_s=timeout_s,
             reward_read_timeout_s=reward_read_timeout_s,
             service=service,
+            user=user,
+            require_reward=require_reward,
         )
 
     def materialise_path(

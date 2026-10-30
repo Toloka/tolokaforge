@@ -209,3 +209,61 @@ def test_malformed_collect_raises(tmp_path: Path, collect_block: str) -> None:
     _write_task(tmp_path, "badc", toml, tests_dockerfile=True)
     with pytest.raises(ValueError):
         discover_tasks(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# [agent] user / [verifier] user
+#
+# Until 2026-10-30 both keys were read into the toml dict and then dropped, so
+# the verifier ran as whatever the task image's USER happened to be. On the
+# TBench Arena delivery — which seals its reward directory against the agent
+# and declares `[verifier] user = "root"` — that meant the reward write failed
+# with EACCES and 77 of 100 tasks scored zero whatever the agent did.
+# ---------------------------------------------------------------------------
+
+_USERS_TOML = """
+[metadata]
+difficulty = "hard"
+
+[agent]
+timeout_sec = 1800.0
+user = "clerk"
+
+[verifier]
+timeout_sec = 600.0
+user = "root"
+"""
+
+
+def test_declared_users_are_parsed(tmp_path: Path) -> None:
+    _write_task(tmp_path, "with-users", _USERS_TOML)
+    task = discover_tasks(tmp_path)["with-users"]
+
+    assert task.agent_user == "clerk"
+    assert task.verifier_user == "root"
+
+
+def test_absent_users_stay_none(tmp_path: Path) -> None:
+    """A task that declares neither keeps the image's USER for both."""
+    _write_task(tmp_path, "no-users", _V21_TOML)
+    task = discover_tasks(tmp_path)["no-users"]
+
+    assert task.agent_user is None
+    assert task.verifier_user is None
+
+
+@pytest.mark.parametrize("bad", ["123", '""', "true"])
+def test_a_user_that_is_not_a_non_empty_string_is_refused(tmp_path: Path, bad: str) -> None:
+    """Refused loudly rather than dropped.
+
+    Silently ignoring an unusable value is the behaviour that hid the original
+    defect; a user that cannot be rendered into ``docker exec --user`` has to
+    stop the run instead.
+    """
+    _write_task(
+        tmp_path,
+        "bad-user",
+        f'[metadata]\ndifficulty = "easy"\n\n[verifier]\nuser = {bad}\n',
+    )
+    with pytest.raises(ValueError, match="verifier.user"):
+        discover_tasks(tmp_path)
