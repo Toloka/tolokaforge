@@ -1161,13 +1161,15 @@ class TrialReplayOutcome:
 def build_replay_grade(result: JudgeResult) -> Grade:
     """Materialise a persistable :class:`Grade` from a replay :class:`JudgeResult`.
 
-    Judge-only: the ``llm_judge`` component carries the replay score; an ``ERRORED``
-    judge leaves it unscored (the ``-1.0`` sentinel), never a fabricated ``0.0``.
-    Echoes the judge's own transcript, KB gating, and structured ``judge_inputs`` so
-    the replay bundle is itself a full, re-replayable bundle.
+    Judge-only: the ``llm_judge`` component carries the replay score after the
+    required-criterion gate, as a live grade's does; an ``ERRORED`` judge leaves it
+    unscored (the ``-1.0`` sentinel), never a fabricated ``0.0``. Echoes the judge's own
+    transcript, KB gating, and structured ``judge_inputs`` so the replay bundle is itself
+    a full, re-replayable bundle.
     """
     completed = result.status is JudgeRunStatus.COMPLETED
-    score = result.score if (completed and result.score is not None) else 0.0
+    gated = _gated_judge_score(result)
+    score = gated if gated is not None else 0.0
     return Grade(
         binary_pass=bool(result.binary_pass) if completed else False,
         score=score,
@@ -1198,6 +1200,15 @@ def build_replay_grade(result: JudgeResult) -> Grade:
         judge_agent_prompt_included=result.include_agent_system_prompt,
         judge_evidence="transcript" if result.evidence == "transcript" else None,
     )
+
+
+def _gated_judge_score(result: JudgeResult) -> float | None:
+    """The judge component a live grade records for *result*: its score, zeroed when a
+    required criterion failed (:func:`~tolokaforge.core.grading.composite_fold.compose_trial_verdict`
+    applies the same gate), ``None`` when the judge produced no score."""
+    if result.status is not JudgeRunStatus.COMPLETED or result.score is None:
+        return None
+    return 0.0 if result.gate_failed else result.score
 
 
 def _replay_destination(source: Path, bundle: Path, replay_id: str) -> Path:
@@ -1517,7 +1528,7 @@ def _compare_trial(
     bundle_key: str, original: dict[str, Any], result: JudgeResult
 ) -> TrialComparison:
     replay_completed = result.status is JudgeRunStatus.COMPLETED
-    replay_score = result.score if (replay_completed and result.score is not None) else None
+    replay_score = _gated_judge_score(result)
     original_component = _optional_component((original.get("components") or {}).get("llm_judge"))
     original_criteria = original.get("criterion_results")
 

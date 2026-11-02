@@ -316,8 +316,11 @@ batch's census instead.
   per-criterion `met_agrees` and `score_delta`.
 - **Agreement rate** — the fraction of criteria whose `met` matches, computed over
   **`comparable`** trials only (both sides produced per-criterion verdicts).
-- **Aggregate `llm_judge` delta** — mean replay score minus mean recorded
-  `llm_judge` component, over comparable trials. Non-judge components (state
+- **Aggregate `llm_judge` delta** — mean replay `llm_judge` component minus mean
+  recorded one, over comparable trials. Both sides read the component after the
+  required-criterion gate: a trial whose required criterion is NOT MET carries `0.0`,
+  in the replay grade as in the live one, so two judges agreeing on every criterion
+  show no delta. Non-judge components (state
   checks, transcript rules) are **carried** from the recorded grade, not
   recomputed — the report says so.
 - **Judge-only usage + cost** — summed across the replayed trials.

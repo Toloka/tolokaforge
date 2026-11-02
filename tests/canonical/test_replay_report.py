@@ -200,3 +200,46 @@ def test_replay_report_snapshot(tmp_path: Path, canon_snapshot) -> None:
     assert len(report.trials) == 5
 
     canon_snapshot("replay_report").assert_match(report.model_dump(mode="json"), "report.json")
+
+
+def test_a_required_gate_both_judges_failed_is_no_delta(tmp_path: Path) -> None:
+    """The live grade records the judge component after the required-criterion gate,
+    so the replay is compared through the same gate: a failed required criterion with
+    every graded one met is 0.0 on both sides, not a +1.0 delta over full agreement."""
+    source = tmp_path / "run"
+    criteria = [
+        ("checked_first", False, 0.0),
+        ("note_saved", True, 1.0),
+    ]
+    bundle = _write_original(
+        source,
+        "gated",
+        status=ModelJudgeStatus.COMPLETED,
+        criteria=[
+            ModelCriterionResult(id=cid, met=met, score=score, justification="j")
+            for cid, met, score in criteria
+        ],
+        llm_judge=0.0,
+    )
+    replayed = JudgeResult(
+        status=JudgeStatus.COMPLETED,
+        usage=_usage(),
+        reasons="replayed",
+        score=1.0,
+        binary_pass=False,
+        gate_failed=True,
+        failed_required_ids=("checked_first",),
+        criterion_results=tuple(
+            CriterionResult(id=cid, met=met, score=score, justification="j")
+            for cid, met, score in criteria
+        ),
+    )
+
+    report = build_replay_report([_outcome(bundle, replayed)], source=source, replay_id="gate")
+
+    assert report is not None
+    assert report.agreement_rate == 1.0
+    (trial,) = report.trials
+    assert trial.replay_llm_judge == 0.0
+    assert trial.llm_judge_delta == 0.0
+    assert report.aggregate_llm_judge_delta == 0.0
