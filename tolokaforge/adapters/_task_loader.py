@@ -51,7 +51,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -78,6 +78,7 @@ from tolokaforge.core.grading.config_validation import (
     SkipKind,
     ToolInventory,
     authored_hash_block,
+    check_project_read_only_call_names,
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.state_composition import (
@@ -105,6 +106,8 @@ from tolokaforge.core.models import (
 from tolokaforge.core.project_loader import (
     construct_config,
     deep_merge,
+    load_project_config,
+    project_judge_customization,
     resolve_effective_grading_combine,
 )
 from tolokaforge.core.tool_output_truncation import validated_output_max_chars
@@ -1095,6 +1098,53 @@ def tool_inventory_under_adapter(
     if resolved is None:
         return ToolInventory.unresolvable(kind=SkipKind.STRUCTURAL)
     return resolved.grading_tool_inventory(task, task_dir)
+
+
+def inspect_project_read_only_calls(project_yaml: Path) -> AuthoringReport:
+    """Check a project's own ``read_only_calls`` rules against every task it discovers.
+
+    The project's tasks are the files its ``tasks.discovery.glob`` matches, each loaded
+    under the project's defaults and read under its own adapter. A task that does not
+    load leaves the rules unchecked rather than refused: its tools are unknown, and
+    the per-task gates report why it does not load.
+    """
+    project = load_project_config(project_yaml)
+    task_defaults = project.task_defaults.model_dump(exclude_defaults=True) or None
+    if not project_read_only_calls(task_defaults):
+        return AuthoringReport()
+    tasks: list[tuple[TaskConfig, Path] | None] = []
+    for task_file in sorted(project_yaml.parent.glob(project.tasks.discovery.glob)):
+        try:
+            tasks.append(load_task_yaml(task_file, project_task_defaults=task_defaults))
+        except (ValueError, RuntimeError, OSError, yaml.YAMLError):
+            tasks.append(None)
+    return inspect_read_only_calls_over_tasks(task_defaults, tasks)
+
+
+def inspect_read_only_calls_over_tasks(
+    task_defaults: Mapping[str, Any] | None, tasks: Sequence[tuple[TaskConfig, Path] | None]
+) -> AuthoringReport:
+    """Check a project's own ``read_only_calls`` rules against *tasks*, each read
+    under its own adapter. ``None`` is a task that did not load: the rules stay
+    unchecked, since the tool may be its."""
+    if not project_read_only_calls(task_defaults):
+        return AuthoringReport()
+    inventories: list[ToolInventory] = []
+    for loaded in tasks:
+        if loaded is None:
+            inventories.append(ToolInventory.unresolvable(kind=SkipKind.STRUCTURAL))
+            continue
+        task, task_dir = loaded
+        inventories.append(tool_inventory_under_adapter(task, task_dir, task.adapter_type))
+    return check_project_read_only_call_names(
+        project_judge_customization(task_defaults), inventories
+    )
+
+
+def project_read_only_calls(task_defaults: Mapping[str, Any] | None) -> bool:
+    """Whether a project's ``task_defaults`` declare ``read_only_calls`` rules of their own."""
+    customization = project_judge_customization(task_defaults)
+    return bool(customization and customization.get("read_only_calls"))
 
 
 def replay_world_under_adapter(task: TaskConfig, task_dir: Path, adapter_type: str) -> ReplayWorld:

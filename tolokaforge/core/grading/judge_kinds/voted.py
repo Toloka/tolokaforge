@@ -288,6 +288,7 @@ def _merge_sample_results(
         include_agent_system_prompt=head.include_agent_system_prompt,
         read_tools_offered=head.read_tools_offered,
         state_diff=head.state_diff,
+        evidence=head.evidence,
         agent_read_only_tools=head.agent_read_only_tools,
         transcript=tuple(turn for cr in sample_results for turn in cr.transcript),
     )

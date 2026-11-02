@@ -397,14 +397,13 @@ message JudgeReport {
   // upstream's bill on a BYOK call). Absent unless every call stated one;
   // cost_usd stays the eval's own figure either way.
   optional double billed_cost_usd = 17;
-  // For a transcript judge (grading.llm_judge.customization.evidence:
-  // transcript): the agent tools it read as unable to change state, those
-  // declaring mutates_state: false. Empty for a judge over the final state.
-  // Offline replay rebuilds the judge's list of state-changing calls from it.
+  // The agent tools declaring mutates_state: false, for every judge. A
+  // transcript judge (grading.llm_judge.customization.evidence: transcript)
+  // does not list their calls as state-changing; an offline replay as a
+  // transcript judge rebuilds that list from this field.
   repeated string agent_read_only_tools = 18;
   // "transcript" when a transcript judge graded the trial; absent for a judge
-  // over the final state. Tells a transcript judge whose agent declared no
-  // read-only tool (an empty agent_read_only_tools) from a state judge.
+  // over the final state.
   optional string judge_evidence = 19;
 }
 

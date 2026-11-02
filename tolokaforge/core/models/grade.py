@@ -112,9 +112,10 @@ class JudgeInputs(BaseModel):
     non-KB read-tool surface (``get_db_state`` / ``query_db`` / ``read_file`` — the
     KB surface lives in :class:`JudgeKbGating`). Written to a sidecar
     ``judge_inputs.yaml``, never inlined in ``grade.yaml`` (the diff can be large).
-    ``agent_read_only_tools`` is, for a transcript judge only, the agent tools it
-    read as unable to change state (their ``mutates_state: false`` is not in the
-    bundle); left out of the dump for any other judge.
+    ``agent_read_only_tools`` are the agent tools that declare ``mutates_state:
+    false`` (the declaration is not in the bundle), recorded for every judge so a
+    replay as a transcript judge tells reads from state changes. ``None`` (left out
+    of the dump) is a bundle that recorded none; a transcript replay refuses it.
     See docs/OUTPUT_FORMAT.md.
     """
 

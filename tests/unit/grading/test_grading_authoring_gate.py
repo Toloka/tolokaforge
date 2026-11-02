@@ -76,6 +76,7 @@ from tolokaforge.core.grading.config_validation import (
     _authored_hash_is_a_state_source,
     _BoundTypeSource,
     _is_a_string_at_runtime,
+    check_project_read_only_call_names,
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.golden_replay import (
@@ -4984,3 +4985,47 @@ def test_a_binary_criterion_without_expected_is_silent() -> None:
     assert report.hints == ()
     assert report.errors == ()
     assert report.advisories == ()
+
+
+# ---------------------------------------------------------------------------
+# A project's read_only_calls rules, across its tasks
+# ---------------------------------------------------------------------------
+
+
+def _project_rules(*tools: str) -> dict[str, Any]:
+    return {"evidence": "transcript", "read_only_calls": [{"tool": tool} for tool in tools]}
+
+
+def test_a_project_rule_for_a_tool_only_one_task_declares_passes() -> None:
+    """A rule may be meant for some of the project's tasks: ``http_request`` is the
+    helpdesk task's tool, and the notes task has none."""
+    report = check_project_read_only_call_names(
+        _project_rules("http_request", "list_notes"), [_inventory(_HELPDESK), _inventory(_NOTES)]
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_a_project_rule_no_task_declares_the_tool_of_is_refused() -> None:
+    report = check_project_read_only_call_names(
+        _project_rules("list_notes", "lisst_notes"), [_inventory(_HELPDESK), _inventory(_NOTES)]
+    )
+
+    (finding,) = report.errors
+    assert finding.where == (
+        "task_defaults.grading_defaults.llm_judge.customization.read_only_calls[1].tool"
+    )
+    assert "tool 'lisst_notes' is declared for the agent by no task of this project" in (
+        finding.message
+    )
+
+
+def test_a_project_rule_is_unchecked_while_a_tasks_tools_are_unknown() -> None:
+    report = check_project_read_only_call_names(
+        _project_rules("lisst_notes"), [_inventory(_NOTES), ToolInventory.unresolvable()]
+    )
+
+    assert report.errors == ()
+    assert [skip.where for skip in report.unchecked] == [
+        "task_defaults.grading_defaults.llm_judge.customization.read_only_calls"
+    ]

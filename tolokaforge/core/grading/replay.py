@@ -814,21 +814,27 @@ _EVIDENCE_FIELDS = ("evidence", "transcript_tool_chars", "read_only_calls")
 
 
 def _transcript_evidence(
-    customization: JudgeCustomization | None, judge_inputs: JudgeInputs | None
+    customization: JudgeCustomization | None,
+    judge_inputs: JudgeInputs | None,
+    trial_dir: Path,
 ) -> TranscriptEvidence | None:
     """The replayed transcript judge's reading, ``None`` for a judge over the state.
 
-    The read-only tools come from the recorded ``judge_inputs.yaml``: the schemas
-    that declare them are not in the bundle. A bundle that recorded none (a judge
-    over the state replayed as a transcript judge) reads every call as one that
-    can change state, unless a ``read_only_calls`` rule marks it.
+    Raises:
+        MissingReplayInputError: the bundle recorded no ``agent_read_only_tools``.
+            A transcript judge needs them to tell reads from state changes, and the
+            schemas that declare them are not in the bundle.
     """
     if customization is None or customization.evidence != "transcript":
         return None
-    recorded = judge_inputs.agent_read_only_tools if judge_inputs is not None else None
+    if judge_inputs is None or judge_inputs.agent_read_only_tools is None:
+        raise MissingReplayInputError(
+            f"{trial_dir / JUDGE_INPUTS_FILENAME} records no agent_read_only_tools, so a "
+            "transcript judge cannot tell the agent's reads from its state changes; "
+            "re-run the trial to record them"
+        )
     return TranscriptEvidence(
         tool_result_chars=customization.transcript_tool_chars,
-        read_only_tools=frozenset(recorded or ()),
         read_only_calls=tuple(customization.read_only_calls),
     )
 
@@ -981,7 +987,10 @@ def read_replay_inputs(
 
     state_diff = judge_inputs.state_diff_text if judge_inputs is not None else None
     fidelity_mode = FidelityMode.FULL if judge_inputs is not None else FidelityMode.FALLBACK
-    transcript_evidence = _transcript_evidence(evidence_customization, judge_inputs)
+    transcript_evidence = _transcript_evidence(evidence_customization, judge_inputs, trial_dir)
+    agent_read_only_tools = frozenset(
+        (judge_inputs.agent_read_only_tools or ()) if judge_inputs is not None else ()
+    )
     if transcript_evidence is not None:
         # A transcript judge sees no view of the final state, whatever the bundle
         # recorded for a judge over it: only knowledge-search shims stay.
@@ -1025,6 +1034,7 @@ def read_replay_inputs(
             include_agent_system_prompt=include_agent_system_prompt,
             judge_snippet_chars=judge_snippet_chars,
             transcript_evidence=transcript_evidence,
+            agent_read_only_tools=agent_read_only_tools,
         ),
         explicit_system_prompt=explicit_system_prompt,
         judge_kind=judge_kind,
@@ -1074,6 +1084,7 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
             include_agent_system_prompt=inputs.options.include_agent_system_prompt,
             judge_snippet_chars=inputs.options.judge_snippet_chars,
             transcript_evidence=inputs.options.transcript_evidence,
+            agent_read_only_tools=inputs.options.agent_read_only_tools,
             llm_client=judge_client,
         )
         return judge.run(
@@ -1181,11 +1192,7 @@ def build_replay_grade(result: JudgeResult) -> Grade:
         judge_inputs=JudgeInputs(
             state_diff_text=result.state_diff,
             read_tools_offered=list(result.read_tools_offered),
-            agent_read_only_tools=(
-                list(result.agent_read_only_tools)
-                if result.agent_read_only_tools is not None
-                else None
-            ),
+            agent_read_only_tools=list(result.agent_read_only_tools),
         ),
         judge_custom_prompt=result.custom_system_prompt,
         judge_agent_prompt_included=result.include_agent_system_prompt,

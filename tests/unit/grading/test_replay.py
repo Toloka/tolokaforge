@@ -1346,7 +1346,7 @@ def test_a_recorded_transcript_judge_replays_without_the_state(tmp_path: Path) -
     evidence = inputs.options.transcript_evidence
     assert evidence is not None
     assert evidence.tool_result_chars == 500
-    assert evidence.read_only_tools == frozenset({"lookup_policy"})
+    assert inputs.options.agent_read_only_tools == frozenset({"lookup_policy"})
     assert [rule.tool for rule in evidence.read_only_calls] == ["get_order"]
     assert inputs.db_reader is None and inputs.state_diff is None
     assert inputs.provenance.judge_evidence == "transcript"
@@ -1359,9 +1359,18 @@ def test_a_recorded_transcript_judge_replays_without_the_state(tmp_path: Path) -
     assert result.agent_read_only_tools == ("lookup_policy",)
 
 
-def test_an_override_turns_a_state_bundle_into_a_transcript_replay(tmp_path: Path) -> None:
+def _transcript_override() -> GradingOverride:
     from tolokaforge.runner.models import JudgeCustomization
 
+    return dataclasses.replace(
+        _grading_override(),
+        evidence_customization=JudgeCustomization.model_validate(_TRANSCRIPT_EVIDENCE),
+    )
+
+
+def test_an_override_turns_a_state_bundle_into_a_transcript_replay(tmp_path: Path) -> None:
+    """A state judge records its agent's read-only tools, so the transcript replay of its
+    trial lists the same calls as state-changing as a live transcript judge would."""
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
         trial_dir,
@@ -1369,20 +1378,31 @@ def test_an_override_turns_a_state_bundle_into_a_transcript_replay(tmp_path: Pat
         judge_inputs=JudgeInputs(
             state_diff_text="orders[O-1]: refunded false -> true",
             read_tools_offered=["get_db_state", "query_db", "read_file"],
+            agent_read_only_tools=["lookup_policy"],
         ),
     )
-    override = dataclasses.replace(
-        _grading_override(),
-        evidence_customization=JudgeCustomization.model_validate(_TRANSCRIPT_EVIDENCE),
-    )
 
-    inputs = read_replay_inputs(trial_dir, grading_override=override)
+    inputs = read_replay_inputs(trial_dir, grading_override=_transcript_override())
 
     assert inputs.provenance.judge_evidence_source is ProvenanceSource.OVERRIDE
     assert inputs.options.transcript_evidence is not None
-    assert inputs.options.transcript_evidence.read_only_tools == frozenset()
+    assert inputs.options.agent_read_only_tools == frozenset({"lookup_policy"})
     assert inputs.db_reader is None and inputs.state_diff is None
     assert inputs.extra_read_tools == []
+
+
+def test_a_bundle_recording_no_read_only_tools_is_refused_a_transcript_replay(
+    tmp_path: Path,
+) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=["get_db_state", "query_db"]),
+    )
+
+    with pytest.raises(MissingReplayInputError, match="records no agent_read_only_tools"):
+        read_replay_inputs(trial_dir, grading_override=_transcript_override())
 
 
 def test_a_state_bundle_replays_as_a_state_judge(tmp_path: Path) -> None:
@@ -1441,6 +1461,7 @@ def test_forcing_a_transcript_replay_keeps_the_recorded_read_rules(tmp_path: Pat
         judge_inputs=JudgeInputs(
             state_diff_text="orders[O-1]: refunded false -> true",
             read_tools_offered=["get_db_state", "query_db"],
+            agent_read_only_tools=["lookup_policy"],
         ),
         recorded_customization={"read_only_calls": [{"tool": "get_order"}]},
     )
@@ -1453,6 +1474,7 @@ def test_forcing_a_transcript_replay_keeps_the_recorded_read_rules(tmp_path: Pat
     evidence = forced.options.transcript_evidence
     assert evidence is not None
     assert [rule.tool for rule in evidence.read_only_calls] == ["get_order"]
+    assert forced.options.agent_read_only_tools == frozenset({"lookup_policy"})
     assert forced.db_reader is None and forced.state_diff is None
     assert forced.provenance.judge_evidence == "transcript"
     assert forced.provenance.judge_evidence_source is ProvenanceSource.OVERRIDE

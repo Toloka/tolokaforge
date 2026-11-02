@@ -39,7 +39,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
 from tolokaforge.core.grading.judge_model_provider import JudgeModel
@@ -511,6 +511,7 @@ def _build_transcript_opening_message(
     numbered: NumberedTranscript,
     evidence: TranscriptEvidence,
     *,
+    read_only_tools: frozenset[str],
     include_agent_system_prompt: bool = True,
 ) -> str:
     """The opening message of a transcript judge: no view of the final state.
@@ -520,7 +521,7 @@ def _build_transcript_opening_message(
     each with how it ended, so the judge reads what the agent did and wrote without
     the state it left. ``show_call`` returns a cut result in full.
     """
-    calls = state_changing_calls(numbered, evidence)
+    calls = state_changing_calls(numbered, evidence, read_only_tools=read_only_tools)
     call_lines = (
         "\n".join(_state_changing_call_line(call) for call in calls)
         if calls
@@ -738,6 +739,9 @@ class LLMJudge:
     transcript and the agent's state-changing calls, and gets ``show_call``.
     :meth:`run` refuses a DB reader, workspace or state diff for it — the caller
     withholds the final state, so a view of it reaching the judge is a caller bug.
+    ``agent_read_only_tools`` are the agent tools declaring ``mutates_state: false``:
+    a transcript judge does not list their calls as state-changing, and every judge
+    records them so a replay as a transcript judge can.
     """
 
     def __init__(
@@ -753,6 +757,7 @@ class LLMJudge:
         include_agent_system_prompt: bool = True,
         judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
         transcript_evidence: TranscriptEvidence | None = None,
+        agent_read_only_tools: frozenset[str] = frozenset(),
         llm_client: JudgeModel | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
@@ -775,6 +780,7 @@ class LLMJudge:
         self._include_agent_system_prompt = include_agent_system_prompt
         self._judge_snippet_chars = judge_snippet_chars
         self._transcript_evidence = transcript_evidence
+        self._agent_read_only_tools = tuple(sorted(agent_read_only_tools))
         self._llm_client = llm_client
         self._logger = logger
 
@@ -813,12 +819,13 @@ class LLMJudge:
         evidence = self._transcript_evidence
         numbered: NumberedTranscript | None = None
         show_call: ShowCallTool | None = None
-        agent_read_only_tools: tuple[str, ...] | None = None
         if evidence is not None:
             _refuse_state_for_transcript_judge(db_reader, workspace_dir, state_diff)
             numbered = number_tool_results(transcript, tool_result_chars=evidence.tool_result_chars)
             show_call = ShowCallTool(numbered, tool_result_chars=evidence.tool_result_chars)
-            agent_read_only_tools = tuple(sorted(evidence.read_only_tools))
+        evidence_mode: Literal["state", "transcript"] = (
+            "state" if evidence is None else "transcript"
+        )
         metrics = _JudgeMetricsSink()
         guarded_reader = _RefusalRecordingDBReader(db_reader) if db_reader is not None else None
 
@@ -864,6 +871,7 @@ class LLMJudge:
                 agent_system_prompt,
                 numbered,
                 evidence,
+                read_only_tools=frozenset(self._agent_read_only_tools),
                 include_agent_system_prompt=self._include_agent_system_prompt,
             )
             if numbered is not None and evidence is not None
@@ -902,7 +910,8 @@ class LLMJudge:
                     include_agent_system_prompt=self._include_agent_system_prompt,
                     read_tools_offered=read_tools_offered,
                     state_diff=state_diff,
-                    agent_read_only_tools=agent_read_only_tools,
+                    evidence=evidence_mode,
+                    agent_read_only_tools=self._agent_read_only_tools,
                 )
 
             if guarded_reader is not None:
@@ -922,7 +931,8 @@ class LLMJudge:
                     include_agent_system_prompt=self._include_agent_system_prompt,
                     read_tools_offered=read_tools_offered,
                     state_diff=state_diff,
-                    agent_read_only_tools=agent_read_only_tools,
+                    evidence=evidence_mode,
+                    agent_read_only_tools=self._agent_read_only_tools,
                 )
 
             try:
@@ -949,7 +959,8 @@ class LLMJudge:
                         include_agent_system_prompt=self._include_agent_system_prompt,
                         read_tools_offered=read_tools_offered,
                         state_diff=state_diff,
-                        agent_read_only_tools=agent_read_only_tools,
+                        evidence=evidence_mode,
+                        agent_read_only_tools=self._agent_read_only_tools,
                     )
                 logger.warning(
                     "Judge submit_report invalid; re-prompting", attempt=attempts, error=str(exc)
@@ -998,7 +1009,8 @@ class LLMJudge:
                 include_agent_system_prompt=self._include_agent_system_prompt,
                 read_tools_offered=read_tools_offered,
                 state_diff=state_diff,
-                agent_read_only_tools=agent_read_only_tools,
+                evidence=evidence_mode,
+                agent_read_only_tools=self._agent_read_only_tools,
                 transcript=_serialize_judge_transcript(messages),
             )
 
@@ -1034,7 +1046,8 @@ def _build_errored_judge_result(
     include_agent_system_prompt: bool,
     read_tools_offered: tuple[str, ...],
     state_diff: str | None,
-    agent_read_only_tools: tuple[str, ...] | None = None,
+    evidence: Literal["state", "transcript"],
+    agent_read_only_tools: tuple[str, ...],
 ) -> JudgeResult:
     """Build a fail-loud ERRORED result — no score, no criterion results.
 
@@ -1058,6 +1071,7 @@ def _build_errored_judge_result(
         include_agent_system_prompt=include_agent_system_prompt,
         read_tools_offered=read_tools_offered,
         state_diff=state_diff,
+        evidence=evidence,
         agent_read_only_tools=agent_read_only_tools,
         transcript=_serialize_judge_transcript(messages),
     )

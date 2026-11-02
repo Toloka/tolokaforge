@@ -2804,7 +2804,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     kb_tools_withheld=list(judge_result.kb_tools_withheld),
                     state_diff_text=judge_result.state_diff or "",
                     read_tools_offered=list(judge_result.read_tools_offered),
-                    agent_read_only_tools=list(judge_result.agent_read_only_tools or ()),
+                    agent_read_only_tools=list(judge_result.agent_read_only_tools),
                     # optional: set only for a transcript judge, absent for a state judge
                     judge_evidence=(
                         "transcript" if judge_result.evidence == "transcript" else None

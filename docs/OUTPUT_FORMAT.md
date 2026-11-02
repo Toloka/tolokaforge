@@ -1820,11 +1820,11 @@ read_tools_offered:
   and `read_file` (a workspace existed). The KB read surface lives in
   `grade.yaml` `judge_kb_gating`. A replay declares which of these live
   backends it must shim offline.
-* `agent_read_only_tools` — written only for a
-  [transcript-only judge](GRADING.md#transcript-only-judge): the agent tools it
-  read as unable to change state (those declaring `mutates_state: false`), whose
-  declarations the bundle does not carry. A replay rebuilds the judge's list of
-  state-changing calls from it. Absent for a judge over the state.
+* `agent_read_only_tools` — the agent tools declaring `mutates_state: false`,
+  whose declarations the bundle does not carry. Written for every judge: a
+  [transcript-only judge](GRADING.md#transcript-only-judge) does not list their
+  calls as state-changing, and a replay as a transcript judge — of either mode's
+  trial — rebuilds that list from it.
 
 ## `trials/{task_id}/{trial_index}/logs.yaml`
 

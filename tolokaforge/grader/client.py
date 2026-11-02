@@ -219,6 +219,7 @@ def _judge_report_from_wire(report: grader_pb2.JudgeReport) -> dict:
         "kb_tools_withheld": list(report.kb_tools_withheld),
         "state_diff_text": report.state_diff_text,
         "read_tools_offered": list(report.read_tools_offered),
+        "agent_read_only_tools": list(report.agent_read_only_tools),
         "custom_system_prompt": report.custom_system_prompt,
     }
     if report.transcript_json:
@@ -231,8 +232,7 @@ def _judge_report_from_wire(report: grader_pb2.JudgeReport) -> dict:
     # Presence-gated too: absent means not every judge call stated a charge.
     if report.HasField("billed_cost_usd"):
         out["billed_cost_usd"] = report.billed_cost_usd
-    # Only a transcript judge sets these, so a judge over the state reads as before.
+    # Only a transcript judge sets it: absent for a judge over the state.
     if report.HasField("judge_evidence"):
         out["judge_evidence"] = report.judge_evidence
-        out["agent_read_only_tools"] = list(report.agent_read_only_tools)
     return out

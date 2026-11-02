@@ -67,6 +67,7 @@ from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
     construct_config,
     project_grading_combine,
+    project_judge_customization,
     resolve_effective_grading_combine,
     resolve_effective_judge_customization,
 )
@@ -727,14 +728,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         return project_grading_combine(self._project_task_defaults)
 
     def _project_judge_customization_defaults(self) -> dict[str, Any] | None:
-        """The project's ``task_defaults.grading_defaults.llm_judge.customization``
-        sub-dict, the base layer under each task's own
-        ``grading.yaml.llm_judge.customization``. ``None`` when unset."""
-        return (
-            self._project_task_defaults.get("grading_defaults", {})
-            .get("llm_judge", {})
-            .get("customization")
-        )
+        return project_judge_customization(self._project_task_defaults)
 
     def reset_environment(self, env: AdapterEnvironment) -> None:
         """Reset environment to initial state by reloading data"""

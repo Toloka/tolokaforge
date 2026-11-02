@@ -11,13 +11,13 @@ module derives from the transcript alone:
 * ``show_call`` — :class:`ShowCallTool`, which returns the full results the cut
   hides, read from the same transcript.
 
-All three are pure functions of the transcript and :class:`TranscriptEvidence`, so
-an offline replay that rebuilds the transcript and the options rebuilds the judge's
-whole view: ``show_call`` needs no live backend and is never shimmed.
+All three are pure functions of the transcript, :class:`TranscriptEvidence` and
+the agent's read-only tools, so an offline replay that rebuilds the transcript and
+the options rebuilds the judge's whole view: ``show_call`` needs no live backend and
+is never shimmed.
 
-A call can change state unless its tool is in
-:attr:`TranscriptEvidence.read_only_tools` (the agent tools that declare
-``mutates_state: false``, ADR-0061) or it matches one of
+A call can change state unless its tool is one of the agent's read-only tools (the
+agent tools that declare ``mutates_state: false``, ADR-0061) or it matches one of
 :attr:`TranscriptEvidence.read_only_calls` (the task's
 :class:`~tolokaforge.runner.models.ReadOnlyCallRule` list). An undeclared tool
 reads as one that can change state, as ADR-0061 prescribes.
@@ -84,17 +84,13 @@ class TranscriptEvidence:
     """How a transcript judge reads one trial.
 
     * ``tool_result_chars`` — how much of each tool result the transcript shows.
-    * ``read_only_tools`` — agent tools that declare ``mutates_state: false``.
     * ``read_only_calls`` — the task's rules marking calls that cannot change state.
     """
 
     tool_result_chars: int = DEFAULT_TRANSCRIPT_TOOL_CHARS
-    read_only_tools: frozenset[str] = frozenset()
     read_only_calls: tuple[ReadOnlyCallRule, ...] = ()
 
-    def is_read_only(self, call: RecordedCall) -> bool:
-        if call.name in self.read_only_tools:
-            return True
+    def matches_read_only_rule(self, call: RecordedCall) -> bool:
         return any(_rule_matches(rule, call) for rule in self.read_only_calls)
 
 
@@ -197,10 +193,20 @@ def call_arguments_brief(call: RecordedCall) -> str:
 
 
 def state_changing_calls(
-    numbered: NumberedTranscript, evidence: TranscriptEvidence
+    numbered: NumberedTranscript,
+    evidence: TranscriptEvidence,
+    *,
+    read_only_tools: frozenset[str],
 ) -> list[RecordedCall]:
-    """The agent's calls that can change state, in the order it made them."""
-    return [call for call in numbered.agent_calls if not evidence.is_read_only(call)]
+    """The agent's calls that can change state, in the order it made them.
+
+    ``read_only_tools`` are the agent tools that declare ``mutates_state: false``.
+    """
+    return [
+        call
+        for call in numbered.agent_calls
+        if call.name not in read_only_tools and not evidence.matches_read_only_rule(call)
+    ]
 
 
 class ShowCallTool(Tool):

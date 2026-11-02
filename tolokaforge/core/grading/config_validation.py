@@ -1396,34 +1396,92 @@ def _check_tool_expectation_names(
 def _check_read_only_call_names(
     grading: Mapping[str, Any], inventory: ToolInventory
 ) -> AuthoringReport:
-    """A ``read_only_calls`` rule may only name a tool the agent of the task can call.
+    """A task's own ``read_only_calls`` rule may only name a tool its agent can call.
 
     A transcript judge lists every agent call no rule marks as a read among the calls
     that can change state, so a misspelled rule matches nothing and shows the judge
-    every read of the tool as a write — silently, on every trial.
+    every read of the tool as a write — silently, on every trial. The rules a task
+    inherits from its project are checked across the project's tasks instead, by
+    :func:`check_project_read_only_call_names`.
     """
     llm_judge = grading.get("llm_judge")
     customization = llm_judge.get("customization") if isinstance(llm_judge, Mapping) else None
-    rules = customization.get("read_only_calls") if isinstance(customization, Mapping) else None
-    if not isinstance(rules, list):
-        return AuthoringReport()
-    if inventory.actor_split_known:
-        declared_set = inventory.declared_by(ToolExecutorIdentity.AGENT)
-    else:
-        declared_set = inventory.declared
+    declared_set = _agent_declared(inventory)
     errors = tuple(
         Finding(
             f"llm_judge.customization.read_only_calls[{index}].tool",
-            f"tool {rule['tool']!r} is not declared by this task for the agent. The "
+            f"tool {tool!r} is not declared by this task for the agent. The "
             f"declared set is {sorted(declared_set)}: the rule matches no call, so a "
             "transcript judge reads every call of the tool it meant as a state change",
         )
-        for index, rule in enumerate(rules)
-        if isinstance(rule, Mapping)
-        and isinstance(rule.get("tool"), str)
-        and rule["tool"] not in declared_set
+        for index, tool in _read_only_call_tools(customization)
+        if tool not in declared_set
     )
     return AuthoringReport(errors=errors)
+
+
+#: Where a project's own ``read_only_calls`` rules are written.
+PROJECT_READ_ONLY_CALLS_WHERE = (
+    "task_defaults.grading_defaults.llm_judge.customization.read_only_calls"
+)
+
+
+def check_project_read_only_call_names(
+    project_customization: Mapping[str, Any] | None, inventories: Sequence[ToolInventory]
+) -> AuthoringReport:
+    """A project's ``read_only_calls`` rule may only name a tool some task's agent can call.
+
+    Every task of the project inherits the rules, and a rule may name a tool only some
+    of its tasks declare, so a single task cannot tell a misspelled rule from one meant
+    for its siblings. A rule no task of the project declares the tool of matches no call
+    anywhere: the misspelling the per-task rule catches, written once for the project.
+
+    ``inventories`` are the tool sets of every task the project's rules reach. One that
+    is unresolvable leaves the rule unchecked: the tool may be that task's.
+    """
+    tools = _read_only_call_tools(project_customization)
+    if not tools:
+        return AuthoringReport()
+    if not inventories or not all(inventory.known for inventory in inventories):
+        return AuthoringReport(
+            unchecked=(
+                Skip(
+                    PROJECT_READ_ONLY_CALLS_WHERE,
+                    "the tools of some task of this project could not be resolved, so "
+                    "whether each rule names a tool one of its tasks declares is not "
+                    "checkable",
+                ),
+            )
+        )
+    declared_set = frozenset().union(*(_agent_declared(inventory) for inventory in inventories))
+    errors = tuple(
+        Finding(
+            f"{PROJECT_READ_ONLY_CALLS_WHERE}[{index}].tool",
+            f"tool {tool!r} is declared for the agent by no task of this project. The "
+            f"declared set is {sorted(declared_set)}: the rule matches no call, so a "
+            "transcript judge reads every call of the tool it meant as a state change",
+        )
+        for index, tool in tools
+        if tool not in declared_set
+    )
+    return AuthoringReport(errors=errors)
+
+
+def _read_only_call_tools(customization: Any) -> list[tuple[int, str]]:
+    rules = customization.get("read_only_calls") if isinstance(customization, Mapping) else None
+    if not isinstance(rules, list):
+        return []
+    return [
+        (index, rule["tool"])
+        for index, rule in enumerate(rules)
+        if isinstance(rule, Mapping) and isinstance(rule.get("tool"), str)
+    ]
+
+
+def _agent_declared(inventory: ToolInventory) -> frozenset[str]:
+    if inventory.actor_split_known:
+        return inventory.declared_by(ToolExecutorIdentity.AGENT)
+    return inventory.declared
 
 
 def _check_required_action_names(

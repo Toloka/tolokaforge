@@ -24,6 +24,8 @@ from tolokaforge.adapters._task_loader import (
     GradingSourceKind,
     declared_search_backend,
     grading_source_under_adapter,
+    inspect_read_only_calls_over_tasks,
+    project_read_only_calls,
     replay_world_under_adapter,
     search_declaration,
     seeded_tables_under_adapter,
@@ -2875,6 +2877,7 @@ class Orchestrator:
             failure = self._grading_rejection(task, fail_on=fail_on)
             if failure is not None:
                 rejected.append(failure)
+        self._warn_project_read_only_calls()
         if not rejected:
             return
         raise ValueError(
@@ -2885,6 +2888,30 @@ class Orchestrator:
             "--tasks <glob>` reports the same findings against the same packs, and "
             "decides its own exit code by the default fail_on rather than this run's."
         )
+
+    def _warn_project_read_only_calls(self) -> None:
+        """Warn of a project ``read_only_calls`` rule no task this run discovers can match.
+
+        Logged, not refused: the run sees only the tasks its glob discovers, and a rule
+        may be meant for a task of the project it leaves out. ``tolokaforge validate``
+        checks the rules against every task of the project and refuses there.
+        """
+        if self.project is None:
+            return
+        task_defaults = self.project.task_defaults.model_dump(exclude_defaults=True) or None
+        if not project_read_only_calls(task_defaults):
+            return
+        report = inspect_read_only_calls_over_tasks(
+            task_defaults,
+            [
+                (self.adapter.get_task(task_id), self.adapter.get_task_dir(task_id))
+                for task_id in self.adapter.get_task_ids()
+            ],
+        )
+        for skip in report.unchecked:
+            self._warn_grading_unchecked("project", skip.where, skip.reason)
+        for finding in report.errors:
+            self._warn_grading_hint("project", finding.where, finding.message)
 
     def _grading_rejection(
         self, task: TaskConfig, *, fail_on: GradingFindingSeverity

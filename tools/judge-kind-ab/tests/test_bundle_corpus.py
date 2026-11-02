@@ -242,7 +242,7 @@ def test_a_transcript_judges_bundle_builds_no_state_diff_and_reads_the_agent_too
 
     assert entry.state_diff is None
     assert entry.options.transcript_evidence is not None
-    assert entry.options.transcript_evidence.read_only_tools == frozenset({"get_seat"})
+    assert entry.options.agent_read_only_tools == frozenset({"get_seat"})
 
 
 def test_corpus_entry_from_bundle_reports_no_state_diff_with_empty_initial_state(

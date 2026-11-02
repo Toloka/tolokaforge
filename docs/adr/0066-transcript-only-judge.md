@@ -70,12 +70,13 @@ We will adopt **Option 1**.
   `decode_transcript_wire` leaves it off the decoded messages, because a trace timeline
   built without tool-call records reads a call's status from the records alone, and a
   status there would decide a `status:` matcher that is undecided today.
-- The agent tools the judge read as read-only are recorded: `JudgeResult` and the
-  `JudgeReport` proto (field 18 on both wires) carry `agent_read_only_tools`, and
-  `judge_inputs.yaml` stores it, because the bundle does not carry the tool schemas.
+- The agent tools declaring `mutates_state: false` are recorded for every judge, not
+  only a transcript judge: `JudgeResult` and the `JudgeReport` proto (field 18 on both
+  wires) carry `agent_read_only_tools`, and `judge_inputs.yaml` stores it, because the
+  bundle does not carry the tool schemas and a state judge's trial replayed as a
+  transcript judge needs them too. `JudgeResult.evidence`,
   `JudgeReport.judge_evidence` (field 19, set only for a transcript judge) and
-  `grade.yaml` `judge_evidence` say which mode graded the trial, which an empty repeated
-  field cannot. Replay rebuilds the whole view from the transcript, the recorded
+  `grade.yaml` `judge_evidence` say which mode graded the trial. Replay rebuilds the whole view from the transcript, the recorded
   customization and this list, stamps `judge_evidence` in its provenance, and
   `rejudge --evidence state|transcript` forces the mode over a whole run.
 

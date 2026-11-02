@@ -254,10 +254,12 @@ forced transcript replay of its state runs. `replay_provenance.yaml` stamps
 `judge_evidence`, `judge_evidence_source` and `judge_evidence_mode`. A
 [transcript judge](GRADING.md#transcript-only-judge) replays without any view of the
 state: no DB shim, no `state_diff`, no `read_file` shim, whatever the bundle recorded.
-`show_call` is rebuilt from the recorded transcript, never shimmed. The agent tools it
-read as read-only come from `judge_inputs.yaml` `agent_read_only_tools`; a bundle that
-recorded none (a state judge replayed as a transcript judge through `--grading`) reads
-every call as one that can change state unless a `read_only_calls` rule marks it.
+`show_call` is rebuilt from the recorded transcript, never shimmed. The agent tools that
+declare `mutates_state: false` come from `judge_inputs.yaml` `agent_read_only_tools`,
+which every judge records, so a state judge replayed as a transcript judge reads the
+same calls as state-changing as a live transcript judge would. A bundle that recorded
+no `agent_read_only_tools` (or no `judge_inputs.yaml`) is refused for a transcript
+replay: it could not tell the agent's reads from its state changes.
 
 ## New-vs-old bundle replayability
 

@@ -115,20 +115,16 @@ class JudgeResult:
     # so an offline replay can rebuild the judge's opening message from this exact
     # string rather than re-reading a live DB.
     state_diff: str | None = None
-    # The agent tools a transcript judge (``customization.evidence: transcript``)
-    # read as unable to change state — those declaring ``mutates_state: false``.
-    # ``None`` for a judge over the final state. Recorded because the tool schemas
-    # that declare it are not in the bundle, so an offline replay rebuilds the
-    # judge's list of state-changing calls from this exact set.
-    agent_read_only_tools: tuple[str, ...] | None = None
+    # What the judge graded from: the final state, or the transcript alone
+    # (``customization.evidence: transcript``).
+    evidence: Literal["state", "transcript"] = "state"
+    # The agent tools declaring ``mutates_state: false``, recorded for every judge:
+    # the tool schemas that declare it are not in the bundle, and an offline replay
+    # as a transcript judge rebuilds its list of state-changing calls from this set,
+    # whatever the judge originally graded from.
+    agent_read_only_tools: tuple[str, ...] = ()
     # The judge's own message transcript (role / content / tool_calls dicts),
     # captured for audit/reproducibility (plan open question #2). Populated for
     # both COMPLETED and ERRORED runs — an errored judge's partial transcript is
     # the most useful artifact for debugging WHY it failed.
     transcript: tuple[dict[str, Any], ...] = ()
-
-    @property
-    def evidence(self) -> Literal["state", "transcript"]:
-        """What the judge graded from: ``transcript`` exactly when it recorded the
-        agent tools it read as read-only (``customization.evidence: transcript``)."""
-        return "state" if self.agent_read_only_tools is None else "transcript"

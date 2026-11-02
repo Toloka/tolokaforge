@@ -123,17 +123,19 @@ def test_k_identical_samples_merge_to_same_verdict() -> None:
 def test_every_sample_of_a_transcript_judge_reads_the_transcript_view() -> None:
     """The voted kind hands its options to every sample unchanged, so each sample is
     a transcript judge: ``show_call`` offered, no DB tools, and the merged result
-    records the read-only tools that mark it as one."""
+    records it as one, with the agent's read-only tools."""
     rubric = _binary_rubric(1)
     clients = [ScriptedClient([_submit_call(rubric.criteria)]) for _ in range(3)]
     provider = _QueuedProvider(list(clients))  # type: ignore[arg-type]
-    evidence = TranscriptEvidence(read_only_tools=frozenset({"lookup"}))
 
     result = _evaluate(
         rubric,
         provider=provider,
         kind_config={"n_samples": 3},
-        options=JudgeTrialOptions(transcript_evidence=evidence),
+        options=JudgeTrialOptions(
+            transcript_evidence=TranscriptEvidence(),
+            agent_read_only_tools=frozenset({"lookup"}),
+        ),
     )
 
     assert result.status is JudgeStatus.COMPLETED

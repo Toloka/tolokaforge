@@ -754,6 +754,7 @@ class GrpcRunnerClient:
                             "kb_tools_withheld": list(grade.judge_report.kb_tools_withheld),
                             "state_diff_text": grade.judge_report.state_diff_text,
                             "read_tools_offered": list(grade.judge_report.read_tools_offered),
+                            "agent_read_only_tools": list(grade.judge_report.agent_read_only_tools),
                             "custom_system_prompt": grade.judge_report.custom_system_prompt,
                             # Omitted when the sending runner has no field 15 (legacy
                             # or version-skewed), so the parse-side include default
@@ -772,15 +773,10 @@ class GrpcRunnerClient:
                                 if grade.judge_report.HasField("billed_cost_usd")
                                 else {}
                             ),
-                            # Only a transcript judge sets these, so a report of a
-                            # judge over the state reads as it always did.
+                            # Only a transcript judge sets it: absent for a judge
+                            # over the state.
                             **(
-                                {
-                                    "judge_evidence": grade.judge_report.judge_evidence,
-                                    "agent_read_only_tools": list(
-                                        grade.judge_report.agent_read_only_tools
-                                    ),
-                                }
+                                {"judge_evidence": grade.judge_report.judge_evidence}
                                 if grade.judge_report.HasField("judge_evidence")
                                 else {}
                             ),

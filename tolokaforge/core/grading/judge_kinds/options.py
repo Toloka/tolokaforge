@@ -52,6 +52,10 @@ class JudgeTrialOptions:
     * ``transcript_evidence`` — how a transcript-only judge reads the trial
       (``customization.evidence: transcript``); ``None`` is the judge over the final
       state. A transcript judge is handed no DB reader, workspace or state diff.
+    * ``agent_read_only_tools`` — the trial's agent tools that declare
+      ``mutates_state: false``. A transcript judge does not list their calls as
+      state-changing; every judge records them, so its trial can be replayed as a
+      transcript judge.
 
     The defaults are what a task with no ``customization`` block is graded with.
     A kind honours every field as :class:`~tolokaforge.core.grading.judge.LLMJudge`
@@ -63,6 +67,7 @@ class JudgeTrialOptions:
     include_agent_system_prompt: bool = True
     judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
     transcript_evidence: TranscriptEvidence | None = None
+    agent_read_only_tools: frozenset[str] = frozenset()
 
 
 def resolve_judge_trial_options(
@@ -77,9 +82,9 @@ def resolve_judge_trial_options(
     ``grader.judge`` block: each of its fields that is not ``None`` wins over the
     task's value, and ``None`` inherits it. It carries no ``judge_snippet_chars``:
     its ``None`` means "inherit", so it could not express whole documents.
-    ``agent_tools`` are the trial's agent tool schemas; a transcript judge reads the
-    ones declaring ``mutates_state: false`` as tools whose calls cannot change state.
-    Required: a caller that forgot them would list every read as a state change.
+    ``agent_tools`` are the trial's agent tool schemas; the ones declaring
+    ``mutates_state: false`` become ``agent_read_only_tools``. Required: a caller
+    that forgot them would have a transcript judge list every read as a state change.
     """
     disable_knowledge_search = customization.disable_knowledge_search if customization else None
     custom_system_prompt = customization.system_prompt if customization else None
@@ -104,18 +109,20 @@ def resolve_judge_trial_options(
             if customization is not None
             else DEFAULT_JUDGE_SNIPPET_CHARS
         ),
-        transcript_evidence=resolve_transcript_evidence(customization, agent_tools),
+        transcript_evidence=resolve_transcript_evidence(customization),
+        agent_read_only_tools=frozenset(
+            tool.name for tool in agent_tools if tool.mutates_state is False
+        ),
     )
 
 
 def resolve_transcript_evidence(
-    customization: JudgeCustomization | None, agent_tools: Iterable[ToolSchema]
+    customization: JudgeCustomization | None,
 ) -> TranscriptEvidence | None:
     """The transcript judge's reading of a trial, ``None`` for a judge over the state."""
     if customization is None or customization.evidence != "transcript":
         return None
     return TranscriptEvidence(
         tool_result_chars=customization.transcript_tool_chars,
-        read_only_tools=frozenset(tool.name for tool in agent_tools if tool.mutates_state is False),
         read_only_calls=tuple(customization.read_only_calls),
     )

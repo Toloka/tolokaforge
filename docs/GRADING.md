@@ -3637,6 +3637,7 @@ Findings come in three classes:
 | `required_tools` / `disallowed_tools` naming a tool outside that set | error | `transcript_rules.tool_expectations` |
 | a `required_actions[i].name` naming a tool outside that set | error | `transcript_rules.required_actions[i].name` |
 | a `read_only_calls[i].tool` naming a tool the agent is not given | error | `llm_judge.customization.read_only_calls[i].tool` |
+| a project's `read_only_calls[i].tool` naming a tool no task of the project gives its agent — checked by `tolokaforge validate` across every task the project's `tasks.discovery.glob` finds; a run's pre-run gate sees only the tasks it discovers, so it logs the finding as a warning instead | error | `task_defaults.grading_defaults.llm_judge.customization.read_only_calls[i].tool` |
 | a `required_actions[i].name` the actor its `requestor` names does not declare — `assistant` reads `tools.agent.enabled`, `user` reads `tools.user.enabled` | error | `transcript_rules.required_actions[i].requestor` |
 | an `args` address whose first segment is outside the properties of a tool whose schema forbids extras | error | every matcher's `args` key, every `bind.values[*].field` |
 | the same against a tool whose schema permits extras | advisory | as above |
@@ -4450,9 +4451,9 @@ each task opts into the mode. All three keys layer project→task and are left o
 at their default.
 
 A trial a transcript judge graded carries `judge_evidence: transcript` in `grade.yaml`
-(absent for a state judge). The judge records the agent tools it read as read-only in
-[`judge_inputs.yaml`](OUTPUT_FORMAT.md) (`agent_read_only_tools`), since their declarations
-are not in the bundle; [`tolokaforge rejudge`](JUDGE_REPLAY.md#transcript-only-judge)
+(absent for a state judge). Every judge records the agent tools declaring
+`mutates_state: false` in [`judge_inputs.yaml`](OUTPUT_FORMAT.md) (`agent_read_only_tools`),
+since their declarations are not in the bundle; [`tolokaforge rejudge`](JUDGE_REPLAY.md#transcript-only-judge)
 rebuilds the same view from it, and `--evidence transcript` replays a whole run of state
 judges as transcript judges for an A/B. How a call ended crosses the grade-time transcript
 wire as `tool_status` for the judge alone: a trace timeline built without tool-call

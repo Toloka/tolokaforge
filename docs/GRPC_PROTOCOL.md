@@ -500,7 +500,7 @@ message JudgeReport {
   // fields 8-15: verdict-consistency rejections, the knowledge-search gating, the
   // replay inputs and the prompt customisation (see runner.proto); 16 is reserved
   optional double billed_cost_usd = 17;  // what the providers stated they charged; absent unless every call stated one
-  repeated string agent_read_only_tools = 18;  // a transcript judge's agent tools declaring mutates_state: false
+  repeated string agent_read_only_tools = 18;  // the agent tools declaring mutates_state: false, for every judge
   optional string judge_evidence = 19;  // "transcript" for a transcript judge; absent for a state judge
 }
 

@@ -935,7 +935,10 @@ project figure by writing `200`. See
 `customization.evidence`, `transcript_tool_chars` and `read_only_calls` layer by the
 same merge. The last two are read by the transcript judge alone and are inert under
 `evidence: state`, so a project can declare its tools' read rules once and let each
-task opt into the mode. A task's `read_only_calls` replaces the project's list. See
+task opt into the mode. A task's `read_only_calls` replaces the project's list. A
+project rule may name a tool only some of its tasks give their agent; `tolokaforge
+validate` refuses one whose tool no task of the project (every task its
+`tasks.discovery.glob` finds) declares. See
 [GRADING.md](GRADING.md#transcript-only-judge).
 
 ### Full override — replace entirely

@@ -2459,8 +2459,8 @@ class JudgeCustomization(BaseModel):
     without it and an older image, which forbids a key it does not declare,
     accepts it.
 
-    ``evidence`` is what the judge grades from. ``state`` (the default) is today's
-    judge: the ``initial → final`` state diff and the read-only DB and workspace
+    ``evidence`` is what the judge grades from. ``state`` (the default) grades
+    from the ``initial → final`` state diff and the read-only DB and workspace
     tools. ``transcript`` withholds every view of the final state: the judge reads
     the transcript with each tool result numbered ``[call N]`` and cut at
     ``transcript_tool_chars`` characters, the agent's calls that can change state
