@@ -511,12 +511,15 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     judge_inputs: JudgeInputs | None = None
     judge_custom_prompt: bool | None = None
     judge_agent_prompt_included: bool | None = None
+    judge_evidence: str | None = None
     raw_report = raw_grade.get("judge_report")
     if raw_report:
         judge_custom_prompt = raw_report.get("custom_system_prompt", False)
         # Default include: a legacy/skewed runner that never carried field 15
         # graded with the agent policy present, so its faithful value is True.
         judge_agent_prompt_included = raw_report.get("include_agent_system_prompt", True)
+        # Absent from a state judge's report and from a runner predating field 19.
+        judge_evidence = raw_report.get("judge_evidence")
         judge_usage = JudgeUsage(
             calls=raw_report.get("calls", 0),
             prompt_tokens=raw_report.get("prompt_tokens", 0),
@@ -537,9 +540,11 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_inputs = JudgeInputs(
             state_diff_text=raw_report.get("state_diff_text") or None,
             read_tools_offered=list(raw_report.get("read_tools_offered", [])),
-            # Empty on the wire for a judge over the state, and for a transcript
-            # judge whose agent declared no read-only tool: both replay alike.
-            agent_read_only_tools=list(raw_report.get("agent_read_only_tools", [])) or None,
+            agent_read_only_tools=(
+                list(raw_report.get("agent_read_only_tools", []))
+                if judge_evidence == "transcript"
+                else None
+            ),
         )
         raw_transcript = raw_report.get("transcript_json")
         if raw_transcript:
@@ -590,6 +595,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_inputs=judge_inputs,
         judge_custom_prompt=judge_custom_prompt,
         judge_agent_prompt_included=judge_agent_prompt_included,
+        judge_evidence=judge_evidence,
         trace_check_results=trace_check_results,
         trace_checks_summary=trace_checks_summary,
     )

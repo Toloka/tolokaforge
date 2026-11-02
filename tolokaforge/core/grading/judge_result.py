@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import CriterionResult
@@ -126,3 +126,9 @@ class JudgeResult:
     # both COMPLETED and ERRORED runs — an errored judge's partial transcript is
     # the most useful artifact for debugging WHY it failed.
     transcript: tuple[dict[str, Any], ...] = ()
+
+    @property
+    def evidence(self) -> Literal["state", "transcript"]:
+        """What the judge graded from: ``transcript`` exactly when it recorded the
+        agent tools it read as read-only (``customization.evidence: transcript``)."""
+        return "state" if self.agent_read_only_tools is None else "transcript"

@@ -270,6 +270,19 @@
           "default": null,
           "title": "Judge Custom Prompt"
         },
+        "judge_evidence": {
+          "anyOf": [
+            {
+              "const": "transcript",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Judge Evidence"
+        },
         "judge_inputs": {
           "anyOf": [
             {

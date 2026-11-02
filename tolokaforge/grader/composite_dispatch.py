@@ -512,17 +512,14 @@ class GraderCompositeDispatch:
             return None, JudgeStatus.UNSPECIFIED, False, {LLM_JUDGE_KEY: NO_JUDGE_MESSAGES_SKIP}
         assert judge_model_config is not None, "llm_judge branch requires judge_model_config"
         judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
-        state_diff_text = (
-            composite.build_judge_state_diff(
-                trial_id=trial_id,
-                substrate=substrate,
-                initial_state_schemas=initial_state_schemas,
-                id_fields=id_fields,
-                unstable_fields=unstable_fields,
-                logger=self._logger,
-            )
-            if composite.judge_reads_final_state(llm_judge_config)
-            else None
+        state_diff_text = composite.build_judge_state_diff(
+            trial_id=trial_id,
+            config=llm_judge_config,
+            substrate=substrate,
+            initial_state_schemas=initial_state_schemas,
+            id_fields=id_fields,
+            unstable_fields=unstable_fields,
+            logger=self._logger,
         )
         judge_result = composite.grade_llm_judge(
             trial_id=trial_id,
@@ -619,6 +616,7 @@ def _build_grade(
     judge_inputs = None
     judge_custom_prompt = None
     judge_agent_prompt_included = None
+    judge_evidence = None
     criterion_results = None
     if judge_result is not None:
         judge_usage = JudgeUsage(
@@ -648,6 +646,7 @@ def _build_grade(
         )
         judge_custom_prompt = judge_result.custom_system_prompt
         judge_agent_prompt_included = judge_result.include_agent_system_prompt
+        judge_evidence = "transcript" if judge_result.evidence == "transcript" else None
         criterion_results = list(judge_result.criterion_results)
 
     return Grade(
@@ -666,4 +665,5 @@ def _build_grade(
         judge_inputs=judge_inputs,
         judge_custom_prompt=judge_custom_prompt,
         judge_agent_prompt_included=judge_agent_prompt_included,
+        judge_evidence=judge_evidence,
     )

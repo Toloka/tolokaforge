@@ -55,6 +55,7 @@ uv run tolokaforge rejudge --source <run-dir> \
 | `--judge-model` | Override the judge model as `<provider>/<model>` (e.g. `openrouter/openai/gpt-4.1-mini`), temperature 0. Default: the recorded `model_config.judge`. |
 | `--grading` | Override the rubric — and, when the file carries them, the judge's custom prompt (`llm_judge.customization.system_prompt`) and agent-policy gating (`llm_judge.customization.include_agent_system_prompt`) — with a supplied `grading.yaml` (or a bare `rubric:` mapping). Required for old bundles that recorded no rubric. Default: the recorded rubric, prompt, and gating. |
 | `--knowledge-search` | `recorded` (honour the bundle's recorded gating), `on`, or `off`. Default: `recorded`. Forcing `on` for a bundle with no recorded KB gating cannot conjure a KB tool: the replay grade records `offered: []` and the provenance records the mode — observable, not silent. |
+| `--evidence` | `recorded` (honour the bundle's `customization.evidence`, or a `--grading` override setting it), `state`, or `transcript`. Default: `recorded`. A forced mode keeps the recorded `transcript_tool_chars` and `read_only_calls`, so `transcript` A/Bs a whole run of state judges against the transcript-only judge. `state` refuses a trial a transcript judge graded: it recorded no state to grade over. See [Transcript-only judge](#transcript-only-judge). |
 | `--replay-id` | Name for the artifact subdirectory. Default: a timestamped id. |
 | `--dry-run` | Discover, classify, and resolve inputs, then report what would replay — spending nothing. The census it prints (`<N> discovered: <e> eligible, <s> not-applicable, <g> no-grade, <f> failed`) is the same one a real batch prints. |
 
@@ -247,7 +248,10 @@ or `null` when it defaulted). The length reaches the judge kind inside the trial
 Replay reads `grading.llm_judge.customization.evidence` (with `transcript_tool_chars`
 and `read_only_calls`) from the bundle's `task.yaml`, and a `--grading` override
 replaces all three only when its own `llm_judge.customization` sets `evidence`.
-`replay_provenance.yaml` stamps `judge_evidence` and `judge_evidence_source`. A
+`--evidence state|transcript` then forces the mode and keeps the two fields beside it —
+`read_only_calls` is recorded under a state judge too, so a project's rules reach a
+forced transcript replay of its state runs. `replay_provenance.yaml` stamps
+`judge_evidence`, `judge_evidence_source` and `judge_evidence_mode`. A
 [transcript judge](GRADING.md#transcript-only-judge) replays without any view of the
 state: no DB shim, no `state_diff`, no `read_file` shim, whatever the bundle recorded.
 `show_call` is rebuilt from the recorded transcript, never shimmed. The agent tools it

@@ -3636,6 +3636,7 @@ Findings come in three classes:
 | a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | every `trace_checks` matcher |
 | `required_tools` / `disallowed_tools` naming a tool outside that set | error | `transcript_rules.tool_expectations` |
 | a `required_actions[i].name` naming a tool outside that set | error | `transcript_rules.required_actions[i].name` |
+| a `read_only_calls[i].tool` naming a tool the agent is not given | error | `llm_judge.customization.read_only_calls[i].tool` |
 | a `required_actions[i].name` the actor its `requestor` names does not declare — `assistant` reads `tools.agent.enabled`, `user` reads `tools.user.enabled` | error | `transcript_rules.required_actions[i].requestor` |
 | an `args` address whose first segment is outside the properties of a tool whose schema forbids extras | error | every matcher's `args` key, every `bind.values[*].field` |
 | the same against a tool whose schema permits extras | advisory | as above |
@@ -4236,8 +4237,11 @@ generation with K-sample geometric-median aggregation.
   DB reads (`get_db_state` / `query_db`), a KB search mirroring the agent's
   (`search_kb` over the task's search backend, or the reused `search_policy` for
   TypeSense — see *Judge KB faithfulness* below), `read_file` (only when the agent produced a
-  workspace), and the rubric-derived `submit_report`. No `write`, no `compute`.
-* **Single call, per-criterion output.** The judge inspects the final state, then
+  workspace), and the rubric-derived `submit_report`. No `write`, no `compute`. A
+  [transcript-only judge](#transcript-only-judge) gets no DB reads and no `read_file`, and
+  gets `show_call` instead.
+* **Single call, per-criterion output.** The judge inspects the final state (a
+  transcript-only judge, the transcript alone), then
   calls `submit_report` once with `{justification, met|score}` for every criterion
   (its arg schema is generated from the rubric). For each criterion the schema
   places the justification **before** the verdict field, so the verdict is written
@@ -4404,13 +4408,17 @@ the final state**: no state diff is built, and `get_db_state`, `query_db` and
   the order results arrive) and is cut at `transcript_tool_chars` characters (`2000` by
   default), saying how much it left out;
 * **the state-changing calls** — the agent's calls that can change state, in order, each
-  as `[call N] name(arguments) -> status`, the status being how the call ended
-  (`success`, `error`, `timeout`, …; `status unknown` when the transcript did not record
-  it, `no result` when nothing answered the call). Arguments are shown in full, so the
-  texts the agent wrote are here;
+  as `[call N] name(arguments) -> status`. The status is how the call ended in the engine's
+  vocabulary (`success`, `error`, `environment_error`, `timeout`, …; `status unknown` when
+  the transcript did not record it, `no result` when nothing answered the call). A call that
+  did not succeed also shows the first line of its result, where an HTTP tool states its
+  code (`-> error: Status: 403` — `http_request` reports every non-2xx reply as `error`).
+  Arguments are cut at 300 characters here; the transcript shows each call, and so every
+  text the agent wrote, in full;
 * **`show_call(calls, offset)`** — the full results of the calls it names, as the agent
-  received them, up to 12,000 characters per answer; `offset` reads further into a long
-  one. It reads the transcript itself, never a live backend.
+  received them, at most 12,000 characters per answer, shared by all the calls one answer
+  names; `offset` reads further into a long one. It reads the transcript itself, never a
+  live backend.
 
 A call can change state unless its tool declares `mutates_state: false`
 ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)) or it matches one of
@@ -4418,8 +4426,10 @@ A call can change state unless its tool declares `mutates_state: false`
 rule marks the reads of a tool that both reads and writes: it names the `tool` and,
 optionally, `arguments` — dotted paths into the call's arguments, each with the values
 that make the call a read. A call matches when every path holds one of its values; a
-path the call does not carry is no match; values compare exactly; a rule with no
-`arguments` matches every call of its tool.
+path the call does not carry is no match; values compare by JSON type and value (`true`
+is not `1`, `1` is not `1.0`); a rule with no `arguments` matches every call of its tool.
+A rule naming a tool the agent is not given is refused before the run
+([What is validated before a run](#what-is-validated-before-a-run)).
 
 ```yaml
 llm_judge:
@@ -4434,13 +4444,19 @@ llm_judge:
       - tool: list_endpoints
 ```
 
-`transcript_tool_chars` and `read_only_calls` are refused under `evidence: state` unless
-they hold their defaults, so a task that returns to the state judge under a project's
-transcript rules also writes `read_only_calls: []`. All three keys layer project→task and
-are left off the wire at their default. The judge records the agent tools it read as
-read-only in [`judge_inputs.yaml`](OUTPUT_FORMAT.md) (`agent_read_only_tools`), since
-their declarations are not in the bundle; [`tolokaforge rejudge`](JUDGE_REPLAY.md)
-rebuilds the same view from it. The design record is
+`transcript_tool_chars` and `read_only_calls` are read by the transcript judge alone and
+are inert under `evidence: state`, so a project declares its tools' read rules once and
+each task opts into the mode. All three keys layer project→task and are left off the wire
+at their default.
+
+A trial a transcript judge graded carries `judge_evidence: transcript` in `grade.yaml`
+(absent for a state judge). The judge records the agent tools it read as read-only in
+[`judge_inputs.yaml`](OUTPUT_FORMAT.md) (`agent_read_only_tools`), since their declarations
+are not in the bundle; [`tolokaforge rejudge`](JUDGE_REPLAY.md#transcript-only-judge)
+rebuilds the same view from it, and `--evidence transcript` replays a whole run of state
+judges as transcript judges for an A/B. How a call ended crosses the grade-time transcript
+wire as `tool_status` for the judge alone: a trace timeline built without tool-call
+records still reads a call's status from the records (G6b). The design record is
 [ADR-0066](adr/0066-transcript-only-judge.md).
 
 ### Fail-loud: the ERRORED status

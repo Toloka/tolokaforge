@@ -20,7 +20,7 @@ pytestmark = pytest.mark.unit
 
 
 def test_no_customization_is_the_library_default() -> None:
-    assert resolve_judge_trial_options(None) == JudgeTrialOptions()
+    assert resolve_judge_trial_options(None, agent_tools=()) == JudgeTrialOptions()
     assert JudgeTrialOptions() == JudgeTrialOptions(
         disable_knowledge_search=False,
         custom_system_prompt=None,
@@ -30,7 +30,7 @@ def test_no_customization_is_the_library_default() -> None:
 
 
 def test_an_empty_block_is_the_library_default() -> None:
-    assert resolve_judge_trial_options(JudgeCustomization()) == JudgeTrialOptions()
+    assert resolve_judge_trial_options(JudgeCustomization(), agent_tools=()) == JudgeTrialOptions()
 
 
 def test_every_customization_field_reaches_the_options() -> None:
@@ -40,7 +40,7 @@ def test_every_customization_field_reaches_the_options() -> None:
         include_agent_system_prompt=False,
         judge_snippet_chars=None,
     )
-    assert resolve_judge_trial_options(customization) == JudgeTrialOptions(
+    assert resolve_judge_trial_options(customization, agent_tools=()) == JudgeTrialOptions(
         disable_knowledge_search=True,
         custom_system_prompt="Grade strictly.",
         include_agent_system_prompt=False,
@@ -52,7 +52,7 @@ def test_an_explicit_false_keeps_knowledge_search_and_true_includes_the_agent_pr
     customization = JudgeCustomization(
         disable_knowledge_search=False, include_agent_system_prompt=True
     )
-    assert resolve_judge_trial_options(customization) == JudgeTrialOptions()
+    assert resolve_judge_trial_options(customization, agent_tools=()) == JudgeTrialOptions()
 
 
 def test_a_set_override_field_wins_and_an_unset_one_inherits() -> None:
@@ -63,7 +63,9 @@ def test_a_set_override_field_wins_and_an_unset_one_inherits() -> None:
         judge_snippet_chars=50,
     )
     override = JudgeGraderConfig(custom_system_prompt="Run voice.")
-    assert resolve_judge_trial_options(customization, override=override) == JudgeTrialOptions(
+    assert resolve_judge_trial_options(
+        customization, override=override, agent_tools=()
+    ) == JudgeTrialOptions(
         disable_knowledge_search=True,
         custom_system_prompt="Run voice.",
         include_agent_system_prompt=False,
@@ -74,7 +76,7 @@ def test_a_set_override_field_wins_and_an_unset_one_inherits() -> None:
         custom_system_prompt="Run voice.",
         include_agent_system_prompt=True,
     )
-    resolved = resolve_judge_trial_options(customization, override=full)
+    resolved = resolve_judge_trial_options(customization, override=full, agent_tools=())
     assert (resolved.disable_knowledge_search, resolved.include_agent_system_prompt) == (
         False,
         True,
@@ -84,9 +86,9 @@ def test_a_set_override_field_wins_and_an_unset_one_inherits() -> None:
 
 def test_an_override_applies_over_no_customization() -> None:
     override = JudgeGraderConfig(disable_knowledge_search=True)
-    assert resolve_judge_trial_options(None, override=override) == JudgeTrialOptions(
-        disable_knowledge_search=True
-    )
+    assert resolve_judge_trial_options(
+        None, override=override, agent_tools=()
+    ) == JudgeTrialOptions(disable_knowledge_search=True)
 
 
 def test_the_options_are_frozen() -> None:

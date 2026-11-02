@@ -21,11 +21,13 @@ from typing import Any
 
 import pytest
 
+from tests.unit.grading.test_judge import ScriptedClient
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions, VotedRubricJudgeKind
 from tolokaforge.core.grading.judge_kinds._shared import member_failure_reason
 from tolokaforge.core.grading.judge_kinds.voted import DEFAULT_N_SAMPLES, _merge_sample_results
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
+from tolokaforge.core.grading.judge_transcript import TranscriptEvidence
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.plugin_registry import UnknownImplementationError
@@ -82,6 +84,7 @@ def _evaluate(
     *,
     provider: _QueuedProvider,
     kind_config: dict[str, Any] | None,
+    options: JudgeTrialOptions | None = None,
 ) -> JudgeResult:
     """Drive :meth:`VotedRubricJudgeKind.evaluate` with a minimal input surface."""
     kind = VotedRubricJudgeKind()
@@ -96,7 +99,7 @@ def _evaluate(
         state_diff=None,
         judge_model_config=_JUDGE_MODEL,
         judge_model_provider=provider,
-        options=JudgeTrialOptions(),
+        options=options or JudgeTrialOptions(),
         kind_config=kind_config,
         logger=StructuredLogger(name="test-voted"),
     )
@@ -115,6 +118,28 @@ def test_k_identical_samples_merge_to_same_verdict() -> None:
     assert [cr.id for cr in result.criterion_results] == [c.id for c in rubric.criteria]
     assert all(cr.met and cr.score == pytest.approx(1.0) for cr in result.criterion_results)
     assert result.score == pytest.approx(1.0)
+
+
+def test_every_sample_of_a_transcript_judge_reads_the_transcript_view() -> None:
+    """The voted kind hands its options to every sample unchanged, so each sample is
+    a transcript judge: ``show_call`` offered, no DB tools, and the merged result
+    records the read-only tools that mark it as one."""
+    rubric = _binary_rubric(1)
+    clients = [ScriptedClient([_submit_call(rubric.criteria)]) for _ in range(3)]
+    provider = _QueuedProvider(list(clients))  # type: ignore[arg-type]
+    evidence = TranscriptEvidence(read_only_tools=frozenset({"lookup"}))
+
+    result = _evaluate(
+        rubric,
+        provider=provider,
+        kind_config={"n_samples": 3},
+        options=JudgeTrialOptions(transcript_evidence=evidence),
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    assert result.evidence == "transcript"
+    assert result.agent_read_only_tools == ("lookup",)
+    assert all(client.seen_tool_names == ["submit_report", "show_call"] for client in clients)
 
 
 def test_default_wrapped_kind_is_single_shot_rubric() -> None:

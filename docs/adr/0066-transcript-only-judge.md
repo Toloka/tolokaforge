@@ -44,16 +44,21 @@ We will adopt **Option 1**.
 
 - `grading.llm_judge.customization` gains `evidence` (`state` by default),
   `transcript_tool_chars` (`2000`) and `read_only_calls` (a list of
-  `{tool, arguments}` rules). The last two apply only to `transcript` and are refused
-  under `state` away from their defaults. All three are left off the wire at their
-  default, so an older image accepts every pack that does not set them.
-- Under `transcript` the composite builds no state diff and hands the judge kind no
-  DB reader and no workspace; `LLMJudge` refuses any of the three if a caller passes
-  one. Knowledge-search tools are unaffected.
+  `{tool, arguments}` rules). The last two are inert under `state`, so a project
+  declares its tools' read rules once and each task opts into the mode. All three are
+  left off the wire at their default, so an older image accepts every pack that does
+  not set them. A rule naming a tool the agent is not given is refused before the run.
+- Under `transcript` `build_judge_state_diff` builds no diff and the composite hands
+  the judge kind no DB reader and no workspace; `LLMJudge` refuses any of the three if
+  a caller passes one, and the composite refuses a kind that completes such a trial
+  without honouring the mode. Knowledge-search tools are unaffected.
 - The judge reads the transcript with every tool result numbered `[call N]` and cut at
   `transcript_tool_chars`; a block of the agent's state-changing calls, each with how
-  it ended; and `show_call(calls, offset)`, which returns full results from the same
-  transcript. `show_call` is a pure function of the transcript, so it is never shimmed
+  it ended (a failed call with the first line of its result, where an HTTP tool states
+  its code) and its arguments cut short — the transcript shows them in full; and
+  `show_call(calls, offset)`, which returns full results from the same transcript. A
+  call is joined to its result by the episode-unique key of its id, as the trace
+  timeline joins them. `show_call` is a pure function of the transcript, so it is never shimmed
   in replay and is not in `read_tools_offered`.
 - A call can change state unless its tool declares `mutates_state: false` or a
   `read_only_calls` rule matches it. A rule names a tool and, optionally, dotted
@@ -61,19 +66,25 @@ We will adopt **Option 1**.
   the reads of a tool that both reads and writes (an HTTP tool). An undeclared tool
   reads as one that can change state, as ADR-0061 prescribes.
 - How a call ended (`ToolExecutionStatus`) is added to the grade-time transcript wire
-  as `tool_status`, only when recorded, so a payload without statuses is unchanged.
+  as `tool_status` when recorded. Only the transcript judge reads it, from the payload:
+  `decode_transcript_wire` leaves it off the decoded messages, because a trace timeline
+  built without tool-call records reads a call's status from the records alone, and a
+  status there would decide a `status:` matcher that is undecided today.
 - The agent tools the judge read as read-only are recorded: `JudgeResult` and the
   `JudgeReport` proto (field 18 on both wires) carry `agent_read_only_tools`, and
   `judge_inputs.yaml` stores it, because the bundle does not carry the tool schemas.
-  Replay rebuilds the whole view from the transcript, the recorded customization and
-  this list, and stamps `judge_evidence` in its provenance.
+  `JudgeReport.judge_evidence` (field 19, set only for a transcript judge) and
+  `grade.yaml` `judge_evidence` say which mode graded the trial, which an empty repeated
+  field cannot. Replay rebuilds the whole view from the transcript, the recorded
+  customization and this list, stamps `judge_evidence` in its provenance, and
+  `rejudge --evidence state|transcript` forces the mode over a whole run.
 
 ## Consequences
 
 ### Positive
 
-- A pack switches the judge to the cheaper mode with one key, and can A/B it through
-  `tolokaforge rejudge --grading`.
+- A pack switches the judge to the cheaper mode with one key, and can A/B it over a
+  recorded run with `tolokaforge rejudge --evidence transcript`.
 - The first runtime consumer of ADR-0061's `mutates_state`.
 - Every judge kind gains the mode without a change.
 
@@ -85,6 +96,11 @@ We will adopt **Option 1**.
   or the tool declares `mutates_state`.
 - `TRIAL_CONTRACT_VERSION` moves to 2: `TrialNodeInputs` and `TrialResult` gain
   optional fields.
+- The block states statuses in the engine's vocabulary, not a protocol's: an HTTP
+  code reaches the judge only through the first line of a failed call's result.
+- `read_only_calls` describes the agent's tools, yet lives under judge customization;
+  a per-call refinement of ADR-0061's `mutates_state` on the tool wire would serve
+  replay and metrics too, and is left to a later decision.
 
 ## Links
 

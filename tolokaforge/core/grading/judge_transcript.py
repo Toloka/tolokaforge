@@ -30,7 +30,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
+from tolokaforge.core.grading.judge_tools import read_only_policy
+from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
+from tolokaforge.tools.registry import Tool, ToolResult
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import ReadOnlyCallRule
@@ -43,6 +45,8 @@ __all__ = [
     "RecordedCall",
     "ShowCallTool",
     "TranscriptEvidence",
+    "call_arguments_brief",
+    "call_outcome",
     "message_text",
     "number_tool_results",
     "state_changing_calls",
@@ -56,6 +60,16 @@ SHOW_CALL_TOOL_NAME = "show_call"
 
 #: Characters of tool results one ``show_call`` answer returns, over all the calls it names.
 SHOW_CALL_MAX_CHARS = 12_000
+
+#: Characters of a call's arguments the state-changing block shows; the transcript
+#: shows them in full on the call itself.
+CALL_ARGUMENT_CHARS = 300
+
+#: Characters of the first line of a failed call's result the block shows.
+OUTCOME_HEAD_CHARS = 120
+
+#: The status of a call that succeeded (:class:`ToolExecutionStatus.SUCCESS`).
+SUCCESS_STATUS = "success"
 
 #: The status a call shows when its result carries none (a transcript from an
 #: engine that did not record it on the transcript wire).
@@ -128,22 +142,27 @@ def number_tool_results(
     A cut result says how many characters it left out and that ``show_call``
     returns them. Results are numbered in the order they arrive, the user's own
     tool steps included, so every result the transcript shows can be read in full.
+    A call and its result are joined by the episode-unique key of their id
+    (:mod:`tolokaforge.core.tool_call_ids`), so a provider that repeats an id
+    across turns still joins each call to its own result.
     """
-    calls_by_id = _calls_by_id(transcript)
+    declared = _declared_calls(transcript)
+    result_keys = EpisodeUniqueCallIds()
     messages: list[dict[str, Any]] = []
     results: dict[int, RecordedCall] = {}
-    number_by_id: dict[Any, int] = {}
+    number_by_key: dict[str, int] = {}
     for message in transcript:
         if message.get("role") != "tool":
             messages.append(dict(message))
             continue
         number = len(results) + 1
-        number_by_id.setdefault(message.get("tool_call_id"), number)
+        key = result_keys.assign(str(message.get("tool_call_id")))
+        number_by_key.setdefault(key, number)
+        call = declared.get(key)
         text = message_text(message.get("content"))
-        name, arguments = calls_by_id.get(message.get("tool_call_id"), ("?", ""))
         results[number] = RecordedCall(
-            name=name,
-            arguments=arguments,
+            name=call.name if call else "?",
+            arguments=call.arguments if call else "",
             number=number,
             result=text,
             status=str(message.get("tool_status") or UNKNOWN_STATUS),
@@ -152,8 +171,29 @@ def number_tool_results(
     return NumberedTranscript(
         messages=messages,
         results=results,
-        agent_calls=_agent_calls(transcript, results, number_by_id),
+        agent_calls=_agent_calls(declared, results, number_by_key),
     )
+
+
+def call_outcome(call: RecordedCall) -> str:
+    """How a call ended, for the state-changing block.
+
+    A call that did not succeed carries the first line of its result, cut at
+    :data:`OUTCOME_HEAD_CHARS` — where an HTTP tool states its status code
+    (``error: Status: 403``), which the engine's status vocabulary does not name.
+    """
+    head = next((line.strip() for line in call.result.splitlines() if line.strip()), "")
+    if call.status == SUCCESS_STATUS or not head:
+        return call.status
+    return f"{call.status}: {_brief(head, OUTCOME_HEAD_CHARS)}"
+
+
+def call_arguments_brief(call: RecordedCall) -> str:
+    """A call's arguments for the state-changing block, cut at :data:`CALL_ARGUMENT_CHARS`.
+
+    The transcript shows them in full on the call itself.
+    """
+    return _brief(call.arguments, CALL_ARGUMENT_CHARS)
 
 
 def state_changing_calls(
@@ -177,7 +217,7 @@ class ShowCallTool(Tool):
                 "into a long one. It shows what the agent saw, not the final state. "
                 "Read-only."
             ),
-            policy=ToolPolicy(timeout_s=15.0, category=ToolCategory.READ),
+            policy=read_only_policy(),
         )
         self._results = numbered.results
 
@@ -232,6 +272,10 @@ class ShowCallTool(Tool):
         return ToolResult(success=True, output="\n\n".join(parts))
 
 
+def _brief(text: str, limit: int) -> str:
+    return text if len(text) <= limit else f"{text[:limit]}…"
+
+
 def _cut(text: str, limit: int) -> str:
     if not text:
         return "(empty result)"
@@ -240,12 +284,25 @@ def _cut(text: str, limit: int) -> str:
     return f"{text[:limit]}\n[... {len(text) - limit} more characters; show_call returns them]"
 
 
-def _calls_by_id(transcript: Sequence[Mapping[str, Any]]) -> dict[Any, tuple[str, str]]:
-    calls: dict[Any, tuple[str, str]] = {}
+@dataclass(frozen=True)
+class _DeclaredCall:
+    role: str
+    name: str
+    arguments: str
+
+
+def _declared_calls(transcript: Sequence[Mapping[str, Any]]) -> dict[str, _DeclaredCall]:
+    """Every declared call by its episode-unique key, in declaration order."""
+    keys = EpisodeUniqueCallIds()
+    calls: dict[str, _DeclaredCall] = {}
     for message in transcript:
         for call in message.get("tool_calls") or []:
             function = call.get("function", call)
-            calls[call.get("id")] = (str(function.get("name", "?")), _arguments_text(function))
+            calls[keys.assign(str(call.get("id")))] = _DeclaredCall(
+                role=str(message.get("role")),
+                name=str(function.get("name", "?")),
+                arguments=_arguments_text(function),
+            )
     return calls
 
 
@@ -257,27 +314,25 @@ def _arguments_text(function: Mapping[str, Any]) -> str:
 
 
 def _agent_calls(
-    transcript: Sequence[Mapping[str, Any]],
+    declared: Mapping[str, _DeclaredCall],
     results: Mapping[int, RecordedCall],
-    number_by_id: Mapping[Any, int],
+    number_by_key: Mapping[str, int],
 ) -> tuple[RecordedCall, ...]:
     calls: list[RecordedCall] = []
-    for message in transcript:
-        if message.get("role") != "assistant":
+    for key, call in declared.items():
+        if call.role != "assistant":
             continue
-        for call in message.get("tool_calls") or []:
-            function = call.get("function", call)
-            number = number_by_id.get(call.get("id"))
-            answered = results.get(number) if number is not None else None
-            calls.append(
-                RecordedCall(
-                    name=str(function.get("name", "?")),
-                    arguments=_arguments_text(function),
-                    number=number,
-                    result=answered.result if answered else "",
-                    status=answered.status if answered else NO_RESULT_STATUS,
-                )
+        number = number_by_key.get(key)
+        answered = results.get(number) if number is not None else None
+        calls.append(
+            RecordedCall(
+                name=call.name,
+                arguments=call.arguments,
+                number=number,
+                result=answered.result if answered else "",
+                status=answered.status if answered else NO_RESULT_STATUS,
             )
+        )
     return tuple(calls)
 
 
@@ -289,9 +344,14 @@ def _rule_matches(rule: ReadOnlyCallRule, call: RecordedCall) -> bool:
     arguments = _parsed_arguments(call.arguments)
     for path, allowed in rule.arguments.items():
         found, value = _value_at(arguments, path)
-        if not found or value not in allowed:
+        if not found or not any(_same_value(value, candidate) for candidate in allowed):
             return False
     return True
+
+
+def _same_value(value: Any, candidate: Any) -> bool:
+    """Equal and of the same JSON type: ``true`` is not ``1``, and ``1`` is not ``1.0``."""
+    return type(value) is type(candidate) and value == candidate
 
 
 def _parsed_arguments(arguments: str) -> Any:

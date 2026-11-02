@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
@@ -427,25 +426,23 @@ def test_a_project_transcript_judge_reaches_the_task_and_the_wire(tmp_path: Path
     assert "transcript_tool_chars" not in wire
 
 
-def test_a_task_returns_to_the_state_judge_by_resetting_the_project_rules(tmp_path: Path):
-    """A task that sets ``evidence: state`` under a project's transcript rules must
-    reset them too: a rule a state judge never reads is refused, not ignored."""
-    project = _judge_defaults(
-        {"evidence": "transcript", "read_only_calls": [{"tool": "rest_call"}]}
-    )
+def test_a_project_declares_read_rules_once_and_a_task_opts_into_the_mode(tmp_path: Path):
+    """The rules are inert under a state judge, so a project can carry them for every
+    task while each task picks its own evidence."""
+    project = _judge_defaults({"read_only_calls": [{"tool": "rest_call"}]})
 
-    with pytest.raises(ValidationError, match="apply only to evidence: transcript"):
-        _build_task(
-            tmp_path / "kept", _rubric_grading({"evidence": "state"}), project_task_defaults=project
-        ).to_task_description("rubric_task")
-
-    adapter = _build_task(
-        tmp_path / "reset",
-        _rubric_grading({"evidence": "state", "read_only_calls": []}),
+    state_task = _build_task(tmp_path / "state", _rubric_grading(), project_task_defaults=project)
+    transcript_task = _build_task(
+        tmp_path / "transcript",
+        _rubric_grading({"evidence": "transcript"}),
         project_task_defaults=project,
     )
-    wire = json.loads(adapter.to_task_description("rubric_task").model_dump_json())
-    assert "evidence" not in wire["grading"]["llm_judge"]["customization"]
+
+    state = state_task.to_task_description("rubric_task").grading.llm_judge.customization
+    transcript = transcript_task.to_task_description("rubric_task").grading.llm_judge.customization
+    assert state.evidence == "state" and state.read_only_calls[0].tool == "rest_call"
+    assert transcript.evidence == "transcript"
+    assert transcript.read_only_calls[0].tool == "rest_call"
 
 
 def test_leaving_judge_snippet_chars_off_keeps_the_serialization_schema():

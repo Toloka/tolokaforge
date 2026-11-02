@@ -222,6 +222,11 @@ class Grade(BaseModel):
     # policy included / gated out. Serialized inline in ``grade.yaml``. See
     # docs/OUTPUT_FORMAT.md.
     judge_agent_prompt_included: bool | None = None
+    # ``transcript`` when a transcript-only judge graded the trial
+    # (``grading.llm_judge.customization.evidence: transcript``); absent for a judge
+    # over the final state and when no judge ran. Serialized inline in ``grade.yaml``.
+    # See docs/GRADING.md § Transcript-only judge.
+    judge_evidence: Literal["transcript"] | None = None
     # Which trajectory ``TerminationReason`` a ``TrialGrader`` synthesised this
     # grade from — populated only on the harness auto-fail branches
     # (``ERROR``/``TIMEOUT``/``STUCK_DETECTED``/``EMPTY_COMPLETION``), where no
@@ -243,7 +248,7 @@ class Grade(BaseModel):
     comparison_view: dict[str, Any] | None = None
 
     omitted_when_absent: ClassVar[frozenset[str]] = frozenset(
-        {"comparison_view", "state_snapshots"}
+        {"comparison_view", "state_snapshots", "judge_evidence"}
     )
     """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
 

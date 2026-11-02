@@ -42,6 +42,7 @@ from tolokaforge.core.failure_attribution import TrialOutcomeClass
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
     REPLAY_UNAVAILABLE,
+    EvidenceMode,
     FidelityMode,
     GradingOverride,
     KnowledgeSearchMode,
@@ -1428,6 +1429,47 @@ def test_a_recorded_evidence_the_model_refuses_fails_loud(tmp_path: Path) -> Non
 
     with pytest.raises(MissingReplayInputError, match="evidence fields"):
         read_replay_inputs(trial_dir, grading_override=_grading_override())
+
+
+def test_forcing_a_transcript_replay_keeps_the_recorded_read_rules(tmp_path: Path) -> None:
+    """A project's read rules are recorded under a state judge too, so a forced
+    transcript replay of a state run grades with them."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(
+            state_diff_text="orders[O-1]: refunded false -> true",
+            read_tools_offered=["get_db_state", "query_db"],
+        ),
+        recorded_customization={"read_only_calls": [{"tool": "get_order"}]},
+    )
+
+    recorded = read_replay_inputs(trial_dir)
+    forced = read_replay_inputs(trial_dir, evidence=EvidenceMode.TRANSCRIPT)
+
+    assert recorded.options.transcript_evidence is None
+    assert recorded.provenance.judge_evidence_source is None
+    evidence = forced.options.transcript_evidence
+    assert evidence is not None
+    assert [rule.tool for rule in evidence.read_only_calls] == ["get_order"]
+    assert forced.db_reader is None and forced.state_diff is None
+    assert forced.provenance.judge_evidence == "transcript"
+    assert forced.provenance.judge_evidence_source is ProvenanceSource.OVERRIDE
+    assert forced.provenance.judge_evidence_mode is EvidenceMode.TRANSCRIPT
+
+
+def test_forcing_a_state_replay_of_a_transcript_run_is_refused(tmp_path: Path) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(agent_read_only_tools=[]),
+        recorded_customization=_TRANSCRIPT_EVIDENCE,
+    )
+
+    with pytest.raises(MissingReplayInputError, match="recorded no state diff"):
+        read_replay_inputs(trial_dir, evidence=EvidenceMode.STATE)
 
 
 def test_a_defaulted_evidence_stamp_can_only_be_state() -> None:

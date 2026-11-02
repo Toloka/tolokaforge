@@ -1669,6 +1669,9 @@ layers.
   whether a block physically appeared — a trial with an empty agent prompt still
   reads `true` under the default. See
   [`docs/GRADING.md`](GRADING.md#gating-the-agents-policy-out-of-the-judges-evidence).
+* `judge_evidence` — `transcript` when a
+  [transcript-only judge](GRADING.md#transcript-only-judge) graded the trial; the key is
+  absent for a judge over the final state and when no judge ran.
 ### Custom-checks fields
 
 `components.custom_checks` and `custom_checks_details` are populated only when
@@ -1886,6 +1889,7 @@ judge_snippet_chars: 200            # characters of each hit the judge's search_
 judge_snippet_chars_source: null    # "recorded" | "override" | null (defaulted to 200)
 judge_evidence: state               # "state" | "transcript": what the judge graded from
 judge_evidence_source: null         # "recorded" | "override" | null (defaulted to state)
+judge_evidence_mode: recorded       # the --evidence value: recorded | state | transcript
 fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)
 ```
 
@@ -1920,7 +1924,8 @@ recorded value, no override). See
 
 `judge_evidence` / `judge_evidence_source` resolve the same way from
 `llm_judge.customization.evidence`: a `--grading` override sets it only when it carries
-its own `evidence` (and takes `transcript_tool_chars` and `read_only_calls` with it), and
+its own `evidence` (and takes `transcript_tool_chars` and `read_only_calls` with it),
+`--evidence state|transcript` forces it (`judge_evidence_source: override`), and
 `judge_evidence_source` is `null` exactly when the judge defaulted to `state`.
 
 ### `replay_report.yaml`

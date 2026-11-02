@@ -56,6 +56,8 @@ from tolokaforge.core.grading.judge_transcript import (
     RecordedCall,
     ShowCallTool,
     TranscriptEvidence,
+    call_arguments_brief,
+    call_outcome,
     message_text,
     number_tool_results,
     state_changing_calls,
@@ -533,7 +535,8 @@ def _build_transcript_opening_message(
         f"{format_transcript(numbered.messages)}\n"
         "===== END TRANSCRIPT =====\n\n"
         "Below are the agent's calls that can change state, in the order it made "
-        "them, each with how it ended. Their arguments carry what the agent wrote.\n"
+        "them, each with how it ended (a failed call with the first line of its "
+        "result). Long arguments are cut here; the transcript shows each call in full.\n"
         "===== STATE-CHANGING CALLS =====\n"
         f"{call_lines}\n"
         "===== END STATE-CHANGING CALLS =====\n\n"
@@ -545,9 +548,8 @@ def _build_transcript_opening_message(
 
 def _state_changing_call_line(call: RecordedCall) -> str:
     reference = f"[call {call.number}]" if call.number is not None else "[no result]"
-    return (
-        f"{reference} {_neutralise_judge_delimiters(call.name)}"
-        f"({_neutralise_judge_delimiters(call.arguments)}) -> {call.status}"
+    return _neutralise_judge_delimiters(
+        f"{reference} {call.name}({call_arguments_brief(call)}) -> {call_outcome(call)}"
     )
 
 
@@ -809,16 +811,14 @@ class LLMJudge:
         """
         logger = self._logger or get_logger("rubric_judge")
         evidence = self._transcript_evidence
+        numbered: NumberedTranscript | None = None
+        show_call: ShowCallTool | None = None
+        agent_read_only_tools: tuple[str, ...] | None = None
         if evidence is not None:
             _refuse_state_for_transcript_judge(db_reader, workspace_dir, state_diff)
-        numbered = (
-            number_tool_results(transcript, tool_result_chars=evidence.tool_result_chars)
-            if evidence is not None
-            else None
-        )
-        agent_read_only_tools = (
-            tuple(sorted(evidence.read_only_tools)) if evidence is not None else None
-        )
+            numbered = number_tool_results(transcript, tool_result_chars=evidence.tool_result_chars)
+            show_call = ShowCallTool(numbered, tool_result_chars=evidence.tool_result_chars)
+            agent_read_only_tools = tuple(sorted(evidence.read_only_tools))
         metrics = _JudgeMetricsSink()
         guarded_reader = _RefusalRecordingDBReader(db_reader) if db_reader is not None else None
 
@@ -836,11 +836,7 @@ class LLMJudge:
             workspace_dir=workspace_dir,
             disable_knowledge_search=self._disable_knowledge_search,
             judge_snippet_chars=self._judge_snippet_chars,
-            show_call=(
-                ShowCallTool(numbered, tool_result_chars=evidence.tool_result_chars)
-                if numbered is not None and evidence is not None
-                else None
-            ),
+            show_call=show_call,
             logger=logger,
         )
         tool_executor = ToolExecutor(registry)

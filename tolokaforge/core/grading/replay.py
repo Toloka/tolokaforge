@@ -92,6 +92,7 @@ __all__ = [
     "REPLAY_UNAVAILABLE",
     "FidelityMode",
     "GradingOverride",
+    "EvidenceMode",
     "KnowledgeSearchMode",
     "MissingReplayInputError",
     "OfflineDBReader",
@@ -134,6 +135,20 @@ class KnowledgeSearchMode(str, Enum):
     RECORDED = "recorded"
     ON = "on"
     OFF = "off"
+
+
+class EvidenceMode(str, Enum):
+    """What a replayed judge grades from, mirroring ``--evidence``.
+
+    ``RECORDED`` honours the bundle's ``customization.evidence`` (or a ``--grading``
+    override setting it); ``STATE`` / ``TRANSCRIPT`` force it, keeping the recorded
+    (or overriding) ``transcript_tool_chars`` and ``read_only_calls``. A bundle a
+    transcript judge graded carries no view of the state, so ``STATE`` refuses it.
+    """
+
+    RECORDED = "recorded"
+    STATE = "state"
+    TRANSCRIPT = "transcript"
 
 
 class TrialEligibility(str, Enum):
@@ -296,9 +311,11 @@ class ReplayProvenance(BaseModel):
     # What the judge graded from — ``state`` or ``transcript``
     # (``customization.evidence``) — and where it came from: RECORDED (the bundle's
     # task.yaml customization) or OVERRIDE (a --grading override setting
-    # ``evidence``); None when neither sets it, which is always ``state``.
+    # ``evidence``, or ``--evidence`` forcing it); None when nothing sets it, which
+    # is always ``state``. ``judge_evidence_mode`` is the ``--evidence`` value.
     judge_evidence: Literal["state", "transcript"] = "state"
     judge_evidence_source: ProvenanceSource | None = None
+    judge_evidence_mode: EvidenceMode = EvidenceMode.RECORDED
     fidelity_mode: FidelityMode
     # Which :class:`JudgeKind` this replay dispatched through and where the
     # decision came from. RECORDED — resolved from the bundle's
@@ -738,26 +755,53 @@ def _resolve_judge_snippet_chars(
 
 
 def _resolve_judge_evidence(
-    trial_dir: Path, task: dict[str, Any] | None, grading_override: GradingOverride | None
+    trial_dir: Path,
+    task: dict[str, Any] | None,
+    grading_override: GradingOverride | None,
+    mode: EvidenceMode,
 ) -> tuple[JudgeCustomization | None, ProvenanceSource | None]:
     """Resolve what the judge grades from, with the transcript fields beside it.
 
-    Returns the customization carrying ``evidence`` (and, for ``transcript``, its
-    ``transcript_tool_chars`` / ``read_only_calls``), or ``None`` for a judge over
-    the state that nothing configured. The override wins only when it sets
-    ``evidence``, so a rubric-only ``--grading`` override never changes a recorded
-    mode. A recorded value the customization model refuses fails loud — the writer
-    never records one, so it is a corrupted or hand-edited bundle.
+    Returns the customization carrying ``evidence`` with its
+    ``transcript_tool_chars`` / ``read_only_calls``, or ``None`` for a judge over the
+    state that nothing configured. The override wins only when it sets ``evidence``,
+    so a rubric-only ``--grading`` override never changes a recorded mode; a forced
+    ``mode`` then replaces the evidence and keeps the fields beside it. A bundle a
+    transcript judge graded refuses a forced ``state``: it recorded no view of the
+    state to grade over. A recorded value the customization model refuses fails
+    loud — the writer never records one, so it is a corrupted or hand-edited bundle.
     """
+    recorded = _recorded_evidence_customization(trial_dir, task)
     if grading_override is not None and grading_override.evidence_customization is not None:
-        return grading_override.evidence_customization, ProvenanceSource.OVERRIDE
+        resolved, source = grading_override.evidence_customization, ProvenanceSource.OVERRIDE
+    elif recorded is not None and "evidence" in recorded.model_fields_set:
+        resolved, source = recorded, ProvenanceSource.RECORDED
+    else:
+        resolved, source = recorded, None
+    if mode is EvidenceMode.RECORDED:
+        return (resolved, source) if source is not None else (None, None)
+    if mode is EvidenceMode.STATE and recorded is not None and recorded.evidence == "transcript":
+        raise MissingReplayInputError(
+            f"--evidence state cannot replay {trial_dir}: a transcript judge graded it, "
+            "so the bundle recorded no state diff and no database reads to grade over"
+        )
+    base = resolved if resolved is not None else JudgeCustomization()
+    return base.model_copy(update={"evidence": mode.value}), ProvenanceSource.OVERRIDE
+
+
+def _recorded_evidence_customization(
+    trial_dir: Path, task: dict[str, Any] | None
+) -> JudgeCustomization | None:
+    """The bundle's recorded evidence fields, ``None`` when it recorded none of them."""
     llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
     customization = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
-    if not isinstance(customization, dict) or "evidence" not in customization:
-        return None, None
+    if not isinstance(customization, dict):
+        return None
     fields = {key: customization[key] for key in _EVIDENCE_FIELDS if key in customization}
+    if not fields:
+        return None
     try:
-        return JudgeCustomization.model_validate(fields), ProvenanceSource.RECORDED
+        return JudgeCustomization.model_validate(fields)
     except ValidationError as exc:
         raise MissingReplayInputError(
             f"recorded customization evidence fields in {trial_dir / TASK_FILENAME} "
@@ -856,6 +900,7 @@ def read_replay_inputs(
     grading_override: GradingOverride | None = None,
     judge_model_override: str | None = None,
     knowledge_search: KnowledgeSearchMode = KnowledgeSearchMode.RECORDED,
+    evidence: EvidenceMode = EvidenceMode.RECORDED,
 ) -> ReplayInputs:
     """Reconstruct the ``LLMJudge.run()`` inputs for one judge-eligible trial.
 
@@ -915,7 +960,7 @@ def read_replay_inputs(
         trial_dir, task, grading_override
     )
     evidence_customization, judge_evidence_source = _resolve_judge_evidence(
-        trial_dir, task, grading_override
+        trial_dir, task, grading_override, evidence
     )
 
     trajectory = Trajectory.model_validate(trajectory_raw)
@@ -962,6 +1007,7 @@ def read_replay_inputs(
             evidence_customization.evidence if evidence_customization is not None else "state"
         ),
         judge_evidence_source=judge_evidence_source,
+        judge_evidence_mode=evidence,
         fidelity_mode=fidelity_mode,
         judge_kind=judge_kind,
         judge_kind_source=judge_kind_source,
@@ -1143,6 +1189,7 @@ def build_replay_grade(result: JudgeResult) -> Grade:
         ),
         judge_custom_prompt=result.custom_system_prompt,
         judge_agent_prompt_included=result.include_agent_system_prompt,
+        judge_evidence="transcript" if result.evidence == "transcript" else None,
     )
 
 
@@ -1230,6 +1277,7 @@ def run_replay_batch(
     grading_override: GradingOverride | None = None,
     judge_model_override: str | None = None,
     knowledge_search: KnowledgeSearchMode = KnowledgeSearchMode.RECORDED,
+    evidence: EvidenceMode = EvidenceMode.RECORDED,
     dry_run: bool = False,
     judge_client: LLMClient | None = None,
     writer: TrialArtifactWriter | None = None,
@@ -1279,6 +1327,7 @@ def run_replay_batch(
                 grading_override=grading_override,
                 judge_model_override=judge_model_override,
                 knowledge_search=knowledge_search,
+                evidence=evidence,
             )
         except (MissingReplayInputError, ValidationError, RedactedBundleError) as exc:
             # ``RedactedBundleError`` is deliberately not a ``ValueError`` (see

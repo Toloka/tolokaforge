@@ -69,7 +69,7 @@ def resolve_judge_trial_options(
     customization: JudgeCustomization | None,
     *,
     override: JudgeGraderConfig | None = None,
-    agent_tools: Iterable[ToolSchema] = (),
+    agent_tools: Iterable[ToolSchema],
 ) -> JudgeTrialOptions:
     """The options a trial is judged with, from its task's customization.
 
@@ -79,6 +79,7 @@ def resolve_judge_trial_options(
     its ``None`` means "inherit", so it could not express whole documents.
     ``agent_tools`` are the trial's agent tool schemas; a transcript judge reads the
     ones declaring ``mutates_state: false`` as tools whose calls cannot change state.
+    Required: a caller that forgot them would list every read as a state change.
     """
     disable_knowledge_search = customization.disable_knowledge_search if customization else None
     custom_system_prompt = customization.system_prompt if customization else None

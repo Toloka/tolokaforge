@@ -23,6 +23,7 @@ from tolokaforge.core.duration import parse_duration
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
 from tolokaforge.core.grading.corpus_curation import CurationError, curate_corpus
 from tolokaforge.core.grading.replay import (
+    EvidenceMode,
     KnowledgeSearchMode,
     ReplayOutcomeStatus,
     ReplayReport,
@@ -1139,6 +1140,7 @@ def _print_rejudge_summary(
                 f"[green]{label.lower()}[/green] {rel} "
                 f"[dim](judge={model}, rubric={prov.rubric_source.value if prov else '?'}, "
                 f"kb={prov.knowledge_search_mode.value if prov else '?'}, "
+                f"evidence={prov.judge_evidence if prov else '?'}, "
                 f"fidelity={prov.fidelity_mode.value if prov else '?'})[/dim]"
             )
 
@@ -1225,6 +1227,17 @@ def _print_replay_report(report: ReplayReport) -> None:
     ),
 )
 @click.option(
+    "--evidence",
+    "evidence",
+    type=click.Choice([m.value for m in EvidenceMode]),
+    default=EvidenceMode.RECORDED.value,
+    help=(
+        "What the judge grades from: 'recorded' honours the bundle (or --grading), "
+        "'state'/'transcript' force it, keeping the recorded transcript_tool_chars and "
+        "read_only_calls. A trial a transcript judge graded refuses 'state'. Default: recorded."
+    ),
+)
+@click.option(
     "--replay-id",
     default=None,
     help="Name for this replay's artifact subdirectory (default: timestamped id).",
@@ -1240,6 +1253,7 @@ def rejudge(
     judge_model: str | None,
     grading: str | None,
     knowledge_search: str,
+    evidence: str,
     replay_id: str | None,
     dry_run: bool,
 ):
@@ -1267,6 +1281,7 @@ def rejudge(
             grading_override=grading_override,
             judge_model_override=judge_model,
             knowledge_search=KnowledgeSearchMode(knowledge_search),
+            evidence=EvidenceMode(evidence),
             dry_run=dry_run,
         )
     except RedactedBundleError as exc:

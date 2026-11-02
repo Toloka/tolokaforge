@@ -2805,6 +2805,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     state_diff_text=judge_result.state_diff or "",
                     read_tools_offered=list(judge_result.read_tools_offered),
                     agent_read_only_tools=list(judge_result.agent_read_only_tools or ()),
+                    # optional: set only for a transcript judge, absent for a state judge
+                    judge_evidence=(
+                        "transcript" if judge_result.evidence == "transcript" else None
+                    ),
                     custom_system_prompt=judge_result.custom_system_prompt,
                     include_agent_system_prompt=judge_result.include_agent_system_prompt,
                 )
@@ -3097,17 +3101,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         judge_logger = _tolokaforge_logging.get_logger("rubric_judge")
 
         def _run() -> "JudgeResult":
-            state_diff_text = (
-                composite.build_judge_state_diff(
-                    trial_id=trial_id,
-                    substrate=substrate,
-                    initial_state_schemas=list(initial_state.schemas),
-                    id_fields=id_fields,
-                    unstable_fields=unstable_fields,
-                    logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
-                )
-                if composite.judge_reads_final_state(llm_judge_config)
-                else None
+            state_diff_text = composite.build_judge_state_diff(
+                trial_id=trial_id,
+                config=llm_judge_config,
+                substrate=substrate,
+                initial_state_schemas=list(initial_state.schemas),
+                id_fields=id_fields,
+                unstable_fields=unstable_fields,
+                logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
             )
             return grade_llm_judge(
                 trial_id=trial_id,

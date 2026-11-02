@@ -36,6 +36,7 @@ import pytest
 from tests.canonical._factories import make_trajectory
 from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
+from tolokaforge.core.grading.judge_transcript import TranscriptEvidence
 from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
@@ -51,6 +52,7 @@ from tolokaforge.runner.models import (
     Criterion,
     JudgeCustomization,
     LLMJudgeConfig,
+    ReadOnlyCallRule,
     Rubric,
     RunnerGradingConfig,
     RunnerInitialStateConfig,
@@ -74,11 +76,15 @@ class _CallSiteProbeJudgeKind:
 
     def evaluate(self, **kwargs: Any) -> JudgeResult:
         type(self).calls.append(kwargs)
+        evidence = kwargs["options"].transcript_evidence
         return JudgeResult(
             status=JudgeStatus.COMPLETED,
             usage=JudgeUsage(),
             reasons="call_site_probe reached",
             score=1.0,
+            agent_read_only_tools=(
+                tuple(sorted(evidence.read_only_tools)) if evidence is not None else None
+            ),
         )
 
 
@@ -137,11 +143,16 @@ def _rubric() -> Rubric:
     )
 
 
+_READ_RULE = ReadOnlyCallRule(tool="lookup", arguments={"verb": ["GET"]})
+
 _CUSTOMIZATION = JudgeCustomization(
     disable_knowledge_search=True,
     system_prompt="Grade against the probe's own voice.",
     include_agent_system_prompt=False,
     judge_snippet_chars=None,
+    evidence="transcript",
+    transcript_tool_chars=500,
+    read_only_calls=[_READ_RULE],
 )
 """Every field away from its default, so a dropped or defaulted one is visible."""
 
@@ -150,6 +161,7 @@ _EXPECTED_OPTIONS = JudgeTrialOptions(
     custom_system_prompt="Grade against the probe's own voice.",
     include_agent_system_prompt=False,
     judge_snippet_chars=None,
+    transcript_evidence=TranscriptEvidence(tool_result_chars=500, read_only_calls=(_READ_RULE,)),
 )
 
 _LOOSE_OPTION_KEYWORDS = frozenset(
@@ -172,11 +184,15 @@ def _llm_judge_config(*, with_kind_config: bool) -> LLMJudgeConfig:
 
 
 def _assert_every_option_forwarded() -> None:
-    """The site handed the kind one options object carrying the whole customization."""
+    """The site handed the kind one options object carrying the whole customization,
+    and — the customization asking for a transcript judge — no view of the state."""
     (call,) = _CallSiteProbeJudgeKind.calls
     assert call["options"] == _EXPECTED_OPTIONS
     assert isinstance(call["options"], JudgeTrialOptions)
     assert not _LOOSE_OPTION_KEYWORDS & set(call), "per-trial options travel in one object"
+    assert call["db_reader"] is None
+    assert call["workspace_dir"] is None
+    assert call["state_diff"] is None
 
 
 def _empty_substrate() -> InProcessGradingSubstrate:

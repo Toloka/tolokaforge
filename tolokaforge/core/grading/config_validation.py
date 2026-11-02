@@ -1123,6 +1123,7 @@ def inspect_grading_authoring(
             _check_tool_names(sites, inventory),
             _check_tool_expectation_names(rules.tool_expectations if rules else None, inventory),
             _check_required_action_names(rules.required_actions if rules else (), inventory),
+            _check_read_only_call_names(grading, inventory),
             _check_golden_action_names(grading, inventory),
             _check_argument_paths(sites, inventory),
             _check_bound_extractions(binders, inventory),
@@ -1388,6 +1389,39 @@ def _check_tool_expectation_names(
         for expectation, hazard in _TOOL_EXPECTATION_HAZARDS.items()
         for name in getattr(expectations, expectation)
         if name not in declared_set
+    )
+    return AuthoringReport(errors=errors)
+
+
+def _check_read_only_call_names(
+    grading: Mapping[str, Any], inventory: ToolInventory
+) -> AuthoringReport:
+    """A ``read_only_calls`` rule may only name a tool the agent of the task can call.
+
+    A transcript judge lists every agent call no rule marks as a read among the calls
+    that can change state, so a misspelled rule matches nothing and shows the judge
+    every read of the tool as a write — silently, on every trial.
+    """
+    llm_judge = grading.get("llm_judge")
+    customization = llm_judge.get("customization") if isinstance(llm_judge, Mapping) else None
+    rules = customization.get("read_only_calls") if isinstance(customization, Mapping) else None
+    if not isinstance(rules, list):
+        return AuthoringReport()
+    if inventory.actor_split_known:
+        declared_set = inventory.declared_by(ToolExecutorIdentity.AGENT)
+    else:
+        declared_set = inventory.declared
+    errors = tuple(
+        Finding(
+            f"llm_judge.customization.read_only_calls[{index}].tool",
+            f"tool {rule['tool']!r} is not declared by this task for the agent. The "
+            f"declared set is {sorted(declared_set)}: the rule matches no call, so a "
+            "transcript judge reads every call of the tool it meant as a state change",
+        )
+        for index, rule in enumerate(rules)
+        if isinstance(rule, Mapping)
+        and isinstance(rule.get("tool"), str)
+        and rule["tool"] not in declared_set
     )
     return AuthoringReport(errors=errors)
 

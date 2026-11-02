@@ -148,6 +148,7 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
     transcript = grade.judge_transcript
     custom_prompt = grade.judge_custom_prompt
     include_agent_prompt = grade.judge_agent_prompt_included
+    evidence = grade.judge_evidence
     if all(
         value is None
         for value in (
@@ -157,6 +158,7 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
             transcript,
             custom_prompt,
             include_agent_prompt,
+            evidence,
         )
     ):
         return
@@ -186,6 +188,8 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
         report.custom_system_prompt = custom_prompt
     if include_agent_prompt is not None:
         report.include_agent_system_prompt = include_agent_prompt
+    if evidence is not None:
+        report.judge_evidence = evidence
 
 
 def _trace_constraint_to_wire(r: TraceConstraintResult) -> grader_pb2.TraceConstraintResult:

@@ -26,7 +26,11 @@ from pydantic import ValidationError
 
 from tests.unit.grading.test_judge import MessageCapturingClient, ScriptedClient
 from tests.utils.wire_grades import lower_wire_grade
-from tolokaforge.core.grading.composite import grade_llm_judge, judge_reads_final_state
+from tolokaforge.core.grading.composite import (
+    build_judge_state_diff,
+    grade_llm_judge,
+    judge_reads_final_state,
+)
 from tolokaforge.core.grading.judge import LLMJudge
 from tolokaforge.core.grading.judge_kinds import resolve_judge_trial_options
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
@@ -37,11 +41,15 @@ from tolokaforge.core.grading.judge_transcript import (
     number_tool_results,
     state_changing_calls,
 )
+from tolokaforge.core.grading.trace_event_kind import TraceEventKind
+from tolokaforge.core.grading.trace_timeline import build_timeline_from_wire
 from tolokaforge.core.grading.transcript_wire import (
     decode_transcript_wire,
     encode_transcript_wire,
 )
 from tolokaforge.core.models import (
+    Grade,
+    GradeComponents,
     JudgeInputs,
     Message,
     MessageRole,
@@ -50,7 +58,11 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.models import JudgeStatus as CoreJudgeStatus
+from tolokaforge.core.models import JudgeUsage as CoreJudgeUsage
 from tolokaforge.core.trial_grader import _parse_grade_result
+from tolokaforge.grader.client import _grade_from_wire
+from tolokaforge.grader.service import _grade_to_wire
 from tolokaforge.runner import runner_pb2
 from tolokaforge.runner.models import (
     JudgeCustomization,
@@ -242,6 +254,63 @@ def test_unparseable_arguments_a_rule_must_read_fail_loud() -> None:
         state_changing_calls(numbered, _evidence())
 
 
+def test_a_repeated_call_id_still_joins_each_call_to_its_own_result() -> None:
+    """A provider that names calls ``<tool>:<index>`` repeats an id across turns."""
+    transcript = [
+        {"role": "assistant", "content": "", "tool_calls": [_call("pay:0", "pay", {"amount": 1})]},
+        {"role": "tool", "content": "declined", "tool_call_id": "pay:0", "tool_status": "error"},
+        {"role": "assistant", "content": "", "tool_calls": [_call("pay:0", "pay", {"amount": 2})]},
+        {"role": "tool", "content": "paid", "tool_call_id": "pay:0", "tool_status": "success"},
+    ]
+
+    numbered = number_tool_results(transcript, tool_result_chars=100)
+
+    assert [(c.number, c.arguments, c.status) for c in numbered.agent_calls] == [
+        (1, '{"amount": 1}', "error"),
+        (2, '{"amount": 2}', "success"),
+    ]
+    assert numbered.results[2].arguments == '{"amount": 2}'
+
+
+@pytest.mark.parametrize(("allowed", "value"), [([0], False), ([True], 1), ([1], 1.0), (["1"], 1)])
+def test_a_rule_value_matches_only_its_own_json_type(allowed: list[Any], value: Any) -> None:
+    transcript = [
+        {"role": "assistant", "content": "", "tool_calls": [_call("c1", "list", {"limit": value})]}
+    ]
+    rule = ReadOnlyCallRule(tool="list", arguments={"limit": allowed})
+    numbered = number_tool_results(transcript, tool_result_chars=10)
+
+    assert len(state_changing_calls(numbered, _evidence(read_only_calls=(rule,)))) == 1
+
+
+def test_a_failed_call_shows_the_head_of_its_result_and_long_arguments_are_cut() -> None:
+    long_body = "b" * 500
+    transcript = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("c1", "post", {"body": long_body})],
+        },
+        {
+            "role": "tool",
+            "content": "\nStatus: 409\nResponse: duplicate",
+            "tool_call_id": "c1",
+            "tool_status": "error",
+        },
+    ]
+    client = MessageCapturingClient([_submit_report()])
+
+    LLMJudge(_JUDGE_MODEL, transcript_evidence=_evidence(), llm_client=client).run(
+        rubric=_rubric(), agent_system_prompt="", transcript=transcript
+    )
+
+    opening = client.snapshots[0][0].content
+    line = opening.split("===== STATE-CHANGING CALLS =====\n")[1].split("\n")[0]
+    assert line.startswith('[call 1] post({"body": "bbb')
+    assert line.endswith("…) -> error: Status: 409")
+    assert long_body in opening.split("===== END TRANSCRIPT =====")[0]
+
+
 # ---------------------------------------------------------------------------
 # show_call
 # ---------------------------------------------------------------------------
@@ -321,7 +390,7 @@ def test_the_transcript_judge_reads_the_numbered_record_and_no_state() -> None:
     assert "[call 1] " in opening and "t" * 2001 not in opening
     calls_block = opening.split("===== STATE-CHANGING CALLS =====\n")[1].split("\n=====")[0]
     assert calls_block.startswith('[call 3] rest_call({"request": {"method": "POST"')
-    assert calls_block.endswith(") -> error")
+    assert calls_block.endswith(") -> error: Status: 403")
     assert "You cannot inspect the final state." in opening
     show_call_answer = next(
         m for m in result.transcript if m["role"] == "tool" and _LONG_ANSWER in m["content"]
@@ -385,13 +454,12 @@ def test_the_transcript_judge_refuses_a_view_of_the_state(state: dict[str, Any])
 # ---------------------------------------------------------------------------
 
 
-def test_the_transcript_fields_need_transcript_evidence() -> None:
-    with pytest.raises(ValidationError, match="apply only to evidence: transcript"):
-        JudgeCustomization(read_only_calls=[_GET_RULE])
-    with pytest.raises(ValidationError, match="apply only to evidence: transcript"):
-        JudgeCustomization(transcript_tool_chars=500)
+def test_the_transcript_fields_are_inert_under_a_state_judge() -> None:
+    """A project declares its tools' read rules once; a task opts into the mode."""
+    customization = JudgeCustomization(transcript_tool_chars=500, read_only_calls=[_GET_RULE])
 
-    assert JudgeCustomization(transcript_tool_chars=2000, read_only_calls=[]).evidence == "state"
+    assert customization.evidence == "state"
+    assert resolve_judge_trial_options(customization, agent_tools=()).transcript_evidence is None
 
 
 def test_the_transcript_fields_stay_off_the_dump_at_their_default() -> None:
@@ -435,7 +503,10 @@ def test_the_options_read_only_the_tools_declaring_no_mutation() -> None:
         read_only_tools=frozenset({"lookup_policy"}), read_only_calls=(_GET_RULE,)
     )
     assert resolve_judge_trial_options(None, agent_tools=tools).transcript_evidence is None
-    assert resolve_judge_trial_options(JudgeCustomization()).transcript_evidence is None
+    assert (
+        resolve_judge_trial_options(JudgeCustomization(), agent_tools=tools).transcript_evidence
+        is None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -448,16 +519,30 @@ class _ProbeJudgeKind:
 
     NAME: ClassVar[str] = "probe"
 
-    def __init__(self) -> None:
+    def __init__(self, *, honours_the_mode: bool = True) -> None:
         self.seen: dict[str, Any] = {}
+        self._honours_the_mode = honours_the_mode
 
     def evaluate(self, **kwargs: Any) -> JudgeResult:
         self.seen = kwargs
-        return JudgeResult(status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok")
+        evidence = kwargs["options"].transcript_evidence
+        read_only = (
+            tuple(sorted(evidence.read_only_tools))
+            if evidence is not None and self._honours_the_mode
+            else None
+        )
+        return JudgeResult(
+            status=JudgeStatus.COMPLETED,
+            usage=JudgeUsage(),
+            reasons="ok",
+            agent_read_only_tools=read_only,
+        )
 
 
-def _grade(config: LLMJudgeConfig, *, state_diff: str | None = None) -> _ProbeJudgeKind:
-    kind = _ProbeJudgeKind()
+def _grade(
+    config: LLMJudgeConfig, *, state_diff: str | None = None, kind: _ProbeJudgeKind | None = None
+) -> _ProbeJudgeKind:
+    kind = kind or _ProbeJudgeKind()
     grade_llm_judge(
         trial_id="t:0",
         config=config,
@@ -485,8 +570,38 @@ def test_the_composite_hands_a_transcript_judge_no_state() -> None:
     assert not judge_reads_final_state(config)
     assert seen["db_reader"] is None and seen["workspace_dir"] is None
     assert seen["options"].transcript_evidence.read_only_tools == frozenset({"lookup_policy"})
-    with pytest.raises(ValueError, match="consult judge_reads_final_state"):
+    with pytest.raises(ValueError, match="build_judge_state_diff builds none for it"):
         _grade(config, state_diff="orders: 1 changed")
+
+
+def test_a_judge_kind_that_ignores_the_transcript_mode_is_refused() -> None:
+    config = LLMJudgeConfig(
+        rubric=_rubric(), customization=JudgeCustomization(evidence="transcript")
+    )
+
+    with pytest.raises(ValueError, match="without honouring options.transcript_evidence"):
+        _grade(config, kind=_ProbeJudgeKind(honours_the_mode=False))
+
+
+def test_no_state_diff_is_built_for_a_transcript_judge() -> None:
+    substrate = MagicMock()
+    config = LLMJudgeConfig(
+        rubric=_rubric(), customization=JudgeCustomization(evidence="transcript")
+    )
+
+    diff = build_judge_state_diff(
+        trial_id="t:0",
+        config=config,
+        substrate=substrate,
+        initial_state_schemas=[],
+        id_fields={},
+        unstable_fields=set(),
+        logger=MagicMock(),
+    )
+
+    assert diff is None
+    substrate.initial_state.assert_not_called()
+    substrate.final_state.assert_not_called()
 
 
 def test_the_composite_hands_a_state_judge_its_state() -> None:
@@ -523,40 +638,62 @@ def _trajectory(status: ToolExecutionStatus | None) -> Trajectory:
     )
 
 
-def test_how_a_call_ended_crosses_the_transcript_wire() -> None:
+def test_how_a_call_ended_crosses_the_transcript_wire_for_the_judge_alone() -> None:
+    """The judge reads ``tool_status`` off the payload; the decoded messages a trace
+    timeline is built from leave it off, so a records-less timeline still reads a
+    call's status from the records alone and a ``status:`` matcher stays undecided."""
     wire = json.loads(encode_transcript_wire(_trajectory(ToolExecutionStatus.ERROR), "") or "[]")
 
     assert wire[1]["tool_status"] == "error"
-    assert decode_transcript_wire(wire)[1].tool_status is ToolExecutionStatus.ERROR
+    assert decode_transcript_wire(wire)[1].tool_status is None
+    timeline = build_timeline_from_wire(wire, [], None)
+    (result,) = [e for e in timeline.events if e.kind is TraceEventKind.TOOL_RESULT]
+    assert result.status is None
 
 
 def test_a_result_without_a_status_encodes_as_before() -> None:
     wire = json.loads(encode_transcript_wire(_trajectory(None), "") or "[]")
 
     assert "tool_status" not in wire[1]
-    assert decode_transcript_wire(wire)[1].tool_status is None
 
 
-def test_an_unknown_status_on_the_wire_fails_loud() -> None:
-    wire = json.loads(encode_transcript_wire(_trajectory(None), "") or "[]")
-    wire[1]["tool_status"] = "exploded"
-
-    with pytest.raises(ValueError, match="wire message 1 has tool_status 'exploded'"):
-        decode_transcript_wire(wire)
-
-
-def test_the_read_only_tools_reach_the_recorded_judge_inputs() -> None:
+@pytest.mark.parametrize("read_only", [["lookup_policy"], []])
+def test_a_transcript_judge_is_recorded_as_one_over_the_runner_wire(read_only: list[str]) -> None:
+    """``judge_evidence`` tells a transcript judge whose agent declared no read-only
+    tool from a state judge, which an empty repeated field alone cannot."""
     proto = runner_pb2.Grade(
         binary_pass=True,
         score=1.0,
         judge_status=runner_pb2.JUDGE_STATUS_COMPLETED,
-        judge_report=runner_pb2.JudgeReport(calls=1, agent_read_only_tools=["lookup_policy"]),
+        judge_report=runner_pb2.JudgeReport(
+            calls=1, agent_read_only_tools=read_only, judge_evidence="transcript"
+        ),
     )
 
-    inputs = _parse_grade_result(lower_wire_grade(proto)).judge_inputs
+    grade = _parse_grade_result(lower_wire_grade(proto))
 
-    assert inputs is not None
-    assert inputs.agent_read_only_tools == ["lookup_policy"]
+    assert grade.judge_evidence == "transcript"
+    assert grade.judge_inputs is not None
+    assert grade.judge_inputs.agent_read_only_tools == read_only
+
+
+@pytest.mark.parametrize("read_only", [["lookup_policy"], []])
+def test_a_transcript_judge_is_recorded_as_one_over_the_grader_wire(read_only: list[str]) -> None:
+    sent = Grade(
+        binary_pass=True,
+        score=1.0,
+        components=GradeComponents(llm_judge=1.0),
+        judge_status=CoreJudgeStatus.COMPLETED,
+        judge_usage=CoreJudgeUsage(calls=1),
+        judge_inputs=JudgeInputs(agent_read_only_tools=read_only),
+        judge_evidence="transcript",
+    )
+
+    received = _parse_grade_result(_grade_from_wire(_grade_to_wire(sent)))
+
+    assert received.judge_evidence == "transcript"
+    assert received.judge_inputs is not None
+    assert received.judge_inputs.agent_read_only_tools == read_only
 
 
 def test_a_state_judge_records_no_read_only_tools() -> None:
@@ -567,8 +704,11 @@ def test_a_state_judge_records_no_read_only_tools() -> None:
         judge_report=runner_pb2.JudgeReport(calls=1),
     )
 
-    inputs = _parse_grade_result(lower_wire_grade(proto)).judge_inputs
+    grade = _parse_grade_result(lower_wire_grade(proto))
+    inputs = grade.judge_inputs
 
+    assert grade.judge_evidence is None
+    assert "judge_evidence" not in grade.model_dump()
     assert inputs is not None and inputs.agent_read_only_tools is None
     assert "agent_read_only_tools" not in inputs.model_dump()
     assert JudgeInputs(agent_read_only_tools=["a"]).model_dump()["agent_read_only_tools"] == ["a"]

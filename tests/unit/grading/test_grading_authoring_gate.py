@@ -480,6 +480,23 @@ _RULES: tuple[_Rule, ...] = (
         "is short a required action on every trial",
     ),
     _Rule(
+        label="read_only_call_naming_an_undeclared_tool",
+        task=_HELPDESK,
+        grading={
+            "llm_judge": {
+                "rubric": {"criteria": [{"id": "told", "description": "Told", "kind": "binary"}]},
+                "customization": {
+                    "evidence": "transcript",
+                    "read_only_calls": [{"tool": "http_reqest"}],
+                },
+            }
+        },
+        checker="_check_read_only_call_names",
+        channel="errors",
+        message="tool 'http_reqest' is not declared by this task for the agent. The declared "
+        "set is ['http_request', 'write_file']: the rule matches no call",
+    ),
+    _Rule(
         label="required_action_whose_requestor_declares_no_such_tool",
         task=_HELPDESK,
         grading=_required_action("http_request", "user"),

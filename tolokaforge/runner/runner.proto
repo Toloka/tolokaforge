@@ -228,6 +228,8 @@ message GradeTrialRequest {
   // decode_transcript_wire rejects a payload whose tool_calls carry none.
   // The leading "system" message is the agent's policy, lifted out by
   // split_leading_system_message rather than replayed as a conversational turn.
+  // A "tool" message may carry "tool_status" (how its call ended), read by a
+  // transcript-only judge alone and left off the decoded messages.
   // Needed for transcript_rules and llm_judge grading; for hash-only grading
   // (TlkMcpCore, Tau) it can be omitted — the Runner has its own tool-call record.
   string llm_messages_json = 2;
@@ -400,6 +402,10 @@ message JudgeReport {
   // declaring mutates_state: false. Empty for a judge over the final state.
   // Offline replay rebuilds the judge's list of state-changing calls from it.
   repeated string agent_read_only_tools = 18;
+  // "transcript" when a transcript judge graded the trial; absent for a judge
+  // over the final state. Tells a transcript judge whose agent declared no
+  // read-only tool (an empty agent_read_only_tools) from a state judge.
+  optional string judge_evidence = 19;
 }
 
 // Outcome of running the rubric judge. Keeps a judge malfunction distinct from a

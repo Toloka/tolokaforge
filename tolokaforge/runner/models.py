@@ -2466,9 +2466,9 @@ class JudgeCustomization(BaseModel):
     ``transcript_tool_chars`` characters, the agent's calls that can change state
     with how each ended, and ``show_call``, which returns a cut result in full. A
     call can change state unless its tool declares ``mutates_state: false``
-    (ADR-0061) or it matches one of ``read_only_calls``. Both of those fields apply
-    only to the ``transcript`` judge, so setting either away from its default under
-    ``state`` is refused; a task resets a project's value by writing the default.
+    (ADR-0061) or it matches one of ``read_only_calls``. Both of those fields are
+    read by the ``transcript`` judge alone and are inert under ``state``, so a
+    project declares its tools' read rules once and each task opts into the mode.
     All three are left off the dump at their default.
 
     :func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns
@@ -2491,18 +2491,6 @@ class JudgeCustomization(BaseModel):
     read_only_calls: list[ReadOnlyCallRule] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
-
-    @model_validator(mode="after")
-    def _transcript_fields_need_transcript_evidence(self) -> JudgeCustomization:
-        if self.evidence == "transcript":
-            return self
-        if self.transcript_tool_chars != DEFAULT_TRANSCRIPT_TOOL_CHARS or self.read_only_calls:
-            raise ValueError(
-                "grading.llm_judge.customization.transcript_tool_chars and read_only_calls "
-                "apply only to evidence: transcript; set evidence: transcript, or reset "
-                f"them to their defaults ({DEFAULT_TRANSCRIPT_TOOL_CHARS} and [])."
-            )
-        return self
 
     @model_serializer(mode="wrap")
     @schema_from_the_fields

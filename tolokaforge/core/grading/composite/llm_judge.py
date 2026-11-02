@@ -3,8 +3,8 @@
 Every deployment shape's LLM-judge scoring goes through
 :func:`grade_llm_judge`. :func:`build_judge_state_diff` sits alongside as
 the runner-resolved passthrough helper the runner + grader wrappers call
-BEFORE :func:`grade_llm_judge` to prepare the ``state_diff`` kwarg — only when
-:func:`judge_reads_final_state` says the task's judge reads the final state.
+BEFORE :func:`grade_llm_judge` to prepare the ``state_diff`` kwarg; it builds none
+for a transcript judge (:func:`judge_reads_final_state`).
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge.core.grading.judge_kinds.options import resolve_judge_trial_options
-from tolokaforge.core.grading.judge_result import JudgeResult
+from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.transcript_wire import split_leading_system_message
@@ -80,8 +80,10 @@ def grade_llm_judge(
     for the tools that declare ``mutates_state: false``.
 
     A transcript judge (``customization.evidence: transcript``) is handed no DB
-    reader and no workspace, and a ``state_diff`` handed for it is refused: the
-    caller consults :func:`judge_reads_final_state` before building one.
+    reader and no workspace, and a ``state_diff`` handed for it is refused —
+    :func:`build_judge_state_diff` builds none for it. A judge kind that grades a
+    transcript judge's trial without honouring ``options.transcript_evidence`` is
+    refused too: it would grade as a state judge that was handed no state.
 
     Fail-loud contract: any judge malfunction — malformed
     ``submit_report`` past retries, budget/turn exhaustion, or a
@@ -103,10 +105,10 @@ def grade_llm_judge(
     reads_state = judge_reads_final_state(config)
     if not reads_state and state_diff is not None:
         raise ValueError(
-            "a state_diff was built for a transcript judge (customization.evidence: "
-            "transcript); the caller must consult judge_reads_final_state first"
+            "a state_diff was handed to a transcript judge (customization.evidence: "
+            "transcript); build_judge_state_diff builds none for it"
         )
-    return judge_kind.evaluate(
+    result = judge_kind.evaluate(
         rubric=config.rubric,
         agent_system_prompt=agent_system_prompt,
         transcript=transcript,
@@ -121,11 +123,20 @@ def grade_llm_judge(
         kind_config=kind_config,
         logger=logger,
     )
+    if not reads_state and result.status is JudgeStatus.COMPLETED and result.evidence == "state":
+        raise ValueError(
+            f"judge kind {config.judge_kind!r} completed a transcript judge's trial "
+            "(customization.evidence: transcript) without honouring "
+            "options.transcript_evidence; it graded with neither the state nor the "
+            "transcript view"
+        )
+    return result
 
 
 def build_judge_state_diff(
     *,
     trial_id: str,
+    config: LLMJudgeConfig,
     substrate: GradingSubstrate,
     initial_state_schemas: list[Any],
     id_fields: dict[str, str | list[str]],
@@ -133,6 +144,9 @@ def build_judge_state_diff(
     logger: StructuredLogger,
 ) -> str | None:
     """Render the ``initial → final`` DB state diff for the judge, or ``None``.
+
+    ``None`` without reading the state for a transcript judge
+    (:func:`judge_reads_final_state` false), which grades with no view of it.
 
     ``None`` is the diff-first default declining itself when there is nothing to
     diff against: an empty ``initial_state`` — the shape non-DB tasks carry, and
@@ -153,6 +167,8 @@ def build_judge_state_diff(
     by this call site are preserved. The judge's own fail-loud contract still
     governs grading.
     """
+    if not judge_reads_final_state(config):
+        return None
     initial_tables = substrate.initial_state()
     if not initial_tables:
         return None

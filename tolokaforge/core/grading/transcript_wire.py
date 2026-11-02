@@ -15,7 +15,11 @@ it produced are joined by id rather than by position. Parallel calls to one tool
 with identical arguments are distinguishable only that way. A result whose message
 recorded how the call ended carries it as ``tool_status`` (a
 :class:`~tolokaforge.tools.registry.ToolExecutionStatus` value); the key is left
-out otherwise, so a payload without statuses encodes as it always did.
+out otherwise. Only the transcript judge reads it, from the payload itself:
+:func:`decode_transcript_wire` leaves it off the decoded messages, because a trace
+timeline built without tool-call records reads a call's status from the records
+alone (docs/GRADING.md G6b), and a status there would turn an undecided ``status:``
+matcher into a decided one.
 
 ``Message.content_blocks``, ``Message.reasoning`` and ``Message.ts`` are not
 represented: a screenshot-only assistant turn crosses as ``content: ""``.
@@ -27,7 +31,6 @@ import json
 from typing import Any
 
 from tolokaforge.core.models import Message, MessageRole, ToolCall, Trajectory
-from tolokaforge.tools.registry import ToolExecutionStatus
 
 __all__ = [
     "decode_tool_call",
@@ -78,8 +81,9 @@ def decode_transcript_wire(messages: list[dict[str, Any]]) -> list[Message]:
     """Reconstruct the :class:`Message` list from a decoded wire payload.
 
     Inverse of :func:`encode_transcript_wire` over everything the wire carries:
-    role, content, ``tool_calls`` (id, name, arguments), ``tool_call_id`` and
-    ``tool_status``.
+    role, content, ``tool_calls`` (id, name, arguments) and ``tool_call_id`` — every
+    key but ``tool_status``, which is the transcript judge's alone (see the module
+    docstring).
     Every malformed shape raises, naming the offending message — a payload that
     cannot be reconstructed must not be silently degraded into an unlinkable
     trace.
@@ -97,20 +101,7 @@ def _decode_entry(entry: dict[str, Any], index: int) -> Message:
         content=entry["content"],
         tool_calls=[decode_tool_call(raw, index) for raw in raw_calls] or None,
         tool_call_id=entry.get("tool_call_id"),
-        tool_status=_decode_tool_status(entry.get("tool_status"), index),
     )
-
-
-def _decode_tool_status(raw: Any, index: int) -> ToolExecutionStatus | None:
-    if raw is None:
-        return None
-    try:
-        return ToolExecutionStatus(raw)
-    except ValueError as exc:
-        known = [status.value for status in ToolExecutionStatus]
-        raise ValueError(
-            f"wire message {index} has tool_status {raw!r}, not one of {known}"
-        ) from exc
 
 
 def decode_tool_call(raw: dict[str, Any], message_index: int) -> ToolCall:

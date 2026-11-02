@@ -934,8 +934,8 @@ grades from: `transcript` gives it no view of the final state (no state diff, no
 or workspace tools) and grades from the transcript, the agent's state-changing calls
 and `show_call` — see [GRADING.md](GRADING.md#transcript-only-judge).
 `transcript_tool_chars` (`int >= 1`, default `2000`) and `read_only_calls` (a list of
-`{tool, arguments}` rules) apply to the `transcript` judge only and are refused under
-`state` unless at their defaults. Omitting the block leaves the judge at the faithful
+`{tool, arguments}` rules) are read by the `transcript` judge alone and are inert under
+`state`. Omitting the block leaves the judge at the faithful
 default. Every judge
 kind receives these settings resolved as one `JudgeTrialOptions` (see
 [JUDGE_KINDS.md](JUDGE_KINDS.md#protocol-contract)). All fields
