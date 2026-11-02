@@ -835,6 +835,61 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         ),
     ),
     _WireKey(
+        path="grading.llm_judge.customization.evidence",
+        emitted_for="grading.llm_judge.customization.evidence",
+        wire_shape="Literal['state', 'transcript']",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.evidence",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack setting `customization.evidence: transcript`",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.transcript_tool_chars",
+        emitted_for="grading.llm_judge.customization.transcript_tool_chars",
+        wire_shape="int [ge=1, strict=True]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.transcript_tool_chars",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack setting `customization.transcript_tool_chars` other than 2000",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.read_only_calls",
+        emitted_for="grading.llm_judge.customization.read_only_calls",
+        wire_shape="list[ReadOnlyCallRule]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.read_only_calls",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack declaring `customization.read_only_calls`",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.read_only_calls[].tool",
+        emitted_for="grading.llm_judge.customization.read_only_calls",
+        wire_shape="str [min_length=1]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.read_only_calls[*].tool",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack declaring `customization.read_only_calls`",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.read_only_calls[].arguments",
+        emitted_for="grading.llm_judge.customization.read_only_calls",
+        wire_shape="dict[str, list[str | int | float | bool | None]]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.read_only_calls[*].arguments",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack declaring `customization.read_only_calls`",
+        ),
+    ),
+    _WireKey(
         path="grading.custom_checks",
         emitted_for="",
         wire_shape="dict[str, Any] | None",

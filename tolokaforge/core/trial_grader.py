@@ -537,6 +537,9 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_inputs = JudgeInputs(
             state_diff_text=raw_report.get("state_diff_text") or None,
             read_tools_offered=list(raw_report.get("read_tools_offered", [])),
+            # Empty on the wire for a judge over the state, and for a transcript
+            # judge whose agent declared no read-only tool: both replay alike.
+            agent_read_only_tools=list(raw_report.get("agent_read_only_tools", [])) or None,
         )
         raw_transcript = raw_report.get("transcript_json")
         if raw_transcript:
@@ -1399,6 +1402,7 @@ def judge_backed_trial_grader_factory(
             judge_model_config=spec.judge_model_config,
             trajectory=trajectory,
             agent_system_prompt=agent_system_prompt,
+            agent_tools=spec.task.agent_tools,
             override=override,
             llm_client=llm_client,
             logger=logger,

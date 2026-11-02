@@ -88,6 +88,7 @@ from tolokaforge.runner.grading_ledger import (
 from tolokaforge.runner.models import (
     RunnerGradingConfig,
     TaskDescription,
+    ToolSchema,
 )
 from tolokaforge.runner.protocol import parse_termination_reason
 
@@ -299,6 +300,7 @@ class GraderCompositeDispatch:
             llm_judge_config=grading_config.llm_judge,
             judge_model_config=judge_model_config,
             llm_messages=llm_messages,
+            agent_tools=task_description.agent_tools,
             substrate=substrate,
             initial_state_schemas=initial_state_schemas,
             id_fields=id_fields,
@@ -485,6 +487,7 @@ class GraderCompositeDispatch:
         llm_judge_config: Any,
         judge_model_config: ModelConfig | None,
         llm_messages: list[dict[str, Any]],
+        agent_tools: list[ToolSchema],
         substrate: GradingSubstrate,
         initial_state_schemas: list[Any],
         id_fields: dict[str, str | list[str]],
@@ -509,13 +512,17 @@ class GraderCompositeDispatch:
             return None, JudgeStatus.UNSPECIFIED, False, {LLM_JUDGE_KEY: NO_JUDGE_MESSAGES_SKIP}
         assert judge_model_config is not None, "llm_judge branch requires judge_model_config"
         judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
-        state_diff_text = composite.build_judge_state_diff(
-            trial_id=trial_id,
-            substrate=substrate,
-            initial_state_schemas=initial_state_schemas,
-            id_fields=id_fields,
-            unstable_fields=unstable_fields,
-            logger=self._logger,
+        state_diff_text = (
+            composite.build_judge_state_diff(
+                trial_id=trial_id,
+                substrate=substrate,
+                initial_state_schemas=initial_state_schemas,
+                id_fields=id_fields,
+                unstable_fields=unstable_fields,
+                logger=self._logger,
+            )
+            if composite.judge_reads_final_state(llm_judge_config)
+            else None
         )
         judge_result = composite.grade_llm_judge(
             trial_id=trial_id,
@@ -528,6 +535,7 @@ class GraderCompositeDispatch:
             judge_model_config=judge_model_config,
             extra_read_tools=[],
             state_diff=state_diff_text,
+            agent_tools=agent_tools,
             logger=self._logger,
         )
         accounted = {LLM_JUDGE_KEY: EVALUATED}
@@ -632,6 +640,11 @@ def _build_grade(
         judge_inputs = JudgeInputs(
             state_diff_text=judge_result.state_diff,
             read_tools_offered=list(judge_result.read_tools_offered),
+            agent_read_only_tools=(
+                list(judge_result.agent_read_only_tools)
+                if judge_result.agent_read_only_tools is not None
+                else None
+            ),
         )
         judge_custom_prompt = judge_result.custom_system_prompt
         judge_agent_prompt_included = judge_result.include_agent_system_prompt

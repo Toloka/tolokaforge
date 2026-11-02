@@ -1817,6 +1817,11 @@ read_tools_offered:
   and `read_file` (a workspace existed). The KB read surface lives in
   `grade.yaml` `judge_kb_gating`. A replay declares which of these live
   backends it must shim offline.
+* `agent_read_only_tools` — written only for a
+  [transcript-only judge](GRADING.md#transcript-only-judge): the agent tools it
+  read as unable to change state (those declaring `mutates_state: false`), whose
+  declarations the bundle does not carry. A replay rebuilds the judge's list of
+  state-changing calls from it. Absent for a judge over the state.
 
 ## `trials/{task_id}/{trial_index}/logs.yaml`
 
@@ -1879,6 +1884,8 @@ include_agent_system_prompt: true   # whether the agent policy was embedded in t
 agent_prompt_source: null           # "recorded" | "override" | null (defaulted to include)
 judge_snippet_chars: 200            # characters of each hit the judge's search_kb showed; null = whole documents
 judge_snippet_chars_source: null    # "recorded" | "override" | null (defaulted to 200)
+judge_evidence: state               # "state" | "transcript": what the judge graded from
+judge_evidence_source: null         # "recorded" | "override" | null (defaulted to state)
 fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)
 ```
 
@@ -1910,6 +1917,11 @@ recorded value, no override). See
 `--grading` override sets the length only when it carries its own
 `llm_judge.customization.judge_snippet_chars` (`null` included), and
 `judge_snippet_chars_source` is `null` exactly when the length defaulted to `200`.
+
+`judge_evidence` / `judge_evidence_source` resolve the same way from
+`llm_judge.customization.evidence`: a `--grading` override sets it only when it carries
+its own `evidence` (and takes `transcript_tool_chars` and `read_only_calls` with it), and
+`judge_evidence_source` is `null` exactly when the judge defaulted to `state`.
 
 ### `replay_report.yaml`
 

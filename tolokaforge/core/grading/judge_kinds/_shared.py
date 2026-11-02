@@ -32,6 +32,7 @@ CONSTRUCTION_FIELDS: tuple[str, ...] = (
     "include_agent_system_prompt",
     "read_tools_offered",
     "state_diff",
+    "agent_read_only_tools",
 )
 
 

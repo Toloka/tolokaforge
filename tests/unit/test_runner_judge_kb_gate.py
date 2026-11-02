@@ -426,6 +426,7 @@ class _FakeTaskDesc:
 
         self.initial_state = RunnerInitialStateConfig()
         self.grading = None
+        self.agent_tools: list = []
 
 
 class _JudgeCtx:

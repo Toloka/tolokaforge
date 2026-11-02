@@ -115,6 +115,12 @@ class JudgeResult:
     # so an offline replay can rebuild the judge's opening message from this exact
     # string rather than re-reading a live DB.
     state_diff: str | None = None
+    # The agent tools a transcript judge (``customization.evidence: transcript``)
+    # read as unable to change state — those declaring ``mutates_state: false``.
+    # ``None`` for a judge over the final state. Recorded because the tool schemas
+    # that declare it are not in the bundle, so an offline replay rebuilds the
+    # judge's list of state-changing calls from this exact set.
+    agent_read_only_tools: tuple[str, ...] | None = None
     # The judge's own message transcript (role / content / tool_calls dicts),
     # captured for audit/reproducibility (plan open question #2). Populated for
     # both COMPLETED and ERRORED runs — an errored judge's partial transcript is

@@ -26,6 +26,7 @@ answer the :class:`JudgeBackedTrialGrader` seam logs at the caller.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from tolokaforge.core.grading.judge_kinds.options import resolve_judge_trial_options
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
         Trajectory,
     )
     from tolokaforge.core.models.run_config import JudgeGraderConfig
+    from tolokaforge.runner.models import ToolSchema
 
 __all__ = [
     "run_judge_only_for_trajectory",
@@ -81,6 +83,7 @@ def run_judge_only_for_trajectory(
     judge_model_config: ModelConfig,
     trajectory: Trajectory,
     agent_system_prompt: str,
+    agent_tools: Sequence[ToolSchema],
     override: JudgeGraderConfig | None,
     llm_client: LLMClient | None,
     logger: StructuredLogger,
@@ -131,7 +134,9 @@ def run_judge_only_for_trajectory(
         state_diff=None,
         judge_model_config=judge_model_config,
         judge_model_provider=judge_model_provider,
-        options=resolve_judge_trial_options(llm_judge_config.customization, override=override),
+        options=resolve_judge_trial_options(
+            llm_judge_config.customization, override=override, agent_tools=agent_tools
+        ),
         kind_config=llm_judge_config.kind_config,
         logger=logger,
     )

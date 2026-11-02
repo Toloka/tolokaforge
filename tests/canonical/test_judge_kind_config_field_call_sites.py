@@ -195,6 +195,7 @@ class _FakeTaskDesc:
     def __init__(self) -> None:
         self.initial_state = RunnerInitialStateConfig()
         self.grading = None
+        self.agent_tools: list = []
 
 
 class _RunnerTrialCtx:
@@ -274,6 +275,7 @@ def test_grader_service_composite_dispatch_reads_judge_kind(
                 {"role": "user", "content": "please answer"},
                 {"role": "assistant", "content": "the answer is 42"},
             ],
+            agent_tools=[],
             substrate=substrate,
             initial_state_schemas=[],
             id_fields={},
@@ -400,6 +402,7 @@ def test_judge_only_helper_reads_judge_kind(probe_judge_kind_registered) -> None
         judge_model_config=_JUDGE_MODEL,
         trajectory=trajectory,
         agent_system_prompt="you are the agent",
+        agent_tools=[],
         override=None,
         llm_client=None,
         logger=StructuredLogger(name="probe"),

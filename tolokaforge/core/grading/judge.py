@@ -51,6 +51,15 @@ from tolokaforge.core.grading.judge_tools import (
     SearchKbTool,
     SubmitReportTool,
 )
+from tolokaforge.core.grading.judge_transcript import (
+    NumberedTranscript,
+    RecordedCall,
+    ShowCallTool,
+    TranscriptEvidence,
+    message_text,
+    number_tool_results,
+    state_changing_calls,
+)
 from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS, KnowledgeSearch
 from tolokaforge.core.grading.rubric import (
     GRADED_MET_THRESHOLD,
@@ -310,6 +319,8 @@ def _answer_terminating_submit_report(
 _JUDGE_UNTRUSTED_DELIMITERS: tuple[str, ...] = (
     "===== TRANSCRIPT =====",
     "===== END TRANSCRIPT =====",
+    "===== STATE-CHANGING CALLS =====",
+    "===== END STATE-CHANGING CALLS =====",
 )
 
 
@@ -352,12 +363,7 @@ def format_transcript(transcript: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for index, msg in enumerate(transcript):
         role = str(msg.get("role", "?")).upper()
-        content = msg.get("content")
-        if isinstance(content, list):
-            content = " ".join(
-                block.get("text", "") for block in content if isinstance(block, dict)
-            )
-        content = (content or "").strip()
+        content = message_text(msg.get("content"))
         if index in steps:
             lines.append(_user_tool_step_line(role, _neutralise_judge_delimiters(content)))
             content = content or "(tool result)"
@@ -455,12 +461,7 @@ def _build_opening_message(
     of the ``agent_system_prompt`` content — self-contained rubrics that do not
     want the agent's framing in the judge's context.
     """
-    policy_block = (
-        f"The agent under evaluation operated under this policy / system prompt:\n"
-        f"---\n{_neutralise_judge_delimiters(agent_system_prompt.strip())}\n---\n\n"
-        if include_agent_system_prompt and agent_system_prompt and agent_system_prompt.strip()
-        else ""
-    )
+    policy_block = _agent_policy_block(agent_system_prompt, include_agent_system_prompt)
     if state_diff and state_diff.strip():
         state_block = (
             "Below is a diff of the database state the agent changed "
@@ -493,6 +494,63 @@ def _build_opening_message(
     )
 
 
+def _agent_policy_block(agent_system_prompt: str, include_agent_system_prompt: bool) -> str:
+    """The opening message's agent-policy section, empty when gated off or blank."""
+    if not (include_agent_system_prompt and agent_system_prompt and agent_system_prompt.strip()):
+        return ""
+    return (
+        f"The agent under evaluation operated under this policy / system prompt:\n"
+        f"---\n{_neutralise_judge_delimiters(agent_system_prompt.strip())}\n---\n\n"
+    )
+
+
+def _build_transcript_opening_message(
+    agent_system_prompt: str,
+    numbered: NumberedTranscript,
+    evidence: TranscriptEvidence,
+    *,
+    include_agent_system_prompt: bool = True,
+) -> str:
+    """The opening message of a transcript judge: no view of the final state.
+
+    The transcript's tool results carry their ``[call N]`` and are cut at
+    ``evidence.tool_result_chars``; the agent's calls that can change state follow,
+    each with how it ended, so the judge reads what the agent did and wrote without
+    the state it left. ``show_call`` returns a cut result in full.
+    """
+    calls = state_changing_calls(numbered, evidence)
+    call_lines = (
+        "\n".join(_state_changing_call_line(call) for call in calls)
+        if calls
+        else "(none: the agent made no call that can change state)"
+    )
+    return (
+        f"{_agent_policy_block(agent_system_prompt, include_agent_system_prompt)}"
+        "Here is the full transcript of the agent's interaction. Each tool result "
+        "starts with its number, [call N], and a result longer than "
+        f"{evidence.tool_result_chars} characters is cut; show_call returns it in full.\n"
+        "===== TRANSCRIPT =====\n"
+        f"{format_transcript(numbered.messages)}\n"
+        "===== END TRANSCRIPT =====\n\n"
+        "Below are the agent's calls that can change state, in the order it made "
+        "them, each with how it ended. Their arguments carry what the agent wrote.\n"
+        "===== STATE-CHANGING CALLS =====\n"
+        f"{call_lines}\n"
+        "===== END STATE-CHANGING CALLS =====\n\n"
+        "You cannot inspect the final state. Grade each criterion from this record, "
+        "reading a cut result in full with show_call where a criterion depends on it, "
+        "then call submit_report."
+    )
+
+
+def _state_changing_call_line(call: RecordedCall) -> str:
+    reference = f"[call {call.number}]" if call.number is not None else "[no result]"
+    return (
+        f"{reference} {_neutralise_judge_delimiters(call.name)}"
+        f"({_neutralise_judge_delimiters(call.arguments)}) -> {call.status}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tool assembly — harness-owned read-only allowlist
 # ---------------------------------------------------------------------------
@@ -507,6 +565,7 @@ def _build_judge_registry(
     workspace_dir: Path | None,
     disable_knowledge_search: bool,
     judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
+    show_call: ShowCallTool | None = None,
     logger: StructuredLogger,
 ) -> tuple[ToolRegistry, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Build the read-only tool registry offered to the judge.
@@ -542,11 +601,16 @@ def _build_judge_registry(
       recorded in ``read_tools_offered`` so a replay of the resulting bundle
       re-offers them.
     * ``read_file`` — only when ``workspace_dir`` exists (the agent produced files).
+    * ``show_call`` — for a transcript judge. A pure function of the transcript, so
+      it is not in ``read_tools_offered``: a replay rebuilds it, never shims it.
     """
     registry = ToolRegistry()
     registry.register(SubmitReportTool(build_submit_report_tool(rubric)))
 
     offered = [SUBMIT_REPORT_TOOL_NAME]
+    if show_call is not None:
+        registry.register(show_call)
+        offered.append(show_call.name)
     read_tools_offered: list[str] = []
     if db_reader is not None:
         registry.register(GetDbStateTool(db_reader))
@@ -665,6 +729,13 @@ class LLMJudge:
 
     Passing both raises :class:`ValueError` at construction time — the two carry
     distinct semantics, and mixing them can only be a caller bug.
+
+    ``transcript_evidence`` makes a transcript-only judge
+    (``customization.evidence: transcript``, see
+    :mod:`~tolokaforge.core.grading.judge_transcript`): it reads the numbered, cut
+    transcript and the agent's state-changing calls, and gets ``show_call``.
+    :meth:`run` refuses a DB reader, workspace or state diff for it — the caller
+    withholds the final state, so a view of it reaching the judge is a caller bug.
     """
 
     def __init__(
@@ -679,6 +750,7 @@ class LLMJudge:
         explicit_system_prompt: str | None = None,
         include_agent_system_prompt: bool = True,
         judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
+        transcript_evidence: TranscriptEvidence | None = None,
         llm_client: JudgeModel | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
@@ -700,6 +772,7 @@ class LLMJudge:
         self._explicit_system_prompt = explicit_system_prompt
         self._include_agent_system_prompt = include_agent_system_prompt
         self._judge_snippet_chars = judge_snippet_chars
+        self._transcript_evidence = transcript_evidence
         self._llm_client = llm_client
         self._logger = logger
 
@@ -735,6 +808,17 @@ class LLMJudge:
                 state the judge never saw, so none is returned.
         """
         logger = self._logger or get_logger("rubric_judge")
+        evidence = self._transcript_evidence
+        if evidence is not None:
+            _refuse_state_for_transcript_judge(db_reader, workspace_dir, state_diff)
+        numbered = (
+            number_tool_results(transcript, tool_result_chars=evidence.tool_result_chars)
+            if evidence is not None
+            else None
+        )
+        agent_read_only_tools = (
+            tuple(sorted(evidence.read_only_tools)) if evidence is not None else None
+        )
         metrics = _JudgeMetricsSink()
         guarded_reader = _RefusalRecordingDBReader(db_reader) if db_reader is not None else None
 
@@ -752,6 +836,11 @@ class LLMJudge:
             workspace_dir=workspace_dir,
             disable_knowledge_search=self._disable_knowledge_search,
             judge_snippet_chars=self._judge_snippet_chars,
+            show_call=(
+                ShowCallTool(numbered, tool_result_chars=evidence.tool_result_chars)
+                if numbered is not None and evidence is not None
+                else None
+            ),
             logger=logger,
         )
         tool_executor = ToolExecutor(registry)
@@ -774,17 +863,22 @@ class LLMJudge:
             user_turn=None,
         )
 
-        messages: list[Message] = [
-            Message(
-                role=MessageRole.USER,
-                content=_build_opening_message(
-                    agent_system_prompt,
-                    transcript,
-                    state_diff,
-                    include_agent_system_prompt=self._include_agent_system_prompt,
-                ),
+        opening = (
+            _build_transcript_opening_message(
+                agent_system_prompt,
+                numbered,
+                evidence,
+                include_agent_system_prompt=self._include_agent_system_prompt,
             )
-        ]
+            if numbered is not None and evidence is not None
+            else _build_opening_message(
+                agent_system_prompt,
+                transcript,
+                state_diff,
+                include_agent_system_prompt=self._include_agent_system_prompt,
+            )
+        )
+        messages: list[Message] = [Message(role=MessageRole.USER, content=opening)]
         rubric_brief = _build_rubric_brief(rubric)
         base_prompt = (
             self._explicit_system_prompt
@@ -812,6 +906,7 @@ class LLMJudge:
                     include_agent_system_prompt=self._include_agent_system_prompt,
                     read_tools_offered=read_tools_offered,
                     state_diff=state_diff,
+                    agent_read_only_tools=agent_read_only_tools,
                 )
 
             if guarded_reader is not None:
@@ -831,6 +926,7 @@ class LLMJudge:
                     include_agent_system_prompt=self._include_agent_system_prompt,
                     read_tools_offered=read_tools_offered,
                     state_diff=state_diff,
+                    agent_read_only_tools=agent_read_only_tools,
                 )
 
             try:
@@ -857,6 +953,7 @@ class LLMJudge:
                         include_agent_system_prompt=self._include_agent_system_prompt,
                         read_tools_offered=read_tools_offered,
                         state_diff=state_diff,
+                        agent_read_only_tools=agent_read_only_tools,
                     )
                 logger.warning(
                     "Judge submit_report invalid; re-prompting", attempt=attempts, error=str(exc)
@@ -905,8 +1002,28 @@ class LLMJudge:
                 include_agent_system_prompt=self._include_agent_system_prompt,
                 read_tools_offered=read_tools_offered,
                 state_diff=state_diff,
+                agent_read_only_tools=agent_read_only_tools,
                 transcript=_serialize_judge_transcript(messages),
             )
+
+
+def _refuse_state_for_transcript_judge(
+    db_reader: DBReader | None, workspace_dir: Path | None, state_diff: str | None
+) -> None:
+    handed = [
+        name
+        for name, value in (
+            ("db_reader", db_reader),
+            ("workspace_dir", workspace_dir),
+            ("state_diff", state_diff),
+        )
+        if value is not None
+    ]
+    if handed:
+        raise ValueError(
+            "a transcript judge (customization.evidence: transcript) grades without the "
+            f"final state, yet was handed {', '.join(handed)}; the caller must withhold them"
+        )
 
 
 def _build_errored_judge_result(
@@ -921,6 +1038,7 @@ def _build_errored_judge_result(
     include_agent_system_prompt: bool,
     read_tools_offered: tuple[str, ...],
     state_diff: str | None,
+    agent_read_only_tools: tuple[str, ...] | None = None,
 ) -> JudgeResult:
     """Build a fail-loud ERRORED result — no score, no criterion results.
 
@@ -944,6 +1062,7 @@ def _build_errored_judge_result(
         include_agent_system_prompt=include_agent_system_prompt,
         read_tools_offered=read_tools_offered,
         state_diff=state_diff,
+        agent_read_only_tools=agent_read_only_tools,
         transcript=_serialize_judge_transcript(messages),
     )
 

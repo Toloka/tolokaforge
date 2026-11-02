@@ -242,6 +242,19 @@ override replaces it only when its own `llm_judge.customization` sets the key â€
 or `null` when it defaulted). The length reaches the judge kind inside the trial's
 `JudgeTrialOptions`, with the other customization values.
 
+## Transcript-only judge
+
+Replay reads `grading.llm_judge.customization.evidence` (with `transcript_tool_chars`
+and `read_only_calls`) from the bundle's `task.yaml`, and a `--grading` override
+replaces all three only when its own `llm_judge.customization` sets `evidence`.
+`replay_provenance.yaml` stamps `judge_evidence` and `judge_evidence_source`. A
+[transcript judge](GRADING.md#transcript-only-judge) replays without any view of the
+state: no DB shim, no `state_diff`, no `read_file` shim, whatever the bundle recorded.
+`show_call` is rebuilt from the recorded transcript, never shimmed. The agent tools it
+read as read-only come from `judge_inputs.yaml` `agent_read_only_tools`; a bundle that
+recorded none (a state judge replayed as a transcript judge through `--grading`) reads
+every call as one that can change state unless a `read_only_calls` rule marks it.
+
 ## New-vs-old bundle replayability
 
 - **New bundles** (recorded with a `judge_inputs.yaml`) replay at **full

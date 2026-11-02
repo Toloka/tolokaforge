@@ -204,6 +204,7 @@ message JudgeReport {
   reserved 16;
   reserved "chunk_boundaries_json";
   optional double billed_cost_usd = 17;
+  repeated string agent_read_only_tools = 18;
 }
 
 // TraceConstraintResult — mirrors runner.TraceConstraintResult including

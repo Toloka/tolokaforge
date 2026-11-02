@@ -112,13 +112,24 @@ class JudgeInputs(BaseModel):
     non-KB read-tool surface (``get_db_state`` / ``query_db`` / ``read_file`` — the
     KB surface lives in :class:`JudgeKbGating`). Written to a sidecar
     ``judge_inputs.yaml``, never inlined in ``grade.yaml`` (the diff can be large).
+    ``agent_read_only_tools`` is, for a transcript judge only, the agent tools it
+    read as unable to change state (their ``mutates_state: false`` is not in the
+    bundle); left out of the dump for any other judge.
     See docs/OUTPUT_FORMAT.md.
     """
 
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"agent_read_only_tools"})
+
     state_diff_text: str | None = None
     read_tools_offered: list[str] = Field(default_factory=list)
+    agent_read_only_tools: list[str] | None = None
 
     model_config = {"extra": "forbid"}
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _leave_out_absent_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return leave_out_absent_fields(self, handler)
 
 
 class CustomCheckDetail(BaseModel):

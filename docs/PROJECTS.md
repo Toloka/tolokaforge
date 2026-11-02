@@ -932,6 +932,14 @@ project figure; a task `null` overrides it with whole documents; a task undoes a
 project figure by writing `200`. See
 [GRADING.md](GRADING.md#llm-judge-rubric-grading).
 
+`customization.evidence`, `transcript_tool_chars` and `read_only_calls` layer by the
+same merge. The last two apply only to `evidence: transcript` and are refused under
+`state` away from their defaults, so a task that sets `evidence: state` under a
+project's transcript judge also writes `read_only_calls: []` (and
+`transcript_tool_chars: 2000` if the project changed it). A task's `read_only_calls`
+replaces the project's list. See
+[GRADING.md](GRADING.md#transcript-only-judge).
+
 ### Full override — replace entirely
 
 Some fields replace instead of merge:

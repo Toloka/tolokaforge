@@ -65,6 +65,7 @@ class JudgeTrialOptions:
     custom_system_prompt: str | None = None
     include_agent_system_prompt: bool = True
     judge_snippet_chars: int | None = 200
+    transcript_evidence: TranscriptEvidence | None = None
 ```
 
 **`NAME`** MUST equal the entry-point name the kind registers under — a
@@ -93,6 +94,7 @@ bundle. The fields:
 | `custom_system_prompt` | `null` | `system_prompt` — a body fragment replacing the default judge prompt; the marker contract is appended |
 | `include_agent_system_prompt` | `true` | `include_agent_system_prompt` — embed the agent's system prompt in the judge's evidence |
 | `judge_snippet_chars` | `200` | `judge_snippet_chars` — characters of each hit the judge's `search_kb` shows; `null` shows whole documents |
+| `transcript_evidence` | `null` | `evidence: transcript` with `transcript_tool_chars` and `read_only_calls`, plus the agent tools declaring `mutates_state: false` — a [transcript-only judge](GRADING.md#transcript-only-judge). `null` is the judge over the state. The composite hands a transcript judge no `db_reader`, `workspace_dir` or `state_diff`, so a kind wrapping `LLMJudge` passes the object on unchanged |
 
 A new customization knob is a field on `JudgeTrialOptions` whose default is
 the behaviour without the knob, so the `evaluate` signature does not change and

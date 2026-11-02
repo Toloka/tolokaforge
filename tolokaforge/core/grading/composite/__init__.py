@@ -34,6 +34,7 @@ from tolokaforge.core.grading.composite.custom_checks import (
 from tolokaforge.core.grading.composite.llm_judge import (
     build_judge_state_diff,
     grade_llm_judge,
+    judge_reads_final_state,
 )
 from tolokaforge.core.grading.composite.state_checks import (
     StateChecksReadResult,
@@ -51,4 +52,5 @@ __all__ = [
     "grade_state_checks_reads",
     "grade_trace_checks",
     "grade_transcript_rules",
+    "judge_reads_final_state",
 ]

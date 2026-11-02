@@ -3,12 +3,13 @@
 Every deployment shape's LLM-judge scoring goes through
 :func:`grade_llm_judge`. :func:`build_judge_state_diff` sits alongside as
 the runner-resolved passthrough helper the runner + grader wrappers call
-BEFORE :func:`grade_llm_judge` to prepare the ``state_diff`` kwarg.
+BEFORE :func:`grade_llm_judge` to prepare the ``state_diff`` kwarg — only when
+:func:`judge_reads_final_state` says the task's judge reads the final state.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge.core.grading.judge_kinds.options import resolve_judge_trial_options
@@ -24,7 +25,17 @@ if TYPE_CHECKING:
     from tolokaforge.core.grading.substrate import GradingSubstrate
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import ModelConfig
-    from tolokaforge.runner.models import LLMJudgeConfig
+    from tolokaforge.runner.models import LLMJudgeConfig, ToolSchema
+
+
+def judge_reads_final_state(config: LLMJudgeConfig) -> bool:
+    """Whether the task's judge reads the final state: ``False`` for a transcript judge.
+
+    A caller builds the judge's ``state_diff`` only when this holds; a transcript
+    judge (``customization.evidence: transcript``) grades without any view of the
+    final state, so building one would read the state for nothing.
+    """
+    return config.customization is None or config.customization.evidence != "transcript"
 
 
 def grade_llm_judge(
@@ -39,6 +50,7 @@ def grade_llm_judge(
     judge_model_config: ModelConfig,
     extra_read_tools: list[DelegatingReadTool],
     state_diff: str | None,
+    agent_tools: Sequence[ToolSchema],
     logger: StructuredLogger,
 ) -> JudgeResult:
     """Run the read-only rubric judge against ``substrate`` and return its verdict.
@@ -64,6 +76,12 @@ def grade_llm_judge(
     reaches the kind as one :class:`JudgeTrialOptions`, resolved here from
     ``config.customization`` (:func:`resolve_judge_trial_options`), so every
     caller of this function grades a task under the same options.
+    ``agent_tools`` are the trial's agent tool schemas, read by a transcript judge
+    for the tools that declare ``mutates_state: false``.
+
+    A transcript judge (``customization.evidence: transcript``) is handed no DB
+    reader and no workspace, and a ``state_diff`` handed for it is refused: the
+    caller consults :func:`judge_reads_final_state` before building one.
 
     Fail-loud contract: any judge malfunction — malformed
     ``submit_report`` past retries, budget/turn exhaustion, or a
@@ -82,18 +100,24 @@ def grade_llm_judge(
     the loop thread.
     """
     agent_system_prompt, transcript = split_leading_system_message(list(llm_messages))
+    reads_state = judge_reads_final_state(config)
+    if not reads_state and state_diff is not None:
+        raise ValueError(
+            "a state_diff was built for a transcript judge (customization.evidence: "
+            "transcript); the caller must consult judge_reads_final_state first"
+        )
     return judge_kind.evaluate(
         rubric=config.rubric,
         agent_system_prompt=agent_system_prompt,
         transcript=transcript,
-        db_reader=substrate.db_reader(),
+        db_reader=substrate.db_reader() if reads_state else None,
         kb_search=substrate.knowledge_search(),
-        workspace_dir=substrate.filesystem_root(),
+        workspace_dir=substrate.filesystem_root() if reads_state else None,
         extra_read_tools=list(extra_read_tools),
         state_diff=state_diff,
         judge_model_config=judge_model_config,
         judge_model_provider=judge_model_provider,
-        options=resolve_judge_trial_options(config.customization),
+        options=resolve_judge_trial_options(config.customization, agent_tools=agent_tools),
         kind_config=kind_config,
         logger=logger,
     )

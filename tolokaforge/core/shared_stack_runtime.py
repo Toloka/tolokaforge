@@ -772,6 +772,17 @@ class GrpcRunnerClient:
                                 if grade.judge_report.HasField("billed_cost_usd")
                                 else {}
                             ),
+                            # Only a transcript judge records it, so a report of a
+                            # judge over the state reads as it always did.
+                            **(
+                                {
+                                    "agent_read_only_tools": list(
+                                        grade.judge_report.agent_read_only_tools
+                                    )
+                                }
+                                if grade.judge_report.agent_read_only_tools
+                                else {}
+                            ),
                         }
                         if grade.HasField("judge_report")
                         else None

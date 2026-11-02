@@ -181,6 +181,7 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
         if inputs.state_diff_text is not None:
             report.state_diff_text = inputs.state_diff_text
         report.read_tools_offered.extend(inputs.read_tools_offered)
+        report.agent_read_only_tools.extend(inputs.agent_read_only_tools or ())
     if custom_prompt is not None:
         report.custom_system_prompt = custom_prompt
     if include_agent_prompt is not None:

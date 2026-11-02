@@ -839,6 +839,13 @@ llm_judge:                                 # the judge MODEL is set once per run
     judge_snippet_chars: null              # int >= 1 | null (default 200): how
                                            # much of each hit the judge's search_kb
                                            # shows; null = whole documents
+    evidence: transcript                   # state (default) | transcript: grade
+                                           # from the transcript alone, no state
+    transcript_tool_chars: 2000            # int >= 1 (default 2000): each tool
+                                           # result's inline length (transcript only)
+    read_only_calls:                       # calls that cannot change state
+      - tool: rest_call                    # (transcript only)
+        arguments: {request.method: [GET, HEAD]}
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth
       The correct order total is $42.50 with apple_pay.
@@ -922,7 +929,14 @@ each hit's content the judge's `search_kb` shows: the first that many characters
 or the whole document for `null`; it is not tri-state, so a task writes `200` to
 undo a project figure. It does not apply to a TypeSense task's `search_policy`
 passthrough (`DelegatingReadTool`), which renders the agent's own tool output
-verbatim. Omitting the block leaves the judge at the faithful default. Every judge
+verbatim. `evidence` (`state` | `transcript`, default `state`) is what the judge
+grades from: `transcript` gives it no view of the final state (no state diff, no DB
+or workspace tools) and grades from the transcript, the agent's state-changing calls
+and `show_call` — see [GRADING.md](GRADING.md#transcript-only-judge).
+`transcript_tool_chars` (`int >= 1`, default `2000`) and `read_only_calls` (a list of
+`{tool, arguments}` rules) apply to the `transcript` judge only and are refused under
+`state` unless at their defaults. Omitting the block leaves the judge at the faithful
+default. Every judge
 kind receives these settings resolved as one `JudgeTrialOptions` (see
 [JUDGE_KINDS.md](JUDGE_KINDS.md#protocol-contract)). All fields
 layer project→task (a project default under

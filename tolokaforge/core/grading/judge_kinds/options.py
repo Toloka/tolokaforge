@@ -17,18 +17,21 @@ recording where each value came from (:mod:`tolokaforge.core.grading.replay`).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from tolokaforge.core.grading.judge_transcript import TranscriptEvidence
 from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 
 if TYPE_CHECKING:
     from tolokaforge.core.models.run_config import JudgeGraderConfig
-    from tolokaforge.runner.models import JudgeCustomization
+    from tolokaforge.runner.models import JudgeCustomization, ToolSchema
 
 __all__ = [
     "JudgeTrialOptions",
     "resolve_judge_trial_options",
+    "resolve_transcript_evidence",
 ]
 
 
@@ -46,6 +49,9 @@ class JudgeTrialOptions:
     * ``judge_snippet_chars`` — how many characters of each hit the judge's
       ``search_kb`` shows; ``None`` shows whole documents
       (``customization.judge_snippet_chars``).
+    * ``transcript_evidence`` — how a transcript-only judge reads the trial
+      (``customization.evidence: transcript``); ``None`` is the judge over the final
+      state. A transcript judge is handed no DB reader, workspace or state diff.
 
     The defaults are what a task with no ``customization`` block is graded with.
     A kind honours every field as :class:`~tolokaforge.core.grading.judge.LLMJudge`
@@ -56,12 +62,14 @@ class JudgeTrialOptions:
     custom_system_prompt: str | None = None
     include_agent_system_prompt: bool = True
     judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
+    transcript_evidence: TranscriptEvidence | None = None
 
 
 def resolve_judge_trial_options(
     customization: JudgeCustomization | None,
     *,
     override: JudgeGraderConfig | None = None,
+    agent_tools: Iterable[ToolSchema] = (),
 ) -> JudgeTrialOptions:
     """The options a trial is judged with, from its task's customization.
 
@@ -69,6 +77,8 @@ def resolve_judge_trial_options(
     ``grader.judge`` block: each of its fields that is not ``None`` wins over the
     task's value, and ``None`` inherits it. It carries no ``judge_snippet_chars``:
     its ``None`` means "inherit", so it could not express whole documents.
+    ``agent_tools`` are the trial's agent tool schemas; a transcript judge reads the
+    ones declaring ``mutates_state: false`` as tools whose calls cannot change state.
     """
     disable_knowledge_search = customization.disable_knowledge_search if customization else None
     custom_system_prompt = customization.system_prompt if customization else None
@@ -93,4 +103,18 @@ def resolve_judge_trial_options(
             if customization is not None
             else DEFAULT_JUDGE_SNIPPET_CHARS
         ),
+        transcript_evidence=resolve_transcript_evidence(customization, agent_tools),
+    )
+
+
+def resolve_transcript_evidence(
+    customization: JudgeCustomization | None, agent_tools: Iterable[ToolSchema]
+) -> TranscriptEvidence | None:
+    """The transcript judge's reading of a trial, ``None`` for a judge over the state."""
+    if customization is None or customization.evidence != "transcript":
+        return None
+    return TranscriptEvidence(
+        tool_result_chars=customization.transcript_tool_chars,
+        read_only_tools=frozenset(tool.name for tool in agent_tools if tool.mutates_state is False),
+        read_only_calls=tuple(customization.read_only_calls),
     )

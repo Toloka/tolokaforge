@@ -67,6 +67,7 @@ class SingleShotRubricJudgeKind:
             custom_system_prompt=options.custom_system_prompt,
             include_agent_system_prompt=options.include_agent_system_prompt,
             judge_snippet_chars=options.judge_snippet_chars,
+            transcript_evidence=options.transcript_evidence,
             llm_client=judge_model,
             logger=logger,
         ).run(

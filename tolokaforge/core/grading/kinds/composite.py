@@ -449,13 +449,17 @@ class CompositeGraderKind:
         judge_gate_failed = False
         if task_config.llm_judge and llm_messages:
             judge_kind = load_judge_kind(task_config.llm_judge.judge_kind)()
-            state_diff_text = composite_mod.build_judge_state_diff(
-                trial_id=trial_id,
-                substrate=substrate,
-                initial_state_schemas=initial_state_schemas,
-                id_fields=id_fields,
-                unstable_fields=unstable_fields,
-                logger=logger,
+            state_diff_text = (
+                composite_mod.build_judge_state_diff(
+                    trial_id=trial_id,
+                    substrate=substrate,
+                    initial_state_schemas=initial_state_schemas,
+                    id_fields=id_fields,
+                    unstable_fields=unstable_fields,
+                    logger=logger,
+                )
+                if composite_mod.judge_reads_final_state(task_config.llm_judge)
+                else None
             )
             judge_result = composite_mod.grade_llm_judge(
                 trial_id=trial_id,
@@ -468,6 +472,7 @@ class CompositeGraderKind:
                 judge_model_config=judge_model_config,
                 extra_read_tools=[],
                 state_diff=state_diff_text,
+                agent_tools=task_description.agent_tools,
                 logger=logger,
             )
             if judge_result.status is JudgeRunStatus.ERRORED:

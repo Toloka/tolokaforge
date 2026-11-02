@@ -395,6 +395,11 @@ message JudgeReport {
   // upstream's bill on a BYOK call). Absent unless every call stated one;
   // cost_usd stays the eval's own figure either way.
   optional double billed_cost_usd = 17;
+  // For a transcript judge (grading.llm_judge.customization.evidence:
+  // transcript): the agent tools it read as unable to change state, those
+  // declaring mutates_state: false. Empty for a judge over the final state.
+  // Offline replay rebuilds the judge's list of state-changing calls from it.
+  repeated string agent_read_only_tools = 18;
 }
 
 // Outcome of running the rubric judge. Keeps a judge malfunction distinct from a

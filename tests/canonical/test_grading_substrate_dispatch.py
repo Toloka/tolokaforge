@@ -419,6 +419,7 @@ def _reassemble_grade_from_composite(
             judge_model_config=_JUDGE_MODEL,
             extra_read_tools=[],
             state_diff=state_diff_text,
+            agent_tools=[],
             logger=logger,  # type: ignore[arg-type]
         )
         accounted_keys[LLM_JUDGE_KEY] = EVALUATED

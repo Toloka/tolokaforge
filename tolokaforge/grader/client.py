@@ -231,4 +231,7 @@ def _judge_report_from_wire(report: grader_pb2.JudgeReport) -> dict:
     # Presence-gated too: absent means not every judge call stated a charge.
     if report.HasField("billed_cost_usd"):
         out["billed_cost_usd"] = report.billed_cost_usd
+    # Only a transcript judge records it, so a judge over the state reads as before.
+    if report.agent_read_only_tools:
+        out["agent_read_only_tools"] = list(report.agent_read_only_tools)
     return out

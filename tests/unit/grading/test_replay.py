@@ -19,6 +19,7 @@ YAML) so the tests exercise the same on-disk contract the eval writer produces.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import re
@@ -162,6 +163,7 @@ def _write_recorded_inputs(
     recorded_system_prompt: str | None = None,
     recorded_include_agent_system_prompt: bool | None = None,
     recorded_judge_snippet_chars: int | None | object = _NOT_RECORDED,
+    recorded_customization: dict[str, Any] | None = None,
 ) -> None:
     """Write everything a bundle records except its grade, via the real writer."""
     writer = FileArtifactWriter()
@@ -177,6 +179,7 @@ def _write_recorded_inputs(
             customization["include_agent_system_prompt"] = recorded_include_agent_system_prompt
         if recorded_judge_snippet_chars is not _NOT_RECORDED:
             customization["judge_snippet_chars"] = recorded_judge_snippet_chars
+        customization.update(recorded_customization or {})
         if customization:
             llm_judge["customization"] = customization
         grading_config = {"llm_judge": llm_judge}
@@ -204,6 +207,7 @@ def _write_bundle(
     recorded_system_prompt: str | None = None,
     recorded_include_agent_system_prompt: bool | None = None,
     recorded_judge_snippet_chars: int | None | object = _NOT_RECORDED,
+    recorded_customization: dict[str, Any] | None = None,
 ) -> Trajectory:
     """Write a new-shape bundle via the real writer; return the source trajectory."""
     trajectory = _trajectory()
@@ -215,6 +219,7 @@ def _write_bundle(
         recorded_system_prompt=recorded_system_prompt,
         recorded_include_agent_system_prompt=recorded_include_agent_system_prompt,
         recorded_judge_snippet_chars=recorded_judge_snippet_chars,
+        recorded_customization=recorded_customization,
     )
     FileArtifactWriter().write_grade(
         trial_dir,
@@ -1311,5 +1316,132 @@ def test_a_defaulted_snippet_stamp_can_only_be_the_default_length() -> None:
             agent_prompt_source=None,
             judge_snippet_chars=None,
             judge_snippet_chars_source=None,
+            fidelity_mode=FidelityMode.FULL,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Transcript evidence (customization.evidence: transcript)
+# ---------------------------------------------------------------------------
+
+_TRANSCRIPT_EVIDENCE = {
+    "evidence": "transcript",
+    "transcript_tool_chars": 500,
+    "read_only_calls": [{"tool": "get_order"}],
+}
+
+
+def test_a_recorded_transcript_judge_replays_without_the_state(tmp_path: Path) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(agent_read_only_tools=["lookup_policy"]),
+        recorded_customization=_TRANSCRIPT_EVIDENCE,
+    )
+
+    inputs = read_replay_inputs(trial_dir)
+
+    evidence = inputs.options.transcript_evidence
+    assert evidence is not None
+    assert evidence.tool_result_chars == 500
+    assert evidence.read_only_tools == frozenset({"lookup_policy"})
+    assert [rule.tool for rule in evidence.read_only_calls] == ["get_order"]
+    assert inputs.db_reader is None and inputs.state_diff is None
+    assert inputs.provenance.judge_evidence == "transcript"
+    assert inputs.provenance.judge_evidence_source is ProvenanceSource.RECORDED
+
+    client = _submit_report_client()
+    result = replay_trial(inputs, judge_client=client)
+    assert result.status is JudgeRunStatus.COMPLETED
+    assert client.seen_tool_names == ["submit_report", "show_call"]
+    assert result.agent_read_only_tools == ("lookup_policy",)
+
+
+def test_an_override_turns_a_state_bundle_into_a_transcript_replay(tmp_path: Path) -> None:
+    from tolokaforge.runner.models import JudgeCustomization
+
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(
+            state_diff_text="orders[O-1]: refunded false -> true",
+            read_tools_offered=["get_db_state", "query_db", "read_file"],
+        ),
+    )
+    override = dataclasses.replace(
+        _grading_override(),
+        evidence_customization=JudgeCustomization.model_validate(_TRANSCRIPT_EVIDENCE),
+    )
+
+    inputs = read_replay_inputs(trial_dir, grading_override=override)
+
+    assert inputs.provenance.judge_evidence_source is ProvenanceSource.OVERRIDE
+    assert inputs.options.transcript_evidence is not None
+    assert inputs.options.transcript_evidence.read_only_tools == frozenset()
+    assert inputs.db_reader is None and inputs.state_diff is None
+    assert inputs.extra_read_tools == []
+
+
+def test_a_state_bundle_replays_as_a_state_judge(tmp_path: Path) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=["get_db_state", "query_db"]),
+    )
+
+    inputs = read_replay_inputs(trial_dir, grading_override=_grading_override())
+
+    assert inputs.options.transcript_evidence is None
+    assert inputs.db_reader is not None
+    assert inputs.provenance.judge_evidence == "state"
+    assert inputs.provenance.judge_evidence_source is None
+
+
+def test_a_grading_override_file_carries_the_evidence_only_when_it_sets_it(
+    tmp_path: Path,
+) -> None:
+    setting = tmp_path / "setting.yaml"
+    setting.write_text(
+        yaml.safe_dump({"llm_judge": {"rubric": _RUBRIC, "customization": _TRANSCRIPT_EVIDENCE}})
+    )
+    silent = tmp_path / "silent.yaml"
+    silent.write_text(
+        yaml.safe_dump({"llm_judge": {"rubric": _RUBRIC, "customization": {"system_prompt": "x"}}})
+    )
+
+    carried = load_grading_override(setting).evidence_customization
+    assert carried is not None and carried.transcript_tool_chars == 500
+    assert load_grading_override(silent).evidence_customization is None
+
+
+def test_a_recorded_evidence_the_model_refuses_fails_loud(tmp_path: Path) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(),
+        recorded_customization={"evidence": "vibes"},
+    )
+
+    with pytest.raises(MissingReplayInputError, match="evidence fields"):
+        read_replay_inputs(trial_dir, grading_override=_grading_override())
+
+
+def test_a_defaulted_evidence_stamp_can_only_be_state() -> None:
+    with pytest.raises(ValueError, match="judge_evidence must be 'state'"):
+        ReplayProvenance(
+            judge_model="openai/gpt",
+            judge_model_source=ProvenanceSource.RECORDED,
+            rubric_source=ProvenanceSource.RECORDED,
+            knowledge_search_mode=KnowledgeSearchMode.RECORDED,
+            knowledge_search_disabled=False,
+            custom_system_prompt=False,
+            custom_prompt_source=None,
+            include_agent_system_prompt=True,
+            agent_prompt_source=None,
+            judge_evidence="transcript",
             fidelity_mode=FidelityMode.FULL,
         )

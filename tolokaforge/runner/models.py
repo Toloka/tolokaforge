@@ -71,6 +71,7 @@ from tolokaforge.core.grading.combine_method import CombineMethod, validate_comb
 from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, ComparisonViewRecord
 from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
+from tolokaforge.core.grading.judge_transcript import DEFAULT_TRANSCRIPT_TOOL_CHARS
 from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
 from tolokaforge.core.grading.regex_engine import RegexEngineKind
@@ -2393,6 +2394,39 @@ class CriterionResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class ReadOnlyCallRule(BaseModel):
+    """Calls of one agent tool that cannot change state, for a transcript-evidence judge.
+
+    A call matches when it calls ``tool`` and, for every entry of ``arguments``, the
+    value at that dotted path into the call's arguments is one of the listed values
+    (``request.method: [GET, HEAD]``); a path the call does not carry is no match.
+    An empty ``arguments`` matches every call of the tool. Values compare exactly.
+
+    The rule is how a task marks reads on a tool that both reads and writes, such
+    as an HTTP tool, whose ``mutates_state`` (ADR-0061) cannot say it per call.
+    """
+
+    tool: str = Field(min_length=1)
+    arguments: dict[str, list[str | int | float | bool | None]] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+    @field_validator("arguments")
+    @classmethod
+    def _paths_and_values_present(
+        cls, value: dict[str, list[str | int | float | bool | None]]
+    ) -> dict[str, list[str | int | float | bool | None]]:
+        for path, allowed in value.items():
+            if not path or any(not segment for segment in path.split(".")):
+                raise ValueError(f"read_only_calls argument path {path!r} has an empty segment")
+            if not allowed:
+                raise ValueError(
+                    f"read_only_calls argument path {path!r} lists no values; a path "
+                    "that matches nothing would make the rule match no call"
+                )
+        return value
+
+
 class JudgeCustomization(BaseModel):
     """Judge tool-surface customization, sibling of ``rubric`` under ``llm_judge``.
 
@@ -2425,21 +2459,50 @@ class JudgeCustomization(BaseModel):
     without it and an older image, which forbids a key it does not declare,
     accepts it.
 
+    ``evidence`` is what the judge grades from. ``state`` (the default) is today's
+    judge: the ``initial → final`` state diff and the read-only DB and workspace
+    tools. ``transcript`` withholds every view of the final state: the judge reads
+    the transcript with each tool result numbered ``[call N]`` and cut at
+    ``transcript_tool_chars`` characters, the agent's calls that can change state
+    with how each ended, and ``show_call``, which returns a cut result in full. A
+    call can change state unless its tool declares ``mutates_state: false``
+    (ADR-0061) or it matches one of ``read_only_calls``. Both of those fields apply
+    only to the ``transcript`` judge, so setting either away from its default under
+    ``state`` is refused; a task resets a project's value by writing the default.
+    All three are left off the dump at their default.
+
     :func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns
     a customization into the
     :class:`~tolokaforge.core.grading.judge_kinds.JudgeTrialOptions` a judge kind
     receives.
     """
 
-    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset({"judge_snippet_chars"})
+    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset(
+        {"judge_snippet_chars", "evidence", "transcript_tool_chars", "read_only_calls"}
+    )
     """Fields the dump leaves out while they hold their default value."""
 
     disable_knowledge_search: bool | None = None
     system_prompt: str | None = None
     include_agent_system_prompt: bool | None = None
     judge_snippet_chars: int | None = Field(default=DEFAULT_JUDGE_SNIPPET_CHARS, ge=1, strict=True)
+    evidence: Literal["state", "transcript"] = "state"
+    transcript_tool_chars: int = Field(default=DEFAULT_TRANSCRIPT_TOOL_CHARS, ge=1, strict=True)
+    read_only_calls: list[ReadOnlyCallRule] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _transcript_fields_need_transcript_evidence(self) -> JudgeCustomization:
+        if self.evidence == "transcript":
+            return self
+        if self.transcript_tool_chars != DEFAULT_TRANSCRIPT_TOOL_CHARS or self.read_only_calls:
+            raise ValueError(
+                "grading.llm_judge.customization.transcript_tool_chars and read_only_calls "
+                "apply only to evidence: transcript; set evidence: transcript, or reset "
+                f"them to their defaults ({DEFAULT_TRANSCRIPT_TOOL_CHARS} and [])."
+            )
+        return self
 
     @model_serializer(mode="wrap")
     @schema_from_the_fields

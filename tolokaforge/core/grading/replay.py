@@ -28,7 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ValidationError, model_validator
@@ -42,6 +42,7 @@ from tolokaforge.core.grading.judge import (
 from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeResult
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
+from tolokaforge.core.grading.judge_transcript import TranscriptEvidence
 from tolokaforge.core.grading.kb_search import (
     DEFAULT_JUDGE_SNIPPET_CHARS,
     KnowledgeSearch,
@@ -84,7 +85,7 @@ from tolokaforge.core.output_writer import (
     TRAJECTORY_FILENAME,
 )
 from tolokaforge.core.plugin_registry import load_judge_kind, load_judge_model_provider
-from tolokaforge.runner.models import LLMJudgeConfig, Rubric
+from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
 __all__ = [
@@ -292,6 +293,12 @@ class ReplayProvenance(BaseModel):
     # neither carries it, which is always the default length.
     judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
     judge_snippet_chars_source: ProvenanceSource | None = None
+    # What the judge graded from — ``state`` or ``transcript``
+    # (``customization.evidence``) — and where it came from: RECORDED (the bundle's
+    # task.yaml customization) or OVERRIDE (a --grading override setting
+    # ``evidence``); None when neither sets it, which is always ``state``.
+    judge_evidence: Literal["state", "transcript"] = "state"
+    judge_evidence_source: ProvenanceSource | None = None
     fidelity_mode: FidelityMode
     # Which :class:`JudgeKind` this replay dispatched through and where the
     # decision came from. RECORDED — resolved from the bundle's
@@ -359,6 +366,16 @@ class ReplayProvenance(BaseModel):
             raise ValueError(
                 "include_agent_system_prompt must be True when agent_prompt_source is "
                 f"None (got include_agent_system_prompt={self.include_agent_system_prompt})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _evidence_fields_coherent(self) -> ReplayProvenance:
+        """A defaulted stamp (``judge_evidence_source is None``) can only be ``state``."""
+        if self.judge_evidence_source is None and self.judge_evidence != "state":
+            raise ValueError(
+                "judge_evidence must be 'state' when judge_evidence_source is None "
+                f"(got judge_evidence={self.judge_evidence!r})"
             )
         return self
 
@@ -466,6 +483,9 @@ class GradingOverride:
     include_agent_system_prompt: bool | None
     judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
     carries_judge_snippet_chars: bool = False
+    # The override's customization when it sets ``evidence`` (with the transcript
+    # fields beside it); ``None`` leaves the recorded evidence untouched.
+    evidence_customization: JudgeCustomization | None = None
 
 
 def load_grading_override(grading_path: Path) -> GradingOverride:
@@ -489,6 +509,9 @@ def load_grading_override(grading_path: Path) -> GradingOverride:
         carries_snippet = (
             customization is not None and "judge_snippet_chars" in customization.model_fields_set
         )
+        carries_evidence = (
+            customization is not None and "evidence" in customization.model_fields_set
+        )
         return GradingOverride(
             rubric=config.rubric,
             custom_system_prompt=custom,
@@ -499,6 +522,7 @@ def load_grading_override(grading_path: Path) -> GradingOverride:
                 else DEFAULT_JUDGE_SNIPPET_CHARS
             ),
             carries_judge_snippet_chars=carries_snippet,
+            evidence_customization=customization if carries_evidence else None,
         )
     if "rubric" in data:
         return GradingOverride(
@@ -713,6 +737,58 @@ def _resolve_judge_snippet_chars(
     return recorded, ProvenanceSource.RECORDED
 
 
+def _resolve_judge_evidence(
+    trial_dir: Path, task: dict[str, Any] | None, grading_override: GradingOverride | None
+) -> tuple[JudgeCustomization | None, ProvenanceSource | None]:
+    """Resolve what the judge grades from, with the transcript fields beside it.
+
+    Returns the customization carrying ``evidence`` (and, for ``transcript``, its
+    ``transcript_tool_chars`` / ``read_only_calls``), or ``None`` for a judge over
+    the state that nothing configured. The override wins only when it sets
+    ``evidence``, so a rubric-only ``--grading`` override never changes a recorded
+    mode. A recorded value the customization model refuses fails loud — the writer
+    never records one, so it is a corrupted or hand-edited bundle.
+    """
+    if grading_override is not None and grading_override.evidence_customization is not None:
+        return grading_override.evidence_customization, ProvenanceSource.OVERRIDE
+    llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
+    customization = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
+    if not isinstance(customization, dict) or "evidence" not in customization:
+        return None, None
+    fields = {key: customization[key] for key in _EVIDENCE_FIELDS if key in customization}
+    try:
+        return JudgeCustomization.model_validate(fields), ProvenanceSource.RECORDED
+    except ValidationError as exc:
+        raise MissingReplayInputError(
+            f"recorded customization evidence fields in {trial_dir / TASK_FILENAME} "
+            f"are invalid: {exc}"
+        ) from exc
+
+
+#: The customization fields that say what the judge grades from.
+_EVIDENCE_FIELDS = ("evidence", "transcript_tool_chars", "read_only_calls")
+
+
+def _transcript_evidence(
+    customization: JudgeCustomization | None, judge_inputs: JudgeInputs | None
+) -> TranscriptEvidence | None:
+    """The replayed transcript judge's reading, ``None`` for a judge over the state.
+
+    The read-only tools come from the recorded ``judge_inputs.yaml``: the schemas
+    that declare them are not in the bundle. A bundle that recorded none (a judge
+    over the state replayed as a transcript judge) reads every call as one that
+    can change state, unless a ``read_only_calls`` rule marks it.
+    """
+    if customization is None or customization.evidence != "transcript":
+        return None
+    recorded = judge_inputs.agent_read_only_tools if judge_inputs is not None else None
+    return TranscriptEvidence(
+        tool_result_chars=customization.transcript_tool_chars,
+        read_only_tools=frozenset(recorded or ()),
+        read_only_calls=tuple(customization.read_only_calls),
+    )
+
+
 def _resolve_judge_model(
     task: dict[str, Any] | None, judge_model_override: str | None
 ) -> tuple[ModelConfig, ProvenanceSource]:
@@ -838,6 +914,9 @@ def read_replay_inputs(
     judge_snippet_chars, judge_snippet_chars_source = _resolve_judge_snippet_chars(
         trial_dir, task, grading_override
     )
+    evidence_customization, judge_evidence_source = _resolve_judge_evidence(
+        trial_dir, task, grading_override
+    )
 
     trajectory = Trajectory.model_validate(trajectory_raw)
     recorded_agent_prompt = prompts.get("system_prompt") or ""
@@ -857,6 +936,14 @@ def read_replay_inputs(
 
     state_diff = judge_inputs.state_diff_text if judge_inputs is not None else None
     fidelity_mode = FidelityMode.FULL if judge_inputs is not None else FidelityMode.FALLBACK
+    transcript_evidence = _transcript_evidence(evidence_customization, judge_inputs)
+    if transcript_evidence is not None:
+        # A transcript judge sees no view of the final state, whatever the bundle
+        # recorded for a judge over it: only knowledge-search shims stay.
+        db_reader, state_diff = None, None
+        extra_read_tools = [
+            tool for tool in extra_read_tools if getattr(tool, "is_knowledge_search", False)
+        ]
 
     provenance = ReplayProvenance(
         judge_model=f"{judge_model_config.provider}/{judge_model_config.name}",
@@ -871,6 +958,10 @@ def read_replay_inputs(
         agent_prompt_source=agent_prompt_source,
         judge_snippet_chars=judge_snippet_chars,
         judge_snippet_chars_source=judge_snippet_chars_source,
+        judge_evidence=(
+            evidence_customization.evidence if evidence_customization is not None else "state"
+        ),
+        judge_evidence_source=judge_evidence_source,
         fidelity_mode=fidelity_mode,
         judge_kind=judge_kind,
         judge_kind_source=judge_kind_source,
@@ -887,6 +978,7 @@ def read_replay_inputs(
             custom_system_prompt=custom_system_prompt,
             include_agent_system_prompt=include_agent_system_prompt,
             judge_snippet_chars=judge_snippet_chars,
+            transcript_evidence=transcript_evidence,
         ),
         explicit_system_prompt=explicit_system_prompt,
         judge_kind=judge_kind,
@@ -935,6 +1027,7 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
             explicit_system_prompt=inputs.explicit_system_prompt,
             include_agent_system_prompt=inputs.options.include_agent_system_prompt,
             judge_snippet_chars=inputs.options.judge_snippet_chars,
+            transcript_evidence=inputs.options.transcript_evidence,
             llm_client=judge_client,
         )
         return judge.run(
@@ -1042,6 +1135,11 @@ def build_replay_grade(result: JudgeResult) -> Grade:
         judge_inputs=JudgeInputs(
             state_diff_text=result.state_diff,
             read_tools_offered=list(result.read_tools_offered),
+            agent_read_only_tools=(
+                list(result.agent_read_only_tools)
+                if result.agent_read_only_tools is not None
+                else None
+            ),
         ),
         judge_custom_prompt=result.custom_system_prompt,
         judge_agent_prompt_included=result.include_agent_system_prompt,

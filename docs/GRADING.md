@@ -1604,6 +1604,11 @@ reject it.
 | `grading.llm_judge.kind_config` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading_method_config` | every pack | `unreleased` | new engine → old image |
 | `grading.llm_judge.customization.judge_snippet_chars` | a pack setting `customization.judge_snippet_chars` other than 200 | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.evidence` | a pack setting `customization.evidence: transcript` | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.transcript_tool_chars` | a pack setting `customization.transcript_tool_chars` other than 2000 | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.read_only_calls` | a pack declaring `customization.read_only_calls` | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.read_only_calls[*].tool` | a pack declaring `customization.read_only_calls` | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.read_only_calls[*].arguments` | a pack declaring `customization.read_only_calls` | `unreleased` | new engine → old image |
 
 `emitted for` is what the adapter puts on the wire, not what the pack asks for: a key
 whose cell reads **every pack** is emitted as `null` when the pack declares nothing
@@ -4385,6 +4390,58 @@ the default. The effective decision is recorded in `grade.yaml` as
 `judge_agent_prompt_included`. See
 [PROJECTS.md](PROJECTS.md#task-override-semantics) and
 [CONFIG.md](CONFIG.md#grading-specification-gradingyaml).
+
+### Transcript-only judge
+
+A pack whose final state is already checked deterministically (`custom_checks`,
+`state_checks`) may want the judge to grade only what the agent said and did. Set
+`grading.llm_judge.customization.evidence: transcript` and the judge gets **no view of
+the final state**: no state diff is built, and `get_db_state`, `query_db` and
+`read_file` are not offered. Its knowledge-search tools stay, governed by
+`disable_knowledge_search`. Instead it reads:
+
+* **the transcript, numbered** — every tool result opens with `[call N]` (numbered in
+  the order results arrive) and is cut at `transcript_tool_chars` characters (`2000` by
+  default), saying how much it left out;
+* **the state-changing calls** — the agent's calls that can change state, in order, each
+  as `[call N] name(arguments) -> status`, the status being how the call ended
+  (`success`, `error`, `timeout`, …; `status unknown` when the transcript did not record
+  it, `no result` when nothing answered the call). Arguments are shown in full, so the
+  texts the agent wrote are here;
+* **`show_call(calls, offset)`** — the full results of the calls it names, as the agent
+  received them, up to 12,000 characters per answer; `offset` reads further into a long
+  one. It reads the transcript itself, never a live backend.
+
+A call can change state unless its tool declares `mutates_state: false`
+([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)) or it matches one of
+`read_only_calls`. A tool that declares nothing reads as one that can change state. A
+rule marks the reads of a tool that both reads and writes: it names the `tool` and,
+optionally, `arguments` — dotted paths into the call's arguments, each with the values
+that make the call a read. A call matches when every path holds one of its values; a
+path the call does not carry is no match; values compare exactly; a rule with no
+`arguments` matches every call of its tool.
+
+```yaml
+llm_judge:
+  customization:
+    evidence: transcript
+    transcript_tool_chars: 2000
+    read_only_calls:
+      - tool: http_request
+        arguments: {method: [GET]}
+      - tool: rest_call
+        arguments: {request.method: [GET, HEAD, OPTIONS]}
+      - tool: list_endpoints
+```
+
+`transcript_tool_chars` and `read_only_calls` are refused under `evidence: state` unless
+they hold their defaults, so a task that returns to the state judge under a project's
+transcript rules also writes `read_only_calls: []`. All three keys layer project→task and
+are left off the wire at their default. The judge records the agent tools it read as
+read-only in [`judge_inputs.yaml`](OUTPUT_FORMAT.md) (`agent_read_only_tools`), since
+their declarations are not in the bundle; [`tolokaforge rejudge`](JUDGE_REPLAY.md)
+rebuilds the same view from it. The design record is
+[ADR-0066](adr/0066-transcript-only-judge.md).
 
 ### Fail-loud: the ERRORED status
 
