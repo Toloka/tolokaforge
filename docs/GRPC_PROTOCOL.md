@@ -500,7 +500,6 @@ message JudgeReport {
   // fields 8-15: verdict-consistency rejections, the knowledge-search gating, the
   // replay inputs and the prompt customisation (see runner.proto); 16 is reserved
   optional double billed_cost_usd = 17;  // what the providers stated they charged; absent unless every call stated one
-  repeated string agent_read_only_tools = 18;  // the agent tools declaring mutates_state: false, for every judge
   optional string judge_evidence = 19;  // "transcript" for a transcript judge; absent for a state judge
 }
 
@@ -775,13 +774,17 @@ state, as the tool's author declares it
 tri-state. The runner sets it only when the task description declares it: an
 MCP tool's `readOnlyHint` annotation read back by the native adapter, a
 builtin's `ToolPolicy.category` (`read` → `false`, `write` → `true`), the search
-tool's `false`, or an adapter's own sources. A tool that declares nothing leaves
-the field unset. The harness reads it back via `HasField("mutates_state")` and
+tool's `false`, a task's `tools.<actor>.<name>.mutates_state`, or an adapter's own
+sources. A task-description declaration that is a `read_when` rule (some calls
+read, others change state) is sent as `true`; the rule itself crosses only in
+`trial_spec_json`, where an image predating it refuses the trial at registration.
+A tool that declares nothing leaves the field unset. The harness reads it back via `HasField("mutates_state")` and
 hands `None` on when it is unset; `None` is unknown and reads as mutating
 wherever the engine needs an answer, the conservative default every undeclared
 tool gets. The field is proto3-`optional`, so an older runner
 sends nothing and a newer harness reads every tool as undeclared, without a
-protocol version bump; nothing consumes the flag yet.
+protocol version bump. The engine reads its declarations from the task description,
+not from this field.
 
 ### ExecuteToolRequest/Response
 

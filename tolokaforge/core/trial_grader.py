@@ -540,7 +540,6 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_inputs = JudgeInputs(
             state_diff_text=raw_report.get("state_diff_text") or None,
             read_tools_offered=list(raw_report.get("read_tools_offered", [])),
-            agent_read_only_tools=list(raw_report.get("agent_read_only_tools", [])),
         )
         raw_transcript = raw_report.get("transcript_json")
         if raw_transcript:

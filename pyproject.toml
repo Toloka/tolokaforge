@@ -568,6 +568,7 @@ only-include = [
     "tolokaforge/core/simulation_budget.py",
     "tolokaforge/core/summarize_policy.py",
     "tolokaforge/core/tool_call_ids.py",
+    "tolokaforge/core/tool_effects.py",
     "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
     "tolokaforge/core/tools_interface.py",

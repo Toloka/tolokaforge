@@ -12,15 +12,10 @@ module derives from the transcript alone:
   hides, read from the same transcript.
 
 All three are pure functions of the transcript, :class:`TranscriptEvidence` and
-the agent's read-only tools, so an offline replay that rebuilds the transcript and
-the options rebuilds the judge's whole view: ``show_call`` needs no live backend and
-is never shimmed.
-
-A call can change state unless its tool is one of the agent's read-only tools (the
-agent tools that declare ``mutates_state: false``, ADR-0061) or it matches one of
-:attr:`TranscriptEvidence.read_only_calls` (the task's
-:class:`~tolokaforge.runner.models.ReadOnlyCallRule` list). An undeclared tool
-reads as one that can change state, as ADR-0061 prescribes.
+the agent tools' ``mutates_state`` declarations
+(:class:`~tolokaforge.core.tool_effects.ToolEffects`), so an offline replay that
+rebuilds the transcript, the options and the declarations rebuilds the judge's
+whole view: ``show_call`` needs no live backend and is never shimmed.
 """
 
 from __future__ import annotations
@@ -35,7 +30,7 @@ from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.tools.registry import Tool, ToolResult
 
 if TYPE_CHECKING:
-    from tolokaforge.runner.models import ReadOnlyCallRule
+    from tolokaforge.core.tool_effects import ToolEffects
 
 __all__ = [
     "DEFAULT_TRANSCRIPT_TOOL_CHARS",
@@ -84,14 +79,9 @@ class TranscriptEvidence:
     """How a transcript judge reads one trial.
 
     * ``tool_result_chars`` — how much of each tool result the transcript shows.
-    * ``read_only_calls`` — the task's rules marking calls that cannot change state.
     """
 
     tool_result_chars: int = DEFAULT_TRANSCRIPT_TOOL_CHARS
-    read_only_calls: tuple[ReadOnlyCallRule, ...] = ()
-
-    def matches_read_only_rule(self, call: RecordedCall) -> bool:
-        return any(_rule_matches(rule, call) for rule in self.read_only_calls)
 
 
 @dataclass(frozen=True)
@@ -193,19 +183,13 @@ def call_arguments_brief(call: RecordedCall) -> str:
 
 
 def state_changing_calls(
-    numbered: NumberedTranscript,
-    evidence: TranscriptEvidence,
-    *,
-    read_only_tools: frozenset[str],
+    numbered: NumberedTranscript, tool_effects: ToolEffects
 ) -> list[RecordedCall]:
-    """The agent's calls that can change state, in the order it made them.
-
-    ``read_only_tools`` are the agent tools that declare ``mutates_state: false``.
-    """
+    """The agent's calls that can change state, in the order it made them."""
     return [
         call
         for call in numbered.agent_calls
-        if call.name not in read_only_tools and not evidence.matches_read_only_rule(call)
+        if tool_effects.can_change_state(call.name, call.arguments)
     ]
 
 
@@ -340,40 +324,3 @@ def _agent_calls(
             )
         )
     return tuple(calls)
-
-
-def _rule_matches(rule: ReadOnlyCallRule, call: RecordedCall) -> bool:
-    if rule.tool != call.name:
-        return False
-    if not rule.arguments:
-        return True
-    arguments = _parsed_arguments(call.arguments)
-    for path, allowed in rule.arguments.items():
-        found, value = _value_at(arguments, path)
-        if not found or not any(_same_value(value, candidate) for candidate in allowed):
-            return False
-    return True
-
-
-def _same_value(value: Any, candidate: Any) -> bool:
-    """Equal and of the same JSON type: ``true`` is not ``1``, and ``1`` is not ``1.0``."""
-    return type(value) is type(candidate) and value == candidate
-
-
-def _parsed_arguments(arguments: str) -> Any:
-    try:
-        return json.loads(arguments) if arguments else {}
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"a transcript tool call carries unparseable arguments JSON ({exc}); the "
-            "transcript wire never produces one"
-        ) from exc
-
-
-def _value_at(arguments: Any, path: str) -> tuple[bool, Any]:
-    value = arguments
-    for segment in path.split("."):
-        if not isinstance(value, Mapping) or segment not in value:
-            return False, None
-        value = value[segment]
-    return True, value

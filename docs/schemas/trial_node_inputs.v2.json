@@ -1153,7 +1153,7 @@
     },
     "JudgeCustomization": {
       "additionalProperties": false,
-      "description": "Judge tool-surface customization, sibling of ``rubric`` under ``llm_judge``.\n\nTri-state ``disable_knowledge_search``: ``None`` (unset) means the faithful\ndefault (the judge is offered whatever knowledge-search tools the agent had);\n``True`` withholds every knowledge-search tool from the judge's surface;\n``False`` explicitly keeps them (so a task can override a project default that\ndisabled them). Layered project\u2192task by :func:`resolve_effective_judge_customization`.\n\n``system_prompt`` replaces the default judge system-prompt body; the harness\nalways appends the marker contract, so a custom prompt can never break\n``submit_report`` validation. ``None`` (unset) keeps the default prompt; a task\nsets ``null`` to reset a project-level custom prompt back to the default. An\nempty or whitespace-only string is rejected at load \u2014 a marker-only prompt is\nalmost certainly a mistake.\n\nTri-state ``include_agent_system_prompt``: ``None`` (unset) and ``True`` both\nembed the agent's policy / system prompt in the judge's opening-message\nevidence (today's behaviour); ``False`` omits that section so a self-contained\nrubric grades without the agent's framing. Evidence gating, distinct from\n``system_prompt`` (which is the judge's own wording). A task sets ``true`` or\n``null`` to re-include over a project ``false``.\n\n``judge_snippet_chars`` is how much of each hit the judge's ``search_kb`` shows:\nthe first that many characters (``200`` by default), or ``null`` for whole\ndocuments \u2014 what a ``bm25`` task whose rubric reads a document's exact wording\nneeds. Not tri-state: ``null`` is a value, so a task resets a project's figure\nby writing ``200``. Left off the dump at its default\n(:attr:`OMITTED_AT_DEFAULT`), so a task that declares nothing serialises\nwithout it and an older image, which forbids a key it does not declare,\naccepts it.\n\n``evidence`` is what the judge grades from. ``state`` (the default) grades\nfrom the ``initial \u2192 final`` state diff and the read-only DB and workspace\ntools. ``transcript`` withholds every view of the final state: the judge reads\nthe transcript with each tool result numbered ``[call N]`` and cut at\n``transcript_tool_chars`` characters, the agent's calls that can change state\nwith how each ended, and ``show_call``, which returns a cut result in full. A\ncall can change state unless its tool declares ``mutates_state: false``\n(ADR-0061) or it matches one of ``read_only_calls``. Both of those fields are\nread by the ``transcript`` judge alone and are inert under ``state``, so a\nproject declares its tools' read rules once and each task opts into the mode.\nAll three are left off the dump at their default.\n\n:func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns\na customization into the\n:class:`~tolokaforge.core.grading.judge_kinds.JudgeTrialOptions` a judge kind\nreceives.",
+      "description": "Judge tool-surface customization, sibling of ``rubric`` under ``llm_judge``.\n\nTri-state ``disable_knowledge_search``: ``None`` (unset) means the faithful\ndefault (the judge is offered whatever knowledge-search tools the agent had);\n``True`` withholds every knowledge-search tool from the judge's surface;\n``False`` explicitly keeps them (so a task can override a project default that\ndisabled them). Layered project\u2192task by :func:`resolve_effective_judge_customization`.\n\n``system_prompt`` replaces the default judge system-prompt body; the harness\nalways appends the marker contract, so a custom prompt can never break\n``submit_report`` validation. ``None`` (unset) keeps the default prompt; a task\nsets ``null`` to reset a project-level custom prompt back to the default. An\nempty or whitespace-only string is rejected at load \u2014 a marker-only prompt is\nalmost certainly a mistake.\n\nTri-state ``include_agent_system_prompt``: ``None`` (unset) and ``True`` both\nembed the agent's policy / system prompt in the judge's opening-message\nevidence (today's behaviour); ``False`` omits that section so a self-contained\nrubric grades without the agent's framing. Evidence gating, distinct from\n``system_prompt`` (which is the judge's own wording). A task sets ``true`` or\n``null`` to re-include over a project ``false``.\n\n``judge_snippet_chars`` is how much of each hit the judge's ``search_kb`` shows:\nthe first that many characters (``200`` by default), or ``null`` for whole\ndocuments \u2014 what a ``bm25`` task whose rubric reads a document's exact wording\nneeds. Not tri-state: ``null`` is a value, so a task resets a project's figure\nby writing ``200``. Left off the dump at its default\n(:attr:`OMITTED_AT_DEFAULT`), so a task that declares nothing serialises\nwithout it and an older image, which forbids a key it does not declare,\naccepts it.\n\n``evidence`` is what the judge grades from. ``state`` (the default) grades\nfrom the ``initial \u2192 final`` state diff and the read-only DB and workspace\ntools. ``transcript`` withholds every view of the final state: the judge reads\nthe transcript with each tool result numbered ``[call N]`` and cut at\n``transcript_tool_chars`` characters, the agent's calls that can change state\nwith how each ended, and ``show_call``, which returns a cut result in full. A\ncall can change state unless its tool's ``mutates_state`` declaration\n(:attr:`ToolSchema.mutates_state`, ADR-0061) says it reads. ``transcript_tool_chars``\nis read by the ``transcript`` judge alone and is inert under ``state``. Both are\nleft off the dump at their default.\n\n:func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns\na customization into the\n:class:`~tolokaforge.core.grading.judge_kinds.JudgeTrialOptions` a judge kind\nreceives.",
       "properties": {
         "disable_knowledge_search": {
           "anyOf": [
@@ -1200,13 +1200,6 @@
           ],
           "default": 200,
           "title": "Judge Snippet Chars"
-        },
-        "read_only_calls": {
-          "items": {
-            "$ref": "#/$defs/ReadOnlyCallRule"
-          },
-          "title": "Read Only Calls",
-          "type": "array"
         },
         "system_prompt": {
           "anyOf": [
@@ -1603,6 +1596,39 @@
       "title": "ModelSessionConfig",
       "type": "object"
     },
+    "MutatesStateReadWhen": {
+      "additionalProperties": false,
+      "description": "The arguments under which a call reads: every ``args`` predicate holds.\n\n``args`` maps a dotted argument path (``request.method``) to a\n:class:`ValuePredicate`, the trace matcher's own vocabulary, read through the\nsame resolver (:mod:`tolokaforge.core.grading.argument_predicates`): a path the\ncall does not carry fails every operator but ``omitted`` / ``exists``. A\npattern runs on the ``linear`` engine unless its predicate names another. A\nrule has no ``bind``, so the binding operators are refused.",
+      "properties": {
+        "args": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ValuePredicate"
+          },
+          "minProperties": 1,
+          "title": "Args",
+          "type": "object"
+        }
+      },
+      "required": [
+        "args"
+      ],
+      "title": "MutatesStateReadWhen",
+      "type": "object"
+    },
+    "MutatesStateRule": {
+      "additionalProperties": false,
+      "description": "A tool that changes state on some calls and only reads on others (ADR-0061).\n\nA call reads when :attr:`read_when` holds over its arguments and can change\nstate otherwise \u2014 so an argument shape the rule does not foresee reads as a\npossible change, the conservative direction.",
+      "properties": {
+        "read_when": {
+          "$ref": "#/$defs/MutatesStateReadWhen"
+        }
+      },
+      "required": [
+        "read_when"
+      ],
+      "title": "MutatesStateRule",
+      "type": "object"
+    },
     "NetworkPolicy": {
       "description": "Network posture the provisioner is asked to enforce for a trial.",
       "enum": [
@@ -1911,48 +1937,6 @@
         }
       },
       "title": "RateLimitProbeConfig",
-      "type": "object"
-    },
-    "ReadOnlyCallRule": {
-      "additionalProperties": false,
-      "description": "Calls of one agent tool that cannot change state, for a transcript-evidence judge.\n\nA call matches when it calls ``tool`` and, for every entry of ``arguments``, the\nvalue at that dotted path into the call's arguments is one of the listed values\n(``request.method: [GET, HEAD]``); a path the call does not carry is no match.\nAn empty ``arguments`` matches every call of the tool. Values compare exactly.\n\nThe rule is how a task marks reads on a tool that both reads and writes, such\nas an HTTP tool, whose ``mutates_state`` (ADR-0061) cannot say it per call.",
-      "properties": {
-        "arguments": {
-          "additionalProperties": {
-            "items": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "type": "array"
-          },
-          "title": "Arguments",
-          "type": "object"
-        },
-        "tool": {
-          "minLength": 1,
-          "title": "Tool",
-          "type": "string"
-        }
-      },
-      "required": [
-        "tool"
-      ],
-      "title": "ReadOnlyCallRule",
       "type": "object"
     },
     "ReadinessSpec": {
@@ -3549,6 +3533,9 @@
           "anyOf": [
             {
               "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/MutatesStateRule"
             },
             {
               "type": "null"

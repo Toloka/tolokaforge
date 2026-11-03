@@ -100,6 +100,7 @@ from tolokaforge.core.redaction import (
     SensitiveKeyRedaction,
 )
 from tolokaforge.core.runner import TrialToolCallRecorder
+from tolokaforge.runner.models import ToolSchema
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
@@ -131,17 +132,23 @@ _TRACE_CHECKS = TraceChecksConfig.model_validate(
 )
 
 
+#: ``get_order``'s ``mutates_state``: a read rule, as the task description declares it.
+_READ_RULE = {"read_when": {"args": {"id": {"regex": "^O-"}}}}
+
 #: The trial's declared tool surface, with the credential where a schema can carry
 #: one: a pinned default on a credential-named parameter.
 _TOOLS_SCHEMAS = [
     {
-        "name": "get_order",
-        "description": "Read one order.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string"},
-                "api_token": {"type": "string", "default": _SECRET},
+        "type": "function",
+        "function": {
+            "name": "get_order",
+            "description": "Read one order.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "api_token": {"type": "string", "default": _SECRET},
+                },
             },
         },
     }
@@ -248,9 +255,14 @@ def _write_bundle(trial_root: Path, policy: RedactionPolicy, trajectory: Traject
     runner.logger.info(
         "tool.request", tool="get_order", api_token=_SECRET, payload={"api_token": _SECRET}
     )
-    setup = make_setup(trial_root, _TASK_ID, 0)
+    setup = replace(make_setup(trial_root, _TASK_ID, 0), tool_schemas=list(_TOOLS_SCHEMAS))
+    spec = make_trial_spec(trial_id=f"{_TASK_ID}:0", task_id=_TASK_ID)
+    get_order = ToolSchema(
+        name="get_order", description="Read one order.", parameters={}, mutates_state=_READ_RULE
+    )
+    spec.task.agent_tools = [get_order]
     conductor._write_artifacts(
-        make_trial_spec(trial_id=f"{_TASK_ID}:0", task_id=_TASK_ID),
+        spec,
         _task_config(),
         setup,
         trajectory,
@@ -349,7 +361,10 @@ class TestTheDefaultWritesWhatTheAgentSent:
         assert _env_state(bundle)["session"]["api_token"] == _SECRET
         assert _task_snapshot(bundle)["policies"]["webhook"]["api_token"] == _SECRET
         assert (
-            _tools_schemas(bundle)[0]["parameters"]["properties"]["api_token"]["default"] == _SECRET
+            _tools_schemas(bundle)[0]["function"]["parameters"]["properties"]["api_token"][
+                "default"
+            ]
+            == _SECRET
         )
         assert _grade(bundle)["state_diff"]["session"]["api_token"] == _SECRET
         assert (
@@ -387,16 +402,18 @@ class TestARedactingPolicyRewritesAndStamps:
         }
 
     def test_the_task_snapshot_and_the_tool_schemas_are_rewritten_too(self, tmp_path: Path) -> None:
-        """Both are mappings the writer puts on disk, so the same rule reaches them."""
+        """Both are mappings the writer puts on disk, so the same rule reaches them. A
+        tool's ``mutates_state`` is no credential-shaped key, so it survives."""
         bundle = _write_bundle(tmp_path, SensitiveKeyRedaction(), _recorded_trajectory())
 
         assert _task_snapshot(bundle)["policies"] == {
             "webhook": {"api_token": REDACTED_PLACEHOLDER}
         }
         assert _task_snapshot(bundle)["task_id"] == _TASK_ID
-        properties = _tools_schemas(bundle)[0]["parameters"]["properties"]
+        properties = _tools_schemas(bundle)[0]["function"]["parameters"]["properties"]
         assert properties["api_token"] == REDACTED_PLACEHOLDER
         assert properties["id"] == {"type": "string"}
+        assert _tools_schemas(bundle)[0]["mutates_state"] == _READ_RULE
 
     def test_the_verdict_s_own_mappings_are_rewritten_too(self, tmp_path: Path) -> None:
         """The rows the runner diffed and whatever a pack's check recorded are

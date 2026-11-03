@@ -81,10 +81,13 @@ from tolokaforge.core.output_writer import (
     ENV_FILENAME,
     GRADE_FILENAME,
     JUDGE_INPUTS_FILENAME,
+    METRICS_FILENAME,
     TASK_FILENAME,
+    TOOLS_SCHEMAS_FILENAME,
     TRAJECTORY_FILENAME,
 )
 from tolokaforge.core.plugin_registry import load_judge_kind, load_judge_model_provider
+from tolokaforge.core.tool_effects import ToolEffects, UnrecordedToolEffectsError
 from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
@@ -142,8 +145,8 @@ class EvidenceMode(str, Enum):
 
     ``RECORDED`` honours the bundle's ``customization.evidence`` (or a ``--grading``
     override setting it); ``STATE`` / ``TRANSCRIPT`` force it, keeping the recorded
-    (or overriding) ``transcript_tool_chars`` and ``read_only_calls``. A bundle a
-    transcript judge graded carries no view of the state, so ``STATE`` refuses it.
+    (or overriding) ``transcript_tool_chars``. A bundle a transcript judge graded
+    carries no view of the state, so ``STATE`` refuses it.
     """
 
     RECORDED = "recorded"
@@ -763,8 +766,8 @@ def _resolve_judge_evidence(
     """Resolve what the judge grades from, with the transcript fields beside it.
 
     Returns the customization carrying ``evidence`` with its
-    ``transcript_tool_chars`` / ``read_only_calls``, or ``None`` for a judge over the
-    state that nothing configured. The override wins only when it sets ``evidence``,
+    ``transcript_tool_chars``, or ``None`` for a judge over the state that nothing
+    configured. The override wins only when it sets ``evidence``,
     so a rubric-only ``--grading`` override never changes a recorded mode; a forced
     ``mode`` then replaces the evidence and keeps the fields beside it. A bundle a
     transcript judge graded refuses a forced ``state``: it recorded no view of the
@@ -810,33 +813,34 @@ def _recorded_evidence_customization(
 
 
 #: The customization fields that say what the judge grades from.
-_EVIDENCE_FIELDS = ("evidence", "transcript_tool_chars", "read_only_calls")
+_EVIDENCE_FIELDS = ("evidence", "transcript_tool_chars")
 
 
 def _transcript_evidence(
-    customization: JudgeCustomization | None,
-    judge_inputs: JudgeInputs | None,
-    trial_dir: Path,
-) -> TranscriptEvidence | None:
-    """The replayed transcript judge's reading, ``None`` for a judge over the state.
+    customization: JudgeCustomization | None, trial_dir: Path
+) -> tuple[TranscriptEvidence | None, ToolEffects]:
+    """The replayed transcript judge's reading and the agent tools' declarations.
+
+    ``(None, empty)`` for a judge over the state, which reads no declaration, so the
+    bundle's ``tools_schemas.yaml`` is read only for a transcript judge.
 
     Raises:
-        MissingReplayInputError: the bundle recorded no ``agent_read_only_tools``.
-            A transcript judge needs them to tell reads from state changes, and the
-            schemas that declare them are not in the bundle.
+        MissingReplayInputError: the bundle does not record which of the agent's
+            calls can change state (:meth:`ToolEffects.from_recorded_schemas`).
     """
     if customization is None or customization.evidence != "transcript":
-        return None
-    if judge_inputs is None or judge_inputs.agent_read_only_tools is None:
-        raise MissingReplayInputError(
-            f"{trial_dir / JUDGE_INPUTS_FILENAME} records no agent_read_only_tools, so a "
-            "transcript judge cannot tell the agent's reads from its state changes; "
-            "re-run the trial to record them"
+        return None, ToolEffects.empty()
+    schemas_path = trial_dir / TOOLS_SCHEMAS_FILENAME
+    metrics = _carried_mapping(trial_dir / METRICS_FILENAME) or {}
+    try:
+        tool_effects = ToolEffects.from_recorded_schemas(
+            _parse_yaml(schemas_path) if schemas_path.exists() else None,
+            schema_version=metrics.get("schema_version"),
+            source=schemas_path,
         )
-    return TranscriptEvidence(
-        tool_result_chars=customization.transcript_tool_chars,
-        read_only_calls=tuple(customization.read_only_calls),
-    )
+    except UnrecordedToolEffectsError as exc:
+        raise MissingReplayInputError(f"a transcript judge cannot replay: {exc}") from exc
+    return TranscriptEvidence(tool_result_chars=customization.transcript_tool_chars), tool_effects
 
 
 def _resolve_judge_model(
@@ -987,10 +991,7 @@ def read_replay_inputs(
 
     state_diff = judge_inputs.state_diff_text if judge_inputs is not None else None
     fidelity_mode = FidelityMode.FULL if judge_inputs is not None else FidelityMode.FALLBACK
-    transcript_evidence = _transcript_evidence(evidence_customization, judge_inputs, trial_dir)
-    agent_read_only_tools = frozenset(
-        (judge_inputs.agent_read_only_tools or ()) if judge_inputs is not None else ()
-    )
+    transcript_evidence, tool_effects = _transcript_evidence(evidence_customization, trial_dir)
     if transcript_evidence is not None:
         # A transcript judge sees no view of the final state, whatever the bundle
         # recorded for a judge over it: only knowledge-search shims stay.
@@ -1034,7 +1035,7 @@ def read_replay_inputs(
             include_agent_system_prompt=include_agent_system_prompt,
             judge_snippet_chars=judge_snippet_chars,
             transcript_evidence=transcript_evidence,
-            agent_read_only_tools=agent_read_only_tools,
+            tool_effects=tool_effects,
         ),
         explicit_system_prompt=explicit_system_prompt,
         judge_kind=judge_kind,
@@ -1084,7 +1085,7 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
             include_agent_system_prompt=inputs.options.include_agent_system_prompt,
             judge_snippet_chars=inputs.options.judge_snippet_chars,
             transcript_evidence=inputs.options.transcript_evidence,
-            agent_read_only_tools=inputs.options.agent_read_only_tools,
+            tool_effects=inputs.options.tool_effects,
             llm_client=judge_client,
         )
         return judge.run(
@@ -1194,7 +1195,6 @@ def build_replay_grade(result: JudgeResult) -> Grade:
         judge_inputs=JudgeInputs(
             state_diff_text=result.state_diff,
             read_tools_offered=list(result.read_tools_offered),
-            agent_read_only_tools=list(result.agent_read_only_tools),
         ),
         judge_custom_prompt=result.custom_system_prompt,
         judge_agent_prompt_included=result.include_agent_system_prompt,

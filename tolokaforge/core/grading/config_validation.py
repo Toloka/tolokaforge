@@ -288,9 +288,7 @@ class ToolInventory:
         schema = self.parameters.get(tool)
         if schema is None:
             return ArgumentSchema.UNKNOWN
-        if schema.get("additionalProperties") is False:
-            return ArgumentSchema.CLOSED
-        return ArgumentSchema.OPEN
+        return _schema_strictness(schema)
 
     def properties(self, tool: str) -> frozenset[str]:
         """The argument names *tool*'s schema declares; empty when unresolved."""
@@ -1123,7 +1121,6 @@ def inspect_grading_authoring(
             _check_tool_names(sites, inventory),
             _check_tool_expectation_names(rules.tool_expectations if rules else None, inventory),
             _check_required_action_names(rules.required_actions if rules else (), inventory),
-            _check_read_only_call_names(grading, inventory),
             _check_golden_action_names(grading, inventory),
             _check_argument_paths(sites, inventory),
             _check_bound_extractions(binders, inventory),
@@ -1391,97 +1388,6 @@ def _check_tool_expectation_names(
         if name not in declared_set
     )
     return AuthoringReport(errors=errors)
-
-
-def _check_read_only_call_names(
-    grading: Mapping[str, Any], inventory: ToolInventory
-) -> AuthoringReport:
-    """A task's own ``read_only_calls`` rule may only name a tool its agent can call.
-
-    A transcript judge lists every agent call no rule marks as a read among the calls
-    that can change state, so a misspelled rule matches nothing and shows the judge
-    every read of the tool as a write — silently, on every trial. The rules a task
-    inherits from its project are checked across the project's tasks instead, by
-    :func:`check_project_read_only_call_names`.
-    """
-    llm_judge = grading.get("llm_judge")
-    customization = llm_judge.get("customization") if isinstance(llm_judge, Mapping) else None
-    declared_set = _agent_declared(inventory)
-    errors = tuple(
-        Finding(
-            f"llm_judge.customization.read_only_calls[{index}].tool",
-            f"tool {tool!r} is not declared by this task for the agent. The "
-            f"declared set is {sorted(declared_set)}: the rule matches no call, so a "
-            "transcript judge reads every call of the tool it meant as a state change",
-        )
-        for index, tool in _read_only_call_tools(customization)
-        if tool not in declared_set
-    )
-    return AuthoringReport(errors=errors)
-
-
-#: Where a project's own ``read_only_calls`` rules are written.
-PROJECT_READ_ONLY_CALLS_WHERE = (
-    "task_defaults.grading_defaults.llm_judge.customization.read_only_calls"
-)
-
-
-def check_project_read_only_call_names(
-    project_customization: Mapping[str, Any] | None, inventories: Sequence[ToolInventory]
-) -> AuthoringReport:
-    """A project's ``read_only_calls`` rule may only name a tool some task's agent can call.
-
-    Every task of the project inherits the rules, and a rule may name a tool only some
-    of its tasks declare, so a single task cannot tell a misspelled rule from one meant
-    for its siblings. A rule no task of the project declares the tool of matches no call
-    anywhere: the misspelling the per-task rule catches, written once for the project.
-
-    ``inventories`` are the tool sets of every task the project's rules reach. One that
-    is unresolvable leaves the rule unchecked: the tool may be that task's.
-    """
-    tools = _read_only_call_tools(project_customization)
-    if not tools:
-        return AuthoringReport()
-    if not inventories or not all(inventory.known for inventory in inventories):
-        return AuthoringReport(
-            unchecked=(
-                Skip(
-                    PROJECT_READ_ONLY_CALLS_WHERE,
-                    "the tools of some task of this project could not be resolved, so "
-                    "whether each rule names a tool one of its tasks declares is not "
-                    "checkable",
-                ),
-            )
-        )
-    declared_set = frozenset().union(*(_agent_declared(inventory) for inventory in inventories))
-    errors = tuple(
-        Finding(
-            f"{PROJECT_READ_ONLY_CALLS_WHERE}[{index}].tool",
-            f"tool {tool!r} is declared for the agent by no task of this project. The "
-            f"declared set is {sorted(declared_set)}: the rule matches no call, so a "
-            "transcript judge reads every call of the tool it meant as a state change",
-        )
-        for index, tool in tools
-        if tool not in declared_set
-    )
-    return AuthoringReport(errors=errors)
-
-
-def _read_only_call_tools(customization: Any) -> list[tuple[int, str]]:
-    rules = customization.get("read_only_calls") if isinstance(customization, Mapping) else None
-    if not isinstance(rules, list):
-        return []
-    return [
-        (index, rule["tool"])
-        for index, rule in enumerate(rules)
-        if isinstance(rule, Mapping) and isinstance(rule.get("tool"), str)
-    ]
-
-
-def _agent_declared(inventory: ToolInventory) -> frozenset[str]:
-    if inventory.actor_split_known:
-        return inventory.declared_by(ToolExecutorIdentity.AGENT)
-    return inventory.declared
 
 
 def _check_required_action_names(
@@ -2882,6 +2788,35 @@ def _one_matchers_argument_paths(site: _MatcherSite, inventory: ToolInventory) -
         _one_argument_path(f"{where}.{path}", path, resolved, _UNMATCHABLE_PREDICATE_HAZARD)
         for path in site.matcher.args or ()
     )
+
+
+_READ_RULE_UNMATCHABLE_HAZARD = (
+    "the rule reads no call, and every call of the tool counts as one that can change state"
+)
+
+
+def check_read_rule_paths(
+    where: str, tool: str, paths: Iterable[str], parameters: Mapping[str, Any]
+) -> AuthoringReport:
+    """A ``mutates_state`` read rule's ``read_when.args`` paths, against *tool*'s parameters.
+
+    The rule a matcher's ``args`` paths are held to (:func:`_check_argument_paths`):
+    the first segment must be a property the schema declares — an error where the
+    schema admits no other argument, an advisory where it permits extras.
+    """
+    resolved = _ResolvedTool(
+        tool, _schema_strictness(parameters), frozenset(parameters.get("properties", {}))
+    )
+    return _merged(
+        _one_argument_path(f"{where}.{path}", path, resolved, _READ_RULE_UNMATCHABLE_HAZARD)
+        for path in paths
+    )
+
+
+def _schema_strictness(schema: Mapping[str, Any]) -> ArgumentSchema:
+    if schema.get("additionalProperties") is False:
+        return ArgumentSchema.CLOSED
+    return ArgumentSchema.OPEN
 
 
 def _one_argument_path(

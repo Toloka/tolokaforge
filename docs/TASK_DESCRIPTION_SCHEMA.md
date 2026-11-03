@@ -98,8 +98,8 @@ class ToolSchema(BaseModel):
     # Per-tool cap on the role=tool message content the engine loop appends.
     output_max_chars: Optional[int] = None        # see below
 
-    # Whether a call can change the graded state, as the tool's author declares it.
-    mutates_state: Optional[bool] = None          # see below; left out of the dump while None
+    # Whether a call can change the graded state: a bool, or a read rule.
+    mutates_state: Union[bool, MutatesStateRule, None] = None  # see below; left out of the dump while None
 ```
 
 `ToolSchema.timeout_s` is the backstop the runner bands a call with **only for a
@@ -142,6 +142,17 @@ it authors: a builtin's `ToolPolicy.category` is read as its declaration (`read`
 says nothing and stays undeclared), and the task's search tool, which the engine
 builds over the trial's index, is `False`. `ToolSchema.category` is not read for
 it and is retired in a later release.
+
+A tool that both reads and changes state declares a `MutatesStateRule` instead of a
+bool: `{read_when: {args: {<dotted path>: <ValuePredicate>}}}`, the trace matcher's own
+`args` vocabulary. A call reads when every predicate holds over its arguments and can
+change state otherwise. The proto field carries a rule as `true`, since some calls do
+change state. The native adapter takes a declaration from the tool's author first; a
+task's `tools.<actor>.<name>.mutates_state` fills an undeclared tool or tightens any to
+`true` ([TASKS.md § Declaring which calls change state](TASKS.md#declaring-which-calls-change-state)).
+An image predating the rule form declares the field as a bool, so it refuses at
+`RegisterTrial` every trial of a pack whose task description carries a rule (new engine
+→ old image); a pack that declares only bools is unaffected.
 
 ```python
 # =============================================================================

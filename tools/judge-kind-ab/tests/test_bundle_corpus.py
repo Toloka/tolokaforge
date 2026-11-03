@@ -209,7 +209,7 @@ def test_a_transcript_judges_bundle_builds_no_state_diff_and_reads_the_agent_too
 ) -> None:
     """A transcript judge grades with no view of the state, so the entry carries no
     diff however much the state changed, and its options read the bundle's agent
-    tools for the ones declaring ``mutates_state: false``."""
+    tools' ``mutates_state`` declarations."""
     out_dir = tmp_path / "bundle"
     serialize_grade_bundle(
         out_dir,
@@ -242,7 +242,8 @@ def test_a_transcript_judges_bundle_builds_no_state_diff_and_reads_the_agent_too
 
     assert entry.state_diff is None
     assert entry.options.transcript_evidence is not None
-    assert entry.options.agent_read_only_tools == frozenset({"get_seat"})
+    assert entry.options.tool_effects.can_change_state("get_seat", "{}") is False
+    assert entry.options.tool_effects.can_change_state("move_seat", "{}") is True
 
 
 def test_corpus_entry_from_bundle_reports_no_state_diff_with_empty_initial_state(

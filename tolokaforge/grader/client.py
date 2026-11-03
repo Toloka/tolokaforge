@@ -219,7 +219,6 @@ def _judge_report_from_wire(report: grader_pb2.JudgeReport) -> dict:
         "kb_tools_withheld": list(report.kb_tools_withheld),
         "state_diff_text": report.state_diff_text,
         "read_tools_offered": list(report.read_tools_offered),
-        "agent_read_only_tools": list(report.agent_read_only_tools),
         "custom_system_prompt": report.custom_system_prompt,
     }
     if report.transcript_json:

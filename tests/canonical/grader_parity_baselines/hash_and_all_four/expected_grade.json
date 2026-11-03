@@ -25,7 +25,6 @@
     }
   ],
   "judge_report": {
-    "agent_read_only_tools": [],
     "calls": 1,
     "completion_tokens": 5,
     "consistency_rejections": 0,

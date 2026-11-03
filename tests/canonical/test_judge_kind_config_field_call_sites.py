@@ -46,12 +46,13 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.plugin_registry import JUDGE_KINDS_GROUP, _clear_discovery_cache
+from tolokaforge.core.tool_effects import ToolEffects
 from tolokaforge.grader.composite_dispatch import GraderCompositeDispatch
 from tolokaforge.runner.models import (
     Criterion,
     JudgeCustomization,
     LLMJudgeConfig,
-    ReadOnlyCallRule,
+    MutatesStateRule,
     Rubric,
     RunnerGradingConfig,
     RunnerInitialStateConfig,
@@ -83,7 +84,6 @@ class _CallSiteProbeJudgeKind:
             reasons="call_site_probe reached",
             score=1.0,
             evidence="state" if options.transcript_evidence is None else "transcript",
-            agent_read_only_tools=tuple(sorted(options.agent_read_only_tools)),
         )
 
 
@@ -142,14 +142,15 @@ def _rubric() -> Rubric:
     )
 
 
-_READ_RULE = ReadOnlyCallRule(tool="lookup", arguments={"verb": ["GET"]})
+_READ_RULE = MutatesStateRule.model_validate({"read_when": {"args": {"verb": {"in_": ["GET"]}}}})
 
 _AGENT_TOOLS = [
     ToolSchema(name="lookup", description="reads", parameters={}, mutates_state=False),
     ToolSchema(name="update", description="writes", parameters={}, mutates_state=True),
+    ToolSchema(name="rest_call", description="both", parameters={}, mutates_state=_READ_RULE),
     ToolSchema(name="undeclared", description="declares nothing", parameters={}),
 ]
-"""The trial's agent tools: only ``lookup`` declares it cannot change state."""
+"""The trial's agent tools, one of each ``mutates_state`` form."""
 
 _CUSTOMIZATION = JudgeCustomization(
     disable_knowledge_search=True,
@@ -158,7 +159,6 @@ _CUSTOMIZATION = JudgeCustomization(
     judge_snippet_chars=None,
     evidence="transcript",
     transcript_tool_chars=500,
-    read_only_calls=[_READ_RULE],
 )
 """Every field away from its default, so a dropped or defaulted one is visible."""
 
@@ -167,8 +167,8 @@ _EXPECTED_OPTIONS = JudgeTrialOptions(
     custom_system_prompt="Grade against the probe's own voice.",
     include_agent_system_prompt=False,
     judge_snippet_chars=None,
-    transcript_evidence=TranscriptEvidence(tool_result_chars=500, read_only_calls=(_READ_RULE,)),
-    agent_read_only_tools=frozenset({"lookup"}),
+    transcript_evidence=TranscriptEvidence(tool_result_chars=500),
+    tool_effects=ToolEffects.from_schemas(_AGENT_TOOLS),
 )
 
 _LOOSE_OPTION_KEYWORDS = frozenset(
@@ -498,6 +498,18 @@ def test_offline_replay_reads_judge_kind_and_forwards_the_recorded_options(
         ),
     )
     writer.write_prompts(trial_dir, "you are the agent", "user-sim prompt")
+    writer.write_metrics(trial_dir, make_trajectory(task_id="probe-task"))
+    writer.write_tools_schemas(
+        trial_dir,
+        [
+            {
+                "type": "function",
+                "function": {"name": tool.name, "parameters": {}},
+                **tool.model_dump(mode="json", include={"mutates_state"}, exclude_none=True),
+            }
+            for tool in _AGENT_TOOLS
+        ],
+    )
     writer.write_task(
         trial_dir,
         {
@@ -516,7 +528,7 @@ def test_offline_replay_reads_judge_kind_and_forwards_the_recorded_options(
             score=1.0,
             components=GradeComponents(llm_judge=1.0),
             judge_status=JudgeStatusEnum.COMPLETED,
-            judge_inputs=JudgeInputs(read_tools_offered=[], agent_read_only_tools=["lookup"]),
+            judge_inputs=JudgeInputs(read_tools_offered=[]),
             judge_kb_gating=JudgeKbGating(knowledge_search_disabled=True, offered=[], withheld=[]),
         ),
     )

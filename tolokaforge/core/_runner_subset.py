@@ -99,6 +99,8 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/simulation_budget.py",
     "tolokaforge/core/summarize_policy.py",
     "tolokaforge/core/tool_call_ids.py",
+    # The judge's options carry the agent tools' ``mutates_state`` declarations.
+    "tolokaforge/core/tool_effects.py",
     "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
     # The task-side MCP server registry (``create_server`` /

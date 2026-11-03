@@ -26,7 +26,8 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import tool_factory
-from tolokaforge.runner.models import TaskDescription, ToolSchema
+from tolokaforge.runner.models import MutatesStateRule, TaskDescription, ToolSchema
+from tolokaforge.runner.service import _wire_tool_schema
 
 pytestmark = pytest.mark.unit
 
@@ -347,3 +348,14 @@ def test_the_engine_client_hands_the_flag_on(
         assert {s["name"]: s["mutates_state"] for s in result["tool_schemas"]} == _DECLARED
     finally:
         runner_service.CleanupTrial(pb2.CleanupTrialRequest(trial_id=trial_id), mock_grpc_context)
+
+
+def test_a_read_rule_crosses_the_json_wire_and_reaches_the_proto_as_true() -> None:
+    """The proto field is a bool, and some calls of a tool declaring a read rule do
+    change state; the JSON wire carries the rule itself."""
+    rule = MutatesStateRule.model_validate({"read_when": {"args": {"method": {"in_": ["GET"]}}}})
+    declared = ToolSchema(name="t", description="d", parameters={}, mutates_state=rule)
+
+    assert ToolSchema.model_validate(json.loads(declared.model_dump_json())) == declared
+    wired = _wire_tool_schema(declared)
+    assert wired.HasField("mutates_state") and wired.mutates_state is True

@@ -7,11 +7,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from tolokaforge.core.grading.argument_predicates import MISSING, argument_at
 from tolokaforge.core.grading.regex_engine import CompiledRegex, RegexEngineKind, engine_for
 from tolokaforge.core.grading.trace_checks.matcher import (
-    _MISSING,
     MatcherOutcome,
-    _argument_at,
     _missing_evidence,
     _outcome_of,
     _results_by_call_id,
@@ -256,15 +255,16 @@ def _binder_reading(bound: BoundValue, event: TraceEvent, outcome: TraceEvent | 
 
     An extraction reads a JSON ``null`` and an absent key as one condition — the
     call that omitted the argument silences a report a sibling call earned, so
-    the :data:`_MISSING` sentinel :func:`_argument_at` returns is folded into
+    the :data:`~tolokaforge.core.grading.argument_predicates.MISSING` sentinel
+    :func:`~tolokaforge.core.grading.argument_predicates.argument_at` returns is folded into
     ``None`` at this boundary and never reaches a bound value.
     """
     head = bound.head_segment()
     if head != "args":
         return _BINDER_FIELDS[head](event, outcome)
     _, _, path = bound.field.partition(".")
-    value = _argument_at(event.arguments, path) if path else event.arguments
-    return None if value is _MISSING else value
+    value = argument_at(event.arguments, path) if path else event.arguments
+    return None if value is MISSING else value
 
 
 # ``status`` and ``executor`` are on no row: a binding over a closed vocabulary of a

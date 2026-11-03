@@ -456,16 +456,6 @@ def project_grading_combine(task_defaults: Mapping[str, Any] | None) -> dict[str
     return (task_defaults.get("grading_defaults") or {}).get("combine")
 
 
-def project_judge_customization(task_defaults: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """The ``grading_defaults.llm_judge.customization`` layer inside a project's
-    ``task_defaults``: the base layer under each task's own
-    ``grading.yaml.llm_judge.customization``. ``None`` when unset."""
-    if not task_defaults:
-        return None
-    llm_judge = (task_defaults.get("grading_defaults") or {}).get("llm_judge") or {}
-    return llm_judge.get("customization")
-
-
 def resolve_effective_grading_combine(
     project_combine: dict[str, Any] | None,
     task_combine: dict[str, Any] | None,

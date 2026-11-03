@@ -932,13 +932,12 @@ project figure; a task `null` overrides it with whole documents; a task undoes a
 project figure by writing `200`. See
 [GRADING.md](GRADING.md#llm-judge-rubric-grading).
 
-`customization.evidence`, `transcript_tool_chars` and `read_only_calls` layer by the
-same merge. The last two are read by the transcript judge alone and are inert under
-`evidence: state`, so a project can declare its tools' read rules once and let each
-task opt into the mode. A task's `read_only_calls` replaces the project's list. A
-project rule may name a tool only some of its tasks give their agent; `tolokaforge
-validate` refuses one whose tool no task of the project (every task its
-`tasks.discovery.glob` finds) declares. See
+`customization.evidence` and `transcript_tool_chars` layer by the same merge.
+`transcript_tool_chars` is read by the transcript judge alone and is inert under
+`evidence: state`. Which of the agent's calls such a judge lists as state-changing is
+the tools' own `mutates_state` declaration, not judge customization; a project
+declares one for every task through a `task_defaults.tools.<actor>.<name>` block,
+which reaches only the tasks that enable the tool. See
 [GRADING.md](GRADING.md#transcript-only-judge).
 
 ### Full override — replace entirely

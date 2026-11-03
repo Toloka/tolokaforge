@@ -857,39 +857,6 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         ),
     ),
     _WireKey(
-        path="grading.llm_judge.customization.read_only_calls",
-        emitted_for="grading.llm_judge.customization.read_only_calls",
-        wire_shape="list[ReadOnlyCallRule]",
-        since=_UNRELEASED,
-        lock=_DocLock(
-            doc_key="grading.llm_judge.customization.read_only_calls",
-            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
-            breadth="a pack declaring `customization.read_only_calls`",
-        ),
-    ),
-    _WireKey(
-        path="grading.llm_judge.customization.read_only_calls[].tool",
-        emitted_for="grading.llm_judge.customization.read_only_calls",
-        wire_shape="str [min_length=1]",
-        since=_UNRELEASED,
-        lock=_DocLock(
-            doc_key="grading.llm_judge.customization.read_only_calls[*].tool",
-            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
-            breadth="a pack declaring `customization.read_only_calls`",
-        ),
-    ),
-    _WireKey(
-        path="grading.llm_judge.customization.read_only_calls[].arguments",
-        emitted_for="grading.llm_judge.customization.read_only_calls",
-        wire_shape="dict[str, list[str | int | float | bool | None]]",
-        since=_UNRELEASED,
-        lock=_DocLock(
-            doc_key="grading.llm_judge.customization.read_only_calls[*].arguments",
-            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
-            breadth="a pack declaring `customization.read_only_calls`",
-        ),
-    ),
-    _WireKey(
         path="grading.custom_checks",
         emitted_for="",
         wire_shape="dict[str, Any] | None",
@@ -1049,7 +1016,9 @@ def _render_constraints(field: FieldInfo) -> str:
     return f" [{', '.join(sorted(rendered))}]" if rendered else ""
 
 
-def _walk_model(model: type[BaseModel], prefix: str, gate: str) -> Iterator[_WalkedKey]:
+def _walk_model(
+    model: type[BaseModel], prefix: str, gate: str, only: frozenset[str] | None = None
+) -> Iterator[_WalkedKey]:
     """Every wire key path under ``model``, with the gate its emission waits on.
 
     ``gate`` is the nearest ancestor a pack must declare — the nearest optional field or
@@ -1058,12 +1027,16 @@ def _walk_model(model: type[BaseModel], prefix: str, gate: str) -> Iterator[_Wal
     children wait on it. Two kinds of field gate on themselves instead: one its model
     names in ``omitted_when_absent`` (the dump leaves it out rather than writing
     ``null``) and one its model leaves off the wire at its default
-    (``OMITTED_AT_DEFAULT``); either appears only in a pack that declares it.
+    (``OMITTED_AT_DEFAULT``); either appears only in a pack that declares it. ``only``
+    names the fields of ``model`` itself to walk, so the walk never descends a surface
+    the census does not speak for.
     """
     omitted = set(getattr(model, "omitted_when_absent", ())) | set(
         getattr(model, "OMITTED_AT_DEFAULT", ())
     )
     for name, field in model.model_fields.items():
+        if only is not None and name not in only:
+            continue
         path = f"{prefix}.{name}" if prefix else name
         nested = _nested_model(field.annotation)
         element = _element_model(field.annotation)
@@ -1095,8 +1068,8 @@ def _walked_wire_keys() -> tuple[_WalkedKey, ...]:
     """The grading and search key paths the declared models emit."""
     return tuple(
         key
-        for key in _walk_model(TaskDescription, prefix="", gate="")
-        if key.path.split(".")[0] in _CENSUS_ROOTS
+        for root in _CENSUS_ROOTS
+        for key in _walk_model(TaskDescription, prefix="", gate="", only=frozenset({root}))
     )
 
 

@@ -602,7 +602,7 @@ threaded through the composite `grade_state_checks_reads` dispatch; each
 backend owns its source's read strategy so the composite dispatches
 without knowing either evaluator's internals. Trace-check operators
 resolve per-call inside
-`tolokaforge.core.grading.trace_checks._operator_holds`, which reads
+`tolokaforge.core.grading.argument_predicates.operator_holds`, which reads
 `load_trace_check_operator(name)` — the entry-point discovery cache means
 a name only pays the loader cost on its first mention. A
 downstream `pip install` of a package that registers under any of these

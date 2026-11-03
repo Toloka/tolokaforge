@@ -18,11 +18,12 @@ recording where each value came from (:mod:`tolokaforge.core.grading.replay`).
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from tolokaforge.core.grading.judge_transcript import TranscriptEvidence
 from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
+from tolokaforge.core.tool_effects import ToolEffects
 
 if TYPE_CHECKING:
     from tolokaforge.core.models.run_config import JudgeGraderConfig
@@ -52,10 +53,9 @@ class JudgeTrialOptions:
     * ``transcript_evidence`` — how a transcript-only judge reads the trial
       (``customization.evidence: transcript``); ``None`` is the judge over the final
       state. A transcript judge is handed no DB reader, workspace or state diff.
-    * ``agent_read_only_tools`` — the trial's agent tools that declare
-      ``mutates_state: false``. A transcript judge does not list their calls as
-      state-changing; every judge records them, so its trial can be replayed as a
-      transcript judge.
+    * ``tool_effects`` — the agent tools' ``mutates_state`` declarations, from
+      which a transcript judge tells the agent's state-changing calls from its
+      reads. Built only for a transcript judge; empty otherwise.
 
     The defaults are what a task with no ``customization`` block is graded with.
     A kind honours every field as :class:`~tolokaforge.core.grading.judge.LLMJudge`
@@ -67,7 +67,7 @@ class JudgeTrialOptions:
     include_agent_system_prompt: bool = True
     judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
     transcript_evidence: TranscriptEvidence | None = None
-    agent_read_only_tools: frozenset[str] = frozenset()
+    tool_effects: ToolEffects = field(default_factory=ToolEffects.empty)
 
 
 def resolve_judge_trial_options(
@@ -82,8 +82,8 @@ def resolve_judge_trial_options(
     ``grader.judge`` block: each of its fields that is not ``None`` wins over the
     task's value, and ``None`` inherits it. It carries no ``judge_snippet_chars``:
     its ``None`` means "inherit", so it could not express whole documents.
-    ``agent_tools`` are the trial's agent tool schemas; the ones declaring
-    ``mutates_state: false`` become ``agent_read_only_tools``. Required: a caller
+    ``agent_tools`` are the trial's agent tool schemas, whose ``mutates_state``
+    declarations become ``tool_effects`` for a transcript judge. Required: a caller
     that forgot them would have a transcript judge list every read as a state change.
     """
     disable_knowledge_search = customization.disable_knowledge_search if customization else None
@@ -98,6 +98,7 @@ def resolve_judge_trial_options(
             custom_system_prompt = override.custom_system_prompt
         if override.include_agent_system_prompt is not None:
             include_agent_system_prompt = override.include_agent_system_prompt
+    transcript_evidence = resolve_transcript_evidence(customization)
     return JudgeTrialOptions(
         disable_knowledge_search=bool(disable_knowledge_search),
         custom_system_prompt=custom_system_prompt,
@@ -109,9 +110,11 @@ def resolve_judge_trial_options(
             if customization is not None
             else DEFAULT_JUDGE_SNIPPET_CHARS
         ),
-        transcript_evidence=resolve_transcript_evidence(customization),
-        agent_read_only_tools=frozenset(
-            tool.name for tool in agent_tools if tool.mutates_state is False
+        transcript_evidence=transcript_evidence,
+        tool_effects=(
+            ToolEffects.from_schemas(agent_tools)
+            if transcript_evidence is not None
+            else ToolEffects.empty()
         ),
     )
 
@@ -122,7 +125,4 @@ def resolve_transcript_evidence(
     """The transcript judge's reading of a trial, ``None`` for a judge over the state."""
     if customization is None or customization.evidence != "transcript":
         return None
-    return TranscriptEvidence(
-        tool_result_chars=customization.transcript_tool_chars,
-        read_only_calls=tuple(customization.read_only_calls),
-    )
+    return TranscriptEvidence(tool_result_chars=customization.transcript_tool_chars)

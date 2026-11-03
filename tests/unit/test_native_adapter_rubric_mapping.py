@@ -399,50 +399,19 @@ def test_judge_snippet_chars_is_off_the_wire_when_no_layer_sets_it(tmp_path: Pat
 
 
 def test_a_project_transcript_judge_reaches_the_task_and_the_wire(tmp_path: Path):
-    """A project's transcript evidence and its rules layer under a task that sets
-    nothing, and cross the wire for the runner's judge."""
+    """A project's transcript evidence layers under a task that sets nothing, and
+    crosses the wire for the runner's judge."""
     adapter = _build_task(
         tmp_path,
         _rubric_grading(),
-        project_task_defaults=_judge_defaults(
-            {
-                "evidence": "transcript",
-                "read_only_calls": [
-                    {"tool": "rest_call", "arguments": {"request.method": ["GET"]}}
-                ],
-            }
-        ),
+        project_task_defaults=_judge_defaults({"evidence": "transcript"}),
     )
     description = adapter.to_task_description("rubric_task")
 
-    customization = description.grading.llm_judge.customization
-    assert customization.evidence == "transcript"
-    assert customization.read_only_calls[0].tool == "rest_call"
+    assert description.grading.llm_judge.customization.evidence == "transcript"
     wire = json.loads(description.model_dump_json())["grading"]["llm_judge"]["customization"]
     assert wire["evidence"] == "transcript"
-    assert wire["read_only_calls"] == [
-        {"tool": "rest_call", "arguments": {"request.method": ["GET"]}}
-    ]
     assert "transcript_tool_chars" not in wire
-
-
-def test_a_project_declares_read_rules_once_and_a_task_opts_into_the_mode(tmp_path: Path):
-    """The rules are inert under a state judge, so a project can carry them for every
-    task while each task picks its own evidence."""
-    project = _judge_defaults({"read_only_calls": [{"tool": "rest_call"}]})
-
-    state_task = _build_task(tmp_path / "state", _rubric_grading(), project_task_defaults=project)
-    transcript_task = _build_task(
-        tmp_path / "transcript",
-        _rubric_grading({"evidence": "transcript"}),
-        project_task_defaults=project,
-    )
-
-    state = state_task.to_task_description("rubric_task").grading.llm_judge.customization
-    transcript = transcript_task.to_task_description("rubric_task").grading.llm_judge.customization
-    assert state.evidence == "state" and state.read_only_calls[0].tool == "rest_call"
-    assert transcript.evidence == "transcript"
-    assert transcript.read_only_calls[0].tool == "rest_call"
 
 
 def test_leaving_judge_snippet_chars_off_keeps_the_serialization_schema():

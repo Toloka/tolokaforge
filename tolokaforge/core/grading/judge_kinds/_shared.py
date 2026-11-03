@@ -36,7 +36,6 @@ CONSTRUCTION_FIELDS: tuple[str, ...] = (
     "read_tools_offered",
     "state_diff",
     "evidence",
-    "agent_read_only_tools",
 )
 
 

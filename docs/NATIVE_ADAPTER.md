@@ -256,7 +256,14 @@ what the agent is handed. The same declaration sets the task's `search` block:
 is declared by whoever authored the tool. A builtin's schema derives it from the
 tool's `ToolPolicy.category` (`read` → `False`, `write` → `True`, `compute` →
 undeclared); the search tool is `False`; an MCP tool carries whatever its server's
-`readOnlyHint` annotation says, and nothing when the server declares nothing.
+`readOnlyHint` annotation says, and nothing when the server declares nothing. The
+task's own `tools.<actor>.<name>.mutates_state` (`false`, `true`, or a `read_when`
+rule) is laid over that declaration: it fills an undeclared tool, a `true` replaces any
+author value, and anything else over an author declaration is refused, as is a
+`read_when` path the tool's closed schema does not declare
+([TASKS.md § Declaring which calls change state](TASKS.md#declaring-which-calls-change-state)).
+A task file's block for a tool it does not enable is refused when the task loads
+([TASKS.md § Tool blocks](TASKS.md#tool-blocks)).
 
 `fixtures/tools.json` format (list of tool descriptors):
 

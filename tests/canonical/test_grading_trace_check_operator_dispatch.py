@@ -1,4 +1,4 @@
-"""``load_trace_check_operator`` discovery + ``_operator_holds`` dispatch.
+"""``load_trace_check_operator`` discovery + ``operator_holds`` dispatch.
 
 Locks the two seams the trace-check operator design commits to:
 
@@ -11,7 +11,7 @@ Locks the two seams the trace-check operator design commits to:
    under the monkeypatched mapping.
 
 2. **Evaluator dispatch through the resolved callable.**
-   :func:`~tolokaforge.core.grading.trace_checks._operator_holds` invokes
+   :func:`~tolokaforge.core.grading.argument_predicates.operator_holds` invokes
    the resolved custom operator by name — proving the registry-lookup path
    IS the dispatch path.
 """
@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 from tests.utils.trace_check_operator_demo import is_positive_number
-from tolokaforge.core.grading.trace_checks import _operator_holds
+from tolokaforge.core.grading.argument_predicates import operator_holds
 from tolokaforge.core.plugin_registry import (
     TRACE_CHECK_OPERATORS_GROUP,
     _clear_discovery_cache,
@@ -81,36 +81,36 @@ def test_loader_resolves_the_monkeypatched_demo_operator(
         _clear_discovery_cache()
 
 
-def test_operator_holds_dispatches_through_the_registered_demo_operator(
+def testoperator_holds_dispatches_through_the_registered_demo_operator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``_operator_holds`` reaches the plug-in operator by name.
+    """``operator_holds`` reaches the plug-in operator by name.
 
     A positive number holds; a non-positive one does not. Proves the dispatch
     site itself reads the entry-point registry — no hard-coded fallback path.
     """
     _inject_demo_operator(monkeypatch)
     try:
-        assert _operator_holds("test_trace_operator", 3, None, {}) is True
-        assert _operator_holds("test_trace_operator", 0, None, {}) is False
-        assert _operator_holds("test_trace_operator", -5, None, {}) is False
-        assert _operator_holds("test_trace_operator", "abc", None, {}) is False
+        assert operator_holds("test_trace_operator", 3, None, {}) is True
+        assert operator_holds("test_trace_operator", 0, None, {}) is False
+        assert operator_holds("test_trace_operator", -5, None, {}) is False
+        assert operator_holds("test_trace_operator", "abc", None, {}) is False
     finally:
         _clear_discovery_cache()
 
 
-def test_operator_holds_preserves_the_none_dispatch_gate(
+def testoperator_holds_preserves_the_none_dispatch_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A ``None`` value short-circuits before the registered operator is called.
 
     Every operator but ``exists`` is false on ``None``; the gate is a dispatch
-    invariant declared once in ``_operator_holds`` rather than repeated inside
+    invariant declared once in ``operator_holds`` rather than repeated inside
     every operator. Locks that the ``None`` gate is declared once in
-    ``_operator_holds``, not duplicated inside every registered operator.
+    ``operator_holds``, not duplicated inside every registered operator.
     """
     _inject_demo_operator(monkeypatch)
     try:
-        assert _operator_holds("test_trace_operator", None, 0, {}) is False
+        assert operator_holds("test_trace_operator", None, 0, {}) is False
     finally:
         _clear_discovery_cache()

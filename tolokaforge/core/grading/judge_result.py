@@ -118,11 +118,6 @@ class JudgeResult:
     # What the judge graded from: the final state, or the transcript alone
     # (``customization.evidence: transcript``).
     evidence: Literal["state", "transcript"] = "state"
-    # The agent tools declaring ``mutates_state: false``, recorded for every judge:
-    # the tool schemas that declare it are not in the bundle, and an offline replay
-    # as a transcript judge rebuilds its list of state-changing calls from this set,
-    # whatever the judge originally graded from.
-    agent_read_only_tools: tuple[str, ...] = ()
     # The judge's own message transcript (role / content / tool_calls dicts),
     # captured for audit/reproducibility (plan open question #2). Populated for
     # both COMPLETED and ERRORED runs — an errored judge's partial transcript is

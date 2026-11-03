@@ -193,11 +193,14 @@ class ToolSchema(BaseModel):
     the per-model cap passes the tool message through verbatim.
     """
 
-    mutates_state: bool | None = None
+    mutates_state: bool | MutatesStateRule | None = None
     """Whether a call can change the graded state, as the tool's author declares it
     (ADR-0061).
 
     ``None`` is unknown and reads as ``True`` wherever the engine needs an answer.
+    A :class:`MutatesStateRule` declares which calls only read, by their arguments;
+    the gRPC ``ToolSchema.mutates_state`` bool carries it as ``true``, since some
+    calls do change state.
     An MCP server declares it through the ``readOnlyHint`` tool annotation
     (``DomainToolRegistry.tool(..., mutates_state=...)``), which the native adapter
     reads back; an adapter that knows it from its own sources sets it directly.
@@ -1096,6 +1099,9 @@ class ValuePredicate(BaseModel):
 
     omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"regex_engine"})
 
+    PATTERN_OPERATORS: ClassVar[frozenset[str]] = TRACE_PREDICATE_REGEX_OPERATORS
+    """The operators whose operand is a compiled pattern rather than the authored value."""
+
     @model_serializer(mode="wrap")
     @schema_from_the_fields
     def _leave_out_absent_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -1177,6 +1183,52 @@ class ValuePredicate(BaseModel):
                     "would hold for no trial. Fix the bound"
                 )
         return self
+
+
+class MutatesStateReadWhen(BaseModel):
+    """The arguments under which a call reads: every ``args`` predicate holds.
+
+    ``args`` maps a dotted argument path (``request.method``) to a
+    :class:`ValuePredicate`, the trace matcher's own vocabulary, read through the
+    same resolver (:mod:`tolokaforge.core.grading.argument_predicates`): a path the
+    call does not carry fails every operator but ``omitted`` / ``exists``. A
+    pattern runs on the ``linear`` engine unless its predicate names another. A
+    rule has no ``bind``, so the binding operators are refused.
+    """
+
+    args: dict[str, ValuePredicate] = Field(min_length=1)
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+    @field_validator("args")
+    @classmethod
+    def _paths_present_and_binding_free(
+        cls, args: dict[str, ValuePredicate]
+    ) -> dict[str, ValuePredicate]:
+        for path, predicate in args.items():
+            if not path or any(not segment for segment in path.split(".")):
+                raise ValueError(f"read_when.args path {path!r} has an empty segment")
+            bound = sorted(predicate.declared_operators() & TRACE_PREDICATE_BINDING_OPERATORS)
+            if bound:
+                raise ValueError(
+                    f"read_when.args.{path} uses {', '.join(bound)}, which compare against "
+                    "a value a constraint's bind extracted; a mutates_state rule binds "
+                    "nothing. Write the value with equals / in_ instead"
+                )
+        return args
+
+
+class MutatesStateRule(BaseModel):
+    """A tool that changes state on some calls and only reads on others (ADR-0061).
+
+    A call reads when :attr:`read_when` holds over its arguments and can change
+    state otherwise — so an argument shape the rule does not foresee reads as a
+    possible change, the conservative direction.
+    """
+
+    read_when: MutatesStateReadWhen
+
+    model_config = {"extra": "forbid", "frozen": True}
 
 
 # Which fields a matcher may read, per event kind. A ``tool_call`` matcher reads
@@ -2394,39 +2446,6 @@ class CriterionResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class ReadOnlyCallRule(BaseModel):
-    """Calls of one agent tool that cannot change state, for a transcript-evidence judge.
-
-    A call matches when it calls ``tool`` and, for every entry of ``arguments``, the
-    value at that dotted path into the call's arguments is one of the listed values
-    (``request.method: [GET, HEAD]``); a path the call does not carry is no match.
-    An empty ``arguments`` matches every call of the tool. Values compare exactly.
-
-    The rule is how a task marks reads on a tool that both reads and writes, such
-    as an HTTP tool, whose ``mutates_state`` (ADR-0061) cannot say it per call.
-    """
-
-    tool: str = Field(min_length=1)
-    arguments: dict[str, list[str | int | float | bool | None]] = Field(default_factory=dict)
-
-    model_config = {"extra": "forbid", "frozen": True}
-
-    @field_validator("arguments")
-    @classmethod
-    def _paths_and_values_present(
-        cls, value: dict[str, list[str | int | float | bool | None]]
-    ) -> dict[str, list[str | int | float | bool | None]]:
-        for path, allowed in value.items():
-            if not path or any(not segment for segment in path.split(".")):
-                raise ValueError(f"read_only_calls argument path {path!r} has an empty segment")
-            if not allowed:
-                raise ValueError(
-                    f"read_only_calls argument path {path!r} lists no values; a path "
-                    "that matches nothing would make the rule match no call"
-                )
-        return value
-
-
 class JudgeCustomization(BaseModel):
     """Judge tool-surface customization, sibling of ``rubric`` under ``llm_judge``.
 
@@ -2465,11 +2484,10 @@ class JudgeCustomization(BaseModel):
     the transcript with each tool result numbered ``[call N]`` and cut at
     ``transcript_tool_chars`` characters, the agent's calls that can change state
     with how each ended, and ``show_call``, which returns a cut result in full. A
-    call can change state unless its tool declares ``mutates_state: false``
-    (ADR-0061) or it matches one of ``read_only_calls``. Both of those fields are
-    read by the ``transcript`` judge alone and are inert under ``state``, so a
-    project declares its tools' read rules once and each task opts into the mode.
-    All three are left off the dump at their default.
+    call can change state unless its tool's ``mutates_state`` declaration
+    (:attr:`ToolSchema.mutates_state`, ADR-0061) says it reads. ``transcript_tool_chars``
+    is read by the ``transcript`` judge alone and is inert under ``state``. Both are
+    left off the dump at their default.
 
     :func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns
     a customization into the
@@ -2478,7 +2496,7 @@ class JudgeCustomization(BaseModel):
     """
 
     OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset(
-        {"judge_snippet_chars", "evidence", "transcript_tool_chars", "read_only_calls"}
+        {"judge_snippet_chars", "evidence", "transcript_tool_chars"}
     )
     """Fields the dump leaves out while they hold their default value."""
 
@@ -2488,7 +2506,6 @@ class JudgeCustomization(BaseModel):
     judge_snippet_chars: int | None = Field(default=DEFAULT_JUDGE_SNIPPET_CHARS, ge=1, strict=True)
     evidence: Literal["state", "transcript"] = "state"
     transcript_tool_chars: int = Field(default=DEFAULT_TRANSCRIPT_TOOL_CHARS, ge=1, strict=True)
-    read_only_calls: list[ReadOnlyCallRule] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 

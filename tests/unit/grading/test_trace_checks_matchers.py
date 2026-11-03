@@ -542,12 +542,12 @@ def test_a_nullness_probe_on_an_args_predicate_is_admitted() -> None:
 
 
 def test_a_binder_extraction_reads_absent_and_null_as_one_condition() -> None:
-    """The ``_MISSING`` sentinel does not leak into a bound value.
+    """The ``MISSING`` sentinel does not leak into a bound value.
 
     A binding reading ``args.body.query`` off a call that carries no ``body``,
     a call that carries ``body: None``, or a call that carries ``body: {}``
     (missing the ``query`` key) extracts nothing in every case. If the sentinel
-    leaked, ``_extracted`` would return ``[_MISSING]`` and every reference in
+    leaked, ``_extracted`` would return ``[MISSING]`` and every reference in
     the constraint would resolve against an in-band object no operator answers
     for.
     """

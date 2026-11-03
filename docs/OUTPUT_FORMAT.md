@@ -160,8 +160,17 @@ describe its newly executed attempts.
 
 * **Shape**: YAML sequence of tool-schema mappings.
 * **Content**: the agent's raw tool schemas **after**
-  `capabilities.schema_sanitizer.sanitize(...)`. Reproduces exactly what
-  the provider saw on the wire.
+  `capabilities.schema_sanitizer.sanitize(...)`, then the user simulator's.
+  Reproduces exactly what the provider saw on the wire.
+* **`mutates_state`**: an entry whose tool declares one
+  ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)) carries it as a top-level
+  key beside `function` — `true`, `false`, or the `read_when` rule
+  (`{read_when: {args: {method: {in_: [GET]}}}}`) — read from the trial's task
+  description, each slice from its own actor's tools; an undeclared tool's entry has
+  no such key. It is the only record of the declarations an offline replay reads:
+  a [transcript-only judge](GRADING.md#transcript-only-judge) replayed from a bundle
+  takes its state-changing calls from it, and a bundle below generation 8 records none,
+  so `rejudge` refuses to replay one as a transcript judge.
 * **Per-trial**: one file per trial, no dedup. Repeats of the same task
   on the same model write identical bytes to independent files —
   audit-friendly trade for ~150 KB extra per trial.
@@ -862,11 +871,14 @@ the client slug the calls were served by, `null` only for a call built without a
 serving client.
 
 To help analytics consumers detect schema evolution, a trial-level metrics file
-written by `write_metrics` includes a root-level `schema_version: 7` marker. The
+written by `write_metrics` includes a root-level `schema_version: 8` marker. The
 one shape that carries no marker is a `metrics.yaml` the writer created for the
 redaction stamp alone, where the caller wrote no metrics of its own (see
 [`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)) —
-such a bundle is refused offline anyway. Generation 7 bundles record what became
+such a bundle is refused offline anyway. Generation 8 bundles record each tool's
+`mutates_state` declaration on its
+[`tools_schemas.yaml`](#trialstask_idtrial_indextools_schemasyaml) entry.
+Generation 7 bundles record what became
 of the reasoning the trial was billed for: `reasoning_recovered_by_fallback`,
 `reasoning_channel_unknown`, `reasoning_replay_dropped`, and `capture_only` on
 any reasoning a reader rather than a codec produced. Generation 5 bundles report a
@@ -1336,7 +1348,7 @@ contains — on this path it is stamped and most of them are absent.
   `provision_stage` set to the lifecycle step that raised (see below),
   `grading_error: null` (grading never ran), empty `messages`.
 * `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
-  `schema_version: 7`, empty `tool_usage`) plus three top-level failure-signal
+  `schema_version: 8`, empty `tool_usage`) plus three top-level failure-signal
   keys:
 
   ```yaml
@@ -1820,11 +1832,6 @@ read_tools_offered:
   and `read_file` (a workspace existed). The KB read surface lives in
   `grade.yaml` `judge_kb_gating`. A replay declares which of these live
   backends it must shim offline.
-* `agent_read_only_tools` — the agent tools declaring `mutates_state: false`,
-  whose declarations the bundle does not carry. Written for every judge: a
-  [transcript-only judge](GRADING.md#transcript-only-judge) does not list their
-  calls as state-changing, and a replay as a transcript judge — of either mode's
-  trial — rebuilds that list from it.
 
 ## `trials/{task_id}/{trial_index}/logs.yaml`
 
@@ -1924,7 +1931,7 @@ recorded value, no override). See
 
 `judge_evidence` / `judge_evidence_source` resolve the same way from
 `llm_judge.customization.evidence`: a `--grading` override sets it only when it carries
-its own `evidence` (and takes `transcript_tool_chars` and `read_only_calls` with it),
+its own `evidence` (and takes `transcript_tool_chars` with it),
 `--evidence state|transcript` forces it (`judge_evidence_source: override`), and
 `judge_evidence_source` is `null` exactly when the judge defaulted to `state`.
 
@@ -2084,7 +2091,7 @@ evidence about us, and our own defects stay counted. See
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator's built-in prompt body or the conversation context it sees. The context `actors.user.tool_turns: isolated` builds is identified by `user_actor.tool_turns`, not by this stamp; a non-built-in simulator (`actors.user.simulator`) writes its own prompt, recorded in `prompts.yaml` |
-| `metrics.yaml` | `schema_version` | `7` | The per-trial bundle's file set or field semantics change |
+| `metrics.yaml` | `schema_version` | `8` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `5` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, or the per-role spend plane. Also whenever the `infrastructure_aborts` key set changes, because those keys are part of the generation: the stamp is how a reader knows which excluded reasons a file could have reported. A termination reason that is *not* excluded only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |

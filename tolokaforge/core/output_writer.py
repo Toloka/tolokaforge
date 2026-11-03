@@ -19,8 +19,13 @@ from tolokaforge.core.redaction import (
     RedactionStamp,
 )
 
-TRIAL_BUNDLE_SCHEMA_VERSION = 7
+TRIAL_BUNDLE_SCHEMA_VERSION = 8
 """The per-trial bundle generation stamped into ``metrics.yaml``.
+
+Version 8 bundles record each tool's ``mutates_state`` declaration (ADR-0061) as a
+top-level ``mutates_state`` on its ``tools_schemas.yaml`` entry, left out where the
+tool declares none — what an offline replay of a transcript-only judge reads to
+tell the agent's state-changing calls from its reads.
 
 Version 7 bundles carry what became of the reasoning the run was billed for:
 ``reasoning_recovered_by_fallback`` on ``metrics``, ``reasoning_channel_unknown``

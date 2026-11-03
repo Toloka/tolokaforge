@@ -130,7 +130,8 @@ message ToolSchema {
   // Whether a call can change the graded state, as the tool's author declares
   // it (ADR-0061). Optional (proto3): unset means unknown, which reads as
   // mutating wherever the engine needs an answer; a runner predating this
-  // field never sets it.
+  // field never sets it. A tool whose declaration is a read rule (some calls
+  // read, others change state) is sent as true.
   optional bool mutates_state = 7;
 }
 
@@ -397,11 +398,6 @@ message JudgeReport {
   // upstream's bill on a BYOK call). Absent unless every call stated one;
   // cost_usd stays the eval's own figure either way.
   optional double billed_cost_usd = 17;
-  // The agent tools declaring mutates_state: false, for every judge. A
-  // transcript judge (grading.llm_judge.customization.evidence: transcript)
-  // does not list their calls as state-changing; an offline replay as a
-  // transcript judge rebuilds that list from this field.
-  repeated string agent_read_only_tools = 18;
   // "transcript" when a transcript judge graded the trial; absent for a judge
   // over the final state.
   optional string judge_evidence = 19;

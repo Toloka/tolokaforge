@@ -843,9 +843,6 @@ llm_judge:                                 # the judge MODEL is set once per run
                                            # from the transcript alone, no state
     transcript_tool_chars: 2000            # int >= 1 (default 2000): each tool
                                            # result's inline length (transcript only)
-    read_only_calls:                       # calls that cannot change state
-      - tool: rest_call                    # (transcript only)
-        arguments: {request.method: [GET, HEAD]}
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth
       The correct order total is $42.50 with apple_pay.
@@ -932,10 +929,10 @@ passthrough (`DelegatingReadTool`), which renders the agent's own tool output
 verbatim. `evidence` (`state` | `transcript`, default `state`) is what the judge
 grades from: `transcript` gives it no view of the final state (no state diff, no DB
 or workspace tools) and grades from the transcript, the agent's state-changing calls
-and `show_call` — see [GRADING.md](GRADING.md#transcript-only-judge).
-`transcript_tool_chars` (`int >= 1`, default `2000`) and `read_only_calls` (a list of
-`{tool, arguments}` rules) are read by the `transcript` judge alone and are inert under
-`state`. Omitting the block leaves the judge at the faithful
+and `show_call` — see [GRADING.md](GRADING.md#transcript-only-judge); which calls
+can change state is each tool's `mutates_state` declaration in `task.yaml`.
+`transcript_tool_chars` (`int >= 1`, default `2000`) is read by the `transcript` judge
+alone and is inert under `state`. Omitting the block leaves the judge at the faithful
 default. Every judge
 kind receives these settings resolved as one `JudgeTrialOptions` (see
 [JUDGE_KINDS.md](JUDGE_KINDS.md#protocol-contract)). All fields

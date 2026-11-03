@@ -638,7 +638,6 @@ def _build_grade(
         judge_inputs = JudgeInputs(
             state_diff_text=judge_result.state_diff,
             read_tools_offered=list(judge_result.read_tools_offered),
-            agent_read_only_tools=list(judge_result.agent_read_only_tools),
         )
         judge_custom_prompt = judge_result.custom_system_prompt
         judge_agent_prompt_included = judge_result.include_agent_system_prompt

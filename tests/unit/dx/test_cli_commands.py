@@ -6,7 +6,6 @@ config_commands.py, docker_commands.py.
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
@@ -61,11 +60,6 @@ class TestCLIGroup:
 # ===================================================================
 # validate command
 # ===================================================================
-
-
-_SHARED_DOMAIN_EXAMPLE = (
-    Path(__file__).resolve().parents[3] / "examples" / "native" / "native_shared_domain"
-)
 
 
 def _write_task_pack(directory: Path) -> Path:
@@ -167,29 +161,6 @@ class TestValidateCommand:
         assert result.exit_code == 1
         assert "project.yaml" in result.stderr
         assert "0 valid, 1 invalid" in result.stderr
-
-    @pytest.mark.parametrize(("tool", "exit_code"), [("list_notes", 0), ("lisst_notes", 1)])
-    def test_validate_checks_a_projects_read_only_calls_across_its_tasks(
-        self, runner: CliRunner, tmp_path: Path, tool: str, exit_code: int
-    ) -> None:
-        """A project rule naming a tool none of its tasks declares fails the project,
-        however many of its tasks the glob selects."""
-        pack = tmp_path / "pack"
-        shutil.copytree(_SHARED_DOMAIN_EXAMPLE, pack)
-        project = yaml.safe_load((pack / "project.yaml").read_text())
-        project["task_defaults"]["grading_defaults"] = {
-            "llm_judge": {"customization": {"read_only_calls": [{"tool": tool}]}}
-        }
-        (pack / "project.yaml").write_text(yaml.dump(project))
-        task_file = pack / "dataset/notes/testcases/summarize_notes_rubric/task.yaml"
-
-        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
-
-        assert result.exit_code == exit_code, result.stderr
-        assert "1 valid, 0 invalid" in result.stderr
-        assert ("is declared for the agent by no task of this project" in result.stderr) == bool(
-            exit_code
-        )
 
     def test_validate_invalid_yaml(self, runner: CliRunner, tmp_path: Path) -> None:
         """Validate a file with invalid YAML."""

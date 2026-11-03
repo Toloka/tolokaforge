@@ -34,7 +34,7 @@ import yaml
 from click.testing import CliRunner
 from pydantic import ValidationError
 
-from tests.unit.grading.test_judge import ScriptedClient
+from tests.unit.grading.test_judge import MessageCapturingClient, ScriptedClient
 from tests.utils.five_shape_run import write_five_shape_run
 from tests.utils.provision_failure import write_provision_failure_bundle
 from tolokaforge.core.conductor import InProcessConductor
@@ -88,6 +88,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
+from tolokaforge.core.tool_effects import ToolEffects
 
 pytestmark = pytest.mark.unit
 
@@ -236,21 +237,22 @@ def _write_bundle(
     return trajectory
 
 
+_SUBMIT_REPORT_SCRIPT = [
+    [
+        (
+            "submit_report",
+            {
+                "reasons": "Refund quoted correctly.",
+                "refund_amount": True,
+                "refund_amount_justification": "Reply quotes $328.50. VERDICT: MET",
+            },
+        )
+    ]
+]
+
+
 def _submit_report_client() -> ScriptedClient:
-    return ScriptedClient(
-        [
-            [
-                (
-                    "submit_report",
-                    {
-                        "reasons": "Refund quoted correctly.",
-                        "refund_amount": True,
-                        "refund_amount_justification": "Reply quotes $328.50. VERDICT: MET",
-                    },
-                )
-            ]
-        ]
-    )
+    return ScriptedClient(_SUBMIT_REPORT_SCRIPT)
 
 
 def test_reconstructed_transcript_is_byte_identical_to_live_path(tmp_path: Path) -> None:
@@ -1325,38 +1327,61 @@ def test_a_defaulted_snippet_stamp_can_only_be_the_default_length() -> None:
 # Transcript evidence (customization.evidence: transcript)
 # ---------------------------------------------------------------------------
 
-_TRANSCRIPT_EVIDENCE = {
-    "evidence": "transcript",
-    "transcript_tool_chars": 500,
-    "read_only_calls": [{"tool": "get_order"}],
-}
+_TRANSCRIPT_EVIDENCE = {"evidence": "transcript", "transcript_tool_chars": 500}
+
+_GET_ORDER_READS = {"read_when": {"args": {"id": {"regex": "^O-"}}}}
 
 
-def test_a_recorded_transcript_judge_replays_without_the_state(tmp_path: Path) -> None:
+def _record_tool_schemas(
+    trial_dir: Path, *, schema_version: int, get_order: bool | dict[str, Any] | None
+) -> None:
+    """Stamp the bundle generation and record ``get_order`` (the trajectory's one call)
+    in ``tools_schemas.yaml``, declaring *get_order* as its ``mutates_state``."""
+    (trial_dir / "metrics.yaml").write_text(yaml.safe_dump({"schema_version": schema_version}))
+    entry: dict[str, Any] = {
+        "type": "function",
+        "function": {"name": "get_order", "description": "Read an order.", "parameters": {}},
+    }
+    if get_order is not None:
+        entry["mutates_state"] = get_order
+    FileArtifactWriter().write_tools_schemas(trial_dir, [entry])
+
+
+def _opening_message(inputs: Any) -> str:
+    client = MessageCapturingClient(_SUBMIT_REPORT_SCRIPT)
+    result = replay_trial(inputs, judge_client=client)
+    assert result.status is JudgeRunStatus.COMPLETED
+    assert client.seen_tool_names == ["submit_report", "show_call"]
+    return str(client.snapshots[0][0].content)
+
+
+@pytest.mark.parametrize(
+    ("get_order", "listed"),
+    [(_GET_ORDER_READS, False), (False, False), (True, True), (None, True)],
+    ids=["read-rule-matches", "declared-read", "declared-write", "undeclared"],
+)
+def test_a_recorded_transcript_judge_reads_the_bundles_tool_declarations(
+    tmp_path: Path, get_order: bool | dict[str, Any] | None, listed: bool
+) -> None:
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
         trial_dir,
         judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(agent_read_only_tools=["lookup_policy"]),
+        judge_inputs=JudgeInputs(),
         recorded_customization=_TRANSCRIPT_EVIDENCE,
     )
+    _record_tool_schemas(trial_dir, schema_version=8, get_order=get_order)
 
     inputs = read_replay_inputs(trial_dir)
 
     evidence = inputs.options.transcript_evidence
-    assert evidence is not None
-    assert evidence.tool_result_chars == 500
-    assert inputs.options.agent_read_only_tools == frozenset({"lookup_policy"})
-    assert [rule.tool for rule in evidence.read_only_calls] == ["get_order"]
+    assert evidence is not None and evidence.tool_result_chars == 500
     assert inputs.db_reader is None and inputs.state_diff is None
     assert inputs.provenance.judge_evidence == "transcript"
     assert inputs.provenance.judge_evidence_source is ProvenanceSource.RECORDED
-
-    client = _submit_report_client()
-    result = replay_trial(inputs, judge_client=client)
-    assert result.status is JudgeRunStatus.COMPLETED
-    assert client.seen_tool_names == ["submit_report", "show_call"]
-    assert result.agent_read_only_tools == ("lookup_policy",)
+    calls = _opening_message(inputs).split("===== STATE-CHANGING CALLS =====\n")[1]
+    assert calls.startswith('[call 1] get_order({"id": "O-1"})') is listed
+    assert calls.startswith("(none: the agent made no call that can change state)") is not listed
 
 
 def _transcript_override() -> GradingOverride:
@@ -1369,8 +1394,9 @@ def _transcript_override() -> GradingOverride:
 
 
 def test_an_override_turns_a_state_bundle_into_a_transcript_replay(tmp_path: Path) -> None:
-    """A state judge records its agent's read-only tools, so the transcript replay of its
-    trial lists the same calls as state-changing as a live transcript judge would."""
+    """The tool declarations are recorded whatever the judge graded from, so the
+    transcript replay of a state judge's trial lists the same calls as state-changing
+    as a live transcript judge would."""
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
         trial_dir,
@@ -1378,21 +1404,22 @@ def test_an_override_turns_a_state_bundle_into_a_transcript_replay(tmp_path: Pat
         judge_inputs=JudgeInputs(
             state_diff_text="orders[O-1]: refunded false -> true",
             read_tools_offered=["get_db_state", "query_db", "read_file"],
-            agent_read_only_tools=["lookup_policy"],
         ),
     )
+    _record_tool_schemas(trial_dir, schema_version=8, get_order=False)
 
     inputs = read_replay_inputs(trial_dir, grading_override=_transcript_override())
 
     assert inputs.provenance.judge_evidence_source is ProvenanceSource.OVERRIDE
     assert inputs.options.transcript_evidence is not None
-    assert inputs.options.agent_read_only_tools == frozenset({"lookup_policy"})
+    assert inputs.options.tool_effects.can_change_state("get_order", '{"id": "O-1"}') is False
     assert inputs.db_reader is None and inputs.state_diff is None
     assert inputs.extra_read_tools == []
 
 
-def test_a_bundle_recording_no_read_only_tools_is_refused_a_transcript_replay(
-    tmp_path: Path,
+@pytest.mark.parametrize("schema_version", [7, None], ids=["generation-7", "unstamped"])
+def test_a_bundle_predating_the_declarations_is_refused_a_transcript_replay(
+    tmp_path: Path, schema_version: int | None
 ) -> None:
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
@@ -1400,22 +1427,28 @@ def test_a_bundle_recording_no_read_only_tools_is_refused_a_transcript_replay(
         judge_status=JudgeStatus.COMPLETED,
         judge_inputs=JudgeInputs(read_tools_offered=["get_db_state", "query_db"]),
     )
+    if schema_version is not None:
+        _record_tool_schemas(trial_dir, schema_version=schema_version, get_order=None)
 
-    with pytest.raises(MissingReplayInputError, match="records no agent_read_only_tools"):
+    with pytest.raises(MissingReplayInputError, match=f"generation-{schema_version} bundle"):
         read_replay_inputs(trial_dir, grading_override=_transcript_override())
 
 
-def test_a_state_bundle_replays_as_a_state_judge(tmp_path: Path) -> None:
+def test_a_generation_7_bundle_replays_as_a_state_judge(tmp_path: Path) -> None:
+    """A judge over the state reads no tool declaration, so a bundle predating them
+    replays as it always did."""
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
         trial_dir,
         judge_status=JudgeStatus.COMPLETED,
         judge_inputs=JudgeInputs(read_tools_offered=["get_db_state", "query_db"]),
     )
+    _record_tool_schemas(trial_dir, schema_version=7, get_order=None)
 
     inputs = read_replay_inputs(trial_dir, grading_override=_grading_override())
 
     assert inputs.options.transcript_evidence is None
+    assert inputs.options.tool_effects == ToolEffects.empty()
     assert inputs.db_reader is not None
     assert inputs.provenance.judge_evidence == "state"
     assert inputs.provenance.judge_evidence_source is None
@@ -1451,9 +1484,9 @@ def test_a_recorded_evidence_the_model_refuses_fails_loud(tmp_path: Path) -> Non
         read_replay_inputs(trial_dir, grading_override=_grading_override())
 
 
-def test_forcing_a_transcript_replay_keeps_the_recorded_read_rules(tmp_path: Path) -> None:
-    """A project's read rules are recorded under a state judge too, so a forced
-    transcript replay of a state run grades with them."""
+def test_forcing_a_transcript_replay_keeps_the_recorded_transcript_fields(
+    tmp_path: Path,
+) -> None:
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
         trial_dir,
@@ -1461,10 +1494,10 @@ def test_forcing_a_transcript_replay_keeps_the_recorded_read_rules(tmp_path: Pat
         judge_inputs=JudgeInputs(
             state_diff_text="orders[O-1]: refunded false -> true",
             read_tools_offered=["get_db_state", "query_db"],
-            agent_read_only_tools=["lookup_policy"],
         ),
-        recorded_customization={"read_only_calls": [{"tool": "get_order"}]},
+        recorded_customization={"transcript_tool_chars": 500},
     )
+    _record_tool_schemas(trial_dir, schema_version=8, get_order=_GET_ORDER_READS)
 
     recorded = read_replay_inputs(trial_dir)
     forced = read_replay_inputs(trial_dir, evidence=EvidenceMode.TRANSCRIPT)
@@ -1472,9 +1505,8 @@ def test_forcing_a_transcript_replay_keeps_the_recorded_read_rules(tmp_path: Pat
     assert recorded.options.transcript_evidence is None
     assert recorded.provenance.judge_evidence_source is None
     evidence = forced.options.transcript_evidence
-    assert evidence is not None
-    assert [rule.tool for rule in evidence.read_only_calls] == ["get_order"]
-    assert forced.options.agent_read_only_tools == frozenset({"lookup_policy"})
+    assert evidence is not None and evidence.tool_result_chars == 500
+    assert forced.options.tool_effects.can_change_state("get_order", '{"id": "O-1"}') is False
     assert forced.db_reader is None and forced.state_diff is None
     assert forced.provenance.judge_evidence == "transcript"
     assert forced.provenance.judge_evidence_source is ProvenanceSource.OVERRIDE
@@ -1486,7 +1518,7 @@ def test_forcing_a_state_replay_of_a_transcript_run_is_refused(tmp_path: Path) -
     _write_bundle(
         trial_dir,
         judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(agent_read_only_tools=[]),
+        judge_inputs=JudgeInputs(),
         recorded_customization=_TRANSCRIPT_EVIDENCE,
     )
 

@@ -1609,9 +1609,6 @@ reject it.
 | `grading.llm_judge.customization.judge_snippet_chars` | a pack setting `customization.judge_snippet_chars` other than 200 | `unreleased` | new engine → old image |
 | `grading.llm_judge.customization.evidence` | a pack setting `customization.evidence: transcript` | `unreleased` | new engine → old image |
 | `grading.llm_judge.customization.transcript_tool_chars` | a pack setting `customization.transcript_tool_chars` other than 2000 | `unreleased` | new engine → old image |
-| `grading.llm_judge.customization.read_only_calls` | a pack declaring `customization.read_only_calls` | `unreleased` | new engine → old image |
-| `grading.llm_judge.customization.read_only_calls[*].tool` | a pack declaring `customization.read_only_calls` | `unreleased` | new engine → old image |
-| `grading.llm_judge.customization.read_only_calls[*].arguments` | a pack declaring `customization.read_only_calls` | `unreleased` | new engine → old image |
 
 `emitted for` is what the adapter puts on the wire, not what the pack asks for: a key
 whose cell reads **every pack** is emitted as `null` when the pack declares nothing
@@ -2274,7 +2271,7 @@ either is [undecided](#when-a-constraint-cannot-be-decided) rather than unmatche
 — a named failing sub-check, never a pass in the agent's favour.
 
 **Every operator name resolves through the `tolokaforge.trace_check_operators`
-entry-point group.** `_operator_holds` looks up the registered callable per
+entry-point group.** `argument_predicates.operator_holds` looks up the registered callable per
 mention (cached in the entry-point discovery table); binding operators are
 identified by the `_binding` suffix on the registered name, no marker
 attribute. Registering `equals_semver` in a downstream package's
@@ -2355,6 +2352,9 @@ position to ordering, so `before` means "requested before".
 
 `args` addresses nested argument paths by dotted segments, so
 `args: { body.resolution_path: { exists: true } }` reaches inside a request body.
+A tool's `mutates_state: {read_when: {args: …}}` rule is read through the same path
+resolver and [operators](#operators), binding operators excepted
+([§ Transcript-only judge](#transcript-only-judge)).
 
 **`latency_seconds` is not matchable.** Wall time is not compared across
 substrates — it is excluded from the timeline parity suite's compared fields — so
@@ -3639,8 +3639,6 @@ Findings come in three classes:
 | a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | every `trace_checks` matcher |
 | `required_tools` / `disallowed_tools` naming a tool outside that set | error | `transcript_rules.tool_expectations` |
 | a `required_actions[i].name` naming a tool outside that set | error | `transcript_rules.required_actions[i].name` |
-| a `read_only_calls[i].tool` naming a tool the agent is not given | error | `llm_judge.customization.read_only_calls[i].tool` |
-| a project's `read_only_calls[i].tool` naming a tool no task of the project gives its agent — checked by `tolokaforge validate` across every task the project's `tasks.discovery.glob` finds; a run's pre-run gate sees only the tasks it discovers, so it logs the finding as a warning instead | error | `task_defaults.grading_defaults.llm_judge.customization.read_only_calls[i].tool` |
 | a `required_actions[i].name` the actor its `requestor` names does not declare — `assistant` reads `tools.agent.enabled`, `user` reads `tools.user.enabled` | error | `transcript_rules.required_actions[i].requestor` |
 | an `args` address whose first segment is outside the properties of a tool whose schema forbids extras | error | every matcher's `args` key, every `bind.values[*].field` |
 | the same against a tool whose schema permits extras | advisory | as above |
@@ -4424,43 +4422,45 @@ the final state**: no state diff is built, and `get_db_state`, `query_db` and
   names; `offset` reads further into a long one. It reads the transcript itself, never a
   live backend.
 
-A call can change state unless its tool declares `mutates_state: false`
-([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)) or it matches one of
-`read_only_calls`. A tool that declares nothing reads as one that can change state. A
-rule marks the reads of a tool that both reads and writes: it names the `tool` and,
-optionally, `arguments` — dotted paths into the call's arguments, each with the values
-that make the call a read. A call matches when every path holds one of its values; a
-path the call does not carry is no match; values compare by JSON type and value (`true`
-is not `1`, `1` is not `1.0`); a rule with no `arguments` matches every call of its tool.
-A rule naming a tool the agent is not given is refused before the run
-([What is validated before a run](#what-is-validated-before-a-run)).
+A call can change state unless its tool's `mutates_state` declaration
+([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)) says it reads: `false` (every
+call reads), or a `read_when` rule whose every `args` predicate holds over the call's
+arguments. A tool that declares nothing, or `true`, can change state on every call. A
+tool that both reads and writes declares the rule on its task block, in the
+[trace matcher's `args` vocabulary](#matchers), read through the matcher's own
+resolver:
 
 ```yaml
+# task.yaml
+tools:
+  agent:
+    enabled: [rest_call]
+    rest_call:
+      mutates_state: {read_when: {args: {request.method: {in_: [GET, HEAD, OPTIONS]}}}}
+```
+
+```yaml
+# grading.yaml
 llm_judge:
   customization:
     evidence: transcript
     transcript_tool_chars: 2000
-    read_only_calls:
-      - tool: http_request
-        arguments: {method: [GET]}
-      - tool: rest_call
-        arguments: {request.method: [GET, HEAD, OPTIONS]}
-      - tool: list_endpoints
 ```
 
-`transcript_tool_chars` and `read_only_calls` are read by the transcript judge alone and
-are inert under `evidence: state`, so a project declares its tools' read rules once and
-each task opts into the mode. All three keys layer project→task and are left off the wire
-at their default.
+Where the declaration comes from, and when a task may make one, is
+[`TASK_DESCRIPTION_SCHEMA.md` § `mutates_state`](TASK_DESCRIPTION_SCHEMA.md#toolschemamutates_state).
+`transcript_tool_chars` is read by the transcript judge alone and is inert under
+`evidence: state`. Both keys layer project→task and are left off the wire at their
+default.
 
 A trial a transcript judge graded carries `judge_evidence: transcript` in `grade.yaml`
-(absent for a state judge). Every judge records the agent tools declaring
-`mutates_state: false` in [`judge_inputs.yaml`](OUTPUT_FORMAT.md) (`agent_read_only_tools`),
-since their declarations are not in the bundle; [`tolokaforge rejudge`](JUDGE_REPLAY.md#transcript-only-judge)
-rebuilds the same view from it, and `--evidence transcript` replays a whole run of state
-judges as transcript judges for an A/B. How a call ended crosses the grade-time transcript
-wire as `tool_status` for the judge alone: a trace timeline built without tool-call
-records still reads a call's status from the records (G6b). The design record is
+(absent for a state judge). The bundle records each tool's declaration on its
+[`tools_schemas.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indextools_schemasyaml) entry, so
+[`tolokaforge rejudge`](JUDGE_REPLAY.md#transcript-only-judge) rebuilds the same view
+from it, and `--evidence transcript` replays a whole run of state judges as transcript
+judges for an A/B. How a call ended crosses the grade-time transcript wire as
+`tool_status` for the judge alone: a trace timeline built without tool-call records still
+reads a call's status from the records (G6b). The design record is
 [ADR-0066](adr/0066-transcript-only-judge.md).
 
 ### Fail-loud: the ERRORED status

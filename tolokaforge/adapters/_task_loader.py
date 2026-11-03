@@ -51,14 +51,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from tolokaforge.core.agent_prompt_contract import resolve_agent_prompt_contract
 from tolokaforge.core.deprecations import (
@@ -78,7 +78,7 @@ from tolokaforge.core.grading.config_validation import (
     SkipKind,
     ToolInventory,
     authored_hash_block,
-    check_project_read_only_call_names,
+    check_read_rule_paths,
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.state_composition import (
@@ -106,12 +106,10 @@ from tolokaforge.core.models import (
 from tolokaforge.core.project_loader import (
     construct_config,
     deep_merge,
-    load_project_config,
-    project_judge_customization,
     resolve_effective_grading_combine,
 )
 from tolokaforge.core.tool_output_truncation import validated_output_max_chars
-from tolokaforge.runner.models import ToolSchema
+from tolokaforge.runner.models import MutatesStateRule, ToolSchema
 from tolokaforge.tools.registry import ToolCategory
 
 if TYPE_CHECKING:
@@ -564,6 +562,9 @@ def load_task_yaml(
             the YAML at either path is not a top-level mapping.
         pydantic.ValidationError: If the merged dict fails :class:`TaskConfig`
             validation (re-raised by Pydantic).
+        ValueError: If the task file configures a ``tools.<actor>.<name>`` block
+            for a tool ``tools.<actor>.enabled`` does not list
+            (:func:`refuse_blocks_of_tools_not_enabled`).
     """
     task_path = Path(task_path)
     task_root = _detect_task_root(task_path)
@@ -589,6 +590,7 @@ def load_task_yaml(
     # which sits below `task.yaml`. Later layers win on conflict.
     domain_data = _load_domain_dict(task_path, task_data, task_root)
     task_data.pop("domain", None)
+    own_tools = task_data.get("tools")
 
     # Lift each layer's legacy ``user_simulator`` into ``actors.user`` before
     # the merge, so a legacy layer and a canonical layer both speak
@@ -638,6 +640,7 @@ def load_task_yaml(
 
     task = construct_config(TaskConfig, task_data, source=task_path)
     task._source_dir = task_root
+    refuse_blocks_of_tools_not_enabled(own_tools, task, task_path)
 
     # A contract that names nothing is refused here rather than at the first
     # trial's prompt build: by then the run has provisioned images, and the
@@ -848,7 +851,7 @@ def search_tool_schema(declaration: SearchDeclaration, backend: SearchBackend) -
     )
 
 
-TOOL_BLOCK_RESERVED_KEYS: frozenset[str] = frozenset({"output_max_chars"})
+TOOL_BLOCK_RESERVED_KEYS: frozenset[str] = frozenset({"output_max_chars", "mutates_state"})
 """Keys the harness reads from a ``tools.<actor>.<tool_name>`` block for its own
 composition, not as tool ``__init__`` kwargs.
 
@@ -856,8 +859,13 @@ The runner's builtin factory splats ``ToolSchema.tool_config`` into the tool
 class and refuses unknown keys, so a reserved key that reached the runner would
 raise ``ToolConfigurationError`` at trial registration. Stripping in
 :func:`tool_configs` keeps that seam clean; each key has its own lifter
-(:func:`tool_output_max_chars_overrides` for ``output_max_chars``) that returns
-the harness-side value."""
+(:func:`tool_output_max_chars_overrides` for ``output_max_chars``,
+:func:`tool_mutates_state_declarations` for ``mutates_state``) that returns the
+harness-side value."""
+
+ACTOR_BLOCK_KEYS: frozenset[str] = frozenset({"enabled", "mcp_server", "output_max_chars"})
+"""The keys of a ``tools.<actor>`` block that configure the block itself; every other
+key is the block of the tool it names."""
 
 
 def tool_configs(task: TaskConfig, actor: ToolActor) -> dict[str, dict]:
@@ -941,6 +949,142 @@ def tool_output_max_chars_overrides(task: TaskConfig, actor: ToolActor) -> dict[
         if cap is not None:
             overrides[tool_name] = cap
     return overrides
+
+
+def tool_mutates_state_declarations(
+    task: TaskConfig, actor: ToolActor
+) -> dict[str, bool | MutatesStateRule]:
+    """Per-tool ``mutates_state`` declared on ``tools.<actor>.<name>`` blocks.
+
+    One of three forms: ``false`` (every call reads), ``true`` (every call can
+    change state), or ``{read_when: {args: {<path>: <ValuePredicate>}}}``
+    (:class:`~tolokaforge.runner.models.MutatesStateRule`). Only enabled tools are
+    read. :func:`compose_mutates_state` lays the value over the tool author's own.
+
+    Raises:
+        ValueError: A declaration is none of the three forms, naming the key and
+            the task.
+    """
+    block = actor_tool_block(task, actor)
+    declarations: dict[str, bool | MutatesStateRule] = {}
+    for tool_name in block.get("enabled", []):
+        raw = block.get(tool_name)
+        if not isinstance(raw, dict) or "mutates_state" not in raw:
+            continue
+        where = f"tools.{actor.value}.{tool_name}.mutates_state"
+        value = raw["mutates_state"]
+        if isinstance(value, bool):
+            declarations[tool_name] = value
+            continue
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"{where} in task {task.task_id!r} is {value!r}; declare false, true, or "
+                "{read_when: {args: {<argument path>: <predicate>}}}, or drop the key"
+            )
+        try:
+            declarations[tool_name] = MutatesStateRule.model_validate(value)
+        except ValidationError as exc:
+            raise ValueError(f"{where} in task {task.task_id!r} is not a read rule: {exc}") from exc
+    return declarations
+
+
+def compose_mutates_state(
+    author: bool | MutatesStateRule | None,
+    task_declared: bool | MutatesStateRule | None,
+    *,
+    where: str,
+    task_id: str,
+) -> bool | MutatesStateRule | None:
+    """The ``mutates_state`` a tool is emitted with, from its author's and its task's.
+
+    The author is the source of truth (ADR-0061), so a task declares only where the
+    author is silent — except ``true``, which only ever tightens, and is how a task
+    whose service changes state on a call the author reads as a read says so.
+
+    Raises:
+        ValueError: The task declares anything but ``true`` over an author
+            declaration, naming the key, the task and the author's value.
+    """
+    if task_declared is None:
+        return author
+    if author is None or task_declared is True:
+        return task_declared
+    raise ValueError(
+        f"{where} in task {task_id!r} overrides the tool author's own declaration "
+        f"({_declaration_text(author)}); a task declares mutates_state only where the "
+        "author is silent, or declares true to treat every call as one that can change "
+        "state. Drop the key"
+    )
+
+
+def _declaration_text(value: bool | MutatesStateRule) -> str:
+    return str(value).lower() if isinstance(value, bool) else "a read_when rule"
+
+
+def check_mutates_state_rule_paths(
+    declared: bool | MutatesStateRule | None,
+    parameters: Mapping[str, Any] | None,
+    *,
+    where: str,
+    tool_name: str,
+    task_id: str,
+) -> None:
+    """Refuse a read rule whose ``read_when.args`` path the tool's schema rules out.
+
+    A path whose first segment the tool's schema does not declare, where the schema
+    admits no other argument, would hold on no call; one the schema merely does not
+    declare while it permits extras is logged. Nothing is checked where *parameters*
+    is ``None`` — the schema did not resolve.
+
+    Raises:
+        ValueError: A path the schema rules out, naming the key and the task.
+    """
+    if not isinstance(declared, MutatesStateRule) or parameters is None:
+        return
+    report = check_read_rule_paths(
+        f"{where}.read_when.args", tool_name, declared.read_when.args, parameters
+    )
+    for advisory in report.advisories:
+        logger.warning(
+            f"{advisory.where} in task {task_id!r}: {advisory.message}",
+            task_id=task_id,
+            tool_name=tool_name,
+        )
+    if report.errors:
+        raise ValueError(
+            f"task {task_id!r}: "
+            + "; ".join(f"{finding.where}: {finding.message}" for finding in report.errors)
+        )
+
+
+def refuse_blocks_of_tools_not_enabled(own_tools: Any, task: TaskConfig, task_path: Path) -> None:
+    """Refuse a ``tools.<actor>.<name>`` block the task file writes for a tool it does not enable.
+
+    Every reader of a tool block reads the enabled tools' alone, so such a block —
+    whatever it carries — configures nothing, and a misspelled name would load as a
+    silent no-op. *own_tools* is the file's own ``tools`` mapping, before any project
+    ``task_defaults`` layer: a project block for a tool some of its tasks do not
+    enable is inert by design. The enabled set is the task's effective one.
+
+    Raises:
+        ValueError: Naming the block, the actor and the enabled set.
+    """
+    if not isinstance(own_tools, Mapping):
+        return
+    for actor in ToolActor:
+        own_block = own_tools.get(actor.value)
+        if not isinstance(own_block, Mapping):
+            continue
+        enabled = enabled_tool_names(task, actor)
+        stray = sorted(
+            name for name in own_block if name not in ACTOR_BLOCK_KEYS and name not in enabled
+        )
+        if stray:
+            raise ValueError(
+                f"{task_path}: tools.{actor.value} configures {stray}, which "
+                f"tools.{actor.value}.enabled does not list (it lists {sorted(enabled)}), so "
+                "nothing reads those blocks. Add each tool to enabled, or delete its block"
+            )
 
 
 def resolve_tool_schemas(
@@ -1098,53 +1242,6 @@ def tool_inventory_under_adapter(
     if resolved is None:
         return ToolInventory.unresolvable(kind=SkipKind.STRUCTURAL)
     return resolved.grading_tool_inventory(task, task_dir)
-
-
-def inspect_project_read_only_calls(project_yaml: Path) -> AuthoringReport:
-    """Check a project's own ``read_only_calls`` rules against every task it discovers.
-
-    The project's tasks are the files its ``tasks.discovery.glob`` matches, each loaded
-    under the project's defaults and read under its own adapter. A task that does not
-    load leaves the rules unchecked rather than refused: its tools are unknown, and
-    the per-task gates report why it does not load.
-    """
-    project = load_project_config(project_yaml)
-    task_defaults = project.task_defaults.model_dump(exclude_defaults=True) or None
-    if not project_read_only_calls(task_defaults):
-        return AuthoringReport()
-    tasks: list[tuple[TaskConfig, Path] | None] = []
-    for task_file in sorted(project_yaml.parent.glob(project.tasks.discovery.glob)):
-        try:
-            tasks.append(load_task_yaml(task_file, project_task_defaults=task_defaults))
-        except (ValueError, RuntimeError, OSError, yaml.YAMLError):
-            tasks.append(None)
-    return inspect_read_only_calls_over_tasks(task_defaults, tasks)
-
-
-def inspect_read_only_calls_over_tasks(
-    task_defaults: Mapping[str, Any] | None, tasks: Sequence[tuple[TaskConfig, Path] | None]
-) -> AuthoringReport:
-    """Check a project's own ``read_only_calls`` rules against *tasks*, each read
-    under its own adapter. ``None`` is a task that did not load: the rules stay
-    unchecked, since the tool may be its."""
-    if not project_read_only_calls(task_defaults):
-        return AuthoringReport()
-    inventories: list[ToolInventory] = []
-    for loaded in tasks:
-        if loaded is None:
-            inventories.append(ToolInventory.unresolvable(kind=SkipKind.STRUCTURAL))
-            continue
-        task, task_dir = loaded
-        inventories.append(tool_inventory_under_adapter(task, task_dir, task.adapter_type))
-    return check_project_read_only_call_names(
-        project_judge_customization(task_defaults), inventories
-    )
-
-
-def project_read_only_calls(task_defaults: Mapping[str, Any] | None) -> bool:
-    """Whether a project's ``task_defaults`` declare ``read_only_calls`` rules of their own."""
-    customization = project_judge_customization(task_defaults)
-    return bool(customization and customization.get("read_only_calls"))
 
 
 def replay_world_under_adapter(task: TaskConfig, task_dir: Path, adapter_type: str) -> ReplayWorld:

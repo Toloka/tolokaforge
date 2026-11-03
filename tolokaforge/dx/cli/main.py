@@ -1233,8 +1233,8 @@ def _print_replay_report(report: ReplayReport) -> None:
     default=EvidenceMode.RECORDED.value,
     help=(
         "What the judge grades from: 'recorded' honours the bundle (or --grading), "
-        "'state'/'transcript' force it, keeping the recorded transcript_tool_chars and "
-        "read_only_calls. A trial a transcript judge graded refuses 'state'. Default: recorded."
+        "'state'/'transcript' force it, keeping the recorded transcript_tool_chars. "
+        "A trial a transcript judge graded refuses 'state'. Default: recorded."
     ),
 )
 @click.option(
@@ -2009,7 +2009,6 @@ def validate(tasks: str, strict_authoring: bool):
         GradingSourceKind,
         grading_source_under_adapter,
         hash_source_layer_under_adapter,
-        inspect_project_read_only_calls,
         replay_world_under_adapter,
         seeded_tables_under_adapter,
         tool_inventory_under_adapter,
@@ -2032,15 +2031,10 @@ def validate(tasks: str, strict_authoring: bool):
 
     valid = 0
     invalid = 0
-    # A project whose own load fails is reported against each of its tasks instead.
-    loaded_projects: set[Path] = set()
 
     for task_file in task_files:
         try:
             task_config, task_dir, project_combine = _load_task_under_its_project(Path(task_file))
-            project_yaml = find_project_yaml(Path(task_file))
-            if project_yaml is not None:
-                loaded_projects.add(project_yaml)
             # A pin the run would refuse when describing the task (ADR-0060): the
             # bundle is built as describe_task builds it, so an application the
             # library does not ship fails here with the run's message. Only a
@@ -2106,27 +2100,9 @@ def validate(tasks: str, strict_authoring: bool):
             console.print(f"[red]✗ {escape(task_file)}: {escape(str(e))}[/red]")
             invalid += 1
 
-    invalid_projects = 0
-    for project_yaml in sorted(loaded_projects):
-        project_report = inspect_project_read_only_calls(project_yaml)
-        for skip in project_report.unchecked:
-            console.print(
-                f"[yellow]? {escape(str(project_yaml))}: {escape(skip.where)} not checked: "
-                f"{escape(skip.reason)}[/yellow]"
-            )
-        if project_report.errors:
-            invalid_projects += 1
-            console.print(f"[red]✗ {escape(str(project_yaml))}[/red]")
-            for finding in project_report.errors:
-                console.print(f"[red]  ✗ {escape(finding.where)}: {escape(finding.message)}[/red]")
-
     console.print(f"\n[bold]Summary:[/bold] {valid} valid, {invalid} invalid")
-    if invalid_projects:
-        console.print(f"[bold]Projects:[/bold] {invalid_projects} invalid")
     if invalid:
         raise click.ClickException(f"{invalid} of {len(task_files)} task files failed validation")
-    if invalid_projects:
-        raise click.ClickException(f"{invalid_projects} project(s) failed validation")
 
 
 def _collect_run_spend_and_tokens(run_dir: Path) -> tuple[float, int, int, int]:

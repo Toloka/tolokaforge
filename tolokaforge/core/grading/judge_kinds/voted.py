@@ -295,6 +295,5 @@ def _merge_sample_results(
         read_tools_offered=head.read_tools_offered,
         state_diff=head.state_diff,
         evidence=head.evidence,
-        agent_read_only_tools=head.agent_read_only_tools,
         transcript=tuple(turn for cr in sample_results for turn in cr.transcript),
     )

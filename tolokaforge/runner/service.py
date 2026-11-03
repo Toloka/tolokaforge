@@ -588,6 +588,7 @@ def _wire_tool_schema(tool: ToolSchema) -> pb2.ToolSchema:
 
     The proto3-optional fields are set only when the description declares them,
     so the engine reads an unset one as "not declared" (``HasField`` is false).
+    A ``mutates_state`` read rule goes out as ``true``: some calls do change state.
     """
     schema = pb2.ToolSchema(
         name=tool.name,
@@ -599,7 +600,7 @@ def _wire_tool_schema(tool: ToolSchema) -> pb2.ToolSchema:
     if tool.output_max_chars is not None:
         schema.output_max_chars = tool.output_max_chars
     if tool.mutates_state is not None:
-        schema.mutates_state = tool.mutates_state
+        schema.mutates_state = tool.mutates_state is not False
     return schema
 
 
@@ -2836,7 +2837,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     kb_tools_withheld=list(judge_result.kb_tools_withheld),
                     state_diff_text=judge_result.state_diff or "",
                     read_tools_offered=list(judge_result.read_tools_offered),
-                    agent_read_only_tools=list(judge_result.agent_read_only_tools),
                     # optional: set only for a transcript judge, absent for a state judge
                     judge_evidence=(
                         "transcript" if judge_result.evidence == "transcript" else None
