@@ -22,9 +22,12 @@ from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from tests.unit.grading.test_judge import MessageCapturingClient, ScriptedClient
 from tests.utils.wire_grades import lower_wire_grade
+from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.conductor import _with_mutates_state
 from tolokaforge.core.grading.composite import (
     build_judge_state_diff,
     grade_llm_judge,
@@ -59,6 +62,8 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.models import JudgeStatus as CoreJudgeStatus
 from tolokaforge.core.models import JudgeUsage as CoreJudgeUsage
+from tolokaforge.core.output.artifacts import FileArtifactWriter
+from tolokaforge.core.output_writer import TOOLS_SCHEMAS_FILENAME, TRIAL_BUNDLE_SCHEMA_VERSION
 from tolokaforge.core.tool_effects import ToolEffects
 from tolokaforge.core.trial_grader import _parse_grade_result
 from tolokaforge.grader.client import _grade_from_wire
@@ -293,6 +298,95 @@ def test_a_failed_call_shows_the_head_of_its_result_and_long_arguments_are_cut()
     assert line.startswith('[call 1] post({"body": "bbb')
     assert line.endswith("…) -> error: Status: 409")
     assert long_body in opening.split("===== END TRANSCRIPT =====")[0]
+
+
+# ---------------------------------------------------------------------------
+# The builtin http_request's declaration, live and recorded
+# ---------------------------------------------------------------------------
+
+
+def _http_request_tools(root: Path, block: dict[str, Any]) -> list[ToolSchema]:
+    """The agent tools a native task enabling ``http_request`` emits."""
+    task_dir = root / "http_task"
+    task_dir.mkdir(parents=True)
+    task = {
+        "task_id": "http_task",
+        "name": "http task",
+        "description": "an agent calling a web service",
+        "category": "compute",
+        "max_turns": 2,
+        "interaction_mode": "conversational",
+        "initial_user_message": "go",
+        "initial_state": {},
+        "tools": {"agent": {"enabled": ["http_request"], **block}, "user": {"enabled": []}},
+        "actors": {"user": {"mode": "llm"}},
+    }
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task))
+    adapter = NativeAdapter({"tasks_glob": "*/task.yaml", "base_dir": str(root)})
+    return adapter.to_task_description("http_task").agent_tools
+
+
+def _recorded_tool_effects(trial_dir: Path, agent_tools: list[ToolSchema]) -> ToolEffects:
+    """The declarations as the conductor records them and replay reads them back."""
+    trial_dir.mkdir(parents=True)
+    entries = [
+        {"type": "function", "function": {"name": t.name, "parameters": t.parameters}}
+        for t in agent_tools
+    ]
+    FileArtifactWriter().write_tools_schemas(trial_dir, _with_mutates_state(entries, agent_tools))
+    schemas_path = trial_dir / TOOLS_SCHEMAS_FILENAME
+    return ToolEffects.from_recorded_schemas(
+        yaml.safe_load(schemas_path.read_text()),
+        schema_version=TRIAL_BUNDLE_SCHEMA_VERSION,
+        source=schemas_path,
+    )
+
+
+def _http_transcript() -> list[dict[str, Any]]:
+    """Look an order up, then refund it."""
+    get = {"method": "GET", "url": "http://mock-web/orders/7"}
+    post = {"method": "POST", "url": "http://mock-web/orders/7/refund", "json": {"full": True}}
+    return [
+        {"role": "user", "content": "Refund order 7."},
+        {"role": "assistant", "content": "", "tool_calls": [_call("c1", "http_request", get)]},
+        {"role": "tool", "content": "Status: 200", "tool_call_id": "c1"},
+        {"role": "assistant", "content": "", "tool_calls": [_call("c2", "http_request", post)]},
+        {"role": "tool", "content": "Status: 201", "tool_call_id": "c2"},
+        {"role": "assistant", "content": "Refunded."},
+    ]
+
+
+@pytest.mark.parametrize("path", ["live", "replay"])
+@pytest.mark.parametrize(
+    ("block", "listed"),
+    [({}, [2]), ({"http_request": {"mutates_state": True}}, [1, 2])],
+    ids=["policy-rule", "task-declares-true"],
+)
+def test_the_state_changing_calls_leave_out_http_requests_safe_methods(
+    tmp_path: Path, path: str, block: dict[str, Any], listed: list[int]
+) -> None:
+    agent_tools = _http_request_tools(tmp_path, block)
+    customization = JudgeCustomization(evidence="transcript")
+    tool_effects = (
+        resolve_judge_trial_options(customization, agent_tools=agent_tools).tool_effects
+        if path == "live"
+        else _recorded_tool_effects(tmp_path / "trial", agent_tools)
+    )
+    client = MessageCapturingClient([_submit_report()])
+
+    LLMJudge(
+        _JUDGE_MODEL,
+        transcript_evidence=TranscriptEvidence(),
+        tool_effects=tool_effects,
+        llm_client=client,
+    ).run(rubric=_rubric(), agent_system_prompt="", transcript=_http_transcript())
+
+    opening = str(client.snapshots[0][0].content)
+    block_text = opening.split("===== STATE-CHANGING CALLS =====\n")[1].split(
+        "===== END STATE-CHANGING CALLS"
+    )[0]
+    numbers = [int(line.split("]")[0].removeprefix("[call ")) for line in block_text.splitlines()]
+    assert numbers == listed
 
 
 # ---------------------------------------------------------------------------

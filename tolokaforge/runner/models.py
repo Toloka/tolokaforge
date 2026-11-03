@@ -213,7 +213,8 @@ class ToolSchema(BaseModel):
     reads back; an adapter that knows it from its own sources sets it directly.
     Left out of the dump while ``None``, so an image predating the field accepts
     every pack that does not declare it. The engine declares it for the tools it
-    authors — a builtin's from its ``ToolPolicy.category`` (``read`` → ``False``,
+    authors — a builtin's from its ``ToolPolicy`` (its own ``mutates_state``, such as
+    ``http_request``'s safe-method rule, else its category: ``read`` → ``False``,
     ``write`` → ``True``, ``compute`` undeclared), the search tool's as ``False``.
     This schema's own ``category`` is not read for it.
     """

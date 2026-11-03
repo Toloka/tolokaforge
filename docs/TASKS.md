@@ -162,7 +162,7 @@ tools:
     enabled: ["http_request", "rest_call"]
     mcp_server: "mcp_server.py"
     http_request:
-      mutates_state: true                       # every call can change state
+      mutates_state: true                       # every call, GET included, can change state
     rest_call:                                  # a call reads when every predicate holds
       mutates_state: {read_when: {args: {request.method: {in_: [GET, HEAD, OPTIONS]}}}}
 ```
@@ -174,10 +174,15 @@ nothing). A call the rule does not foresee — a path it does not carry, a value
 predicate — can change state. The task load refuses:
 
 - a declaration over the tool author's own (an MCP server's `readOnlyHint` or read rule, a builtin's
-  category, the search tool's `false`), unless it is `true` — tightening is always safe,
+  `ToolPolicy`, the search tool's `false`), unless it is `true` — tightening is always safe,
   and is how a pack whose service changes state on a call the author calls a read says so;
 - a `read_when` path whose first segment the tool's schema does not declare, where the
   schema admits no other argument; where it permits extras, the path is logged instead.
+
+The builtin `http_request` declares its own rule: a call whose `method` is `GET`, `HEAD`
+or `OPTIONS` (RFC 9110's safe methods, spelled as the schema's upper-case enum) reads,
+and every other call can change state. A pack whose service changes state on a safe
+method declares `http_request: {mutates_state: true}`, as above.
 
 ## Initial State
 

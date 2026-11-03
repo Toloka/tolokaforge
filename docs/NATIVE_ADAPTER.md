@@ -253,9 +253,11 @@ what the agent is handed. The same declaration sets the task's `search` block:
 (see [TASK_DESCRIPTION_SCHEMA.md](TASK_DESCRIPTION_SCHEMA.md)).
 
 `ToolSchema.mutates_state` ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md))
-is declared by whoever authored the tool. A builtin's schema derives it from the
-tool's `ToolPolicy.category` (`read` → `False`, `write` → `True`, `compute` →
-undeclared); the search tool is `False`; an MCP tool carries whatever its server's
+is declared by whoever authored the tool. A builtin's schema takes it from the
+tool's `ToolPolicy`: its own `mutates_state` where set (`http_request`'s safe-method
+read rule), else its category (`read` → `False`, `write` → `True`, `compute` →
+undeclared), and a policy value its category contradicts fails the schema; the search
+tool is `False`; an MCP tool carries whatever its server's
 `readOnlyHint` annotation says, or the read rule its `_meta` carries under
 `tolokaforge/mutates_state` beside `readOnlyHint: false`, and nothing when the server
 declares nothing. A rule beside `readOnlyHint: true`, or one the rule model refuses,

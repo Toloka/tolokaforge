@@ -774,7 +774,8 @@ state, as the tool's author declares it
 tri-state. The runner sets it only when the task description declares it: an
 MCP tool's `readOnlyHint` annotation, or the read rule its `_meta` carries, read
 back by the native adapter, a
-builtin's `ToolPolicy.category` (`read` → `false`, `write` → `true`), the search
+builtin's `ToolPolicy` (its category, `read` → `false`, `write` → `true`, or
+`http_request`'s safe-method rule), the search
 tool's `false`, a task's `tools.<actor>.<name>.mutates_state`, or an adapter's own
 sources. A task-description declaration that is a `read_when` rule (some calls
 read, others change state) is sent as `true`; the rule itself crosses only in

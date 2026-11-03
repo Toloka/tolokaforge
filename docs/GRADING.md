@@ -4425,10 +4425,11 @@ the final state**: no state diff is built, and `get_db_state`, `query_db` and
 A call can change state unless its tool's `mutates_state` declaration
 ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)) says it reads: `false` (every
 call reads), or a `read_when` rule whose every `args` predicate holds over the call's
-arguments. A tool that declares nothing, or `true`, can change state on every call. A
-tool that both reads and writes declares the rule on its task block, in the
-[trace matcher's `args` vocabulary](#matchers), read through the matcher's own
-resolver:
+arguments. A tool that declares nothing, or `true`, can change state on every call. The
+builtin `http_request` declares its safe methods (`GET`, `HEAD`, `OPTIONS`) as reads, so
+its other calls are the ones listed. Another tool that both reads and writes declares the
+rule on its task block, in the [trace matcher's `args` vocabulary](#matchers), read
+through the matcher's own resolver:
 
 ```yaml
 # task.yaml

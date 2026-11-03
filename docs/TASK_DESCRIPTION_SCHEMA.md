@@ -139,8 +139,12 @@ flag from its own sources sets it directly. The proto `ToolSchema` that
 mutates_state = 7`, set only when declared. The engine declares it for the tools
 it authors: a builtin's `ToolPolicy.category` is read as its declaration (`read`
 → `False`, `write` → `True`; `compute` — a shell, a browser, an HTTP client —
-says nothing and stays undeclared), and the task's search tool, which the engine
-builds over the trial's index, is `False`. `ToolSchema.category` is not read for
+says nothing and stays undeclared), unless the policy's own `mutates_state` says
+more, and the task's search tool, which the engine builds over the trial's index, is
+`False`. A policy's `mutates_state` must agree with its category — `read` admits only
+`False`, `write` only `True` — and a contradiction fails the schema naming the tool, so
+only a `compute` builtin declares a rule: `http_request`'s reads a call whose `method`
+is in `[GET, HEAD, OPTIONS]`. `ToolSchema.category` is not read for
 it and is retired in a later release.
 
 A tool that both reads and changes state declares a `MutatesStateRule` instead of a
@@ -157,7 +161,10 @@ task's `tools.<actor>.<name>.mutates_state` fills an undeclared tool or tightens
 `true` ([TASKS.md § Declaring which calls change state](TASKS.md#declaring-which-calls-change-state)).
 An image predating the rule form declares the field as a bool, so it refuses at
 `RegisterTrial` every trial of a pack whose task description carries a rule (new engine
-→ old image); a pack that declares only bools is unaffected.
+→ old image) — every pack enabling `http_request`, as well as every pack declaring a rule
+on a tool block or through its MCP server; a pack that declares only bools is
+unaffected. `tolokaforge run` builds the runner image from the engine's own source, by
+content hash, so only a pinned older image meets this.
 
 ```python
 # =============================================================================

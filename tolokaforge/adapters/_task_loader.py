@@ -111,7 +111,7 @@ from tolokaforge.core.project_loader import (
 )
 from tolokaforge.core.tool_output_truncation import validated_output_max_chars
 from tolokaforge.runner.models import MutatesStateRule, ToolSchema
-from tolokaforge.tools.registry import ToolCategory
+from tolokaforge.tools.registry import ToolCategory, ToolPolicy
 
 if TYPE_CHECKING:
     from tolokaforge.core.search.backend import SearchBackend
@@ -1546,22 +1546,40 @@ BUILTIN_MUTATES_STATE_BY_CATEGORY: dict[ToolCategory, bool | None] = {
 """What a builtin tool's :attr:`~tolokaforge.tools.registry.ToolPolicy.category`
 declares about ``mutates_state`` (ADR-0061).
 
-The engine authors its builtin tools, so their policy category is the author's
-declaration: a ``read`` tool never changes the graded state and a ``write`` tool
-does. ``compute`` says nothing about state — a shell, a browser or an HTTP client
-can do either — so it stays undeclared. Every member of
-:class:`~tolokaforge.tools.registry.ToolCategory` has a row here, and a member
-added without one fails :func:`builtin_mutates_state` loudly rather than
-slipping onto the wire as a guess."""
+The engine authors its builtin tools, so their policy is the author's declaration:
+a ``read`` tool never changes the graded state and a ``write`` tool does.
+``compute`` says nothing about state — a shell, a browser or an HTTP client can do
+either — so it is undeclared unless the policy's own ``mutates_state`` says more.
+Every member of :class:`~tolokaforge.tools.registry.ToolCategory` has a row here,
+and a member added without one fails :func:`builtin_mutates_state` loudly rather
+than slipping onto the wire as a guess."""
 
 
-def builtin_mutates_state(category: ToolCategory) -> bool | None:
-    """The ``mutates_state`` a builtin tool of *category* declares; ``None`` is undeclared.
+def builtin_mutates_state(policy: ToolPolicy, *, tool_name: str) -> bool | MutatesStateRule | None:
+    """The ``mutates_state`` the builtin *tool_name* declares; ``None`` is undeclared.
+
+    The policy's own ``mutates_state`` where it sets one, else what its category
+    declares (:data:`BUILTIN_MUTATES_STATE_BY_CATEGORY`). A category that declares
+    a value admits only that value from the policy.
 
     Raises:
-        KeyError: *category* has no row in :data:`BUILTIN_MUTATES_STATE_BY_CATEGORY`.
+        KeyError: The category has no row in :data:`BUILTIN_MUTATES_STATE_BY_CATEGORY`.
+        ValueError: The policy's value contradicts its category, or is not a read
+            rule :class:`~tolokaforge.runner.models.MutatesStateRule` accepts,
+            naming the tool.
     """
-    return BUILTIN_MUTATES_STATE_BY_CATEGORY[category]
+    by_category = BUILTIN_MUTATES_STATE_BY_CATEGORY[policy.category]
+    if policy.mutates_state is None:
+        return by_category
+    if by_category is not None and policy.mutates_state is not by_category:
+        raise ValueError(
+            f"builtin tool {tool_name!r} is a {policy.category.value!r} tool, which declares "
+            f"mutates_state {str(by_category).lower()}, but its policy declares "
+            f"{policy.mutates_state!r}; a read rule belongs on a 'compute' tool"
+        )
+    return author_mutates_state(
+        policy.mutates_state, tool_name=tool_name, source="the builtin's ToolPolicy"
+    )
 
 
 def _builtin_tool_schemas(
@@ -1572,11 +1590,15 @@ def _builtin_tool_schemas(
     Each known name is instantiated with kwargs from ``tool_configs[name]`` and
     its ``get_schema()`` output reduced to ``{"description", "parameters"}`` so
     the LLM receives real parameter descriptions, plus the policy-declared
-    ``output_max_chars`` and ``timeout_s``. ``mutates_state`` is derived from the
-    policy's category through :func:`builtin_mutates_state` and carried only when
-    declared (builtins are never cached, so an absent key here says nothing about
-    the cache's age). A name the registry does not know, or one whose
-    construction raises, is absent from the result.
+    ``output_max_chars`` and ``timeout_s``. ``mutates_state`` comes from the policy
+    through :func:`builtin_mutates_state` and is carried only when declared
+    (builtins are never cached, so an absent key here says nothing about the
+    cache's age). A name the registry does not know, or one whose construction
+    raises, is absent from the result.
+
+    Raises:
+        ValueError: A builtin's policy declares a ``mutates_state`` that
+            :func:`builtin_mutates_state` refuses.
     """
     from tolokaforge.tools.builtin import registry
 
@@ -1586,22 +1608,22 @@ def _builtin_tool_schemas(
         if not registry.is_builtin(name):
             continue
         try:
-            cls = registry.get_class(name)
-            tool = cls(**configs.get(name, {}))
+            tool = registry.get_class(name)(**configs.get(name, {}))
             raw = tool.get_schema()
-            # get_schema() returns {"type": "function", "function": {…}}
-            func_def = raw.get("function", raw)
-            schemas[name] = {
-                "description": func_def.get("description", f"Builtin tool: {name}"),
-                "parameters": func_def.get("parameters", {"type": "object", "properties": {}}),
-                "output_max_chars": tool.policy.output_max_chars,
-                "timeout_s": tool.policy.timeout_s,
-            }
-            mutates_state = builtin_mutates_state(tool.policy.category)
-            if mutates_state is not None:
-                schemas[name]["mutates_state"] = mutates_state
         except Exception as exc:
             logger.debug("Could not load builtin schema", tool_name=name, error=str(exc))
+            continue
+        # get_schema() returns {"type": "function", "function": {…}}
+        func_def = raw.get("function", raw)
+        schemas[name] = {
+            "description": func_def.get("description", f"Builtin tool: {name}"),
+            "parameters": func_def.get("parameters", {"type": "object", "properties": {}}),
+            "output_max_chars": tool.policy.output_max_chars,
+            "timeout_s": tool.policy.timeout_s,
+        }
+        mutates_state = builtin_mutates_state(tool.policy, tool_name=name)
+        if mutates_state is not None:
+            schemas[name]["mutates_state"] = mutates_state
     return schemas
 
 

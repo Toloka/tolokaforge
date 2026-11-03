@@ -196,7 +196,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
     runner resolves against its extracted artifacts dir.
 
     ``mutates_state`` is the tool author's declaration (the ``tools.json`` cache,
-    the builtin's category, the search tool's ``false``) with the task's
+    the builtin's policy, the search tool's ``false``) with the task's
     ``tools.<actor>.<name>.mutates_state`` laid over it (:func:`compose_mutates_state`).
 
     Raises:
@@ -266,6 +266,15 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
             c for c in (rich.get("output_max_chars"), overrides.get(tool_name)) if c is not None
         ]
         emitted_cap = min(cap_candidates) if cap_candidates else None
+        author = (
+            author_mutates_state(
+                rich.get("mutates_state"),
+                tool_name=tool_name,
+                source=f"task {task.task_id!r}'s {task_dir / 'fixtures' / 'tools.json'}",
+            )
+            if mcp_server_ref
+            else rich.get("mutates_state")
+        )
         schemas.append(
             ToolSchema(
                 name=tool_name,
@@ -279,16 +288,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
                 tool_config=configs.get(tool_name, {}),
                 output_max_chars=emitted_cap,
                 mutates_state=_emitted_mutates_state(
-                    task,
-                    actor,
-                    tool_name,
-                    author_mutates_state(
-                        rich.get("mutates_state"),
-                        tool_name=tool_name,
-                        source=f"task {task.task_id!r}'s {task_dir / 'fixtures' / 'tools.json'}",
-                    ),
-                    task_declared,
-                    rich.get("parameters"),
+                    task, actor, tool_name, author, task_declared, rich.get("parameters")
                 ),
             )
         )

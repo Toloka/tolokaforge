@@ -24,6 +24,7 @@ from tolokaforge.adapters._task_loader import (
 )
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.runner.models import MutatesStateRule
+from tolokaforge.tools.builtin.http_request import SAFE_METHODS_READ
 
 pytestmark = pytest.mark.unit
 
@@ -83,17 +84,21 @@ def _cached(name: str, mutates_state: bool | dict[str, Any] | None) -> dict[str,
     }
 
 
+_LISTING_READS = {"read_when": {"args": {"command": {"regex": "^ls( |$)"}}}}
+
+
 @pytest.mark.parametrize(
     "declared",
-    [False, True, _GET_ONLY],
+    [False, True, _LISTING_READS],
     ids=["false", "true", "read-rule"],
 )
 def test_a_task_declaration_reaches_the_tool_schema_where_the_author_is_silent(
     tmp_path: Path, declared: bool | dict[str, Any]
 ) -> None:
-    _pack(tmp_path, {"enabled": ["http_request"], "http_request": {"mutates_state": declared}})
+    """``bash`` is a ``compute`` builtin whose policy declares nothing."""
+    _pack(tmp_path, {"enabled": ["bash"], "bash": {"mutates_state": declared}})
 
-    emitted = _emitted(tmp_path)["http_request"]
+    emitted = _emitted(tmp_path)["bash"]
 
     expected = MutatesStateRule.model_validate(declared) if isinstance(declared, dict) else declared
     assert emitted == expected
@@ -184,12 +189,39 @@ def test_a_malformed_author_declaration_in_the_cache_is_refused(
     assert error in str(caught.value)
 
 
-def test_a_rule_over_a_builtins_category_declaration_is_refused(tmp_path: Path) -> None:
-    """``read_file`` is a ``read`` builtin, so its author declares ``false``."""
-    _pack(tmp_path, {"enabled": ["read_file"], "read_file": {"mutates_state": _GET_ONLY}})
+@pytest.mark.parametrize(
+    ("tool_name", "declared", "authors"),
+    [
+        ("read_file", _GET_ONLY, "false"),
+        ("http_request", False, "a read_when rule"),
+        ("http_request", _GET_ONLY, "a read_when rule"),
+    ],
+    ids=["rule-over-a-read-category", "false-over-http-request", "rule-over-http-request"],
+)
+def test_a_declaration_over_a_builtins_own_is_refused(
+    tmp_path: Path, tool_name: str, declared: bool | dict[str, Any], authors: str
+) -> None:
+    """``read_file`` is a ``read`` builtin, so its author declares ``false``;
+    ``http_request``'s policy declares its safe methods as reads."""
+    _pack(tmp_path, {"enabled": [tool_name], tool_name: {"mutates_state": declared}})
 
-    with pytest.raises(ValueError, match=r"author's own declaration \(false\)"):
+    with pytest.raises(ValueError, match=rf"author's own declaration \({authors}\)"):
         _emitted(tmp_path)
+
+
+def test_http_request_carries_its_policys_rule_unless_the_task_declares_true(
+    tmp_path: Path,
+) -> None:
+    _pack(tmp_path / "silent", {"enabled": ["http_request"]})
+    _pack(
+        tmp_path / "tightened",
+        {"enabled": ["http_request"], "http_request": {"mutates_state": True}},
+    )
+
+    assert _emitted(tmp_path / "silent")["http_request"] == MutatesStateRule.model_validate(
+        SAFE_METHODS_READ
+    )
+    assert _emitted(tmp_path / "tightened")["http_request"] is True
 
 
 def test_a_rule_over_the_search_tools_declaration_is_refused(tmp_path: Path) -> None:
