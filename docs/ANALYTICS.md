@@ -283,8 +283,9 @@ and the fallback would blame the agent for a substrate fault.
 
 `harness_autofail` catches trials the harness auto-failed on a `TrialGrader`
 synth branch whose termination reason is not otherwise enumerated in the
-deterministic elif chain — today that is `STUCK_DETECTED` (the `TIMEOUT` /
-`EMPTY_COMPLETION` / `CONTEXT_WINDOW_EXCEEDED` / `ERROR` / `RATE_LIMIT` /
+deterministic elif chain — today that is `STUCK_DETECTED` and
+`PROVIDER_CONTENT_FILTER` (the `TIMEOUT` / `EMPTY_COMPLETION` /
+`CONTEXT_WINDOW_EXCEEDED` / `ERROR` / `RATE_LIMIT` /
 `API_ERROR` reasons keep their `timeout_or_resource` label because the
 enumerated branch catches them first). It is forward-compat: any future `TerminationReason` a `TrialGrader`
 synthesises from without an enumerated branch lands here rather than falling
@@ -306,7 +307,7 @@ Every attribution record also carries `provision_stage` as a top-level field, ta
 Every attribution record also carries two first-class marker fields for harness-synthesised auto-fail grades:
 
 - `synthesized: bool` — `True` when the trial's `Grade` was fabricated on a `TrialGrader` auto-fail branch (no evaluator ran on the trial), `False` on every real measured verdict.
-- `synthesized_by_termination_reason: str | None` — the `TerminationReason` value name the grader synthesised from (`error` / `stuck_detected` / `empty_completion` / `context_window_exceeded`), or `null` off the synth path.
+- `synthesized_by_termination_reason: str | None` — the `TerminationReason` value name the grader synthesised from (`error` / `stuck_detected` / `context_window_exceeded` / `provider_content_filter`), or `null` off the synth path.
 
 Present-but-null off the synth path so a reader can access `record["synthesized"]` unconditionally rather than gate on the presence of a marker key.
 

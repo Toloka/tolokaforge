@@ -609,7 +609,8 @@ class GradingCompleteness:
         ``--fail-on-zero-coverage`` is set: nothing reached the measurement
         point (``measured_trials == 0``), or every measurement was a
         harness-synthesised auto-fail from
-        ``ERROR``/``TIMEOUT``/``STUCK_DETECTED``/``EMPTY_COMPLETION``
+        ``ERROR``/``TIMEOUT``/``STUCK_DETECTED``/``CONTEXT_WINDOW_EXCEEDED``/
+        ``PROVIDER_CONTENT_FILTER``
         (``synthesized_trials == measured_trials``). See
         ``docs/adr/0041-zero-coverage-exit-signal.md``.
         """

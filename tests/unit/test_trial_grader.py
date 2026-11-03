@@ -139,6 +139,31 @@ class TestAutoFailBranches:
         assert logger.info.call_args.args[0] == "Trial stuck - automatic fail"
         assert logger.info.call_args.kwargs["termination_reason"] == "stuck_detected"
 
+    def test_provider_content_filter_auto_fails_and_logs(self) -> None:
+        """A refused trial is graded a failure, not dropped.
+
+        ``Grade(binary_pass=False)`` rather than ``None``: the provider
+        answered — it declined — so the agent had its turn and produced nothing
+        usable. ``None`` would take the trial out of every denominator and
+        quietly raise the pass rate of whichever model its provider refuses
+        most often.
+        """
+        backend = _StubBackend()
+        grader, logger = _make_grader(backend)
+        traj = make_trajectory(
+            status=TrialStatus.FAILED,
+            termination_reason=TerminationReason.PROVIDER_CONTENT_FILTER,
+        )
+
+        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
+
+        assert grade is not None, "a refused trial must be graded, not dropped"
+        assert grade.binary_pass is False
+        assert grade.score == 0.0
+        assert backend.calls == [], "a refused trial has no action to dispatch for grading"
+        assert logger.info.call_args.args[0] == "Provider declined the request - automatic fail"
+        assert logger.info.call_args.kwargs["termination_reason"] == "provider_content_filter"
+
 
 def _make_auto_fail_grader(kind: str) -> Any:
     """One :class:`TrialGrader` per registered subclass, wired with a stub
@@ -213,6 +238,12 @@ _SYNTH_ROWS: tuple[tuple[str, TrialStatus, TerminationReason | None, Termination
         TerminationReason.STUCK_DETECTED,
         TerminationReason.STUCK_DETECTED,
     ),
+    (
+        "runner_rpc",
+        TrialStatus.COMPLETED,
+        TerminationReason.PROVIDER_CONTENT_FILTER,
+        TerminationReason.PROVIDER_CONTENT_FILTER,
+    ),
     ("judge_backed", TrialStatus.ERROR, None, TerminationReason.ERROR),
     ("judge_backed", TrialStatus.TIMEOUT, None, TerminationReason.ERROR),
     (
@@ -220,6 +251,12 @@ _SYNTH_ROWS: tuple[tuple[str, TrialStatus, TerminationReason | None, Termination
         TrialStatus.COMPLETED,
         TerminationReason.STUCK_DETECTED,
         TerminationReason.STUCK_DETECTED,
+    ),
+    (
+        "judge_backed",
+        TrialStatus.COMPLETED,
+        TerminationReason.PROVIDER_CONTENT_FILTER,
+        TerminationReason.PROVIDER_CONTENT_FILTER,
     ),
     ("grader_rpc", TrialStatus.ERROR, None, TerminationReason.ERROR),
     ("grader_rpc", TrialStatus.TIMEOUT, None, TerminationReason.ERROR),
@@ -229,6 +266,12 @@ _SYNTH_ROWS: tuple[tuple[str, TrialStatus, TerminationReason | None, Termination
         TerminationReason.STUCK_DETECTED,
         TerminationReason.STUCK_DETECTED,
     ),
+    (
+        "grader_rpc",
+        TrialStatus.COMPLETED,
+        TerminationReason.PROVIDER_CONTENT_FILTER,
+        TerminationReason.PROVIDER_CONTENT_FILTER,
+    ),
     ("queue", TrialStatus.ERROR, None, TerminationReason.ERROR),
     ("queue", TrialStatus.TIMEOUT, None, TerminationReason.ERROR),
     (
@@ -236,6 +279,12 @@ _SYNTH_ROWS: tuple[tuple[str, TrialStatus, TerminationReason | None, Termination
         TrialStatus.COMPLETED,
         TerminationReason.STUCK_DETECTED,
         TerminationReason.STUCK_DETECTED,
+    ),
+    (
+        "queue",
+        TrialStatus.COMPLETED,
+        TerminationReason.PROVIDER_CONTENT_FILTER,
+        TerminationReason.PROVIDER_CONTENT_FILTER,
     ),
 )
 

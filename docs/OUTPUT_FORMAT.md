@@ -199,7 +199,7 @@ describe its newly executed attempts.
 * **`judge_prompt` derivation**: computed from the trial's effective
   `grading_config.llm_judge` at bundle-write time, not from an actual
   judge invocation, so an auto-fail trial (`ERROR` / `TIMEOUT` /
-  `STUCK_DETECTED` / `EMPTY_COMPLETION` / `CONTEXT_WINDOW_EXCEEDED`)
+  `STUCK_DETECTED` / `CONTEXT_WINDOW_EXCEEDED` / `PROVIDER_CONTENT_FILTER`)
   that never called the judge
   still records the contract it would have graded under. Same source of
   truth as the judge's own composition
@@ -1511,7 +1511,8 @@ judge_custom_prompt: false      # null (no judge) | false (default prompt) | tru
 judge_agent_prompt_included: true  # null (no judge) | false (agent policy gated out) | true (included)
 synthesized_by_termination_reason: null  # null on every grade produced by a real evaluator;
                                 # named ``TerminationReason`` (e.g. ``stuck_detected``,
-                                # ``context_window_exceeded``, ``error``) when a
+                                # ``context_window_exceeded``, ``provider_content_filter``,
+                                # ``error``) when a
                                 # ``TrialGrader`` auto-fail branch synthesised the
                                 # grade — no evaluator ran on the trial,
                                 # ``components`` is empty and this field names which reason

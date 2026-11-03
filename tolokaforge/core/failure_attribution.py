@@ -79,6 +79,17 @@ earns ``PROVIDER_REFUSED_ALL_REQUESTS`` the same way: from the request
 middleware's own per-request status records, every one of them outside 2xx.
 Never from matching prose against an exception message.
 
+``PROVIDER_CONTENT_FILTER`` is deliberately absent too, and for the opposite
+reason to ``API_ERROR``'s: its evidence *is* typed — a ``GenerationResult``
+whose content is empty and whose finish reason names a content filter — but
+typed evidence only earns membership when it shows the trial never happened.
+A refusal shows the opposite. The provider answered; the answer was a refusal;
+the agent was given its turn and produced nothing usable. That is a measured
+non-pass, and excluding it would quietly shrink the denominator by exactly the
+trials one provider's safety classifier declined, flattering whichever model it
+declines for most. The trial is graded a failure instead — see
+``TrialGrader``'s synthesised-grade branch.
+
 ``API_ERROR`` is deliberately absent, and stays absent. It is also set by a
 catch-all that fires when an exception string merely *contains* "API", which
 is prose — the trial may well be one the agent failed. The typed cases that
@@ -202,9 +213,10 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         # A harness-synthesised auto-fail grade — the deterministic branches above
         # already claim ``timeout_or_resource`` for the ERROR / TIMEOUT /
         # EMPTY_COMPLETION reasons, so this branch fires on any synthesised trial
-        # whose ``termination_reason`` is not enumerated above (today only
-        # STUCK_DETECTED). The tool-log scan below settles on ``model_reasoning``
-        # by default, which would misattribute a harness-terminated trial to the
+        # whose ``termination_reason`` is not enumerated above (today
+        # STUCK_DETECTED and PROVIDER_CONTENT_FILTER). The tool-log scan below
+        # settles on ``model_reasoning`` by default, which would
+        # misattribute a harness-terminated trial to the
         # model, so the synth marker takes precedence. Forward-compat: a future
         # ``TerminationReason`` value ``TrialGrader`` synthesises from without
         # an enumerated branch above lands here rather than falling through.

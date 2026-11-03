@@ -15,6 +15,7 @@ generate seam and a tool executor are faked, no over-mocking of the loop.
 """
 
 import time
+from unittest.mock import MagicMock
 
 import pytest
 from litellm.exceptions import RateLimitError
@@ -535,6 +536,166 @@ def test_a_genuinely_empty_completion_still_terminates_one_shot():
 
     assert client.calls == 1
     assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
+
+
+def test_a_safety_refusal_is_not_an_empty_completion():
+    """The provider declining is an answer, not an absent one.
+
+    Both arrive as HTTP 200 with no text and no tool calls, so shape alone
+    cannot tell them apart — the finish reason is the only thing that can.
+    Reporting a refusal as ``EMPTY_COMPLETION`` sends it to the excluded set,
+    where the trial leaves the denominator entirely; the agent was given its
+    turn and produced nothing usable, which is a result.
+    """
+    client = _ScriptedClient(
+        [
+            GenerationResult(text="", tool_calls=[], usage=Usage(), finish_reason="content_filter"),
+            GenerationResult(text="unreached", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(client, should_terminate=_never_terminate, max_turns=5).run(
+        "sys", messages, time.time()
+    )
+
+    assert outcome.termination_reason == TerminationReason.PROVIDER_CONTENT_FILTER
+    assert outcome.status == TrialStatus.FAILED
+    # Same Gemini-legal-tail invariant the empty-completion path keeps.
+    assert not any(
+        m.role == MessageRole.ASSISTANT and m.content == "" and not m.tool_calls for m in messages
+    )
+
+
+def test_a_safety_refusal_is_not_resampled():
+    """One call, even where the empty-completion budget would allow four.
+
+    A refusal is the provider's verdict on the content of the request and the
+    resample re-sends that content unchanged, so the budget buys a full
+    prompt's input tokens per attempt for an answer that does not move.
+    """
+    client = _ScriptedClient(
+        [GenerationResult(text="", tool_calls=[], usage=Usage(), finish_reason="content_filter")]
+        * 5
+    )
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, empty_retry_count=3),
+    ).run("sys", [], time.time())
+
+    assert client.calls == 1
+    assert outcome.termination_reason == TerminationReason.PROVIDER_CONTENT_FILTER
+
+
+def test_a_refusal_post_mapped_to_stop_is_read_off_the_native_finish_reason():
+    """Some routes map a refusal onto ``"stop"`` before it reaches the engine.
+
+    On those the post-mapped field cannot tell a refusal from a model that
+    simply said nothing, so the provider's own value is consulted too. Without
+    it this trial would terminate ``EMPTY_COMPLETION`` and leave the
+    denominator.
+    """
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(),
+                finish_reason="stop",
+                native_finish_reason="refusal",
+            )
+        ]
+    )
+    outcome = _loop(client, should_terminate=_never_terminate, max_turns=5).run(
+        "sys", [], time.time()
+    )
+
+    assert outcome.termination_reason == TerminationReason.PROVIDER_CONTENT_FILTER
+
+
+def test_an_unremarkable_finish_reason_is_still_an_empty_completion():
+    """The guard on the two tests above: only a named content filter diverts.
+
+    An ordinary ``"stop"`` with no native reason keeps the behaviour it had, so
+    this change moves only the trials whose cause the provider actually named.
+    """
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="", tool_calls=[], usage=Usage(prompt_tokens=1), finish_reason="stop"
+            )
+        ]
+    )
+    outcome = _loop(client, should_terminate=_never_terminate, max_turns=5).run(
+        "sys", [], time.time()
+    )
+
+    assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
+
+
+def test_an_actionless_turn_records_its_finish_reasons_at_info():
+    """Issue #1965: the cause of an actionless turn has to survive the run.
+
+    The trajectory records only the absence. With the finish reasons at
+    ``debug`` they were dropped from every normal run, leaving the bundles with
+    no way to tell a refusal from a stall from a truncation after the fact.
+    """
+    logger = MagicMock()
+    client = _ScriptedClient(
+        [GenerationResult(text="", tool_calls=[], usage=Usage(), finish_reason="content_filter")]
+    )
+    ToolCallingLoop(
+        llm_client=client,
+        tool_executor=_RecordingExecutor(),
+        tool_schemas=[],
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000),
+        metrics=_CountingSink(),
+        should_terminate=_never_terminate,
+        user_turn=None,
+        classify_error=_classify_no_patterns,
+        logger=logger,
+        retry_sleep=lambda _s: None,
+    ).run("sys", [], time.time())
+
+    actionless = [
+        call
+        for call in logger.info.call_args_list
+        if call.args and call.args[0] == "Agent turn produced no text and no tool call"
+    ]
+    assert len(actionless) == 1, "an actionless turn must say so at INFO, exactly once"
+    assert actionless[0].kwargs["finish_reason"] == "content_filter"
+
+
+def test_a_productive_turn_does_not_log_the_actionless_line():
+    """The INFO line is scoped to the turns that need it, not every turn."""
+    logger = MagicMock()
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="working on it",
+                tool_calls=[ToolCall(id="a", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=1),
+            )
+        ]
+    )
+    ToolCallingLoop(
+        llm_client=client,
+        tool_executor=_RecordingExecutor(),
+        tool_schemas=[],
+        config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
+        metrics=_CountingSink(),
+        should_terminate=_never_terminate,
+        user_turn=None,
+        classify_error=_classify_no_patterns,
+        logger=logger,
+        retry_sleep=lambda _s: None,
+    ).run("sys", [], time.time())
+
+    assert not [
+        call
+        for call in logger.info.call_args_list
+        if call.args and call.args[0] == "Agent turn produced no text and no tool call"
+    ]
 
 
 def test_reasoning_only_without_a_length_signal_is_still_a_stall():

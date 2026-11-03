@@ -8,10 +8,17 @@ the same machinery.
 The engine is deliberately behaviour-light: it owns turn structure (episode
 timeout, generate, accumulate, append assistant, terminate, execute tools,
 optional user turn, error classification, max-turns), and delegates every
-*policy* decision to pluggable seams. The engine consumes three wire-shape
-observations directly: the provider-shaped *empty completion* —
-``result.text == "" and not result.tool_calls``, with no reasoning billed and
-no reasoning billed — resamples up to ``LoopConfig.empty_retry_count`` times
+*policy* decision to pluggable seams. The engine consumes five wire-shape
+observations directly: the *provider content filter* — the same actionless
+shape, but with ``result.finish_reason`` (or the provider's own
+``native_finish_reason``) naming a content filter — terminates the trial
+immediately with :attr:`TerminationReason.PROVIDER_CONTENT_FILTER` and spends
+no resample on it, because the provider's verdict is on the content of the
+request and a redraw re-sends that content unchanged; checked ahead of the two
+actionless shapes below because a refusal is a refusal whether or not the
+provider happened to bill reasoning for it; the provider-shaped *empty completion* —
+``result.text == "" and not result.tool_calls``, with no reasoning billed —
+resamples up to ``LoopConfig.empty_retry_count`` times
 without appending the empty assistant message, and on the ``(N + 1)``-th empty
 result terminates the trial with :attr:`TerminationReason.EMPTY_COMPLETION`
 (the Gemini-legal-tail invariant is preserved end-to-end because the empty
@@ -674,6 +681,51 @@ _EMPTY_COMPLETION_EVIDENCE = (
 :class:`~tolokaforge.core.llm.client.GenerationResult`, not from an exception,
 so no classifier decision carries its evidence.
 """
+
+
+_CONTENT_FILTER_FINISH_REASONS = frozenset({"content_filter"})
+"""litellm's post-mapped ``finish_reason`` for a provider safety refusal.
+
+``"content_filter"`` is the OpenAI-compatible value every provider's refusal is
+mapped onto before it reaches :class:`GenerationResult`, so this is the one
+field a refusal is reliably readable from.
+"""
+
+_CONTENT_FILTER_NATIVE_FINISH_REASONS = frozenset({"content_filter", "refusal", "safety"})
+"""Provider-native refusal names, read only as a second signal.
+
+Deliberately NOT an entry in
+:data:`~tolokaforge.core.llm.client._SYNTHETIC_ENVELOPE_NATIVE_REASONS`: that set
+makes the client raise so its retry controller re-attempts the call, and a
+refusal is frequently deterministic for a given prompt, so retrying it spends a
+full prompt's input tokens per attempt for an answer that does not change. A
+refusal needs a typed termination reason, not a retry.
+
+Kept to the names actually observed on the wire rather than every refusal word a
+provider might one day emit: a value that reaches neither set falls through to
+``EMPTY_COMPLETION`` exactly as it does today, which is the status quo, not a
+regression.
+"""
+
+
+def _is_content_filter_refusal(result: Any) -> bool:
+    """Whether an actionless result is the provider's safety classifier declining.
+
+    On the wire this is HTTP 200 with ``finish_reason: "content_filter"``, empty
+    content, no tool calls and no tokens billed — indistinguishable from an
+    empty completion by shape alone, which is why it has to be read off the
+    finish reason.
+
+    ``native_finish_reason`` is consulted as well because litellm post-maps a
+    refusal onto ``"stop"`` on some routes (the same hazard
+    :func:`~tolokaforge.core.llm.client._detect_synthetic_envelope` exists for),
+    and on those routes the post-mapped field cannot tell a refusal from a model
+    that simply said nothing.
+    """
+    if result.finish_reason in _CONTENT_FILTER_FINISH_REASONS:
+        return True
+    native = getattr(result, "native_finish_reason", None)
+    return native in _CONTENT_FILTER_NATIVE_FINISH_REASONS
 
 
 def _is_reasoning_only(result: Any) -> bool:
@@ -1386,6 +1438,48 @@ class ToolCallingLoop:
                     continue
                 break
 
+            if _is_content_filter_refusal(result):
+                # Terminal on the first occurrence: no resample, and deliberately
+                # not a share of ``empty_retry_count``.
+                #
+                # A refusal is the provider's verdict on the *content of the
+                # request*, and a resample re-sends that content unchanged. An
+                # empty completion is a sampling artifact a redraw genuinely
+                # fixes, which is what that budget was opted into for; a safety
+                # classifier is not drawn from, so the redraw costs a full
+                # prompt's input tokens for an answer that does not move. Field
+                # evidence: one model refused the same prompt identically twelve
+                # times across four independent serving endpoints.
+                #
+                # It can also be intermittent, and that case is served better by
+                # terminating than by retrying: the trial now lands in the output
+                # as a typed ``provider_content_filter`` rather than vanishing,
+                # so an operator who finds a model's refusals are intermittent
+                # can see it in ``outcomes_by_reason`` and set policy on the
+                # evidence, instead of the harness guessing on their behalf.
+                self._append_both(
+                    messages,
+                    self._system_message(
+                        "Provider declined the request (content filter); no text and "
+                        "no tool calls returned. Dialogue terminated."
+                    ),
+                )
+                self.logger.info(
+                    "Provider declined the request",
+                    turn=turn,
+                    finish_reason=result.finish_reason,
+                    native_finish_reason=getattr(result, "native_finish_reason", None),
+                )
+                # No ``_excluding_reason_evidence``: this reason does not excuse
+                # the trial from the measured denominator. The provider answered,
+                # the agent produced nothing usable, and the grader synthesises a
+                # failing grade for it.
+                return (
+                    TrialStatus.FAILED,
+                    TerminationReason.PROVIDER_CONTENT_FILTER,
+                    True,
+                )
+
             if _is_reasoning_only(result):
                 # The same truncation that arrives with a token of text falls
                 # through to ``break`` above and the trial carries on. Arriving
@@ -1778,6 +1872,25 @@ class ToolCallingLoop:
                 count=len(result.tool_calls),
                 tools=[tc.name for tc in result.tool_calls],
             )
+            return
+        if result.text:
+            return
+        # Issue #1965. An actionless turn is the one shape whose *cause* is not
+        # recoverable from the recorded artifacts afterwards: the trajectory
+        # records the absence, never the provider's stated reason for it. At
+        # ``debug`` the finish reasons that name the cause — a truncation, a
+        # stall, a safety refusal — were dropped from every normal run, which
+        # made separating them a day's work over bundles that no longer held the
+        # answer. Logged at INFO on exactly the turns that need it, so the cost
+        # is one line per actionless turn rather than one per turn.
+        self.logger.info(
+            "Agent turn produced no text and no tool call",
+            turn=turn,
+            finish_reason=result.finish_reason,
+            native_finish_reason=getattr(result, "native_finish_reason", None),
+            completion_tokens=result.usage.completion_tokens,
+            reasoning_tokens=result.usage.reasoning_tokens,
+        )
 
     @staticmethod
     def _assistant_message(result: GenerationResult) -> Message:

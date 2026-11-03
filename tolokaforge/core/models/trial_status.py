@@ -39,6 +39,14 @@ class TerminationReason(str, Enum):
         "provider_refused_all_requests"
     )
     EMPTY_COMPLETION = "empty_completion"  # Provider returned no text and no tool calls
+    PROVIDER_CONTENT_FILTER = (
+        # The provider's safety classifier declined the request: HTTP 200 with a
+        # content-filter finish reason, no text and no tool calls. Separate from
+        # EMPTY_COMPLETION because the provider *answered* — it declined — so the
+        # agent had its turn and produced nothing usable. A measured non-pass,
+        # not an absent measurement, hence not in EXCLUDED_TYPED_REASONS
+        "provider_content_filter"
+    )
     REASONING_WITHOUT_ACTION = (
         "reasoning_without_action"  # Billed reasoning tokens but returned no text and no tool call
     )

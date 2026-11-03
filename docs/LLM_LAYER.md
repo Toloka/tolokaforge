@@ -2087,12 +2087,25 @@ one as the other names the wrong party:
   terminating on the `(N + 1)`-th with `TerminationReason.EMPTY_COMPLETION`.
   The default `empty_retry_count = 0` keeps this one-shot terminal for models
   that do not opt in.
+- **Provider content filter** — the same actionless shape, but with
+  `finish_reason` (or the provider's own `native_finish_reason`, carried on
+  `GenerationResult` for routes that post-map a refusal onto `"stop"`) naming a
+  content filter. Terminates immediately with
+  `TerminationReason.PROVIDER_CONTENT_FILTER` and spends **no** resample on it:
+  the provider's verdict is on the content of the request, and a resample
+  re-sends that content unchanged, so the budget would buy a full prompt's
+  input tokens per attempt for an answer that does not move. Checked ahead of
+  the two shapes above, because a refusal is a refusal whether or not the
+  provider happened to bill reasoning for it.
 
-Both are recognised immediately after `_generate` — before the assistant
-message would be appended — and neither advances the outer turn counter.
-Both terminate with `TrialStatus.FAILED` and both sit in
+All three are recognised immediately after `_generate` — before the assistant
+message would be appended — and none advances the outer turn counter. All
+terminate with `TrialStatus.FAILED`. The first two sit in
 `EXCLUDED_TYPED_REASONS`, so a trial lost to either leaves the measured
 denominator rather than scoring zero against the agent.
+`PROVIDER_CONTENT_FILTER` deliberately does not: the provider answered the
+request by declining it, so the agent had its turn, and the trial is graded a
+synthesised failure instead of vanishing from every rate.
 
 The metrics sink records every generation, resampled ones included, because
 the trial paid for each call. Presets that observably recover on a resample
@@ -3181,7 +3194,7 @@ through to accept the `{}`-coerced response (see § *Parser-error retry*
 above). Each owns a dedicated `LoopConfig` field so a preset can tune
 them independently.
 
-`TerminationReason.CONTEXT_WINDOW_EXCEEDED` is a third wire-shape reason
+`TerminationReason.CONTEXT_WINDOW_EXCEEDED` is a further wire-shape reason
 (parallel to `EMPTY_COMPLETION`), not routed through the API-error retry.
 It fires when the provider returns
 `litellm.exceptions.ContextWindowExceededError`, and — with the summarize

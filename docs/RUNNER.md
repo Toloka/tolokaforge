@@ -793,6 +793,9 @@ independent by design:
   killed by a *typed* infrastructure condition — `rate_limit`, `api_timeout`,
   `provision_error`, `empty_completion`, `reasoning_without_action`,
   `provider_refused_all_requests` — leaves the rate denominators.
+  `provider_content_filter` is typed too and deliberately stays in: the
+  provider answered the request by declining it, so the trial is a measured
+  non-pass and is graded a failure rather than dropped.
 
 They disagree, and the disagreements are the point. A wall-clock `timeout`, an
 `api_error`, a bare `error` and a `trial_lost` are all retried *and* counted:
