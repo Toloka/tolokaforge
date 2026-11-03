@@ -956,9 +956,8 @@ a message naming its replacement:
 | `include_agent_system_prompt: false` / `true` | `evidence.agent_policy: false` / `true` |
 | `judge_snippet_chars: N` / `null` | `evidence.knowledge_search: {snippet_chars: N}` / `{snippet_chars: null}` |
 
-A `disable_knowledge_search: null` or `include_agent_system_prompt: null` meant unset,
-and reads as the key's absence; it is what every customization recorded before
-`evidence` carries.
+A `disable_knowledge_search` or `include_agent_system_prompt` holding `null` reads as
+absent; any other value of a removed key is refused, naming its replacement.
 
 See [GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the
 two weighting layers, and the fail-loud ERRORED status.

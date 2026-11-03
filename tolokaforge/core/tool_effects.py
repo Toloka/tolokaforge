@@ -17,15 +17,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError
-
 from tolokaforge.core.grading.argument_predicates import (
     PredicatePatterns,
     argument_at,
     compile_predicate_patterns,
     predicate_holds,
 )
-from tolokaforge.runner.models import MutatesStateRule
+from tolokaforge.runner.models import MutatesStateRule, parse_mutates_state
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import ToolSchema
@@ -125,16 +123,14 @@ class ToolEffects:
             if name in seen:
                 continue
             seen.add(name)
-            if raw is None:
-                continue
             try:
-                value = raw if isinstance(raw, bool) else MutatesStateRule.model_validate(raw)
-            except ValidationError as exc:
-                raise UnrecordedToolEffectsError(
-                    f"{source} entry {index} ({name!r}) records a mutates_state no rule "
-                    f"validates: {exc}"
-                ) from exc
-            declared[name] = _compiled(value)
+                value = parse_mutates_state(
+                    raw, where=f"{source} entry {index} ({name!r}): mutates_state"
+                )
+            except ValueError as exc:
+                raise UnrecordedToolEffectsError(str(exc)) from exc
+            if value is not None:
+                declared[name] = _compiled(value)
         return cls(MappingProxyType(declared))
 
     def can_change_state(self, name: str, arguments_json: str) -> bool:

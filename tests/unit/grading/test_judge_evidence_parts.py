@@ -35,7 +35,7 @@ from tolokaforge.core.grading.judge import LLMJudge
 from tolokaforge.core.grading.judge_evidence import (
     SHOW_CALL_MAX_CHARS,
     ShowCallTool,
-    call_result_head,
+    call_result_brief,
     number_tool_results,
     state_changing_calls,
 )
@@ -191,7 +191,7 @@ def test_an_empty_result_reads_as_one_in_the_transcript_and_the_block() -> None:
     numbered = number_tool_results(transcript, tool_result_chars=10)
 
     assert numbered.messages[1]["content"] == "[call 1] (empty result)"
-    assert call_result_head(numbered.agent_calls[0]) == "(empty result)"
+    assert call_result_brief(numbered.agent_calls[0]) == "(empty result)"
 
 
 def test_state_changing_calls_skip_the_calls_their_tools_declare_reads() -> None:
@@ -199,8 +199,8 @@ def test_state_changing_calls_skip_the_calls_their_tools_declare_reads() -> None
 
     calls = state_changing_calls(numbered, _TOOL_EFFECTS)
 
-    assert [(c.number, c.name, call_result_head(c)) for c in calls] == [
-        (3, "rest_call", "Error: Status: 403")
+    assert [(c.number, c.name, call_result_brief(c)) for c in calls] == [
+        (3, "rest_call", "Error: Status: 403 Response (JSON): {'detail': 'agents may not comment'}")
     ]
     assert '"POST"' in calls[0].arguments
     assert "Closed, sorry for the wait." in calls[0].arguments
@@ -223,7 +223,7 @@ def test_a_call_no_result_answers_has_no_number() -> None:
         number_tool_results(transcript, tool_result_chars=10), _TOOL_EFFECTS
     )
 
-    assert [(c.number, call_result_head(c)) for c in calls] == [(None, "no result")]
+    assert [(c.number, call_result_brief(c)) for c in calls] == [(None, "no result")]
 
 
 def test_the_users_own_tool_steps_are_not_the_agents_calls() -> None:
@@ -282,13 +282,16 @@ def _state_changing_lines(opening: str) -> list[str]:
 @pytest.mark.parametrize(
     ("content", "shown"),
     [
-        ("\n\nError: Status: 409\nResponse: duplicate", "Error: Status: 409"),
-        ("Status: 201\nResponse (JSON):\n{'id': 9}", "Status: 201"),
-        ("o" * 200, f"{'o' * 120}…"),
+        ("\n\nError: Status: 409\nResponse: duplicate", "Error: Status: 409 Response: duplicate"),
+        (
+            f"Status: 201\nResponse (JSON):\n{json.dumps({'id': 9, 'note': 'call back'}, indent=2)}",
+            'Status: 201 Response (JSON): { "id": 9, "note": "call back" }',
+        ),
+        ("o" * 100 + "\n" + "o" * 100, f"{'o' * 100} {'o' * 19}…"),
     ],
-    ids=["failed", "succeeded", "long-first-line"],
+    ids=["failed", "succeeded-pretty-printed", "long"],
 )
-def test_a_call_shows_the_first_line_of_its_result_and_long_arguments_are_cut(
+def test_a_call_shows_its_result_on_one_line_and_long_arguments_are_cut(
     content: str, shown: str
 ) -> None:
     long_body = "b" * 500
@@ -486,7 +489,9 @@ def test_the_transcript_judge_reads_the_numbered_record_and_no_state() -> None:
     assert "[call 1] " in opening and "t" * 2001 not in opening
     calls_block = opening.split("===== STATE-CHANGING CALLS =====\n")[1].split("\n=====")[0]
     assert calls_block.startswith('[call 3] rest_call({"request": {"method": "POST"')
-    assert calls_block.endswith(") -> Error: Status: 403")
+    assert calls_block.endswith(
+        ") -> Error: Status: 403 Response (JSON): {'detail': 'agents may not comment'}"
+    )
     assert "You cannot inspect the final state." in opening
     show_call_answer = next(
         m for m in result.transcript if m["role"] == "tool" and _LONG_ANSWER in m["content"]
@@ -826,5 +831,5 @@ def test_a_failed_call_reads_the_same_with_or_without_the_trials_records() -> No
     assert recorded == messages_only
     assert _state_changing_lines(recorded) == [
         '[call 1] rest_call({"request": {"method": "POST", "url": "/tickets/7/comments"}})'
-        " -> Error: Status: 403"
+        " -> Error: Status: 403 Response (JSON): {'detail': 'agents may not comment'}"
     ]

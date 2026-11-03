@@ -83,6 +83,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.tool_effects import ToolEffects
 from tolokaforge.runner.models import (
+    FINAL_STATE_INPUTS,
     Criterion,
     CriterionResult,
     EvidenceInput,
@@ -688,14 +689,15 @@ def _refuse_views_no_part_needs(
     db_reader: DBReader | None,
     workspace_dir: Path | None,
 ) -> None:
+    views: dict[EvidenceInput, object] = {
+        EvidenceInput.STATE_DIFF: state_diff,
+        EvidenceInput.DB: db_reader,
+        EvidenceInput.WORKSPACE: workspace_dir,
+    }
     handed = [
         evidence_input.value
-        for evidence_input, view in (
-            (EvidenceInput.STATE_DIFF, state_diff),
-            (EvidenceInput.DB, db_reader),
-            (EvidenceInput.WORKSPACE, workspace_dir),
-        )
-        if view is not None and not evidence.needs(evidence_input)
+        for evidence_input in FINAL_STATE_INPUTS
+        if views[evidence_input] is not None and not evidence.needs(evidence_input)
     ]
     if handed:
         raise ValueError(

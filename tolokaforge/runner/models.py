@@ -56,6 +56,7 @@ from pydantic import (
     PrivateAttr,
     SerializerFunctionWrapHandler,
     StrictBool,
+    ValidationError,
     ValidationInfo,
     field_validator,
     model_serializer,
@@ -87,6 +88,10 @@ from tolokaforge.core.grading.state_composition import (
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind
 from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.hash import ColumnCompareRule
+from tolokaforge.core.mutates_state_meta import (
+    check_read_rule_binds_nothing,
+    check_read_rule_path,
+)
 from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
 from tolokaforge.core.value_predicate_operators import (
     TRACE_PREDICATE_BINDING_OPERATORS,
@@ -1187,15 +1192,8 @@ class MutatesStateReadWhen(BaseModel):
         cls, args: dict[str, ValuePredicate]
     ) -> dict[str, ValuePredicate]:
         for path, predicate in args.items():
-            if not path or any(not segment for segment in path.split(".")):
-                raise ValueError(f"read_when.args path {path!r} has an empty segment")
-            bound = sorted(predicate.declared_operators() & TRACE_PREDICATE_BINDING_OPERATORS)
-            if bound:
-                raise ValueError(
-                    f"read_when.args.{path} uses {', '.join(bound)}, which compare against "
-                    "a value a constraint's bind extracted; a mutates_state rule binds "
-                    "nothing. Write the value with equals / in_ instead"
-                )
+            check_read_rule_path(path)
+            check_read_rule_binds_nothing(f"read_when.args.{path}", predicate.declared_operators())
         return args
 
 
@@ -1210,6 +1208,26 @@ class MutatesStateRule(BaseModel):
     read_when: MutatesStateReadWhen
 
     model_config = {"extra": "forbid", "frozen": True}
+
+
+def parse_mutates_state(raw: object, *, where: str) -> bool | MutatesStateRule | None:
+    """A ``mutates_state`` value: ``None`` (undeclared), a bool, or a read-rule mapping.
+
+    Raises:
+        ValueError: *raw* is none of these, or a mapping the rule model refuses, naming
+            *where*.
+    """
+    if raw is None or isinstance(raw, bool):
+        return raw
+    if not isinstance(raw, Mapping):
+        raise ValueError(
+            f"{where} is {raw!r}; declare true, false or "
+            "{read_when: {args: {<argument path>: <predicate>}}}"
+        )
+    try:
+        return MutatesStateRule.model_validate(raw)
+    except ValidationError as exc:
+        raise ValueError(f"{where} is not a read rule: {exc}") from exc
 
 
 # Which fields a matcher may read, per event kind. A ``tool_call`` matcher reads
@@ -2436,6 +2454,14 @@ class EvidenceInput(str, Enum):
     TOOL_EFFECTS = "tool_effects"
 
 
+#: The views of the trial's final state, in :class:`EvidenceInput` order.
+FINAL_STATE_INPUTS: tuple[EvidenceInput, ...] = (
+    EvidenceInput.STATE_DIFF,
+    EvidenceInput.DB,
+    EvidenceInput.WORKSPACE,
+)
+
+
 class EvidencePartName(str, Enum):
     """The parts of the judge's evidence, named as :class:`JudgeEvidence` fields."""
 
@@ -2530,17 +2556,6 @@ class JudgeEvidence(BaseModel):
         """Whether ``part`` is on."""
         return getattr(self, part.value) is not False
 
-    def reads_final_state(self) -> bool:
-        """Whether any part shows the judge the final state."""
-        return any(
-            self.needs(evidence_input)
-            for evidence_input in (
-                EvidenceInput.STATE_DIFF,
-                EvidenceInput.DB,
-                EvidenceInput.WORKSPACE,
-            )
-        )
-
     def knowledge_search_options(self) -> KnowledgeSearchOptions | None:
         """The ``knowledge_search`` options, ``None`` while the part is off."""
         return _part_options(self.knowledge_search, KnowledgeSearchOptions)
@@ -2599,9 +2614,9 @@ _REMOVED_CUSTOMIZATION_KEYS: dict[str, str] = {
 _REMOVED_TRI_STATE_KEYS: frozenset[str] = frozenset(
     {"disable_knowledge_search", "include_agent_system_prompt"}
 )
-"""Removed keys whose ``null`` meant unset, and so still reads as the key's absence.
+"""Removed keys whose ``null`` reads as the key's absence.
 
-Every customization the engine recorded before ``evidence`` dumps both as ``null``.
+A customization recorded by an engine without ``evidence`` carries both as ``null``.
 """
 
 
@@ -2641,7 +2656,7 @@ class JudgeCustomization(BaseModel):
     :func:`~tolokaforge.core.project_loader.layer_judge_customization`, part by part.
     A key ``evidence`` replaced is refused naming its replacement, except a
     ``disable_knowledge_search`` or ``include_agent_system_prompt`` that holds
-    ``null``, which meant unset and reads as absent.
+    ``null``, which reads as absent.
 
     :func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns
     a customization into the

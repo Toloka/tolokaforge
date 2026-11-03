@@ -90,6 +90,7 @@ from tolokaforge.core.plugin_registry import load_judge_kind, load_judge_model_p
 from tolokaforge.core.project_loader import customization_sources, layer_judge_customization
 from tolokaforge.core.tool_effects import ToolEffects, UnrecordedToolEffectsError
 from tolokaforge.runner.models import (
+    FINAL_STATE_INPUTS,
     EvidenceInput,
     EvidencePartName,
     JudgeCustomization,
@@ -643,14 +644,6 @@ def _resolve_customization(
     )
 
 
-#: The views of the final state a judge reads, each built only while its part needs it.
-_FINAL_STATE_INPUTS: tuple[EvidenceInput, ...] = (
-    EvidenceInput.STATE_DIFF,
-    EvidenceInput.DB,
-    EvidenceInput.WORKSPACE,
-)
-
-
 def _recorded_inputs(trial_dir: Path, judge_inputs: JudgeInputs | None) -> frozenset[EvidenceInput]:
     """The views of the final state the bundle recorded for its judge.
 
@@ -666,7 +659,7 @@ def _recorded_inputs(trial_dir: Path, judge_inputs: JudgeInputs | None) -> froze
     }
     recorded = {
         evidence_input
-        for evidence_input in _FINAL_STATE_INPUTS
+        for evidence_input in FINAL_STATE_INPUTS
         if JudgeEvidence.part_needing(evidence_input) in owners
     }
     if judge_inputs.state_diff_text is not None:
@@ -688,7 +681,7 @@ def _refuse_views_the_bundle_lacks(
     on_the_record = _recorded_inputs(trial_dir, judge_inputs)
     lacking = [
         f"evidence.{customization.evidence.part_needing(evidence_input).value}"
-        for evidence_input in _FINAL_STATE_INPUTS
+        for evidence_input in FINAL_STATE_INPUTS
         if customization.evidence.needs(evidence_input)
         and not recorded.evidence.needs(evidence_input)
         and evidence_input not in on_the_record

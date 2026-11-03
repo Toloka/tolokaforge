@@ -28,6 +28,7 @@ from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.tool_effects import ToolEffects
 from tolokaforge.runner.models import (
+    FINAL_STATE_INPUTS,
     EvidenceInput,
     EvidencePartName,
     JudgeCustomization,
@@ -368,7 +369,7 @@ def test_every_combination_of_parts_names_only_the_tools_it_offers(
     named = {name for name in _NAMEABLE_TOOLS if name in opening}
     assert named <= offered, f"{customization.evidence!r} names {named - offered} unoffered"
     says_it_cannot_inspect = "You cannot inspect the final state" in opening
-    if not evidence.reads_final_state():
+    if not any(evidence.needs(view) for view in FINAL_STATE_INPUTS):
         assert says_it_cannot_inspect
     if says_it_cannot_inspect:
         assert not offered & {"get_db_state", "query_db", "read_file"}

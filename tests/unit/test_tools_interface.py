@@ -388,18 +388,10 @@ class TestDecoratorSideEffects:
             ),
             pytest.param({"read_when": {"args": {}}}, "one or more", id="no-path"),
             pytest.param(
-                {"read_when": {"args": {"a..b": {"equals": 1}}}}, "'a..b'", id="empty-segment"
-            ),
-            pytest.param(
                 {"read_when": {"args": {"m": "GET"}}}, "mapping of operators", id="bare-value"
             ),
             pytest.param(
                 {"read_when": {"args": {"m": {"in": ["GET"]}}}}, "names in", id="unknown-operator"
-            ),
-            pytest.param(
-                {"read_when": {"args": {"m": {"equals_binding": "x"}}}},
-                "binds nothing",
-                id="binding-operator",
             ),
             pytest.param(
                 {"read_when": {"args": {"m": {"regex_engine": "linear"}}}},

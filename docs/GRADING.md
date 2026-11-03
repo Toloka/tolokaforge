@@ -4430,9 +4430,9 @@ Its knowledge-search tools stay, governed by `knowledge_search`. It reads:
   `[call N]` (numbered in the order results arrive) and is cut at `max_chars`
   characters, saying how much it left out;
 * **the state-changing calls** (`state_changing_calls`) — the agent's calls that can
-  change state, in order, each as `[call N] name(arguments) -> <first line of its
-  result>`: the first non-blank line of the result the agent received, cut at 120
-  characters; `(empty result)` when it has no text, and
+  change state, in order, each as `[call N] name(arguments) -> <its result>`: the
+  result the agent received on one line, every run of whitespace (newlines included)
+  one space, cut at 120 characters; `(empty result)` when it has no text, and
   `[no result] name(arguments) -> no result` when nothing answered the call. The
   result's body is how a call says it ended: a call the harness saw fail carries the
   `Error: ` prefix the agent saw, so a refused `http_request` reads

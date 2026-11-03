@@ -16,7 +16,12 @@ import pytest
 
 from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
-from tolokaforge.runner.models import JudgeCustomization, JudgeEvidence, TaskDescription
+from tolokaforge.runner.models import (
+    FINAL_STATE_INPUTS,
+    JudgeCustomization,
+    JudgeEvidence,
+    TaskDescription,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -362,7 +367,8 @@ def test_a_project_transcript_judge_reaches_the_task_and_the_wire(tmp_path: Path
     )
     description = adapter.to_task_description("rubric_task")
 
-    assert not description.grading.llm_judge.customization.evidence.reads_final_state()
+    evidence = description.grading.llm_judge.customization.evidence
+    assert not any(evidence.needs(view) for view in FINAL_STATE_INPUTS)
     wire = json.loads(description.model_dump_json())["grading"]["llm_judge"]["customization"]
     assert wire["evidence"] == transcript_only
 

@@ -196,11 +196,10 @@ record falls back to `task.yaml grading_config.llm_judge.customization`, which i
 taken before the run-level `grader.judge` layer of the `judge_only` grader: a
 replay of such a bundle is stamped `customization_record: task_yaml`, and
 `rejudge` prints a warning naming how many bundles it read that way.
-A bundle recorded before `evidence` carries `disable_knowledge_search: null` and
-`include_agent_system_prompt: null` there; that `null` meant unset and reads as
-absent. One that set either to `true` or `false`, or set `judge_snippet_chars`, is
-refused naming the `evidence` key that replaced it, whatever the `--grading`
-override says.
+A recorded `disable_knowledge_search` or `include_agent_system_prompt` holding
+`null` reads as absent; either holding `true` or `false`, or any
+`judge_snippet_chars`, is refused naming the `evidence` key that replaces it, whatever
+the `--grading` override says.
 
 `replay_provenance.yaml` stamps `customization` (what the replay judged under),
 `customization_sources` (each dotted key path a layer set, mapped to `recorded` or

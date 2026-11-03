@@ -79,8 +79,8 @@ We will adopt **Option 4**.
   offers `show_call(calls, offset)`, which returns full results from the same
   transcript; it is a pure function of the transcript, so replay rebuilds it and never
   shims it. `state_changing_calls` lists the agent's calls that can change state, each
-  with the first line of the result the agent received; on without `tool_results` the
-  results are numbered and not cut.
+  with the start of the result the agent received, squeezed onto one line; on without
+  `tool_results` the results are numbered and not cut.
 - Whether a call can change state belongs to the tool's declaration, ADR-0061
   `mutates_state`, which gains a third form: `{read_when: {args: {<path>:
   <predicate>}}}` in the trace matcher's own vocabulary, evaluated through the
@@ -135,8 +135,8 @@ We will adopt **Option 4**.
 - Each tool's declaration is recorded on its `tools_schemas.yaml` entry (bundle
   generation 8); a bundle predating it replays every part except
   `state_changing_calls`.
-- The block shows a result's first line, not a typed status: a tool that states its
-  outcome further down its result, or an MCP error reply (`isError: true`), whose text
+- The block shows the start of a result, not a typed status: a tool that states its
+  outcome past the cut, or an MCP error reply (`isError: true`), whose text
   reaches the agent without the `Error: ` prefix, reads only as the agent saw it.
 
 ## Links

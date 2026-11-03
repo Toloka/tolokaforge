@@ -13,7 +13,7 @@ tools' ``mutates_state`` declarations
 * the transcript with every tool result numbered ``[call N]`` (in the order the
   results arrive), cut when ``tool_results`` is on — :func:`number_tool_results`;
 * the agent's calls that can change state, in the order it made them, each with the
-  first line of the result the agent received — :func:`state_changing_calls`;
+  start of the result the agent received, on one line — :func:`state_changing_calls`;
 * ``show_call`` — :class:`ShowCallTool`, which returns the full results the cut
   hides, read from the same transcript, so a replay rebuilds it and never shims it.
 
@@ -65,7 +65,7 @@ __all__ = [
     "ToolRecord",
     "TrialEvidence",
     "call_arguments_brief",
-    "call_result_head",
+    "call_result_brief",
     "compose_evidence",
     "evidence_parts",
     "format_transcript",
@@ -85,14 +85,19 @@ SHOW_CALL_MAX_CHARS = 12_000
 #: shows them in full on the call itself.
 CALL_ARGUMENT_CHARS = 300
 
-#: Characters of the first line of a call's result the state-changing block shows.
-RESULT_HEAD_CHARS = 120
+#: Characters of a call's result, on one line, the state-changing block shows.
+RESULT_BRIEF_CHARS = 120
 
 #: What the judge reads in place of a result with no text.
 EMPTY_RESULT = "(empty result)"
 
 #: What the state-changing block shows for a call no result answers.
 NO_RESULT = "no result"
+
+#: How every closing instruction of a judge that cannot read the final state starts.
+_GRADE_FROM_THIS_RECORD = (
+    "You cannot inspect the final state. Grade each criterion from this record, "
+)
 
 #: Delimiter strings the opening message fences untrusted evidence with. Anything in
 #: a model-controlled slot that replays one exactly would let the judge read what
@@ -241,8 +246,8 @@ def number_tool_results(
     )
 
 
-def call_result_head(call: RecordedCall) -> str:
-    """The first non-blank line of a call's result, cut at :data:`RESULT_HEAD_CHARS`.
+def call_result_brief(call: RecordedCall) -> str:
+    """A call's result with every run of whitespace one space, cut at :data:`RESULT_BRIEF_CHARS`.
 
     The result is the text the agent received, so a failed call reads with the
     :data:`~tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX` the loop
@@ -250,8 +255,8 @@ def call_result_head(call: RecordedCall) -> str:
     """
     if call.number is None:
         return NO_RESULT
-    head = next((line.strip() for line in call.result.splitlines() if line.strip()), "")
-    return _brief(head, RESULT_HEAD_CHARS) if head else EMPTY_RESULT
+    one_line = " ".join(call.result.split())
+    return _brief(one_line, RESULT_BRIEF_CHARS) if one_line else EMPTY_RESULT
 
 
 def call_arguments_brief(call: RecordedCall) -> str:
@@ -691,16 +696,15 @@ class ToolResultsPart(_Part):
 
     def closing(self, trial: TrialEvidence, offered: frozenset[str]) -> str | None:
         return (
-            "You cannot inspect the final state. Grade each criterion from this record, "
-            f"reading a cut result in full with {SHOW_CALL_TOOL_NAME} where a criterion "
-            "depends on it, then call submit_report."
+            f"{_GRADE_FROM_THIS_RECORD}reading a cut result in full with "
+            f"{SHOW_CALL_TOOL_NAME} where a criterion depends on it, then call submit_report."
         )
 
 
 @_registered
 @dataclass(frozen=True)
 class StateChangingCallsPart(_Part):
-    """The agent's calls that can change state, each with the first line of its result."""
+    """The agent's calls that can change state, each with the start of its result."""
 
     name: ClassVar[EvidencePartName] = EvidencePartName.STATE_CHANGING_CALLS
     numbers_transcript: ClassVar[bool] = True
@@ -717,8 +721,9 @@ class StateChangingCallsPart(_Part):
         )
         return (
             "Below are the agent's calls that can change state, in the order it made "
-            "them, each with the first line of the result the agent received. Long "
-            "arguments are cut here; the transcript shows each call in full.\n"
+            "them, each with the start of the result the agent received, on one line. "
+            "Long arguments and results are cut here; the transcript shows each call "
+            "in full.\n"
             "===== STATE-CHANGING CALLS =====\n"
             f"{call_lines}\n"
             "===== END STATE-CHANGING CALLS =====\n\n"
@@ -728,7 +733,7 @@ class StateChangingCallsPart(_Part):
 def _state_changing_call_line(call: RecordedCall) -> str:
     reference = f"[call {call.number}]" if call.number is not None else "[no result]"
     return neutralise_judge_delimiters(
-        f"{reference} {call.name}({call_arguments_brief(call)}) -> {call_result_head(call)}"
+        f"{reference} {call.name}({call_arguments_brief(call)}) -> {call_result_brief(call)}"
     )
 
 
@@ -758,10 +763,7 @@ REPLAYED_TOOL_OWNERS: Mapping[str, EvidencePartName] = {
 # The composition
 # ---------------------------------------------------------------------------
 
-_CANNOT_INSPECT = (
-    "You cannot inspect the final state. Grade each criterion from this record, "
-    "then call submit_report."
-)
+_CANNOT_INSPECT = f"{_GRADE_FROM_THIS_RECORD}then call submit_report."
 
 
 @dataclass(frozen=True)
@@ -799,7 +801,7 @@ def compose_evidence(
     """
     _refuse_unowned_extras(extra_read_tools)
     parts = evidence_parts(evidence)
-    cut_chars = options.max_chars if (options := evidence.tool_results_options()) else None
+    cut_chars = next(part for part in parts if isinstance(part, ToolResultsPart)).max_chars
     numbered = (
         number_tool_results(transcript, tool_result_chars=cut_chars)
         if any(part.enabled and part.numbers_transcript for part in parts)

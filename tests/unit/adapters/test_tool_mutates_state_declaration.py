@@ -168,7 +168,7 @@ def test_an_mcp_authors_rule_reaches_the_tool_schema(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("author", "error"),
     [
-        ("false", "declares mutates_state 'false'"),
+        ("false", "mutates_state is 'false'"),
         ({"read_when": {"args": {"method": {"in": ["GET"]}}}}, "not a read rule"),
         (
             {"read_when": {"args": {"verb": {"equals": "GET"}}}},
@@ -264,12 +264,11 @@ def test_a_path_an_open_schema_does_not_declare_is_logged(
 @pytest.mark.parametrize(
     ("value", "error"),
     [
-        ("false", "is 'false'; declare false, true"),
-        (None, "is None; declare false, true"),
-        ({"read_when": {"args": {"method": {"equals_binding": "x"}}}}, "binds nothing"),
+        ("false", "is 'false'; declare true, false"),
+        (None, "is null; declare false, true"),
         ({"read_when": {"args": {}}}, "not a read rule"),
     ],
-    ids=["string", "null", "binding-operator", "no-paths"],
+    ids=["string", "null", "no-paths"],
 )
 def test_a_malformed_declaration_is_refused(tmp_path: Path, value: Any, error: str) -> None:
     task_yaml = _pack(

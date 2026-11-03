@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from tolokaforge.core.agent_prompt_contract import resolve_agent_prompt_contract
 from tolokaforge.core.deprecations import (
@@ -110,7 +110,7 @@ from tolokaforge.core.project_loader import (
     resolve_effective_grading_combine,
 )
 from tolokaforge.core.tool_output_truncation import validated_output_max_chars
-from tolokaforge.runner.models import MutatesStateRule, ToolSchema
+from tolokaforge.runner.models import MutatesStateRule, ToolSchema, parse_mutates_state
 from tolokaforge.tools.registry import ToolCategory, ToolPolicy
 
 if TYPE_CHECKING:
@@ -972,20 +972,13 @@ def tool_mutates_state_declarations(
         raw = block.get(tool_name)
         if not isinstance(raw, dict) or "mutates_state" not in raw:
             continue
-        where = f"tools.{actor.value}.{tool_name}.mutates_state"
-        value = raw["mutates_state"]
-        if isinstance(value, bool):
-            declarations[tool_name] = value
-            continue
-        if not isinstance(value, dict):
+        where = f"tools.{actor.value}.{tool_name}.mutates_state in task {task.task_id!r}"
+        declared = parse_mutates_state(raw["mutates_state"], where=where)
+        if declared is None:
             raise ValueError(
-                f"{where} in task {task.task_id!r} is {value!r}; declare false, true, or "
-                "{read_when: {args: {<argument path>: <predicate>}}}, or drop the key"
+                f"{where} is null; declare false, true or a read rule, or drop the key"
             )
-        try:
-            declarations[tool_name] = MutatesStateRule.model_validate(value)
-        except ValidationError as exc:
-            raise ValueError(f"{where} in task {task.task_id!r} is not a read rule: {exc}") from exc
+        declarations[tool_name] = declared
     return declarations
 
 
@@ -1031,20 +1024,7 @@ def author_mutates_state(
         ValueError: Any other value, or a mapping the rule model refuses, naming the
             tool and *source*.
     """
-    if declared is None or isinstance(declared, bool):
-        return declared
-    if not isinstance(declared, Mapping):
-        raise ValueError(
-            f"tool {tool_name!r} in {source} declares mutates_state {declared!r}; it is "
-            "null, true, false or {read_when: {args: {<argument path>: <predicate>}}}"
-        )
-    try:
-        return MutatesStateRule.model_validate(declared)
-    except ValidationError as exc:
-        raise ValueError(
-            f"tool {tool_name!r} in {source} declares a mutates_state that is not a read "
-            f"rule: {exc}"
-        ) from exc
+    return parse_mutates_state(declared, where=f"tool {tool_name!r} in {source}: mutates_state")
 
 
 def _declaration_text(value: bool | MutatesStateRule) -> str:

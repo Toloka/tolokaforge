@@ -8,12 +8,14 @@ tool can change state, and a bundle predating the recorded declarations is refus
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+from tolokaforge.core.mutates_state_meta import check_read_rule_shape
 from tolokaforge.core.tool_effects import ToolEffects, UnrecordedToolEffectsError
 from tolokaforge.runner.models import MutatesStateRule, ToolSchema
 
@@ -22,6 +24,10 @@ pytestmark = pytest.mark.unit
 
 def _rule(args: dict[str, Any]) -> MutatesStateRule:
     return MutatesStateRule.model_validate({"read_when": {"args": args}})
+
+
+def _shape_checked(args: dict[str, Any]) -> None:
+    check_read_rule_shape({"read_when": {"args": args}})
 
 
 def _effects(**declared: bool | MutatesStateRule | None) -> ToolEffects:
@@ -114,19 +120,27 @@ def test_empty_arguments_are_no_arguments() -> None:
     assert effects.can_change_state("rest_call", "") is False
 
 
-@pytest.mark.parametrize("operator", ["equals_binding", "contains_binding"])
-def test_a_rule_refuses_the_binding_operators(operator: str) -> None:
-    with pytest.raises(ValidationError, match="binds nothing"):
-        _rule({"method": {operator: "verb"}})
-
-
+@pytest.mark.parametrize("validate", [_rule, _shape_checked], ids=["rule-model", "server-side"])
 @pytest.mark.parametrize(
     ("args", "error"),
-    [({}, "at least 1"), ({"request..method": {"equals": "GET"}}, "empty segment")],
+    [
+        ({"method": {"equals_binding": "verb"}}, "binds nothing"),
+        ({"method": {"contains_binding": "verb"}}, "binds nothing"),
+        ({"request..method": {"equals": "GET"}}, "is not a dotted argument path"),
+    ],
+    ids=["equals-binding", "contains-binding", "empty-segment"],
 )
-def test_a_malformed_rule_is_refused(args: dict[str, Any], error: str) -> None:
-    with pytest.raises(ValidationError, match=error):
-        _rule(args)
+def test_a_read_rule_binds_nothing_and_names_dotted_paths(
+    validate: Callable[[dict[str, Any]], object], args: dict[str, Any], error: str
+) -> None:
+    """The engine's rule model and the MCP server's stdlib shape check refuse alike."""
+    with pytest.raises(ValueError, match=error):
+        validate(args)
+
+
+def test_a_rule_with_no_path_is_refused() -> None:
+    with pytest.raises(ValidationError, match="at least 1"):
+        _rule({})
 
 
 @pytest.mark.parametrize(
@@ -191,7 +205,7 @@ def test_a_record_predating_the_declarations_is_refused(schema_version: Any) -> 
     ("entries", "error"),
     [
         (None, "records no tool list"),
-        ([_entry("rest_call", mutates_state={"read_when": {}})], "no rule validates"),
+        ([_entry("rest_call", mutates_state={"read_when": {}})], "is not a read rule"),
         (
             [
                 _entry(

@@ -12,7 +12,7 @@ Stdlib only, and imported relatively, so a server that loads the registry by pat
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .value_predicate_operators import (
@@ -21,7 +21,12 @@ from .value_predicate_operators import (
     TRACE_PREDICATE_OPERATORS,
 )
 
-__all__ = ["MUTATES_STATE_META_KEY", "check_read_rule_shape"]
+__all__ = [
+    "MUTATES_STATE_META_KEY",
+    "check_read_rule_binds_nothing",
+    "check_read_rule_path",
+    "check_read_rule_shape",
+]
 
 MUTATES_STATE_META_KEY = "tolokaforge/mutates_state"
 """The engine-owned ``_meta`` key of an MCP tool that carries its read rule."""
@@ -50,22 +55,40 @@ def check_read_rule_shape(rule: Any) -> None:
     if not isinstance(args, Mapping) or not args:
         raise ValueError(f"read_when.args maps one or more argument paths, not {args!r}")
     for path, predicate in args.items():
-        if not isinstance(path, str) or not all(path.split(".")):
-            raise ValueError(f"read_when.args path {path!r} is not a dotted argument path")
+        check_read_rule_path(path)
         _check_predicate_shape(f"read_when.args.{path}", predicate)
 
 
-def _check_predicate_shape(where: str, predicate: Any) -> None:
-    if not isinstance(predicate, Mapping):
-        raise ValueError(f"{where} is a mapping of operators, not {predicate!r}")
-    names = set(predicate)
-    bound = sorted(names & TRACE_PREDICATE_BINDING_OPERATORS)
+def check_read_rule_path(path: Any) -> None:
+    """Refuse a ``read_when.args`` path that is not a dotted string with no empty segment.
+
+    Raises:
+        ValueError: Naming the path.
+    """
+    if not isinstance(path, str) or not all(path.split(".")):
+        raise ValueError(f"read_when.args path {path!r} is not a dotted argument path")
+
+
+def check_read_rule_binds_nothing(where: str, operators: Iterable[Any]) -> None:
+    """Refuse a read-rule predicate at *where* that declares a binding operator.
+
+    Raises:
+        ValueError: Naming *where* and the binding operators.
+    """
+    bound = sorted(set(operators) & TRACE_PREDICATE_BINDING_OPERATORS)
     if bound:
         raise ValueError(
             f"{where} uses {', '.join(bound)}, which compare against a value a "
             "constraint's bind extracted; a read rule binds nothing. Write the value "
             "with equals / in_ instead"
         )
+
+
+def _check_predicate_shape(where: str, predicate: Any) -> None:
+    if not isinstance(predicate, Mapping):
+        raise ValueError(f"{where} is a mapping of operators, not {predicate!r}")
+    names = set(predicate)
+    check_read_rule_binds_nothing(where, names)
     unknown = sorted(str(name) for name in names - _RULE_OPERATORS - TRACE_PREDICATE_MODIFIERS)
     if unknown:
         raise ValueError(

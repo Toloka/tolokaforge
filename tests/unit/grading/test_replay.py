@@ -87,7 +87,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.tool_effects import ToolEffects
-from tolokaforge.runner.models import JudgeEvidence, ToolResultsOptions
+from tolokaforge.runner.models import FINAL_STATE_INPUTS, JudgeEvidence, ToolResultsOptions
 
 pytestmark = pytest.mark.unit
 
@@ -1152,7 +1152,8 @@ def test_a_customization_only_grading_file_keeps_the_recorded_rubric(tmp_path: P
 
     assert override.rubric is None
     assert inputs.provenance.rubric_source is ProvenanceSource.RECORDED
-    assert not inputs.options.customization.evidence.reads_final_state()
+    evidence = inputs.options.customization.evidence
+    assert not any(evidence.needs(view) for view in FINAL_STATE_INPUTS)
     assert inputs.provenance.customization_sources == dict.fromkeys(
         _dotted_paths(_TRANSCRIPT_EVIDENCE), ProvenanceSource.OVERRIDE
     )
