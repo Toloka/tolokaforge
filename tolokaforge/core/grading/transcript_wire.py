@@ -12,14 +12,7 @@ The payload carries the **full interleaved** trace — assistant and user turns,
 each ``tool_calls`` entry carrying the trial's episode-unique call id, and every
 ``role: tool`` result carrying its ``tool_call_id`` — so a call and the result
 it produced are joined by id rather than by position. Parallel calls to one tool
-with identical arguments are distinguishable only that way. A result whose message
-recorded how the call ended carries it as ``tool_status`` (a
-:class:`~tolokaforge.tools.registry.ToolExecutionStatus` value); the key is left
-out otherwise. Only the transcript judge reads it, from the payload itself:
-:func:`decode_transcript_wire` leaves it off the decoded messages, because a trace
-timeline built without tool-call records reads a call's status from the records
-alone (docs/GRADING.md G6b), and a status there would turn an undecided ``status:``
-matcher into a decided one.
+with identical arguments are distinguishable only that way.
 
 ``Message.content_blocks``, ``Message.reasoning`` and ``Message.ts`` are not
 represented: a screenshot-only assistant turn crosses as ``content: ""``.
@@ -71,8 +64,6 @@ def encode_transcript_wire(
             ]
         if msg.tool_call_id:
             entry["tool_call_id"] = msg.tool_call_id
-        if msg.tool_status is not None:
-            entry["tool_status"] = msg.tool_status.value
         messages.append(entry)
     return json.dumps(messages)
 
@@ -81,9 +72,7 @@ def decode_transcript_wire(messages: list[dict[str, Any]]) -> list[Message]:
     """Reconstruct the :class:`Message` list from a decoded wire payload.
 
     Inverse of :func:`encode_transcript_wire` over everything the wire carries:
-    role, content, ``tool_calls`` (id, name, arguments) and ``tool_call_id`` — every
-    key but ``tool_status``, which is the transcript judge's alone (see the module
-    docstring).
+    role, content, ``tool_calls`` (id, name, arguments) and ``tool_call_id``.
     Every malformed shape raises, naming the offending message — a payload that
     cannot be reconstructed must not be silently degraded into an unlinkable
     trace.

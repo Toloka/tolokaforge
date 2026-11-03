@@ -229,8 +229,6 @@ message GradeTrialRequest {
   // decode_transcript_wire rejects a payload whose tool_calls carry none.
   // The leading "system" message is the agent's policy, lifted out by
   // split_leading_system_message rather than replayed as a conversational turn.
-  // A "tool" message may carry "tool_status" (how its call ended), read by a
-  // transcript-only judge alone and left off the decoded messages.
   // Needed for transcript_rules and llm_judge grading; for hash-only grading
   // (TlkMcpCore, Tau) it can be omitted — the Runner has its own tool-call record.
   string llm_messages_json = 2;

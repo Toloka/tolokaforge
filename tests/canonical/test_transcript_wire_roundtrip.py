@@ -10,8 +10,8 @@ wire. Locked in both directions:
   an encoding with no inverse cannot have.
 * ``decode(encode(trajectory))`` reproduces the ``(role, content,
   tool_calls[id, name, arguments], tool_call_id)`` of every message — asserted as
-  that tuple, because ``content_blocks`` / ``reasoning`` / ``ts`` are not
-  represented on the wire at all.
+  that tuple, because ``content_blocks`` / ``reasoning`` / ``ts`` /
+  ``tool_status`` are not represented on the wire at all.
 
 The fixture is the ambiguity case the id exists for: two calls to one tool with
 byte-identical arguments, distinguishable only by ``id``.
@@ -32,6 +32,7 @@ from tolokaforge.core.grading.transcript_wire import (
 )
 from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
 from tolokaforge.core.models import Message, MessageRole, ToolCall, Trajectory
+from tolokaforge.tools.registry import ToolExecutionStatus
 
 pytestmark = pytest.mark.canonical
 
@@ -177,6 +178,22 @@ def test_wire_does_not_represent_content_blocks_reasoning_or_timestamps() -> Non
     assert decoded.content_blocks is None
     assert decoded.reasoning is None
     assert decoded.ts != stamp
+
+
+def test_how_a_call_ended_does_not_cross_the_wire() -> None:
+    """A result's ``tool_status`` stays in the trajectory: the payload is the
+    messages as the agent saw them, so a failed call reads as one from its body."""
+    agent_system_prompt, entries = split_leading_system_message(json.loads(_WIRE))
+    messages = [
+        msg.model_copy(update={"tool_status": status})
+        for msg, status in zip(
+            decode_transcript_wire(entries),
+            [None, None, ToolExecutionStatus.SUCCESS, ToolExecutionStatus.ERROR, None, None],
+            strict=True,
+        )
+    ]
+
+    assert encode_transcript_wire(_trajectory(messages), agent_system_prompt) == _WIRE
 
 
 def test_empty_trace_with_no_policy_encodes_to_none() -> None:

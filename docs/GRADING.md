@@ -4410,13 +4410,15 @@ the final state**: no state diff is built, and `get_db_state`, `query_db` and
   the order results arrive) and is cut at `transcript_tool_chars` characters (`2000` by
   default), saying how much it left out;
 * **the state-changing calls** — the agent's calls that can change state, in order, each
-  as `[call N] name(arguments) -> status`. The status is how the call ended in the engine's
-  vocabulary (`success`, `error`, `environment_error`, `timeout`, …; `status unknown` when
-  the transcript did not record it, `no result` when nothing answered the call). A call that
-  did not succeed also shows the first line of its result, where an HTTP tool states its
-  code (`-> error: Status: 403` — `http_request` reports every non-2xx reply as `error`).
-  Arguments are cut at 300 characters here; the transcript shows each call, and so every
-  text the agent wrote, in full;
+  as `[call N] name(arguments) -> <first line of its result>`: the first non-blank line of
+  the result the agent received, cut at 120 characters; `(empty result)` when it has no
+  text, and `[no result] name(arguments) -> no result` when nothing answered the call. The
+  result's body is how a call says it ended: a call the harness saw fail carries the
+  `Error: ` prefix the agent saw ([G6b](#guarantees)), so a refused `http_request` reads
+  `-> Error: Status: 403` and an accepted one `-> Status: 201`. The block is the same on
+  every grading path, the standalone grader service included, because it reads the
+  transcript alone. Arguments are cut at 300 characters here; the transcript shows each
+  call, and so every text the agent wrote, in full;
 * **`show_call(calls, offset)`** — the full results of the calls it names, as the agent
   received them, at most 12,000 characters per answer, shared by all the calls one answer
   names; `offset` reads further into a long one. It reads the transcript itself, never a
@@ -4459,10 +4461,7 @@ A trial a transcript judge graded carries `judge_evidence: transcript` in `grade
 [`tools_schemas.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indextools_schemasyaml) entry, so
 [`tolokaforge rejudge`](JUDGE_REPLAY.md#transcript-only-judge) rebuilds the same view
 from it, and `--evidence transcript` replays a whole run of state judges as transcript
-judges for an A/B. How a call ended crosses the grade-time transcript wire as
-`tool_status` for the judge alone: a trace timeline built without tool-call records still
-reads a call's status from the records (G6b). The design record is
-[ADR-0066](adr/0066-transcript-only-judge.md).
+judges for an A/B. The design record is [ADR-0066](adr/0066-transcript-only-judge.md).
 
 ### Fail-loud: the ERRORED status
 

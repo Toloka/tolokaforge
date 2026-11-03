@@ -7,7 +7,8 @@ module derives from the transcript alone:
   results arrive) and cut at :attr:`TranscriptEvidence.tool_result_chars`
   characters — :func:`number_tool_results`;
 * the agent's calls that can change state, in the order it made them, each with
-  how it ended — :func:`state_changing_calls`;
+  the first line of the result the agent received — :func:`state_changing_calls`,
+  :func:`call_result_head`;
 * ``show_call`` — :class:`ShowCallTool`, which returns the full results the cut
   hides, read from the same transcript.
 
@@ -41,7 +42,7 @@ __all__ = [
     "ShowCallTool",
     "TranscriptEvidence",
     "call_arguments_brief",
-    "call_outcome",
+    "call_result_head",
     "message_text",
     "number_tool_results",
     "state_changing_calls",
@@ -60,18 +61,14 @@ SHOW_CALL_MAX_CHARS = 12_000
 #: shows them in full on the call itself.
 CALL_ARGUMENT_CHARS = 300
 
-#: Characters of the first line of a failed call's result the block shows.
-OUTCOME_HEAD_CHARS = 120
+#: Characters of the first line of a call's result the state-changing block shows.
+RESULT_HEAD_CHARS = 120
 
-#: The status of a call that succeeded (:class:`ToolExecutionStatus.SUCCESS`).
-SUCCESS_STATUS = "success"
+#: What the judge reads in place of a result with no text.
+EMPTY_RESULT = "(empty result)"
 
-#: The status a call shows when its result carries none (a transcript from an
-#: engine that did not record it on the transcript wire).
-UNKNOWN_STATUS = "status unknown"
-
-#: The status of a call no result answers.
-NO_RESULT_STATUS = "no result"
+#: What the state-changing block shows for a call no result answers.
+NO_RESULT = "no result"
 
 
 @dataclass(frozen=True)
@@ -89,14 +86,13 @@ class RecordedCall:
     """One agent tool call as the transcript records it.
 
     ``number`` is the ``[call N]`` of the result that answers it, ``None`` when no
-    result does; ``result`` is that result in full and ``status`` how the call ended.
+    result does; ``result`` is that result in full, as the agent received it.
     """
 
     name: str
     arguments: str
     number: int | None
     result: str
-    status: str
 
 
 @dataclass(frozen=True)
@@ -151,7 +147,6 @@ def number_tool_results(
             arguments=call.arguments if call else "",
             number=number,
             result=text,
-            status=str(message.get("tool_status") or UNKNOWN_STATUS),
         )
         messages.append({**message, "content": f"[call {number}] {_cut(text, tool_result_chars)}"})
     return NumberedTranscript(
@@ -161,17 +156,17 @@ def number_tool_results(
     )
 
 
-def call_outcome(call: RecordedCall) -> str:
-    """How a call ended, for the state-changing block.
+def call_result_head(call: RecordedCall) -> str:
+    """The first non-blank line of a call's result, cut at :data:`RESULT_HEAD_CHARS`.
 
-    A call that did not succeed carries the first line of its result, cut at
-    :data:`OUTCOME_HEAD_CHARS` — where an HTTP tool states its status code
-    (``error: Status: 403``), which the engine's status vocabulary does not name.
+    The result is the text the agent received, so a failed call reads with the
+    :data:`~tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX` the
+    loop wrote onto it (``Error: Status: 403``).
     """
+    if call.number is None:
+        return NO_RESULT
     head = next((line.strip() for line in call.result.splitlines() if line.strip()), "")
-    if call.status == SUCCESS_STATUS or not head:
-        return call.status
-    return f"{call.status}: {_brief(head, OUTCOME_HEAD_CHARS)}"
+    return _brief(head, RESULT_HEAD_CHARS) if head else EMPTY_RESULT
 
 
 def call_arguments_brief(call: RecordedCall) -> str:
@@ -268,7 +263,7 @@ def _brief(text: str, limit: int) -> str:
 
 def _cut(text: str, limit: int) -> str:
     if not text:
-        return "(empty result)"
+        return EMPTY_RESULT
     if len(text) <= limit:
         return text
     return f"{text[:limit]}\n[... {len(text) - limit} more characters; show_call returns them]"
@@ -320,7 +315,6 @@ def _agent_calls(
                 arguments=call.arguments,
                 number=number,
                 result=answered.result if answered else "",
-                status=answered.status if answered else NO_RESULT_STATUS,
             )
         )
     return tuple(calls)

@@ -1,4 +1,4 @@
-"""Lock what the default rubric judge is shown: its opening message and its tool surface.
+"""Lock what the rubric judge is shown: its opening message and its tool surface.
 
 Each fixture drives the public ``LLMJudge(...).run(...)`` with a scripted client and
 snapshots, per evidence combination, the opening message, the tool schemas the model
@@ -7,7 +7,9 @@ facts the result records (``read_tools_offered``, the KB offered / withheld list
 KB and agent-policy flags). Together the fixtures reach every branch of the opening
 message (policy shown / gated off / blank; state diff present / blank) and of the
 tool registry (DB reader; ``search_kb`` with a cut or whole snippet; KB-tagged and
-non-KB extra tools; KB withheld; workspace present / missing).
+non-KB extra tools; KB withheld; workspace present / missing). One fixture grades
+from the transcript alone: numbered, cut results, the state-changing calls block
+(a read left out, a failed write, an unanswered call) and ``show_call``.
 """
 
 from __future__ import annotations
@@ -21,9 +23,11 @@ from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge import LLMJudge
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+from tolokaforge.core.grading.judge_transcript import TranscriptEvidence
 from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.runner.models import Rubric
+from tolokaforge.core.tool_effects import ToolEffects
+from tolokaforge.runner.models import Rubric, ToolSchema
 
 pytestmark = pytest.mark.canonical
 
@@ -89,6 +93,39 @@ _USER_TOOL_STEP_TRANSCRIPT: list[dict[str, Any]] = [
     {"role": "user", "content": "It says out for delivery."},
     {"role": "assistant", "content": "Great, it should arrive today."},
 ]
+
+
+_TRANSCRIPT_ONLY_TRANSCRIPT: list[dict[str, Any]] = [
+    {"role": "user", "content": "Refund order ord_1 and tell me when it is done."},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": "a1", "name": "get_order", "arguments": {"order_id": "ord_1"}},
+            {"id": "a2", "name": "refund_order", "arguments": {"order_id": "ord_1"}},
+        ],
+    },
+    {"role": "tool", "tool_call_id": "a1", "content": "order ord_1: " + "line item; " * 300},
+    {
+        "role": "tool",
+        "tool_call_id": "a2",
+        "content": "Error: Status: 409\nResponse (JSON):\n{'detail': 'already refunded'}",
+    },
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": "a3", "name": "notify_customer", "arguments": {"text": "Refunded."}},
+        ],
+    },
+    {"role": "assistant", "content": "Your refund is done."},
+]
+
+
+def _agent_tool(name: str, mutates_state: bool | None) -> ToolSchema:
+    return ToolSchema(
+        name=name, description=name, parameters={"type": "object"}, mutates_state=mutates_state
+    )
 
 
 class _RecordingClient(ScriptedLLMClient):
@@ -198,6 +235,21 @@ _FIXTURES: dict[str, dict[str, Any]] = {
     "h_user_tool_steps": {
         "transcript": _USER_TOOL_STEP_TRANSCRIPT,
         "evidence": {"db": True},
+    },
+    "i_transcript_only": {
+        "judge": {
+            "transcript_evidence": TranscriptEvidence(),
+            "tool_effects": ToolEffects.from_schemas(
+                [
+                    _agent_tool("get_order", False),
+                    _agent_tool("refund_order", True),
+                    _agent_tool("notify_customer", None),
+                ]
+            ),
+        },
+        "transcript": _TRANSCRIPT_ONLY_TRANSCRIPT,
+        "evidence": {"kb": True},
+        "script": [[("show_call", {"calls": [1], "offset": 3000})]],
     },
 }
 

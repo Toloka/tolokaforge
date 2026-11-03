@@ -57,7 +57,7 @@ from tolokaforge.core.grading.judge_transcript import (
     ShowCallTool,
     TranscriptEvidence,
     call_arguments_brief,
-    call_outcome,
+    call_result_head,
     message_text,
     number_tool_results,
     state_changing_calls,
@@ -521,7 +521,7 @@ def _build_transcript_opening_message(
 
     The transcript's tool results carry their ``[call N]`` and are cut at
     ``evidence.tool_result_chars``; the agent's calls that can change state follow,
-    each with how it ended, so the judge reads what the agent did and wrote without
+    each with the first line of its result, so the judge reads what the agent did and wrote without
     the state it left. ``show_call`` returns a cut result in full.
     """
     calls = state_changing_calls(numbered, tool_effects)
@@ -539,8 +539,8 @@ def _build_transcript_opening_message(
         f"{format_transcript(numbered.messages)}\n"
         "===== END TRANSCRIPT =====\n\n"
         "Below are the agent's calls that can change state, in the order it made "
-        "them, each with how it ended (a failed call with the first line of its "
-        "result). Long arguments are cut here; the transcript shows each call in full.\n"
+        "them, each with the first line of the result the agent received. Long "
+        "arguments are cut here; the transcript shows each call in full.\n"
         "===== STATE-CHANGING CALLS =====\n"
         f"{call_lines}\n"
         "===== END STATE-CHANGING CALLS =====\n\n"
@@ -553,7 +553,7 @@ def _build_transcript_opening_message(
 def _state_changing_call_line(call: RecordedCall) -> str:
     reference = f"[call {call.number}]" if call.number is not None else "[no result]"
     return _neutralise_judge_delimiters(
-        f"{reference} {call.name}({call_arguments_brief(call)}) -> {call_outcome(call)}"
+        f"{reference} {call.name}({call_arguments_brief(call)}) -> {call_result_head(call)}"
     )
 
 

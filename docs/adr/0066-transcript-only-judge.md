@@ -50,9 +50,9 @@ We will adopt **Option 1**.
   a caller passes one, and the composite refuses a kind that completes such a trial
   without honouring the mode. Knowledge-search tools are unaffected.
 - The judge reads the transcript with every tool result numbered `[call N]` and cut at
-  `transcript_tool_chars`; a block of the agent's state-changing calls, each with how
-  it ended (a failed call with the first line of its result, where an HTTP tool states
-  its code) and its arguments cut short — the transcript shows them in full; and
+  `transcript_tool_chars`; a block of the agent's state-changing calls, each with the
+  first line of the result the agent received and its arguments cut short — the
+  transcript shows them in full; and
   `show_call(calls, offset)`, which returns full results from the same transcript. A
   call is joined to its result by the episode-unique key of its id, as the trace
   timeline joins them. `show_call` is a pure function of the transcript, so it is never shimmed
@@ -65,11 +65,11 @@ We will adopt **Option 1**.
   `tools.<actor>.<name>.mutates_state` where the tool's author is silent, or `true` to
   tighten. An undeclared tool reads as one that can change state, as ADR-0061
   prescribes.
-- How a call ended (`ToolExecutionStatus`) is added to the grade-time transcript wire
-  as `tool_status` when recorded. Only the transcript judge reads it, from the payload:
-  `decode_transcript_wire` leaves it off the decoded messages, because a trace timeline
-  built without tool-call records reads a call's status from the records alone, and a
-  status there would decide a `status:` matcher that is undecided today.
+- How a call ended is read from its result's body, the channel
+  `core/tool_message_format.py` declares: a call the harness saw fail carries the
+  agent-facing `Error: ` prefix. The grade-time transcript wire is unchanged, so the
+  block is the same on every path, the standalone grader service included, which
+  receives the messages and no tool-call records.
 - Each tool's declaration is recorded on its `tools_schemas.yaml` entry (bundle
   generation 8), whatever the judge graded from, so a state judge's trial replays as a
   transcript judge too; replay reads the file only for a transcript judge.
@@ -97,8 +97,9 @@ We will adopt **Option 1**.
   declares `mutates_state`.
 - `TRIAL_CONTRACT_VERSION` moves to 2: `TrialNodeInputs` and `TrialResult` gain
   optional fields.
-- The block states statuses in the engine's vocabulary, not a protocol's: an HTTP
-  code reaches the judge only through the first line of a failed call's result.
+- The block shows a result's first line, not a typed status: a tool that states its
+  outcome further down its result, or an MCP error reply (`isError: true`), whose text
+  reaches the agent without the `Error: ` prefix, reads only as the agent saw it.
 
 ## Links
 

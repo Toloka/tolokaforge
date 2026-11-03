@@ -829,7 +829,7 @@ trace in execution order, not a trajectory object:
   {"role": "assistant", "content": "", "tool_calls": [
     {"id": "call_123", "function": {"name": "book_reservation", "arguments": "{\"user_id\": \"mia_li_3668\", \"origin\": \"JFK\", \"destination\": \"SEA\"}"}}
   ]},
-  {"role": "tool", "content": "Reservation confirmed: RES-456", "tool_call_id": "call_123", "tool_status": "success"},
+  {"role": "tool", "content": "Reservation confirmed: RES-456", "tool_call_id": "call_123"},
   {"role": "assistant", "content": "I've booked your flight to Seattle."}
 ]
 ```
@@ -847,11 +847,6 @@ Three properties a consumer can rely on:
 - **The leading `system` message is the agent's policy**, lifted out of the
   transcript and injected as policy for rubric evaluation rather than replayed as
   a conversational turn.
-- **A result may say how its call ended.** `tool_status` (a `ToolExecutionStatus`
-  value) rides a `role: tool` message when the trial recorded it. Only a
-  [transcript-only judge](GRADING.md#transcript-only-judge) reads it; the decoded
-  messages a trace timeline is built from leave it off, so a timeline without
-  records reads a call's status from the records alone.
 
 `tool_calls` appears on `role: user` turns too, for a simulated user that calls
 tools. `content_blocks` (multimodal), reasoning blocks and per-message timestamps
