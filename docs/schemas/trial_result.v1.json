@@ -1618,6 +1618,7 @@
         "api_error",
         "provider_refused_all_requests",
         "empty_completion",
+        "provider_content_filter",
         "reasoning_without_action",
         "context_window_exceeded",
         "provision_error",
