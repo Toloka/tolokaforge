@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tolokaforge.core.grading import judge_result
 from tolokaforge.core.grading.grading_failed import GradingFailedError
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.models import JudgeUsage
+
+pytestmark = pytest.mark.unit
 
 
 def test_the_judges_spend_rides_into_the_failure() -> None:

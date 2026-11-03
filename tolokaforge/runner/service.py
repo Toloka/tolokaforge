@@ -3978,8 +3978,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         # Every caller waits on this sync within a state-read deadline; the mirror's
         # requests take the longest of them, so the caller's own wait is what bounds them.
-        mirror_timeout_s = self.state_read_deadlines.final_state_read_s
-        current_response = await self.db_client.get_state(trial_id, timeout=mirror_timeout_s)
+        current_response = await self.db_client.get_state(
+            trial_id, timeout=self._whole_state_read_s
+        )
         current_state: dict[str, list[dict]] = current_response.data
         id_fields = self._id_fields_for_trial(trial_id)
 
@@ -3990,7 +3991,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             operations = compute_diff_ops(current_records, new_records, table_name, id_fields)
             if operations:
                 await self.db_client.mutate(
-                    trial_id, table_name, operations, timeout=mirror_timeout_s
+                    trial_id, table_name, operations, timeout=self._whole_state_read_s
                 )
                 logger.debug(
                     f"_sync_mcp_state_to_db: {trial_id}/{table_name} — {len(operations)} op(s)"

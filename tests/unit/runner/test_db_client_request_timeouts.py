@@ -15,6 +15,8 @@ import pytest
 
 from tolokaforge.runner.db_client import DBServiceClient
 
+pytestmark = pytest.mark.unit
+
 _STATE = {"data": {}, "version": 1, "full_hash": "f", "stable_hash": "s"}
 _STABLE = {"data": {}, "version": 1, "stable_hash": "s", "filtered_fields": []}
 _QUERY = {"results": [], "count": 0}
