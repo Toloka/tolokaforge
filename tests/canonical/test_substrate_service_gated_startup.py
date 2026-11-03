@@ -83,11 +83,18 @@ class _FakeDBServiceClient:
         self._tables = tables
 
     async def get_state(
-        self, trial_id: str, tables: list[str] | None = None
-    ) -> StateResponse:  # noqa: ARG002
+        self,
+        trial_id: str,  # noqa: ARG002
+        tables: list[str] | None = None,  # noqa: ARG002
+        timeout: float | None = None,  # noqa: ARG002
+    ) -> StateResponse:
         return StateResponse(data=self._tables, version=1, full_hash="full", stable_hash="stable")
 
-    async def get_stable_state(self, trial_id: str) -> Any:  # noqa: ARG002
+    async def get_stable_state(
+        self,
+        trial_id: str,  # noqa: ARG002
+        timeout: float | None = None,  # noqa: ARG002
+    ) -> Any:
         raise AssertionError(
             "RAW ReadFinalDBState must not reach get_stable_state (parity depends "
             "on this split staying honest)"
