@@ -232,8 +232,8 @@ class GraderCompositeDispatch:
                     artifacts_dir=artifacts_dir,
                 )
             except SubstrateUnreachableError as exc:
-                raise GradingFailedError(
-                    f"substrate unreachable at {dispatch.runner_substrate_address}: {exc}"
+                raise GradingFailedError.from_unreachable(
+                    f"substrate unreachable at {dispatch.runner_substrate_address}: {exc}", exc
                 ) from exc
         finally:
             substrate.close()

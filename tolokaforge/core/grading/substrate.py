@@ -75,6 +75,7 @@ from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesyst
 if TYPE_CHECKING:
     from tolokaforge.core.grading.bundle import GradeBundleView
     from tolokaforge.core.grading.judge import DBReader
+    from tolokaforge.core.grading.judge_result import JudgeUsage
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
 
 __all__ = [
@@ -124,7 +125,14 @@ class SubstrateUnreachableError(Exception):
     the trial is booked as ungradeable rather than as an agent failure.
     Distinct from a grading verdict of ``None`` (nothing to grade) — this
     is "the grader tried and could not read the inputs it needed".
+
+    ``judge_usage`` is what the rubric judge had spent when one of its reads
+    met this error, set by the judge as it gives up; ``None`` when no judge
+    was running. The seam carries it into ``GradingFailedError`` so an
+    ungraded trial still accounts for the judge calls it paid for.
     """
+
+    judge_usage: JudgeUsage | None = None
 
 
 @runtime_checkable

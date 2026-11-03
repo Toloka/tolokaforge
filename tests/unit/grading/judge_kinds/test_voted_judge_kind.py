@@ -26,6 +26,7 @@ from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions, VotedRubricJ
 from tolokaforge.core.grading.judge_kinds._shared import member_failure_reason
 from tolokaforge.core.grading.judge_kinds.voted import DEFAULT_N_SAMPLES, _merge_sample_results
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
+from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.plugin_registry import UnknownImplementationError
@@ -319,3 +320,44 @@ def test_majority_aggregator_end_to_end() -> None:
     assert result.status is JudgeStatus.COMPLETED
     assert result.criterion_results[0].score == 0.0
     assert result.criterion_results[0].met is False
+
+
+class _RefusingReader:
+    """A :class:`DBReader` whose state source is gone."""
+
+    def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:  # noqa: ARG002
+        raise SubstrateUnreachableError("its DB state could not be read for grading")
+
+    def query(self, jsonpath: str) -> dict[str, Any]:  # noqa: ARG002
+        raise SubstrateUnreachableError("its DB state could not be read for grading")
+
+
+def test_a_refused_sample_carries_the_spend_of_the_samples_before_it() -> None:
+    """Samples 0 and 1 complete; sample 2's read is refused. The refusal books all three."""
+    rubric = _binary_rubric(1)
+    read = [("query_db", {"jsonpath": "$.users"})]
+    scripts = [[_submit_call(rubric.criteria)]] * 2 + [[read, _submit_call(rubric.criteria)]]
+    provider = _QueuedProvider(_clients(scripts))
+    reader = _RefusingReader()
+
+    with pytest.raises(SubstrateUnreachableError) as refused:
+        VotedRubricJudgeKind().evaluate(
+            rubric=rubric,
+            agent_system_prompt="you are an agent",
+            transcript=[{"role": "user", "content": "hi"}],
+            db_reader=reader,
+            kb_search=None,
+            workspace_dir=None,
+            extra_read_tools=[],
+            state_diff=None,
+            judge_model_config=_JUDGE_MODEL,
+            judge_model_provider=provider,
+            options=JudgeTrialOptions(),
+            kind_config={"n_samples": 3},
+            logger=StructuredLogger(name="test-voted"),
+        )
+
+    usage = refused.value.judge_usage
+    assert isinstance(usage, JudgeUsage)
+    # One call for each completed sample, two for the refused one (the read, then the report).
+    assert usage.calls == 4

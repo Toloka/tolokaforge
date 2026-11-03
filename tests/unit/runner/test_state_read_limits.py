@@ -166,6 +166,22 @@ class TestDeadlines:
             > 100.0
         )
 
+    def test_a_request_with_room_in_its_call_keeps_its_bound(self) -> None:
+        deadlines = StateReadDeadlines()
+
+        assert deadlines.within_call(300.0, call_left_s=600.0) == 300.0
+
+    def test_a_request_is_cut_to_what_its_call_has_left_before_the_unwind(self) -> None:
+        """A cut request fails with its own cause while the call can still answer with it."""
+        deadlines = StateReadDeadlines()
+
+        assert deadlines.within_call(300.0, call_left_s=200.0) == 190.0
+
+    def test_a_call_with_nothing_left_still_gives_its_request_a_floor(self) -> None:
+        deadlines = StateReadDeadlines()
+
+        assert deadlines.within_call(300.0, call_left_s=-5.0) == 1.0
+
     def test_an_invalid_bound_is_refused(self) -> None:
         with pytest.raises(ValueError):
             StateReadDeadlines(holder_read_s=0)

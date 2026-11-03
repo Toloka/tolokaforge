@@ -60,6 +60,13 @@ live state before grading and, for hash grading, the read of the state the golde
 replay left and — when grading fails after the replay — the restore of the
 trial's own state into the holder."""
 
+_CALL_UNWIND_S = 10.0
+"""What a runner call keeps of its budget past its last state request, to turn
+the request's failure into its answer before the call's own ceiling fires."""
+
+_MIN_STATE_REQUEST_S = 1.0
+"""The least a state request is given, however little of its call is left."""
+
 _ENGINE_GRADE_WAIT_MARGIN_S = 60.0
 """Head start an engine-side wait on a whole grade keeps over the runner's
 ``GradeTrial`` budget, for the transport and the queue around it."""
@@ -112,8 +119,9 @@ class StateReadDeadlines:
     Each one is the holder read's own bound plus the budget of the work around
     it, so it always outlasts the holder read: a slow holder fails with
     :meth:`holder_timeout_error`'s cause instead of the waiting caller's
-    timeout. At the default bound they are the runner's long-standing values
-    (30 s, 300 s, 300 s, 600 s); :attr:`engine_grade_wait_s` is the engine's side.
+    timeout. At the default bound of 20 s they are the runner's long-standing
+    values (30 s, 300 s, 300 s, 600 s); :attr:`engine_grade_wait_s` is the
+    engine's side.
     """
 
     holder_read_s: float = DEFAULT_STATE_READ_TIMEOUT_S
@@ -143,6 +151,17 @@ class StateReadDeadlines:
             _BOUNDED_HOLDER_CALLS_PER_GRADE_TRIAL * self.holder_read_s
             + _GRADE_TRIAL_AFTER_HOLDER_CALLS_S
         )
+
+    def within_call(self, request_s: float, call_left_s: float) -> float:
+        """``request_s``, cut to what the runner call it serves has left.
+
+        One call may make more state requests than its budget holds at their full
+        bounds: a ``GradeTrial`` syncs the mirror, reads the state for each grader
+        and around the golden replay. A request cut to the remainder, less the
+        call's unwind margin, fails with its own cause (the state could not be
+        read, and what a judge had spent) rather than the call's bare ceiling.
+        """
+        return min(request_s, max(call_left_s - _CALL_UNWIND_S, _MIN_STATE_REQUEST_S))
 
     @property
     def engine_grade_wait_s(self) -> float:

@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import grpc
+import httpx
 import pytest
 
 from tests.utils.runner_requests import register_request, simple_task_description, trial_spec_json
@@ -185,6 +186,137 @@ def _substrate(service: RunnerServiceImpl, trial_id: str, *, synced: bool = Fals
     if synced:
         service._run_async(live_state.ensure())
     return service._build_grading_substrate(trial_id, trial_context, live_state)
+
+
+class _RecordingRequests:
+    """Passes every db-service request through and records the ``timeout`` it carried."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.sent: list[tuple[str, str, Any]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def _send(self, method: str, url: str, kwargs: dict[str, Any]) -> httpx.Response:
+        self.sent.append((method, url, kwargs.get("timeout")))
+        return await getattr(self._inner, method)(url, **kwargs)
+
+    async def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self._send("get", url, kwargs)
+
+    async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self._send("post", url, kwargs)
+
+    async def patch(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self._send("patch", url, kwargs)
+
+
+class TestStateReadsCarryTheirDeadline:
+    """Every request a state read makes waits as long as its deadline, not the client's default."""
+
+    def test_the_sync_get_state_final_reads_and_grading_send_the_final_read_deadline(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        deadlines = StateReadDeadlines(holder_read_s=7.0)
+        monkeypatch.setattr(runner_service, "state_read_deadlines", deadlines)
+        db_client = runner_service.db_client
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+
+        assert _get_state(runner_service, mock_grpc_context, trial_id).success
+        assert runner_service.GetState(
+            pb2.GetStateRequest(trial_id=trial_id, include_unstable=False), mock_grpc_context
+        ).success
+        substrate = SubstrateServicer(runner_service)
+        substrate.ReadFinalDBState(
+            pb2.ReadFinalDBStateRequest(trial_id=trial_id), mock_grpc_context
+        )
+        substrate.ReadFinalDBStateStable(
+            pb2.ReadFinalDBStateStableRequest(trial_id=trial_id), mock_grpc_context
+        )
+        assert _grade(runner_service, mock_grpc_context, trial_id).success
+
+        state_requests = [
+            (method, url, timeout)
+            for method, url, timeout in recorder.sent
+            if url.endswith(("/state", "/state/stable")) or method == "patch"
+        ]
+        kinds = {(method, url.rsplit("/", 1)[-1]) for method, url, _ in state_requests}
+        assert {("get", "state"), ("get", "stable"), ("patch", "users")} <= kinds
+        for method, url, timeout in state_requests:
+            assert isinstance(timeout, httpx.Timeout), (method, url, timeout)
+            # The whole-state bound, cut to what its call has left (GetState's budget
+            # is that bound itself, less the time the call keeps to answer).
+            assert (
+                deadlines.final_state_read_s - 11.0 < timeout.read <= deadlines.final_state_read_s
+            ), (method, url, timeout)
+            assert timeout.connect == db_client.timeout, (method, url, timeout)
+
+    def test_hash_grading_sends_the_final_read_deadline_on_every_request(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """The server-side hash, the snapshots, the reset and the restores read or
+        write the whole state too, so none of them waits on the client's default."""
+        deadlines = StateReadDeadlines(holder_read_s=7.0)
+        monkeypatch.setattr(runner_service, "state_read_deadlines", deadlines)
+        db_client = runner_service.db_client
+        wrapper = mcp_trial(_task(golden_balance=120))
+        # A mismatch, so the grading also reads both states for its diff.
+        _mutate(runner_service, wrapper, 999)
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        assert _grade(runner_service, mock_grpc_context, trial_id).success
+
+        paths = {url.split(f"/trials/{trial_id}", 1)[-1] for _, url, _ in recorder.sent}
+        assert {
+            "/state/hash",
+            "/snapshots/pre_golden",
+            "/snapshots/golden_result",
+            "/snapshots/golden_result/restore",
+            "/snapshots/pre_golden/restore",
+            "/reset",
+        } <= paths
+        for method, url, timeout in recorder.sent:
+            assert isinstance(timeout, httpx.Timeout), (method, url, timeout)
+            assert timeout.read == deadlines.final_state_read_s, (method, url, timeout)
+
+    def test_a_request_inside_grade_trial_is_cut_to_what_the_call_has_left(
+        self, runner_service, trial_id, monkeypatch
+    ) -> None:
+        deadlines = StateReadDeadlines(holder_read_s=7.0)
+        monkeypatch.setattr(runner_service, "state_read_deadlines", deadlines)
+
+        with runner_service._call_budget(trial_id, 100.0):
+            inside = runner_service._whole_state_read_s(trial_id)
+        outside = runner_service._whole_state_read_s(trial_id)
+
+        assert 85.0 < inside <= 90.0
+        assert outside == deadlines.final_state_read_s
+
+    def test_a_restore_after_a_failure_keeps_its_whole_budget(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """A grading that ran out of its budget must still not leave the golden world behind."""
+        deadlines = StateReadDeadlines(holder_read_s=7.0)
+        monkeypatch.setattr(runner_service, "state_read_deadlines", deadlines)
+        db_client = runner_service.db_client
+        wrapper = mcp_trial(_task())
+        runner_service._run_async(db_client.create_snapshot(trial_id, "pre_golden"))
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        with runner_service._call_budget(trial_id, 0.0):
+            runner_service._run_async(
+                runner_service._restore_pre_golden_after_failure(trial_id, wrapper)
+            )
+
+        assert [url.rsplit("/", 1)[-1] for _, url, _ in recorder.sent] == ["restore", "state"]
+        for method, url, timeout in recorder.sent:
+            assert timeout.read == deadlines.final_state_read_s, (method, url, timeout)
 
 
 class TestHealthyChild:
@@ -571,6 +703,50 @@ class TestMirrorReadFailsAfterASuccessfulSync:
             substrate.final_state()
 
 
+class _LateJudgeReads:
+    """The db-service answering the judge's reads late, cut off the way httpx cuts a request.
+
+    A judge read (``GET .../state`` naming tables, or ``POST .../query``) answers after
+    ``delay_s``. When its budget is shorter, it raises ``httpx.ReadTimeout`` at the budget
+    instead. The budget is the request's own ``timeout`` when the client passes one, and the
+    client's default otherwise. Every other request, the sync's own whole-state read among
+    them, passes through on time.
+    """
+
+    def __init__(self, inner: Any, db_client: Any, delay_s: float) -> None:
+        self._inner = inner
+        self._db_client = db_client
+        self._delay_s = delay_s
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def _answer_late(self, kwargs: dict[str, Any]) -> None:
+        timeout = kwargs.get("timeout") or self._db_client.timeout
+        # httpx cuts a server that is slow to answer at the read phase's timeout.
+        budget = timeout.read if isinstance(timeout, httpx.Timeout) else timeout
+        if self._delay_s >= budget:
+            await asyncio.sleep(budget)
+            raise httpx.ReadTimeout("")
+        await asyncio.sleep(self._delay_s)
+
+    async def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        if (kwargs.get("params") or {}).get("tables"):
+            await self._answer_late(kwargs)
+        return await self._inner.get(url, **kwargs)
+
+    async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        if url.endswith("/query"):
+            await self._answer_late(kwargs)
+        return await self._inner.post(url, **kwargs)
+
+
+_JUDGE_READS = [
+    pytest.param(("get_db_state", {"tables": ["users"]}), id="get_db_state"),
+    pytest.param(("query_db", {"jsonpath": "$.users"}), id="query_db"),
+]
+
+
 class TestJudgeReadsOfTheState:
     """The judge reads the state through its own DB tools, under the same refusal.
 
@@ -683,7 +859,7 @@ class TestJudgeReadsOfTheState:
         )
         real_get_state = runner_service.db_client.get_state
 
-        async def stall(trial: str, tables: Any = None) -> Any:
+        async def stall(trial: str, tables: Any = None, timeout: Any = None) -> Any:  # noqa: ARG001
             if tables is None:  # the sync's own read
                 return await real_get_state(trial)
             await asyncio.sleep(5)
@@ -697,6 +873,79 @@ class TestJudgeReadsOfTheState:
 
         assert graded.success is False
         assert "timed out after 0.5s" in graded.error
+
+    @staticmethod
+    def _late_reads(runner_service, monkeypatch, delay_s: float) -> None:
+        # Deadline 0.5 s: the sync's bound plus the read's own budget.
+        monkeypatch.setattr(state_read_limits, "_JUDGE_READ_AFTER_SYNC_S", 0.4)
+        monkeypatch.setattr(
+            runner_service, "state_read_deadlines", StateReadDeadlines(holder_read_s=0.1)
+        )
+        db_client = runner_service.db_client
+        # The client's default, far below the deadline, as 30 s sits below a large world's.
+        monkeypatch.setattr(db_client, "timeout", 0.05)
+        monkeypatch.setattr(
+            db_client, "_test_client", _LateJudgeReads(db_client._test_client, db_client, delay_s)
+        )
+
+    @pytest.mark.parametrize("read", _JUDGE_READS)
+    def test_a_read_slower_than_the_clients_default_is_judged(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch, read
+    ) -> None:
+        task, tables = self._judged_task()
+        wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
+        _mutate(runner_service, wrapper, 120)
+        self._late_reads(runner_service, monkeypatch, delay_s=0.2)
+        self._judge_reads_then_passes(runner_service, monkeypatch, read=read)
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success, graded.error
+        assert graded.grade.binary_pass is True
+
+    @pytest.mark.parametrize("read", _JUDGE_READS)
+    def test_a_read_past_the_deadline_leaves_no_verdict_and_keeps_the_judges_spend(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch, read
+    ) -> None:
+        task, tables = self._judged_task()
+        wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
+        _mutate(runner_service, wrapper, 120)
+        self._late_reads(runner_service, monkeypatch, delay_s=2.0)
+        self._judge_reads_then_passes(runner_service, monkeypatch, read=read)
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success is False
+        assert "could not be read for grading" in graded.error
+        assert not graded.HasField("grade")
+        # Both scripted judge calls ran before the refusal; their usage reaches the host.
+        usage = json.loads(graded.failure_evidence_json)["judge_usage"]
+        assert usage["calls"] == 2
+
+    @pytest.mark.parametrize("read", _JUDGE_READS)
+    def test_a_read_longer_than_its_grade_trial_has_left_fails_with_its_own_cause(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch, read
+    ) -> None:
+        """The read's own bound outlasts the whole call: cut to what the call has
+        left, it fails as a lost state with the judge's spend, not as the call's
+        bare timeout."""
+        task, tables = self._judged_task()
+        wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
+        _mutate(runner_service, wrapper, 120)
+        self._late_reads(runner_service, monkeypatch, delay_s=20.0)
+        # The read may take 10.1 s; the whole call has 3.3 s, the last 1 s of it to answer.
+        monkeypatch.setattr(state_read_limits, "_JUDGE_READ_AFTER_SYNC_S", 10.0)
+        monkeypatch.setattr(state_read_limits, "_GRADE_TRIAL_AFTER_HOLDER_CALLS_S", 3.0)
+        monkeypatch.setattr(state_read_limits, "_CALL_UNWIND_S", 1.0)
+        monkeypatch.setattr(state_read_limits, "_MIN_STATE_REQUEST_S", 0.05)
+        self._judge_reads_then_passes(runner_service, monkeypatch, read=read)
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success is False
+        assert "could not be read for grading" in graded.error
+        usage = json.loads(graded.failure_evidence_json)["judge_usage"]
+        assert usage["calls"] == 2
 
 
 class TestNoDatabase:

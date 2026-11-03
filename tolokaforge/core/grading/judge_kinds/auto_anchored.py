@@ -41,8 +41,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from tolokaforge.core.grading.judge_kinds._shared import billed_sum
+from tolokaforge.core.grading.judge_kinds._shared import billed_sum, carry_earlier_spend
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeUsage
+from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.llm.usage import sum_known
 from tolokaforge.core.models.trajectory import Message, MessageRole
 from tolokaforge.runner.models import Criterion, Rubric
@@ -413,21 +414,25 @@ def _dispatch_wrapped(
     from tolokaforge.core.plugin_registry import load_judge_kind
 
     wrapped_kind_instance = load_judge_kind(wrapped_kind_name)()
-    inner = wrapped_kind_instance.evaluate(
-        rubric=rubric,
-        agent_system_prompt=agent_system_prompt,
-        transcript=transcript,
-        db_reader=db_reader,
-        kb_search=kb_search,
-        workspace_dir=workspace_dir,
-        extra_read_tools=list(extra_read_tools),
-        state_diff=state_diff,
-        judge_model_config=judge_model_config,
-        judge_model_provider=judge_model_provider,
-        options=options,
-        kind_config=None,
-        logger=logger,
-    )
+    try:
+        inner = wrapped_kind_instance.evaluate(
+            rubric=rubric,
+            agent_system_prompt=agent_system_prompt,
+            transcript=transcript,
+            db_reader=db_reader,
+            kb_search=kb_search,
+            workspace_dir=workspace_dir,
+            extra_read_tools=list(extra_read_tools),
+            state_diff=state_diff,
+            judge_model_config=judge_model_config,
+            judge_model_provider=judge_model_provider,
+            options=options,
+            kind_config=None,
+            logger=logger,
+        )
+    except SubstrateUnreachableError as exc:
+        carry_earlier_spend(exc, [warmup_usage])
+        raise
 
     combined_usage = JudgeUsage(
         calls=warmup_usage.calls + inner.usage.calls,

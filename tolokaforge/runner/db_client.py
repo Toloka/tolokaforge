@@ -236,6 +236,18 @@ class DBServiceClient:
             timeout=httpx.Timeout(self.timeout),
         )
 
+    def _request_timeout(self, timeout: float | None) -> float | httpx.Timeout:
+        """The ``httpx`` timeout of one request given its own budget, if any.
+
+        A per-request budget bounds the wait for the answer, which a large state
+        may take long to produce. Reaching the service is no slower for it, so
+        the connect phase keeps the client's default and a service that is not
+        there still fails fast.
+        """
+        if timeout is None:
+            return self.timeout
+        return httpx.Timeout(timeout, connect=min(timeout, self.timeout))
+
     async def close(self) -> None:
         """Close the HTTP client (no-op since we create per-request clients)."""
         pass
@@ -365,6 +377,7 @@ class DBServiceClient:
         self,
         trial_id: str,
         tables: list[str] | None = None,
+        timeout: float | None = None,
     ) -> StateResponse:
         """
         Get the complete current state including all fields.
@@ -374,6 +387,8 @@ class DBServiceClient:
         Args:
             trial_id: Trial identifier
             tables: Optional list of table names to return (default: all)
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             StateResponse with data, version, full_hash, stable_hash
@@ -387,14 +402,20 @@ class DBServiceClient:
 
         async with self._create_client() as client:
             try:
-                response = await client.get(f"/trials/{trial_id}/state", params=params)
+                response = await client.get(
+                    f"/trials/{trial_id}/state",
+                    params=params,
+                    timeout=self._request_timeout(timeout),
+                )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
 
             self._handle_error_response(response)
             return StateResponse.model_validate(response.json())
 
-    async def get_stable_state(self, trial_id: str) -> StableStateResponse:
+    async def get_stable_state(
+        self, trial_id: str, timeout: float | None = None
+    ) -> StableStateResponse:
         """
         Get state with unstable fields filtered out.
 
@@ -402,6 +423,8 @@ class DBServiceClient:
 
         Args:
             trial_id: Trial identifier
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             StableStateResponse with data (filtered), version, stable_hash, filtered_fields
@@ -411,7 +434,10 @@ class DBServiceClient:
         """
         async with self._create_client() as client:
             try:
-                response = await client.get(f"/trials/{trial_id}/state/stable")
+                response = await client.get(
+                    f"/trials/{trial_id}/state/stable",
+                    timeout=self._request_timeout(timeout),
+                )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
 
@@ -419,7 +445,11 @@ class DBServiceClient:
             return StableStateResponse.model_validate(response.json())
 
     async def get_stable_hash(
-        self, trial_id: str, *, numeric_string_fields: Iterable[str] | None = None
+        self,
+        trial_id: str,
+        *,
+        numeric_string_fields: Iterable[str] | None = None,
+        timeout: float | None = None,
     ) -> str:
         """
         Get SHA-256 hash of the stable state.
@@ -431,6 +461,8 @@ class DBServiceClient:
             numeric_string_fields: Opt-in per-field list — record field names
                 whose numeric-looking string values fold ("130.00" == "130.0")
                 when hashing. See core/hash.py compute_stable_hash.
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             The stable_hash string
@@ -448,6 +480,7 @@ class DBServiceClient:
                 response = await client.get(
                     f"/trials/{trial_id}/state/hash",
                     params=params,
+                    timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
@@ -462,6 +495,7 @@ class DBServiceClient:
         table_name: str,
         operations: list[dict[str, Any]],
         etag: str | None = None,
+        timeout: float | None = None,
     ) -> MutateResponse:
         """
         Apply mutations to a specific table.
@@ -473,6 +507,8 @@ class DBServiceClient:
             table_name: Name of the table to mutate
             operations: List of mutation operations (insert, update, delete, upsert)
             etag: Optional ETag for optimistic locking
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             MutateResponse with status, version, affected_rows, new_hash
@@ -492,6 +528,7 @@ class DBServiceClient:
                 response = await client.patch(
                     f"/trials/{trial_id}/state/{table_name}",
                     json=payload,
+                    timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
@@ -520,7 +557,7 @@ class DBServiceClient:
                 response = await client.post(
                     f"/trials/{trial_id}/update",
                     json={"ops": ops},
-                    timeout=timeout if timeout is not None else self.timeout,
+                    timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
@@ -532,7 +569,9 @@ class DBServiceClient:
     # Snapshot Endpoints
     # =========================================================================
 
-    async def create_snapshot(self, trial_id: str, name: str) -> SnapshotResponse:
+    async def create_snapshot(
+        self, trial_id: str, name: str, timeout: float | None = None
+    ) -> SnapshotResponse:
         """
         Create a named snapshot of the current state.
 
@@ -541,6 +580,8 @@ class DBServiceClient:
         Args:
             trial_id: Trial identifier
             name: Snapshot name
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             SnapshotResponse with status, snapshot_name, version, hash
@@ -551,14 +592,18 @@ class DBServiceClient:
         """
         async with self._create_client() as client:
             try:
-                response = await client.post(f"/trials/{trial_id}/snapshots/{name}")
+                response = await client.post(
+                    f"/trials/{trial_id}/snapshots/{name}", timeout=self._request_timeout(timeout)
+                )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
 
             self._handle_error_response(response)
             return SnapshotResponse.model_validate(response.json())
 
-    async def restore_snapshot(self, trial_id: str, name: str) -> RestoreSnapshotResponse:
+    async def restore_snapshot(
+        self, trial_id: str, name: str, timeout: float | None = None
+    ) -> RestoreSnapshotResponse:
         """
         Restore state from a named snapshot.
 
@@ -567,6 +612,8 @@ class DBServiceClient:
         Args:
             trial_id: Trial identifier
             name: Snapshot name to restore
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             RestoreSnapshotResponse with status, restored_from, version, hash
@@ -577,7 +624,10 @@ class DBServiceClient:
         """
         async with self._create_client() as client:
             try:
-                response = await client.post(f"/trials/{trial_id}/snapshots/{name}/restore")
+                response = await client.post(
+                    f"/trials/{trial_id}/snapshots/{name}/restore",
+                    timeout=self._request_timeout(timeout),
+                )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
 
@@ -588,7 +638,7 @@ class DBServiceClient:
     # Reset and Delete Endpoints
     # =========================================================================
 
-    async def reset_trial(self, trial_id: str) -> ResetTrialResponse:
+    async def reset_trial(self, trial_id: str, timeout: float | None = None) -> ResetTrialResponse:
         """
         Reset trial state to the initial state provided during init.
 
@@ -596,6 +646,8 @@ class DBServiceClient:
 
         Args:
             trial_id: Trial identifier
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             ResetTrialResponse with status, version, hash
@@ -605,7 +657,9 @@ class DBServiceClient:
         """
         async with self._create_client() as client:
             try:
-                response = await client.post(f"/trials/{trial_id}/reset")
+                response = await client.post(
+                    f"/trials/{trial_id}/reset", timeout=self._request_timeout(timeout)
+                )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
 
@@ -666,7 +720,7 @@ class DBServiceClient:
                 response = await client.post(
                     f"/trials/{trial_id}/query",
                     json={"jsonpath": jsonpath},
-                    timeout=timeout if timeout is not None else self.timeout,
+                    timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
