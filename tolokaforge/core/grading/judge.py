@@ -150,8 +150,10 @@ class _RefusalRecordingDBReader:
             self.refusal = self.refusal or exc
             raise
 
-    def raise_refusal(self) -> None:
+    def raise_refusal(self, usage: JudgeUsage) -> None:
+        """Re-raise the kept refusal, carrying what the judge spent before it."""
         if self.refusal is not None:
+            self.refusal.judge_usage = usage
             raise self.refusal
 
 
@@ -799,7 +801,7 @@ class LLMJudge:
                 outcome = loop.run(system_prompt, messages, start_time=time.time())
             except Exception as exc:  # noqa: BLE001 — fail loud, never score on judge crash
                 if guarded_reader is not None:
-                    guarded_reader.raise_refusal()
+                    guarded_reader.raise_refusal(metrics.snapshot())
                 logger.error("Judge loop raised", error=str(exc), error_type=type(exc).__name__)
                 return _build_errored_judge_result(
                     metrics,
@@ -815,7 +817,7 @@ class LLMJudge:
                 )
 
             if guarded_reader is not None:
-                guarded_reader.raise_refusal()
+                guarded_reader.raise_refusal(metrics.snapshot())
 
             if termination.captured_args is None:
                 # Loop ended without submit_report — turn / wall-time / API error.

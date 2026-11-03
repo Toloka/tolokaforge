@@ -365,6 +365,7 @@ class DBServiceClient:
         self,
         trial_id: str,
         tables: list[str] | None = None,
+        timeout: float | None = None,
     ) -> StateResponse:
         """
         Get the complete current state including all fields.
@@ -374,6 +375,8 @@ class DBServiceClient:
         Args:
             trial_id: Trial identifier
             tables: Optional list of table names to return (default: all)
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             StateResponse with data, version, full_hash, stable_hash
@@ -387,14 +390,20 @@ class DBServiceClient:
 
         async with self._create_client() as client:
             try:
-                response = await client.get(f"/trials/{trial_id}/state", params=params)
+                response = await client.get(
+                    f"/trials/{trial_id}/state",
+                    params=params,
+                    timeout=timeout if timeout is not None else self.timeout,
+                )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
 
             self._handle_error_response(response)
             return StateResponse.model_validate(response.json())
 
-    async def get_stable_state(self, trial_id: str) -> StableStateResponse:
+    async def get_stable_state(
+        self, trial_id: str, timeout: float | None = None
+    ) -> StableStateResponse:
         """
         Get state with unstable fields filtered out.
 
@@ -402,6 +411,8 @@ class DBServiceClient:
 
         Args:
             trial_id: Trial identifier
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             StableStateResponse with data (filtered), version, stable_hash, filtered_fields
@@ -411,7 +422,10 @@ class DBServiceClient:
         """
         async with self._create_client() as client:
             try:
-                response = await client.get(f"/trials/{trial_id}/state/stable")
+                response = await client.get(
+                    f"/trials/{trial_id}/state/stable",
+                    timeout=timeout if timeout is not None else self.timeout,
+                )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
 

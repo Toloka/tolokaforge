@@ -781,7 +781,11 @@ class _FixtureStateDBClient:
     def __init__(self, tables: dict[str, list[dict[str, Any]]]) -> None:
         self._tables = tables
 
-    async def get_state(self, trial_id: str) -> runner_models.StateResponse:
+    async def get_state(
+        self,
+        trial_id: str,  # noqa: ARG002
+        timeout: float | None = None,  # noqa: ARG002
+    ) -> runner_models.StateResponse:
         return runner_models.StateResponse(
             data=self._tables, version=1, full_hash="", stable_hash=""
         )

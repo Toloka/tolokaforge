@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import grpc
+import httpx
 import pytest
 
 from tests.utils.runner_requests import register_request, simple_task_description, trial_spec_json
@@ -571,6 +572,48 @@ class TestMirrorReadFailsAfterASuccessfulSync:
             substrate.final_state()
 
 
+class _LateJudgeReads:
+    """The db-service answering the judge's reads late, cut off the way httpx cuts a request.
+
+    A judge read (``GET .../state`` naming tables, or ``POST .../query``) answers after
+    ``delay_s``. When its budget is shorter, it raises ``httpx.ReadTimeout`` at the budget
+    instead. The budget is the request's own ``timeout`` when the client passes one, and the
+    client's default otherwise. Every other request, the sync's own whole-state read among
+    them, passes through on time.
+    """
+
+    def __init__(self, inner: Any, db_client: Any, delay_s: float) -> None:
+        self._inner = inner
+        self._db_client = db_client
+        self._delay_s = delay_s
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def _answer_late(self, kwargs: dict[str, Any]) -> None:
+        budget = kwargs.get("timeout") or self._db_client.timeout
+        if self._delay_s >= budget:
+            await asyncio.sleep(budget)
+            raise httpx.ReadTimeout("")
+        await asyncio.sleep(self._delay_s)
+
+    async def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        if (kwargs.get("params") or {}).get("tables"):
+            await self._answer_late(kwargs)
+        return await self._inner.get(url, **kwargs)
+
+    async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        if url.endswith("/query"):
+            await self._answer_late(kwargs)
+        return await self._inner.post(url, **kwargs)
+
+
+_JUDGE_READS = [
+    pytest.param(("get_db_state", {"tables": ["users"]}), id="get_db_state"),
+    pytest.param(("query_db", {"jsonpath": "$.users"}), id="query_db"),
+]
+
+
 class TestJudgeReadsOfTheState:
     """The judge reads the state through its own DB tools, under the same refusal.
 
@@ -683,7 +726,7 @@ class TestJudgeReadsOfTheState:
         )
         real_get_state = runner_service.db_client.get_state
 
-        async def stall(trial: str, tables: Any = None) -> Any:
+        async def stall(trial: str, tables: Any = None, timeout: Any = None) -> Any:  # noqa: ARG001
             if tables is None:  # the sync's own read
                 return await real_get_state(trial)
             await asyncio.sleep(5)
@@ -697,6 +740,54 @@ class TestJudgeReadsOfTheState:
 
         assert graded.success is False
         assert "timed out after 0.5s" in graded.error
+
+    @staticmethod
+    def _late_reads(runner_service, monkeypatch, delay_s: float) -> None:
+        # Deadline 0.5 s: the sync's bound plus the read's own budget.
+        monkeypatch.setattr(state_read_limits, "_JUDGE_READ_AFTER_SYNC_S", 0.4)
+        monkeypatch.setattr(
+            runner_service, "state_read_deadlines", StateReadDeadlines(holder_read_s=0.1)
+        )
+        db_client = runner_service.db_client
+        # The client's default, far below the deadline, as 30 s sits below a large world's.
+        monkeypatch.setattr(db_client, "timeout", 0.05)
+        monkeypatch.setattr(
+            db_client, "_test_client", _LateJudgeReads(db_client._test_client, db_client, delay_s)
+        )
+
+    @pytest.mark.parametrize("read", _JUDGE_READS)
+    def test_a_read_slower_than_the_clients_default_is_judged(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch, read
+    ) -> None:
+        task, tables = self._judged_task()
+        wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
+        _mutate(runner_service, wrapper, 120)
+        self._late_reads(runner_service, monkeypatch, delay_s=0.2)
+        self._judge_reads_then_passes(runner_service, monkeypatch, read=read)
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success, graded.error
+        assert graded.grade.binary_pass is True
+
+    @pytest.mark.parametrize("read", _JUDGE_READS)
+    def test_a_read_past_the_deadline_leaves_no_verdict_and_keeps_the_judges_spend(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch, read
+    ) -> None:
+        task, tables = self._judged_task()
+        wrapper = mcp_trial(task, child_tables=tables, judge_model_config=self.JUDGE)
+        _mutate(runner_service, wrapper, 120)
+        self._late_reads(runner_service, monkeypatch, delay_s=2.0)
+        self._judge_reads_then_passes(runner_service, monkeypatch, read=read)
+
+        graded = _grade(runner_service, mock_grpc_context, trial_id)
+
+        assert graded.success is False
+        assert "could not be read for grading" in graded.error
+        assert not graded.HasField("grade")
+        # Both scripted judge calls ran before the refusal; their usage reaches the host.
+        usage = json.loads(graded.failure_evidence_json)["judge_usage"]
+        assert usage["calls"] == 2
 
 
 class TestNoDatabase:

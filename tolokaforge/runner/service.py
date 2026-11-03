@@ -1941,6 +1941,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=str(e),
                 failure_evidence_json=json.dumps(e.evidence()),
             )
+        except SubstrateUnreachableError as e:
+            # The trial's state could not be read for grading. Book it ungradeable
+            # and keep what a judge had already spent, so its cost is not lost.
+            logger.error(f"GradeTrial: State source unreachable: {e}")
+            message = f"Grading error: {type(e).__name__}: {e}"
+            return pb2.GradeTrialResponse(
+                success=False,
+                error=message,
+                failure_evidence_json=json.dumps(
+                    GradingFailedError.from_unreachable(message, e).evidence()
+                ),
+            )
         except Exception as e:
             logger.error(f"GradeTrial: Unexpected error: {e}")
             logger.error(traceback.format_exc())
@@ -1977,6 +1989,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         table that is not there) is not a lost state and keeps its own error, so
         a judge can correct it. A trial that provisions no database keeps the
         DB client's own errors, which the evaluators already read as "no database".
+
+        Each read's HTTP request carries the same deadline as the wait around it, so
+        the DB client's default per-request timeout never cuts a slow read short of
+        the bound ``state_read_timeout_s`` sets.
         """
         db_client = self.db_client
         deadlines = self.state_read_deadlines
@@ -2014,19 +2030,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             """Sync :class:`DBReader` seam bridging to the async DB client on the runner's loop."""
 
             def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
-                read = partial(db_client.get_state, trial_id, tables)
+                read = partial(
+                    db_client.get_state, trial_id, tables, timeout=deadlines.judge_db_read_s
+                )
                 return _bridged_read(read, deadlines.judge_db_read_s).data
 
             def query(self, jsonpath: str) -> dict[str, Any]:
-                read = partial(db_client.query, trial_id, jsonpath)
+                read = partial(
+                    db_client.query, trial_id, jsonpath, timeout=deadlines.judge_db_read_s
+                )
                 return {"results": _bridged_read(read, deadlines.judge_db_read_s).results}
 
         def _get_raw_state() -> dict[str, Any]:
-            read = partial(db_client.get_state, trial_id)
+            read = partial(db_client.get_state, trial_id, timeout=deadlines.final_state_read_s)
             return _bridged_read(read, deadlines.final_state_read_s).data
 
         def _get_stable_state() -> dict[str, Any]:
-            read = partial(db_client.get_stable_state, trial_id)
+            read = partial(
+                db_client.get_stable_state, trial_id, timeout=deadlines.final_state_read_s
+            )
             return _bridged_read(read, deadlines.final_state_read_s).data
 
         def _get_filesystem_state() -> dict[str, str]:
@@ -2525,7 +2547,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 # trial ungradeable — success=False with the reason threaded
                 # through — matching the detached and CLI lanes, rather than
                 # letting it escape as an unhandled gRPC error.
-                return pb2.GradeTrialResponse(success=False, error=str(exc))
+                return pb2.GradeTrialResponse(
+                    success=False,
+                    error=str(exc),
+                    failure_evidence_json=json.dumps(
+                        GradingFailedError.from_unreachable(str(exc), exc).evidence()
+                    ),
+                )
         finally:
             substrate.close()
 
@@ -4015,13 +4043,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         if request.include_unstable:
             # Get full state
-            state_response = await self.db_client.get_state(trial_id, tables)
+            state_response = await self.db_client.get_state(
+                trial_id, tables, timeout=self.state_read_deadlines.final_state_read_s
+            )
             state_json = json.dumps(state_response.data)
             stable_hash = state_response.stable_hash
             full_hash = state_response.full_hash
         else:
             # Get stable state (unstable fields filtered)
-            stable_state_response = await self.db_client.get_stable_state(trial_id)
+            stable_state_response = await self.db_client.get_stable_state(
+                trial_id, timeout=self.state_read_deadlines.final_state_read_s
+            )
             state_json = json.dumps(stable_state_response.data)
             stable_hash = stable_state_response.stable_hash
             full_hash = ""  # Not available for stable state
