@@ -8,6 +8,7 @@ from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
 from tolokaforge.core.grading.judge_result import JudgeStatus, JudgeUsage
+from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.llm.usage import sum_known
 
 if TYPE_CHECKING:
@@ -17,8 +18,10 @@ __all__ = [
     "CONSTRUCTION_FIELDS",
     "assert_construction_fields_match",
     "billed_sum",
+    "carry_earlier_spend",
     "member_failure_reason",
     "sum_usage",
+    "sum_usages",
 ]
 
 
@@ -39,16 +42,30 @@ CONSTRUCTION_FIELDS: tuple[str, ...] = (
 
 def sum_usage(results: list[JudgeResult]) -> JudgeUsage:
     """Field-wise sum of per-call :class:`JudgeUsage` across multiple judge calls."""
+    return sum_usages([r.usage for r in results])
+
+
+def sum_usages(usages: Sequence[JudgeUsage]) -> JudgeUsage:
+    """Field-wise sum of several judge runs' :class:`JudgeUsage`."""
     return JudgeUsage(
-        calls=sum(r.usage.calls for r in results),
-        prompt_tokens=sum(r.usage.prompt_tokens for r in results),
-        completion_tokens=sum(r.usage.completion_tokens for r in results),
-        reasoning_tokens=sum(r.usage.reasoning_tokens for r in results),
-        cost_usd=sum(r.usage.cost_usd for r in results),
-        tool_calls=sum(r.usage.tool_calls for r in results),
-        consistency_rejections=sum(r.usage.consistency_rejections for r in results),
-        billed_cost_usd=billed_sum(r.usage for r in results),
+        calls=sum(u.calls for u in usages),
+        prompt_tokens=sum(u.prompt_tokens for u in usages),
+        completion_tokens=sum(u.completion_tokens for u in usages),
+        reasoning_tokens=sum(u.reasoning_tokens for u in usages),
+        cost_usd=sum(u.cost_usd for u in usages),
+        tool_calls=sum(u.tool_calls for u in usages),
+        consistency_rejections=sum(u.consistency_rejections for u in usages),
+        billed_cost_usd=billed_sum(usages),
     )
+
+
+def carry_earlier_spend(exc: SubstrateUnreachableError, earlier: Sequence[JudgeUsage]) -> None:
+    """Add the spend of judge runs that finished before ``exc`` to the spend it carries.
+
+    A kind that runs its judge more than once (samples, a warm-up) re-raises a refusal from a
+    later run; without this, the refusal would carry that run's spend alone.
+    """
+    exc.judge_usage = sum_usages([*earlier, exc.judge_usage or JudgeUsage()])
 
 
 def billed_sum(usages: Iterable[JudgeUsage]) -> float | None:

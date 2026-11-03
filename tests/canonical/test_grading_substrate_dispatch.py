@@ -185,11 +185,16 @@ class _FakeDBServiceClient:
         self,
         trial_id: str,  # noqa: ARG002
         tables: list[str] | None = None,  # noqa: ARG002
+        timeout: float | None = None,  # noqa: ARG002
     ) -> StateResponse:
         self.raw_calls += 1
         return StateResponse(data=_RAW_STATE, version=1, full_hash="full", stable_hash="stable")
 
-    async def get_stable_state(self, trial_id: str) -> StableStateResponse:  # noqa: ARG002
+    async def get_stable_state(
+        self,
+        trial_id: str,  # noqa: ARG002
+        timeout: float | None = None,  # noqa: ARG002
+    ) -> StableStateResponse:
         self.stable_calls += 1
         return StableStateResponse(
             data=_STABLE_STATE, version=1, stable_hash="stable", filtered_fields=[]

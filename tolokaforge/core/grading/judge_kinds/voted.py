@@ -24,11 +24,13 @@ from tolokaforge.core.grading.judge_kinds import aggregators
 from tolokaforge.core.grading.judge_kinds._shared import (
     CONSTRUCTION_FIELDS,
     assert_construction_fields_match,
+    carry_earlier_spend,
     member_failure_reason,
     sum_usage,
 )
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.rubric import GRADED_MET_THRESHOLD, aggregate_rubric
+from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.runner.models import CriterionResult
 
 if TYPE_CHECKING:
@@ -104,21 +106,25 @@ class VotedRubricJudgeKind:
         criterion_ids = tuple(c.id for c in rubric.criteria)
         sample_results: list[JudgeResult] = []
         for sample_index in range(n_samples):
-            sample_result = wrapped_kind_instance.evaluate(
-                rubric=rubric,
-                agent_system_prompt=agent_system_prompt,
-                transcript=transcript,
-                db_reader=db_reader,
-                kb_search=kb_search,
-                workspace_dir=workspace_dir,
-                extra_read_tools=list(extra_read_tools),
-                state_diff=state_diff,
-                judge_model_config=judge_model_config,
-                judge_model_provider=judge_model_provider,
-                options=options,
-                kind_config=wrapped_kind_config,
-                logger=logger,
-            )
+            try:
+                sample_result = wrapped_kind_instance.evaluate(
+                    rubric=rubric,
+                    agent_system_prompt=agent_system_prompt,
+                    transcript=transcript,
+                    db_reader=db_reader,
+                    kb_search=kb_search,
+                    workspace_dir=workspace_dir,
+                    extra_read_tools=list(extra_read_tools),
+                    state_diff=state_diff,
+                    judge_model_config=judge_model_config,
+                    judge_model_provider=judge_model_provider,
+                    options=options,
+                    kind_config=wrapped_kind_config,
+                    logger=logger,
+                )
+            except SubstrateUnreachableError as exc:
+                carry_earlier_spend(exc, [r.usage for r in sample_results])
+                raise
             sample_results.append(sample_result)
             failure = member_failure_reason(sample_result, criterion_ids)
             if failure is not None:

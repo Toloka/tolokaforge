@@ -29,10 +29,16 @@ class FakeMutatingDBClient:
         self._state = {t: [dict(r) for r in v] for t, v in (state or {}).items()}
         self.mutations: list[tuple[str, list[dict]]] = []
 
-    async def get_state(self, trial_id: str) -> Any:
+    async def get_state(self, trial_id: str, timeout: float | None = None) -> Any:
         return SimpleNamespace(data=self._state)
 
-    async def mutate(self, trial_id: str, table_name: str, operations: list[dict]) -> Any:
+    async def mutate(
+        self,
+        trial_id: str,
+        table_name: str,
+        operations: list[dict],
+        timeout: float | None = None,
+    ) -> Any:
         self.mutations.append((table_name, operations))
         return SimpleNamespace(success=True)
 

@@ -102,7 +102,11 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         return self._read_final_state(
             request.trial_id,
             context,
-            lambda: self._runner.db_client.get_state(request.trial_id, tables),
+            lambda: self._runner.db_client.get_state(
+                request.trial_id,
+                tables,
+                timeout=self._runner.state_read_deadlines.final_state_read_s,
+            ),
         )
 
     def ReadFinalDBStateStable(  # noqa: N802
@@ -113,7 +117,9 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         return self._read_final_state(
             request.trial_id,
             context,
-            lambda: self._runner.db_client.get_stable_state(request.trial_id),
+            lambda: self._runner.db_client.get_stable_state(
+                request.trial_id, timeout=self._runner.state_read_deadlines.final_state_read_s
+            ),
         )
 
     def _read_final_state(

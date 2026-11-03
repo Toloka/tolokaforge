@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
+from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.models import JudgeUsage
 from tolokaforge.core.models.grade import GradingStateSnapshots
 
@@ -36,6 +38,15 @@ class GradingFailedError(Exception):
         self.state_snapshots = state_snapshots
         self.state_diff = state_diff
         self.comparison_view = comparison_view
+
+    @classmethod
+    def from_unreachable(cls, message: str, exc: SubstrateUnreachableError) -> GradingFailedError:
+        """The failure a lost state source books, keeping the judge spend it carries."""
+        usage = exc.judge_usage
+        return cls(
+            message,
+            judge_usage=None if usage is None else JudgeUsage(**dataclasses.asdict(usage)),
+        )
 
     def evidence(self) -> dict[str, Any]:
         """Structured work already completed before the verdict failed."""
