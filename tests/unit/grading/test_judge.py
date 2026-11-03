@@ -646,8 +646,7 @@ def _kb_tagged_passthrough(name: str = "search_policy"):
 def test_disable_knowledge_search_withholds_kb_tagged_tools():
     """disable_knowledge_search=True withholds EVERY KB-tagged tool from the judge's
     schema (rag search_kb + the tagged passthrough), records them in withheld with
-    an empty offered set and the flag True, and leaves a non-KB extra read tool
-    registered."""
+    an empty offered set, and leaves a non-KB extra read tool registered."""
     from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 
     rubric = _binary_rubric()
@@ -680,7 +679,6 @@ def test_disable_knowledge_search_withholds_kb_tagged_tools():
     assert result.read_tools_offered == ("get_db_state", "query_db", "read_ledger")
     assert result.kb_tools_offered == ()
     assert result.kb_tools_withheld == ("search_kb", "search_policy")
-    assert result.knowledge_search_disabled is True
     assert "Judge KB: none offered (disabled by config)" in result.reasons
 
 
@@ -706,14 +704,13 @@ def test_disable_flag_false_is_byte_for_byte_default():
     assert "search_policy" in client.seen_tool_names
     assert result.kb_tools_offered == ("search_kb", "search_policy")
     assert result.kb_tools_withheld == ()
-    assert result.knowledge_search_disabled is False
     assert "Judge KB: search_kb, search_policy" in result.reasons
 
 
-def test_disable_flag_true_but_no_kb_records_flag_with_empty_withheld():
-    """A disabled judge over a KB-less trial records the flag True with an EMPTY
-    withheld set (nothing to gate) and the plain 'none offered' note — the
-    config-disable-vs-faithful-none distinction the gating record must preserve."""
+def test_disable_flag_true_but_no_kb_records_an_empty_withheld():
+    """A disabled judge over a KB-less trial records an EMPTY withheld set (nothing
+    to gate) and the plain 'none offered' note: a config disable that withheld
+    nothing reads as the faithful none."""
     rubric = _binary_rubric()
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
 
@@ -731,7 +728,6 @@ def test_disable_flag_true_but_no_kb_records_flag_with_empty_withheld():
 
     assert result.kb_tools_offered == ()
     assert result.kb_tools_withheld == ()
-    assert result.knowledge_search_disabled is True
     assert "Judge KB: none offered" in result.reasons
     assert "(disabled by config)" not in result.reasons
 
@@ -1390,10 +1386,9 @@ def test_marker_contract_is_the_single_source_of_the_tokens(token):
     assert token in _JUDGE_MARKER_CONTRACT
 
 
-def test_custom_system_prompt_recorded_on_result():
-    """A judge constructed with a custom prompt records ``custom_system_prompt``
-    True on its result and sends the custom body at the head of the system prompt
-    it puts on the wire; the default records False."""
+def test_custom_system_prompt_heads_the_wire_system_prompt():
+    """A judge constructed with a custom prompt sends the custom body at the head of
+    the system prompt it puts on the wire, the marker contract after it."""
     rubric = _binary_rubric()
 
     custom_client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
@@ -1405,25 +1400,15 @@ def test_custom_system_prompt_recorded_on_result():
         custom_system_prompt="Grade only the refund.",
         llm_client=custom_client,
     )
-    assert custom.custom_system_prompt is True
+    assert custom.status is JudgeStatus.COMPLETED
     assert custom_client.seen_system is not None
     assert custom_client.seen_system.startswith("Grade only the refund.")
     assert _JUDGE_MARKER_CONTRACT in custom_client.seen_system
 
-    default = _run_llm_judge(
-        rubric=rubric,
-        model_config=_JUDGE_MODEL,
-        agent_system_prompt="",
-        transcript=[],
-        llm_client=ScriptedClient([[("submit_report", _submit_args(refund_done=True))]]),
-    )
-    assert default.custom_system_prompt is False
 
-
-def test_include_agent_system_prompt_recorded_on_result():
+def test_include_agent_system_prompt_gates_the_policy_out_of_the_opening_message():
     """A judge constructed gated withholds the agent-policy section from the
-    opening message it sends and records ``include_agent_system_prompt`` False on
-    its result; default construction embeds the policy and records True."""
+    opening message it sends; default construction embeds the policy."""
     rubric = _binary_rubric()
 
     gated_client = MessageCapturingClient([[("submit_report", _submit_args(refund_done=True))]])
@@ -1436,15 +1421,17 @@ def test_include_agent_system_prompt_recorded_on_result():
         include_agent_system_prompt=False,
         llm_client=gated_client,
     )
-    assert gated.include_agent_system_prompt is False
+    assert gated.status is JudgeStatus.COMPLETED
     assert "SECRET-AGENT-POLICY-MARKER" not in gated_client.snapshots[0][0].content
 
+    default_client = MessageCapturingClient([[("submit_report", _submit_args(refund_done=True))]])
     default = _run_llm_judge(
         rubric=rubric,
         model_config=_JUDGE_MODEL,
         agent_system_prompt="SECRET-AGENT-POLICY-MARKER",
         transcript=[{"role": "user", "content": "do the thing"}],
         db_reader=FakeDBReader(),
-        llm_client=ScriptedClient([[("submit_report", _submit_args(refund_done=True))]]),
+        llm_client=default_client,
     )
-    assert default.include_agent_system_prompt is True
+    assert default.status is JudgeStatus.COMPLETED
+    assert "SECRET-AGENT-POLICY-MARKER" in default_client.snapshots[0][0].content

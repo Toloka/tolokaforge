@@ -71,9 +71,9 @@ from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
     construct_config,
+    layer_judge_customization,
     project_grading_combine,
     resolve_effective_grading_combine,
-    resolve_effective_judge_customization,
 )
 from tolokaforge.core.project_loader import resolve as resolve_environment
 from tolokaforge.runner.id_resolution import check_id_fields_against_seeded_tables
@@ -1085,7 +1085,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         project_customization = self._project_judge_customization_defaults()
         effective_customization = None
         if task_customization is not None or project_customization is not None:
-            effective_customization = resolve_effective_judge_customization(
+            effective_customization = layer_judge_customization(
                 project_customization, task_customization
             )
         if llm_judge_data and llm_judge_data.get("rubric"):

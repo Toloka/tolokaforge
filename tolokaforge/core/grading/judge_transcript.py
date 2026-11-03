@@ -32,6 +32,7 @@ from tolokaforge.tools.registry import Tool, ToolResult
 
 if TYPE_CHECKING:
     from tolokaforge.core.tool_effects import ToolEffects
+    from tolokaforge.runner.models import JudgeCustomization
 
 __all__ = [
     "DEFAULT_TRANSCRIPT_TOOL_CHARS",
@@ -45,6 +46,7 @@ __all__ = [
     "call_result_head",
     "message_text",
     "number_tool_results",
+    "resolve_transcript_evidence",
     "state_changing_calls",
 ]
 
@@ -79,6 +81,13 @@ class TranscriptEvidence:
     """
 
     tool_result_chars: int = DEFAULT_TRANSCRIPT_TOOL_CHARS
+
+
+def resolve_transcript_evidence(customization: JudgeCustomization) -> TranscriptEvidence | None:
+    """The transcript judge's reading of a trial, ``None`` for a judge over the state."""
+    if customization.evidence != "transcript":
+        return None
+    return TranscriptEvidence(tool_result_chars=customization.transcript_tool_chars)
 
 
 @dataclass(frozen=True)

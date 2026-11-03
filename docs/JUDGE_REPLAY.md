@@ -46,6 +46,10 @@ uv run tolokaforge rejudge --source <run-dir>
 uv run tolokaforge rejudge --source <run-dir> \
     --judge-model openrouter/openai/gpt-4.1-mini \
     --grading path/to/grading.yaml
+
+# Re-judge under a different judge customization, keeping the recorded rubric.
+uv run tolokaforge rejudge --source <run-dir> --grading customization.yaml
+#   customization.yaml:  llm_judge: {customization: {disable_knowledge_search: true}}
 ```
 
 | Flag | Meaning |
@@ -53,9 +57,7 @@ uv run tolokaforge rejudge --source <run-dir> \
 | `--source` | A run dir (`trials/<task>/<idx>/` subtree), a flat collection of bundle dirs, or a single bundle dir. A directory is a trial bundle iff it directly contains `trajectory.yaml` — the one file every writer produces — so a trial that produced no grade is discovered and reported as a no-grade skip. |
 | `--trial` | Re-judge a single bundle dir instead of the whole `--source`. |
 | `--judge-model` | Override the judge model as `<provider>/<model>` (e.g. `openrouter/openai/gpt-4.1-mini`), temperature 0. Default: the recorded `model_config.judge`. |
-| `--grading` | Override the rubric — and, when the file carries them, the judge's custom prompt (`llm_judge.customization.system_prompt`) and agent-policy gating (`llm_judge.customization.include_agent_system_prompt`) — with a supplied `grading.yaml` (or a bare `rubric:` mapping). Required for old bundles that recorded no rubric. Default: the recorded rubric, prompt, and gating. |
-| `--knowledge-search` | `recorded` (honour the bundle's recorded gating), `on`, or `off`. Default: `recorded`. Forcing `on` for a bundle with no recorded KB gating cannot conjure a KB tool: the replay grade records `offered: []` and the provenance records the mode — observable, not silent. |
-| `--evidence` | `recorded` (honour the bundle's `customization.evidence`, or a `--grading` override setting it), `state`, or `transcript`. Default: `recorded`. A forced mode keeps the recorded `transcript_tool_chars`, so `transcript` A/Bs a whole run of state judges against the transcript-only judge. `state` refuses a trial a transcript judge graded: it recorded no state to grade over. See [Transcript-only judge](#transcript-only-judge). |
+| `--grading` | Override the rubric, the judge customization, or both, with a supplied `grading.yaml`: `llm_judge.rubric`, `llm_judge.customization`, or a bare `rubric:` mapping. A customization is layered over the recorded one key by key (see [Judge customization](#judge-customization)); a document with no rubric keeps the recorded rubric. A rubric is required for old bundles that recorded none. Default: the recorded rubric and customization. |
 | `--replay-id` | Name for the artifact subdirectory. Default: a timestamped id. |
 | `--dry-run` | Discover, classify, and resolve inputs, then report what would replay — spending nothing. The census it prints (`<N> discovered: <e> eligible, <s> not-applicable, <g> no-grade, <f> failed`) is the same one a real batch prints. |
 
@@ -161,12 +163,12 @@ and `judge_kind_source: recorded` (there is no `OVERRIDE` case today —
 `--judge-kind` at replay time is deliberately out of scope; κ-parity
 kind A/B lives in the parity harness, not on the offline replay CLI).
 
-The bundle-branch prompt escape hatch: when
-`prompts.yaml.judge_prompt` is present and non-null (source 1 below),
+The bundle-branch prompt escape hatch: when replay uses the bundle's
+`prompts.yaml.judge_prompt` verbatim (see [Judge system prompt](#judge-system-prompt)),
 `replay_trial` short-circuits to a direct `LLMJudge` construction
 instead of resolving through the kind seam.
 `JudgeKind.evaluate` has no `explicit_system_prompt` kwarg today, and
-the recorded composed prompt supersedes both the task customization
+the recorded composed prompt stands in for the customization's body
 and the kind's default composition — a legitimate case the kind seam
 does not yet accommodate. Widening the Protocol with an optional
 `explicit_system_prompt` keyword-only argument is tracked at
@@ -175,90 +177,72 @@ every bundle-branch trial re-routes through the seam.
 
 [issue-1583]: https://github.com/Toloka/tolokaforge/issues/1583
 
-## Custom judge system prompt
+## Judge customization
 
-Replay resolves the judge's system prompt from three ordered sources.
+Replay resolves the judge's `customization` once: the **recorded** customization,
+with the `--grading` document's `llm_judge.customization` layered over it by the same
+layering every config layer goes through
+(`tolokaforge.core.project_loader.layer_judge_customization`). A key the override
+sets wins, `null` included; a key it leaves out keeps its recorded value; a key
+neither sets holds its default. A rubric-only override therefore changes no
+customization key, and a customization-only override keeps the recorded rubric.
 
-1. **Bundle-recorded composed prompt** (`prompts.yaml.judge_prompt`). Every trial
-   bundle written by the current engine records the exact composed prompt (body +
-   marker contract) the judge would have graded under. When present and non-null,
-   replay uses that string **verbatim** — no re-composition, no marker
-   re-appended — so the replayed judge grades under the same contract the
-   original run's engine version defined, even if the current engine's default
-   body has since changed. `replay_provenance.yaml` stamps
-   `judge_prompt_source: bundle`, and `custom_system_prompt` / `custom_prompt_source`
-   both fall to `false` / `null` (the bundle-recorded prompt supersedes any
-   task.yaml customization).
-2. **Task.yaml customization body fragment**
-   (`grading_config.llm_judge.customization.system_prompt`). Reached only when the
-   bundle predates the `judge_prompt` key (old bundles) or recorded `null`
-   (grading with no LLM judge). The recorded body is a fragment; the marker
-   contract is appended at run time, so `submit_report` validation is never
-   silently broken. Stamped `custom_system_prompt: true` /
-   `custom_prompt_source: recorded`, `judge_prompt_source: null`.
-3. **`--grading` override body fragment**
-   (`llm_judge.customization.system_prompt` in the override document). Wins over
-   source (2) only when the override document actually carries a
-   `customization.system_prompt`; a rubric-only override leaves the recorded body
-   in effect and never resets it to the default. Stamped
-   `custom_system_prompt: true` / `custom_prompt_source: override`,
-   `judge_prompt_source: null`.
+**The record** is `judge_inputs.yaml customization`: the effective customization
+the trial was graded under, after the project, task and run-level `grader.judge`
+layers (see [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md)). A bundle that predates the
+record falls back to `task.yaml grading_config.llm_judge.customization`, which is
+taken before the run-level `grader.judge` layer of the `judge_only` grader: a
+replay of such a bundle is stamped `customization_record: task_yaml`, and
+`rejudge` prints a warning naming how many bundles it read that way.
 
-Absence at all three sources — a legacy pre-`judge_prompt` bundle with no
-customization anywhere and no override carrying one — replays under the engine
-default composed prompt, with `judge_prompt_source: null`,
-`custom_prompt_source: null`, `custom_system_prompt: false`.
+`replay_provenance.yaml` stamps `customization` (what the replay judged under),
+`customization_sources` (each dotted key path a layer set, mapped to `recorded` or
+`override`; a path it leaves out holds its default) and `customization_record`
+(`judge_inputs` or `task_yaml`). The `rejudge` summary line prints the record and
+the sources of every trial.
 
-The rubric and the judge system prompt resolve **independently**. A rubric-only
-override leaves the recorded prompt path (bundle or task.yaml) in effect, so a
-custom-prompted bundle re-run under a rubric override reads
-`rubric_source: override` while the prompt source stays `bundle` or `recorded`.
+### Judge system prompt
 
-## Agent-policy evidence gating
+Every bundle the current engine writes records the composed judge prompt (body +
+marker contract) in `prompts.yaml judge_prompt`, composed from the `task.yaml`
+customization. Replay uses that string **verbatim** — no re-composition, no marker
+re-appended, so a replay keeps the default body of the engine that graded the
+trial — while the prompt in effect is the one it was composed from: the resolved
+`system_prompt` equals the `task.yaml` one and no override set it. Provenance then
+stamps `judge_prompt_source: bundle`, with no `system_prompt` in `customization` or
+`customization_sources`.
 
-If the recorded run gated the agent's policy out of the judge's evidence
-(`grading.llm_judge.customization.include_agent_system_prompt: false`), replay
-reconstructs the gating from the bundle's `task.yaml` — the same source as the
-rubric — and re-runs the judge with it, so the replayed opening message withholds
-the agent policy exactly as the recorded run did. An old bundle with no recorded
-value replays with the agent policy **included** (the declared fallback: old runs
-graded with the policy present).
+Otherwise the resolved `system_prompt` body is composed at replay time with the
+marker contract appended (`judge_prompt_source: null`). That covers a bundle with no
+`judge_prompt` key, a `--grading` override setting `system_prompt` (or `null`, which
+resets it to the default body), and a `judge_only` trial whose run-level
+`grader.judge` set a prompt the bundle's `judge_prompt` does not carry.
 
-The gating resolves **independently** of the rubric, like the custom prompt. A
-`--grading` override flips it **only when its own
-`llm_judge.customization.include_agent_system_prompt` is set**; a rubric-only
-override leaves the recorded gating in effect. `replay_provenance.yaml` stamps
-`include_agent_system_prompt` (the effective decision) and `agent_prompt_source`
-(`recorded` / `override`, or `null` when the gating defaulted to include), so a
-rubric-only override over a gated bundle reads `rubric_source: override` while
-`agent_prompt_source: recorded`.
+### Read tools the customization turns on
 
-## Judge snippet length
+The offline read surface is the recorded one, filtered by the resolved
+customization: a judge over the final state gets the DB and `read_file` shims and
+the recorded `state_diff`; a [transcript judge](GRADING.md#transcript-only-judge)
+gets none of them, whatever the bundle recorded. Knowledge-search shims cover every
+KB tool the recorded judge was offered or withheld, so `disable_knowledge_search`
+in an override withholds a recorded KB and `false` offers back one the run
+withheld.
 
-Replay reads `grading.llm_judge.customization.judge_snippet_chars` from the
-bundle's `task.yaml` (`200` when the bundle records none), and a `--grading`
-override replaces it only when its own `llm_judge.customization` sets the key —
-`null` (whole documents) included. `replay_provenance.yaml` stamps
-`judge_snippet_chars` and `judge_snippet_chars_source` (`recorded` / `override`,
-or `null` when it defaulted). The length reaches the judge kind inside the trial's
-`JudgeTrialOptions`, with the other customization values.
+An override that turns on a view of the final state the bundle never recorded is
+refused, naming `customization.evidence` and the missing views: a transcript judge
+read no state, so its bundle records no DB reads, workspace reads or state diff to
+rebuild one over. The test is the recorded surface (`judge_inputs.yaml
+read_tools_offered` and `state_diff_text`, or `env.yaml` on a bundle predating
+them).
 
-## Transcript-only judge
-
-Replay reads `grading.llm_judge.customization.evidence` (with `transcript_tool_chars`)
-from the bundle's `task.yaml`, and a `--grading` override replaces both only when its
-own `llm_judge.customization` sets `evidence`. `--evidence state|transcript` then forces
-the mode and keeps `transcript_tool_chars`. `replay_provenance.yaml` stamps
-`judge_evidence`, `judge_evidence_source` and `judge_evidence_mode`. A
-[transcript judge](GRADING.md#transcript-only-judge) replays without any view of the
-state: no DB shim, no `state_diff`, no `read_file` shim, whatever the bundle recorded.
-`show_call` is rebuilt from the recorded transcript, never shimmed. Which of the agent's
-calls can change state comes from each tool's `mutates_state` on its
-[`tools_schemas.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indextools_schemasyaml) entry,
-recorded whatever the judge graded from, so a state judge replayed as a transcript judge
-lists the same calls as a live transcript judge would. That file is read only for a
-transcript judge: a bundle below generation 8 records no declarations and is refused for
-a transcript replay, while it replays as a judge over the state as before.
+`show_call` is rebuilt from the recorded transcript, never shimmed. Which of the
+agent's calls can change state comes from each tool's `mutates_state` on its
+[`tools_schemas.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indextools_schemasyaml)
+entry, recorded whatever the judge graded from, so a state judge replayed as a
+transcript judge lists the same calls as a live transcript judge would. That file
+is read only for a transcript judge: a bundle below generation 8 records no
+declarations and is refused for a transcript replay, while it replays as a judge
+over the state.
 
 ## New-vs-old bundle replayability
 
@@ -283,11 +267,10 @@ trial:
 
 - `grade.yaml`, `judge_trajectory.yaml`, `judge_inputs.yaml` — the same formats as
   a normal trial bundle (so a replay bundle is itself replayable).
-- `replay_provenance.yaml` — the judge model used, whether each of the judge
-  model / rubric / KB-gating / judge system prompt / agent-policy gating /
-  snippet length came
-  from the bundle (`prompts.yaml.judge_prompt` verbatim, or task.yaml
-  customization) or an override, and the fidelity mode.
+- `replay_provenance.yaml` — the judge model used, whether the judge model and
+  rubric came from the bundle or an override, the resolved customization with the
+  source of each key it sets and the record it was read from, whether the bundle's
+  composed judge prompt was used verbatim, and the fidelity mode.
 
 Under a redacting artifact-write policy both judge sidecars are withheld and a
 `metrics.yaml` appears carrying the redaction stamp alone — the writer's

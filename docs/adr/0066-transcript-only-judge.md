@@ -73,19 +73,20 @@ We will adopt **Option 1**.
 - Each tool's declaration is recorded on its `tools_schemas.yaml` entry (bundle
   generation 8), whatever the judge graded from, so a state judge's trial replays as a
   transcript judge too; replay reads the file only for a transcript judge.
-  `JudgeResult.evidence`,
-  `JudgeReport.judge_evidence` (field 19, set only for a transcript judge) and
-  `grade.yaml` `judge_evidence` say which mode graded the trial. Replay rebuilds the
-  whole view from the transcript, the recorded customization and the recorded
-  declarations, stamps `judge_evidence` in its provenance, and
-  `rejudge --evidence state|transcript` forces the mode over a whole run.
+- The effective customization a trial was graded under — after the project, task and
+  run-level `grader.judge` layers — is recorded once, as `judge_inputs.yaml
+  customization` (`JudgeReport.customization_json`, field 18 on both wires), so it says
+  which mode graded the trial. Replay rebuilds the whole view from the transcript, that
+  record with a `rejudge --grading` customization layered over it, and the recorded
+  declarations; a `--grading` document carrying only `evidence: transcript` switches a
+  whole run's mode.
 
 ## Consequences
 
 ### Positive
 
 - A pack switches the judge to the cheaper mode with one key, and can A/B it over a
-  recorded run with `tolokaforge rejudge --evidence transcript`.
+  recorded run with a customization-only `tolokaforge rejudge --grading` document.
 - The first runtime consumer of ADR-0061's `mutates_state`.
 - Every judge kind gains the mode without a change.
 

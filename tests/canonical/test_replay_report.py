@@ -21,8 +21,8 @@ import pytest
 
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.replay import (
+    CustomizationRecord,
     FidelityMode,
-    KnowledgeSearchMode,
     ProvenanceSource,
     ReplayOutcomeStatus,
     ReplayProvenance,
@@ -40,7 +40,7 @@ from tolokaforge.core.models import (
     JudgeStatus as ModelJudgeStatus,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
-from tolokaforge.runner.models import CriterionResult
+from tolokaforge.runner.models import CriterionResult, JudgeCustomization
 
 pytestmark = pytest.mark.canonical
 
@@ -52,12 +52,9 @@ def _provenance() -> ReplayProvenance:
         judge_model=_JUDGE_MODEL,
         judge_model_source=ProvenanceSource.OVERRIDE,
         rubric_source=ProvenanceSource.RECORDED,
-        knowledge_search_mode=KnowledgeSearchMode.RECORDED,
-        knowledge_search_disabled=False,
-        custom_system_prompt=False,
-        custom_prompt_source=None,
-        include_agent_system_prompt=True,
-        agent_prompt_source=None,
+        customization=JudgeCustomization(),
+        customization_sources={},
+        customization_record=CustomizationRecord.JUDGE_INPUTS,
         fidelity_mode=FidelityMode.FULL,
     )
 

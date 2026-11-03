@@ -22,6 +22,7 @@ from tolokaforge.runner.grpc_limits import (
     MAX_MESSAGE_MB_CEILING,
     MAX_MESSAGE_MB_FLOOR,
 )
+from tolokaforge.runner.models import JudgeCustomization
 from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 
 if TYPE_CHECKING:
@@ -46,7 +47,6 @@ __all__ = [
     "GRPC_NODE_DISPATCH_ADAPTER",
     "GraderConfig",
     "HarnessAdapterConfig",
-    "JudgeGraderConfig",
     "LEGACY_DOCKER_RUNTIME_ALIAS",
     "LocalDiskBundleStoreConfig",
     "LocalDockerComputeConfig",
@@ -1090,44 +1090,6 @@ class QueueGraderConfig(BaseModel):
     worker_grader: str = "grader_rpc"
 
 
-class JudgeGraderConfig(BaseModel):
-    """``judge_only`` grader settings.
-
-    Absent means "use the task's own ``grading.llm_judge.customization``
-    exactly". Every field here is an *optional override*; ``None`` on the
-    field means the task's own value wins.
-
-    Two-state override, not three: this cannot express "reset a
-    task-level customization back to library defaults". An evaluation
-    flight that needs the default judge prompt against a pack whose
-    tasks set a strict prompt must (today) edit the tasks' grading.yaml.
-    A ``reset_*`` axis is a follow-up if this trips real flights.
-    """
-
-    model_config = {"extra": "forbid"}
-
-    disable_knowledge_search: bool | None = None
-    custom_system_prompt: str | None = None
-    include_agent_system_prompt: bool | None = None
-
-    @field_validator("custom_system_prompt")
-    @classmethod
-    def _reject_blank_system_prompt(cls, value: str | None) -> str | None:
-        """Same fail-loud contract as ``JudgeCustomization.system_prompt``:
-        an empty / whitespace-only override would replace the task's
-        (validated non-empty) prompt with essentially the marker
-        contract alone, defeating the customization it is supposed to
-        express. ``None`` (unset) stays valid — that's the "inherit"
-        case.
-        """
-        if value is not None and not value.strip():
-            raise ValueError(
-                "grader.judge.custom_system_prompt must not be empty or whitespace-only. "
-                "Omit the field to inherit the task's own customization."
-            )
-        return value
-
-
 class LocalDiskBundleStoreConfig(BaseModel):
     """Local-filesystem grade-bundle store —
     :class:`~tolokaforge.core.grading.bundle_store.LocalDiskBundleStore`
@@ -1249,13 +1211,18 @@ class GraderConfig(BaseModel):
     ``snapshot`` opts into grade-bundle production per trial. Presence
     + ``enabled=true`` turns on the orchestrator's trial-end producer
     seam; see :class:`SnapshotBundleConfig`.
+
+    ``judge`` is the ``judge_only`` grader's run-level customization layer:
+    a ``customization`` block layered over the trial's own, key by key.
+    A key it sets — ``null`` included — replaces the task's value; a key it
+    leaves out inherits it.
     """
 
     model_config = {"extra": "forbid"}
 
     name: str | None = None
     queue: QueueGraderConfig | None = None
-    judge: JudgeGraderConfig | None = None
+    judge: JudgeCustomization | None = None
     expose_substrate: bool = False
     snapshot: SnapshotBundleConfig | None = None
 

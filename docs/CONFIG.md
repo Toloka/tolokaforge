@@ -936,11 +936,17 @@ alone and is inert under `state`. Omitting the block leaves the judge at the fai
 default. Every judge
 kind receives these settings resolved as one `JudgeTrialOptions` (see
 [JUDGE_KINDS.md](JUDGE_KINDS.md#protocol-contract)). All fields
-layer project→task (a project default under
-`grading_defaults.llm_judge.customization`, task wins; `system_prompt: null`
-resets a project prompt; `include_agent_system_prompt: true` (explicit
-re-include) or `null` (reset) both override a project `false`) — see
-[PROJECTS.md](PROJECTS.md#task-override-semantics). A malformed value,
+layer project → task → run → replay, key by key: a project default under
+`grading_defaults.llm_judge.customization`, the task's own block over it
+(`system_prompt: null` resets a project prompt; `include_agent_system_prompt: true`
+(explicit re-include) or `null` (reset) both override a project `false`, see
+[PROJECTS.md](PROJECTS.md#task-override-semantics)), the run-level `grader.judge`
+block of the `judge_only` grader over that (see
+[GRADER_SERVICE.md](GRADER_SERVICE.md)), and a `tolokaforge rejudge --grading`
+document over the recorded result (see [JUDGE_REPLAY.md](JUDGE_REPLAY.md#judge-customization)).
+A key a layer sets wins, `null` included; a key it leaves out inherits. The
+effective customization a trial was graded under is recorded as
+[`judge_inputs.yaml customization`](OUTPUT_FORMAT.md#trialstask_idtrial_indexjudge_inputsyaml). A malformed value,
 an empty/whitespace-only `system_prompt`, or an unknown key under `customization`
 is rejected loudly at load. See
 [GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the

@@ -4353,13 +4353,13 @@ The setting layers project→task: a task-level `system_prompt` overrides a proj
 default, omitting the key inherits the project value, and a task sets
 `system_prompt: null` to reset a project-level custom prompt back to the default.
 An empty or whitespace-only string is rejected loudly at load. When absent, the
-judge runs with the byte-for-byte default prompt. The full custom text is recorded
-in the bundle's `task.yaml.grading_config`, and the composed prompt the judge
-would have graded under is persisted verbatim in the bundle's
-[`prompts.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indexpromptsyaml) `judge_prompt`
-key — so `tolokaforge rejudge` prefers the recorded composed prompt over the
-current engine's default, falling back to the task.yaml body fragment only for
-pre-`judge_prompt` bundles. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
+judge runs with the byte-for-byte default prompt. The effective customization —
+custom text included — is recorded in the bundle's `judge_inputs.yaml`, and the
+composed prompt the task's customization yields is persisted verbatim in the
+bundle's [`prompts.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indexpromptsyaml)
+`judge_prompt` key — so `tolokaforge rejudge` prefers the recorded composed prompt
+over the current engine's default while the prompt in effect is the one it was
+composed from. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#judge-system-prompt).
 
 ### Gating the agent's policy out of the judge's evidence
 
@@ -4392,8 +4392,8 @@ llm_judge:
 The setting is tri-state and layers project→task: unset and `true` both include the
 agent policy (today's behaviour); `false` omits it; a task sets `true` or `null` to
 re-include over a project `false`. When absent, the opening message is byte-for-byte
-the default. The effective decision is recorded in `grade.yaml` as
-`judge_agent_prompt_included`. See
+the default. The effective decision is recorded with the rest of the customization
+in the bundle's `judge_inputs.yaml`. See
 [PROJECTS.md](PROJECTS.md#task-override-semantics) and
 [CONFIG.md](CONFIG.md#grading-specification-gradingyaml).
 
@@ -4456,12 +4456,13 @@ Where the declaration comes from, and when a task may make one, is
 `evidence: state`. Both keys layer project→task and are left off the wire at their
 default.
 
-A trial a transcript judge graded carries `judge_evidence: transcript` in `grade.yaml`
-(absent for a state judge). The bundle records each tool's declaration on its
+A trial a transcript judge graded records `evidence: transcript` in its bundle's
+`judge_inputs.yaml customization`. The bundle records each tool's declaration on its
 [`tools_schemas.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indextools_schemasyaml) entry, so
-[`tolokaforge rejudge`](JUDGE_REPLAY.md#transcript-only-judge) rebuilds the same view
-from it, and `--evidence transcript` replays a whole run of state judges as transcript
-judges for an A/B. The design record is [ADR-0066](adr/0066-transcript-only-judge.md).
+[`tolokaforge rejudge`](JUDGE_REPLAY.md#read-tools-the-customization-turns-on) rebuilds
+the same view from it, and a `--grading` document carrying
+`llm_judge: {customization: {evidence: transcript}}` replays a whole run of state judges
+as transcript judges for an A/B. The design record is [ADR-0066](adr/0066-transcript-only-judge.md).
 
 ### Fail-loud: the ERRORED status
 

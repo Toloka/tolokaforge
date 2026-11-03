@@ -86,7 +86,7 @@ behaviour every existing run keeps. Fields:
 | `name` | `str \| None` | `None` | Overrides `adapter.trial_grader_name` for this run when set. Value is the entry-point name of a registered `TrialGraderFactory` — one of the four built-ins (`runner_rpc`, `judge_only`, `grader_rpc`, `queue`) or a downstream-registered name. |
 | `expose_substrate` | `bool` | `false` | When true, the runner registers `SubstrateService` on its listen port so an independent grader container can read the trial's substrate. Off by default so a brownfield deploy never accidentally opens the surface. See [SubstrateService (runner-side, read-only)](#substrateservice-runner-side-read-only). |
 | `queue` | `QueueGraderConfig \| None` | `None` | Consumed only when `name: queue`. |
-| `judge` | `JudgeGraderConfig \| None` | `None` | Consumed only when `name: judge_only`. |
+| `judge` | `JudgeCustomization \| None` | `None` | Consumed only when `name: judge_only`: a run-level judge `customization` layer. |
 
 Only the subblock matching the selected `name` is consulted; an
 unrelated subblock is data the factory ignores.
@@ -99,21 +99,15 @@ unrelated subblock is data the factory ignores.
 | `backend` | `"in_memory"` | `"in_memory"` | Names the `GradeBroker` implementation. |
 | `worker_grader` | `str` | `"grader_rpc"` | Downstream `TrialGrader` each worker dispatches to — a `TrialGraderFactory` name from `tolokaforge.trial_graders`. Layering `queue` on top of another registered grader adds throughput scale without duplicating grading logic. |
 
-`JudgeGraderConfig` — overrides for `name: judge_only`. Absent means
-"use the task's own `grading.llm_judge.customization` exactly"; every
-field is an optional override, and `None` on a field means the task's
-own value wins.
-
-| Field | Type | Default | Purpose |
-| --- | --- | --- | --- |
-| `disable_knowledge_search` | `bool \| None` | `None` | Optional override of the task-level customization; `None` inherits. |
-| `custom_system_prompt` | `str \| None` | `None` | Optional override. Blank or whitespace-only is refused fail-loud (`grader.judge.custom_system_prompt must not be empty or whitespace-only`); omit the field to inherit. |
-| `include_agent_system_prompt` | `bool \| None` | `None` | Optional override; `None` inherits. |
-
-Two-state override, not three: the `judge` block cannot express "reset
-a task-level customization back to library defaults". A flight that
-needs the default judge prompt against a pack whose tasks set a strict
-prompt edits the tasks' `grading.yaml`.
+`judge` — the run-level judge customization layer for `name: judge_only`. It takes
+the keys of a task's `grading.llm_judge.customization` (see
+[`CONFIG.md`](CONFIG.md#grading-specification-gradingyaml)) and is layered over each trial's own
+customization key by key: a key it sets wins, `null` included, so
+`system_prompt: null` resets a task's custom prompt to the default body; a key it
+leaves out inherits the task's value. Absent means the task's own customization
+exactly. The resulting customization is recorded on each grade as
+[`judge_inputs.yaml customization`](OUTPUT_FORMAT.md#trialstask_idtrial_indexjudge_inputsyaml),
+which is what `tolokaforge rejudge` replays under.
 
 Worked `run_config.yaml` excerpt with all four `grader.*` fields
 side-by-side:
@@ -128,13 +122,14 @@ grader:
     worker_grader: grader_rpc  # each worker dials the standalone grader
   judge:                     # ignored while name != judge_only
     disable_knowledge_search: true
-    custom_system_prompt: "Strict factual judge."
+    system_prompt: "Strict factual judge."
     include_agent_system_prompt: false
 ```
 
 Shipped source of truth:
-[`GraderConfig` / `QueueGraderConfig` / `JudgeGraderConfig`](../tolokaforge/core/models/run_config.py)
-in `tolokaforge.core.models.run_config`.
+[`GraderConfig` / `QueueGraderConfig`](../tolokaforge/core/models/run_config.py)
+in `tolokaforge.core.models.run_config`; `judge` is a
+[`JudgeCustomization`](../tolokaforge/runner/models.py).
 
 ## Built-in graders
 

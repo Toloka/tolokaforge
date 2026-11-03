@@ -59,8 +59,8 @@ from tests.utils.provision_failure import FailProvisionBackend, provisioning_exe
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeUsage
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
+    CustomizationRecord,
     FidelityMode,
-    KnowledgeSearchMode,
     ProvenanceSource,
     ReplayProvenance,
     _write_replay_artifacts,
@@ -100,7 +100,7 @@ from tolokaforge.core.redaction import (
     SensitiveKeyRedaction,
 )
 from tolokaforge.core.runner import TrialToolCallRecorder
-from tolokaforge.runner.models import ToolSchema
+from tolokaforge.runner.models import JudgeCustomization, ToolSchema
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
@@ -681,12 +681,9 @@ _REPLAY_PROVENANCE = ReplayProvenance(
     judge_model="openrouter/openai/gpt-4.1-mini",
     judge_model_source=ProvenanceSource.RECORDED,
     rubric_source=ProvenanceSource.RECORDED,
-    knowledge_search_mode=KnowledgeSearchMode.RECORDED,
-    knowledge_search_disabled=False,
-    custom_system_prompt=False,
-    custom_prompt_source=None,
-    include_agent_system_prompt=True,
-    agent_prompt_source=None,
+    customization=JudgeCustomization(),
+    customization_sources={},
+    customization_record=CustomizationRecord.JUDGE_INPUTS,
     fidelity_mode=FidelityMode.FULL,
 )
 

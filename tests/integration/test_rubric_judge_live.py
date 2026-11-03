@@ -619,11 +619,8 @@ def _write_live_grade(tmp_path: Path, result) -> tuple[dict, dict]:
         ),
         judge_transcript=list(result.transcript),
         judge_kb_gating=JudgeKbGating(
-            knowledge_search_disabled=result.knowledge_search_disabled,
-            offered=list(result.kb_tools_offered),
-            withheld=list(result.kb_tools_withheld),
+            offered=list(result.kb_tools_offered), withheld=list(result.kb_tools_withheld)
         ),
-        judge_agent_prompt_included=result.include_agent_system_prompt,
     )
     trial_dir = tmp_path / "trials" / "judge_customization" / "0"
     FileArtifactWriter().write_grade(trial_dir, grade)
@@ -636,8 +633,7 @@ def _write_live_grade(tmp_path: Path, result) -> tuple[dict, dict]:
 def test_rubric_judge_live_judge_customization_disabled(tmp_path):
     """With ``disable_knowledge_search=True`` the real judge grades end-to-end with
     NO KB tool in its surface: none offered, ``search_kb`` withheld, no KB call in
-    the trajectory, and ``grade.yaml`` records the gating (the authoritative
-    replay signal)."""
+    the trajectory, and ``grade.yaml`` records the withheld surface."""
     judge = LLMJudge(
         model_config_from_ref(_MODEL_REF),
         max_turns=10,
@@ -657,13 +653,11 @@ def test_rubric_judge_live_judge_customization_disabled(tmp_path):
     # No KB tool in the judge's toolset; the agent's search_kb was withheld.
     assert result.kb_tools_offered == ()
     assert "search_kb" in result.kb_tools_withheld
-    assert result.knowledge_search_disabled is True
     # No KB search call in the judge's trajectory (the tool was never offered).
     assert "search_kb" not in _tool_names_in_transcript(result.transcript)
 
     grade_yaml, traj_yaml = _write_live_grade(tmp_path, result)
     gating = grade_yaml["judge_kb_gating"]
-    assert gating["knowledge_search_disabled"] is True
     assert gating["offered"] == []
     assert gating["withheld"]  # non-empty — the agent had a KB tool that was withheld
     assert "search_kb" not in _tool_names_in_transcript(traj_yaml["messages"])
@@ -672,8 +666,8 @@ def test_rubric_judge_live_judge_customization_disabled(tmp_path):
 @pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
 def test_rubric_judge_live_judge_customization_baseline(tmp_path):
     """Without the flag the judge is offered the SAME KB tool the agent had —
-    the faithful baseline: ``search_kb`` offered, nothing withheld, and
-    ``grade.yaml`` records ``knowledge_search_disabled: false``."""
+    the faithful baseline: ``search_kb`` offered and nothing withheld, in the result
+    and in ``grade.yaml``."""
     judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
     result = judge.run(
         rubric=_rubric(),
@@ -686,11 +680,9 @@ def test_rubric_judge_live_judge_customization_baseline(tmp_path):
     assert result.status is JudgeStatus.COMPLETED, result.reasons
     assert result.kb_tools_offered == ("search_kb",)
     assert result.kb_tools_withheld == ()
-    assert result.knowledge_search_disabled is False
 
     grade_yaml, _ = _write_live_grade(tmp_path, result)
     gating = grade_yaml["judge_kb_gating"]
-    assert gating["knowledge_search_disabled"] is False
     assert gating["offered"] == ["search_kb"]
     assert gating["withheld"] == []
 
@@ -704,9 +696,8 @@ def test_rubric_judge_live_judge_customization_baseline(tmp_path):
 def test_rubric_judge_live_agent_prompt_gating_omits_policy(tmp_path):
     """With ``include_agent_system_prompt=False`` the real judge grades end-to-end
     with NO agent-policy section in its opening-message evidence: grading completes,
-    no consistency rejections, the recorded ``judge_trajectory.yaml`` opening message
-    carries neither the policy-framing sentence nor the agent prompt text, and
-    ``grade.yaml`` records ``judge_agent_prompt_included: false``."""
+    no consistency rejections, and the recorded ``judge_trajectory.yaml`` opening
+    message carries neither the policy-framing sentence nor the agent prompt text."""
     judge = LLMJudge(
         model_config_from_ref(_MODEL_REF),
         max_turns=10,
@@ -722,10 +713,8 @@ def test_rubric_judge_live_agent_prompt_gating_omits_policy(tmp_path):
 
     assert result.status is JudgeStatus.COMPLETED, result.reasons
     assert result.usage.consistency_rejections == 0, result.reasons
-    assert result.include_agent_system_prompt is False
 
-    grade_yaml, traj_yaml = _write_live_grade(tmp_path, result)
-    assert grade_yaml["judge_agent_prompt_included"] is False
+    _, traj_yaml = _write_live_grade(tmp_path, result)
     opening = traj_yaml["messages"][0]["content"]
     assert "The agent under evaluation operated under this policy" not in opening
     assert _AGENT_SYSTEM_PROMPT not in opening

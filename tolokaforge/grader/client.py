@@ -214,24 +214,15 @@ def _judge_report_from_wire(report: grader_pb2.JudgeReport) -> dict:
         "cost_usd": report.cost_usd,
         "tool_calls": report.tool_calls,
         "consistency_rejections": report.consistency_rejections,
-        "knowledge_search_disabled": report.knowledge_search_disabled,
         "kb_tools_offered": list(report.kb_tools_offered),
         "kb_tools_withheld": list(report.kb_tools_withheld),
         "state_diff_text": report.state_diff_text,
         "read_tools_offered": list(report.read_tools_offered),
-        "custom_system_prompt": report.custom_system_prompt,
+        "customization_json": report.customization_json,
     }
     if report.transcript_json:
         out["transcript_json"] = report.transcript_json
-    # ``include_agent_system_prompt`` is proto ``optional`` — presence-gated
-    # so ``_parse_grade_result`` can distinguish the tri-state (True / False /
-    # not-set-by-a-legacy-sender).
-    if report.HasField("include_agent_system_prompt"):
-        out["include_agent_system_prompt"] = report.include_agent_system_prompt
-    # Presence-gated too: absent means not every judge call stated a charge.
+    # Presence-gated: absent means not every judge call stated a charge.
     if report.HasField("billed_cost_usd"):
         out["billed_cost_usd"] = report.billed_cost_usd
-    # Only a transcript judge sets it: absent for a judge over the state.
-    if report.HasField("judge_evidence"):
-        out["judge_evidence"] = report.judge_evidence
     return out

@@ -37,6 +37,7 @@ from tolokaforge.core.grading.transcript_wire import (
     split_leading_system_message,
 )
 from tolokaforge.core.plugin_registry import load_judge_kind, load_judge_model_provider
+from tolokaforge.core.project_loader import layer_judge_customization, set_customization_keys
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge_model_provider import JudgeModel, JudgeModelProvider
@@ -48,8 +49,7 @@ if TYPE_CHECKING:
         ModelConfig,
         Trajectory,
     )
-    from tolokaforge.core.models.run_config import JudgeGraderConfig
-    from tolokaforge.runner.models import ToolSchema
+    from tolokaforge.runner.models import JudgeCustomization, ToolSchema
 
 __all__ = [
     "run_judge_only_for_trajectory",
@@ -84,7 +84,7 @@ def run_judge_only_for_trajectory(
     trajectory: Trajectory,
     agent_system_prompt: str,
     agent_tools: Sequence[ToolSchema],
-    override: JudgeGraderConfig | None,
+    override: JudgeCustomization | None,
     llm_client: LLMClient | None,
     logger: StructuredLogger,
 ) -> Grade | None:
@@ -95,10 +95,11 @@ def run_judge_only_for_trajectory(
     the replay path uses, so the transcript the judge sees is
     byte-identical to the runner-side composite grading path.
 
-    Task customization is the base; a run-level ``override`` wins
-    per-field when the field is not ``None`` (see :class:`JudgeGraderConfig`
-    — the override cannot express "reset to library default"), both laid
-    together by :func:`resolve_judge_trial_options`.
+    Task customization is the base; the run-level ``override``
+    (``grader.judge``) is layered over it by
+    :func:`~tolokaforge.core.project_loader.layer_judge_customization`: each key
+    it sets wins, ``null`` included. The resulting customization is recorded on
+    the grade as ``judge_inputs.customization``.
 
     ``llm_client`` is a test-only injection point wrapped in
     :class:`_FixedClientJudgeModelProvider` so the kind sees a
@@ -123,6 +124,17 @@ def run_judge_only_for_trajectory(
         else load_judge_model_provider("litellm")()
     )
     judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
+    options = resolve_judge_trial_options(
+        layer_judge_customization(
+            (
+                set_customization_keys(llm_judge_config.customization)
+                if llm_judge_config.customization is not None
+                else None
+            ),
+            set_customization_keys(override) if override is not None else None,
+        ),
+        agent_tools=agent_tools,
+    )
     result = judge_kind.evaluate(
         rubric=llm_judge_config.rubric,
         agent_system_prompt=judge_agent_prompt,
@@ -134,9 +146,7 @@ def run_judge_only_for_trajectory(
         state_diff=None,
         judge_model_config=judge_model_config,
         judge_model_provider=judge_model_provider,
-        options=resolve_judge_trial_options(
-            llm_judge_config.customization, override=override, agent_tools=agent_tools
-        ),
+        options=options,
         kind_config=llm_judge_config.kind_config,
         logger=logger,
     )
@@ -145,4 +155,4 @@ def run_judge_only_for_trajectory(
             f"judge_only grader errored for trial {trial_id!r}: "
             f"{result.reasons or 'no reason recorded'}"
         )
-    return build_replay_grade(result)
+    return build_replay_grade(result, options.customization)

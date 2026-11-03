@@ -289,11 +289,7 @@ def _merge_sample_results(
         failed_required_ids=aggregate.failed_required_ids,
         kb_tools_offered=head.kb_tools_offered,
         kb_tools_withheld=head.kb_tools_withheld,
-        knowledge_search_disabled=head.knowledge_search_disabled,
-        custom_system_prompt=head.custom_system_prompt,
-        include_agent_system_prompt=head.include_agent_system_prompt,
         read_tools_offered=head.read_tools_offered,
         state_diff=head.state_diff,
-        evidence=head.evidence,
         transcript=tuple(turn for cr in sample_results for turn in cr.transcript),
     )

@@ -111,7 +111,8 @@ class TestJudgeCustomizationSnippet:
 
     def test_the_trial_options_read_the_default_for_no_block(self) -> None:
         def snippet(customization: JudgeCustomization | None) -> int | None:
-            return resolve_judge_trial_options(customization, agent_tools=()).judge_snippet_chars
+            options = resolve_judge_trial_options(customization, agent_tools=())
+            return options.customization.judge_snippet_chars
 
         assert snippet(None) == 200
         assert snippet(JudgeCustomization()) == 200

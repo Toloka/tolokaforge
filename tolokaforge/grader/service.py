@@ -146,21 +146,7 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
     kb = grade.judge_kb_gating
     inputs = grade.judge_inputs
     transcript = grade.judge_transcript
-    custom_prompt = grade.judge_custom_prompt
-    include_agent_prompt = grade.judge_agent_prompt_included
-    evidence = grade.judge_evidence
-    if all(
-        value is None
-        for value in (
-            usage,
-            kb,
-            inputs,
-            transcript,
-            custom_prompt,
-            include_agent_prompt,
-            evidence,
-        )
-    ):
+    if all(value is None for value in (usage, kb, inputs, transcript)):
         return
     report = wire.judge_report
     if usage is not None:
@@ -176,19 +162,14 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
     if transcript is not None:
         report.transcript_json = json.dumps(transcript)
     if kb is not None:
-        report.knowledge_search_disabled = kb.knowledge_search_disabled
         report.kb_tools_offered.extend(kb.offered)
         report.kb_tools_withheld.extend(kb.withheld)
     if inputs is not None:
         if inputs.state_diff_text is not None:
             report.state_diff_text = inputs.state_diff_text
         report.read_tools_offered.extend(inputs.read_tools_offered)
-    if custom_prompt is not None:
-        report.custom_system_prompt = custom_prompt
-    if include_agent_prompt is not None:
-        report.include_agent_system_prompt = include_agent_prompt
-    if evidence is not None:
-        report.judge_evidence = evidence
+        if inputs.customization is not None:
+            report.customization_json = inputs.customization.model_dump_json()
 
 
 def _trace_constraint_to_wire(r: TraceConstraintResult) -> grader_pb2.TraceConstraintResult:

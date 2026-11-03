@@ -23,9 +23,9 @@ from tolokaforge.core.duration import parse_duration
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
 from tolokaforge.core.grading.corpus_curation import CurationError, curate_corpus
 from tolokaforge.core.grading.replay import (
-    EvidenceMode,
-    KnowledgeSearchMode,
+    CustomizationRecord,
     ReplayOutcomeStatus,
+    ReplayProvenance,
     ReplayReport,
     TrialReplayOutcome,
     emit_replay_report,
@@ -1135,13 +1135,8 @@ def _print_rejudge_summary(
             console.print(f"[red]failed[/red] {escape(rel)} — {reason}")
         else:
             prov = outcome.provenance
-            model = prov.judge_model if prov else "?"
             console.print(
-                f"[green]{label.lower()}[/green] {rel} "
-                f"[dim](judge={model}, rubric={prov.rubric_source.value if prov else '?'}, "
-                f"kb={prov.knowledge_search_mode.value if prov else '?'}, "
-                f"evidence={prov.judge_evidence if prov else '?'}, "
-                f"fidelity={prov.fidelity_mode.value if prov else '?'})[/dim]"
+                f"[green]{label.lower()}[/green] {rel} [dim]({_provenance_summary(prov)})[/dim]"
             )
 
     eligible = sum(
@@ -1157,6 +1152,31 @@ def _print_rejudge_summary(
     )
     if not dry_run and eligible:
         console.print(f"Replay artifacts: {source / JUDGE_REPLAY_DIRNAME / replay_id}")
+    from_task_yaml = sum(
+        o.provenance is not None
+        and o.provenance.customization_record is CustomizationRecord.TASK_YAML
+        for o in outcomes
+    )
+    if from_task_yaml:
+        console.print(
+            f"[yellow]warning:[/yellow] {from_task_yaml} bundle(s) predate "
+            "judge_inputs.yaml customization, so their customization was read from "
+            "task.yaml, which does not carry a run-level grader.judge layer"
+        )
+
+
+def _provenance_summary(prov: ReplayProvenance | None) -> str:
+    """One line naming where each resolved replay input came from."""
+    if prov is None:
+        return "provenance unknown"
+    sources = ", ".join(
+        f"{path}={source.value}" for path, source in sorted(prov.customization_sources.items())
+    )
+    return escape(
+        f"judge={prov.judge_model}, rubric={prov.rubric_source.value}, "
+        f"customization={prov.customization_record.value}: {sources or 'defaults'}, "
+        f"fidelity={prov.fidelity_mode.value}"
+    )
 
 
 def _print_replay_report(report: ReplayReport) -> None:
@@ -1212,29 +1232,10 @@ def _print_replay_report(report: ReplayReport) -> None:
     default=None,
     type=click.Path(exists=True, dir_okay=False),
     help=(
-        "Override the rubric with a supplied grading.yaml (or a bare rubric mapping). "
-        "Required for old bundles that did not record a rubric. Default: the recorded rubric."
-    ),
-)
-@click.option(
-    "--knowledge-search",
-    "knowledge_search",
-    type=click.Choice([m.value for m in KnowledgeSearchMode]),
-    default=KnowledgeSearchMode.RECORDED.value,
-    help=(
-        "Judge knowledge-search gating: 'recorded' honours the bundle's recorded "
-        "gating, 'on'/'off' force it. Default: recorded."
-    ),
-)
-@click.option(
-    "--evidence",
-    "evidence",
-    type=click.Choice([m.value for m in EvidenceMode]),
-    default=EvidenceMode.RECORDED.value,
-    help=(
-        "What the judge grades from: 'recorded' honours the bundle (or --grading), "
-        "'state'/'transcript' force it, keeping the recorded transcript_tool_chars. "
-        "A trial a transcript judge graded refuses 'state'. Default: recorded."
+        "Override the rubric and/or the judge customization with a supplied grading.yaml: "
+        "llm_judge.rubric, llm_judge.customization (layered over the recorded one, key by "
+        "key), or both; or a bare rubric mapping. A rubric is required for old bundles "
+        "that did not record one. Default: the recorded rubric and customization."
     ),
 )
 @click.option(
@@ -1252,8 +1253,6 @@ def rejudge(
     trial: str | None,
     judge_model: str | None,
     grading: str | None,
-    knowledge_search: str,
-    evidence: str,
     replay_id: str | None,
     dry_run: bool,
 ):
@@ -1280,8 +1279,6 @@ def rejudge(
             trial=Path(trial) if trial else None,
             grading_override=grading_override,
             judge_model_override=judge_model,
-            knowledge_search=KnowledgeSearchMode(knowledge_search),
-            evidence=EvidenceMode(evidence),
             dry_run=dry_run,
         )
     except RedactedBundleError as exc:

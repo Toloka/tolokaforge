@@ -471,7 +471,7 @@ class CompositeGraderKind:
                 state_diff=state_diff_text,
                 agent_tools=task_description.agent_tools,
                 logger=logger,
-            )
+            ).result
             if judge_result.status is JudgeRunStatus.ERRORED:
                 judge_status = judge_status_cls.ERRORED
             else:

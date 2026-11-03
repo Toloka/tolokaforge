@@ -156,8 +156,8 @@ def test_rejudge_reproduces_recorded_verdict_with_judge_only_spend(tmp_path: Pat
 def test_custom_prompted_judge_completes_with_marker_intact(tmp_path: Path) -> None:
     """A bundle recording a custom judge system prompt re-judges end-to-end with a
     real model: the judge COMPLETES, the marker contract survives the custom body
-    (no consistency rejections), and the replay grade.yaml records
-    judge_custom_prompt: true."""
+    (no consistency rejections), and the replay's judge_inputs.yaml records the
+    customization it graded under."""
     import yaml
 
     source = tmp_path / "run"
@@ -184,10 +184,11 @@ def test_custom_prompted_judge_completes_with_marker_intact(tmp_path: Path) -> N
     # The custom body did not break submit_report: the appended marker contract
     # was honoured, so no verdict/justification marker mismatches were rejected.
     assert result.usage.consistency_rejections == 0
-    # The judge ran with the reconstructed custom prompt.
-    assert result.custom_system_prompt is True
+    assert outcome.provenance is not None
+    assert outcome.provenance.customization.system_prompt is not None
 
-    # The replay grade.yaml honestly records that a custom prompt was in effect.
-    replay_grade_path = source / "replays" / "live" / "trials" / "refund_task" / "0" / "grade.yaml"
-    replay_grade = yaml.safe_load(replay_grade_path.read_text())
-    assert replay_grade["judge_custom_prompt"] is True
+    replay_dir = source / "replays" / "live" / "trials" / "refund_task" / "0"
+    replay_inputs = yaml.safe_load((replay_dir / "judge_inputs.yaml").read_text())
+    assert replay_inputs["customization"]["system_prompt"].startswith(
+        "You are a meticulous refund auditor."
+    )

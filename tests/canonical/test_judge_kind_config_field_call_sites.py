@@ -35,7 +35,6 @@ import pytest
 from tests.canonical._factories import make_trajectory
 from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
-from tolokaforge.core.grading.judge_transcript import TranscriptEvidence
 from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
@@ -77,13 +76,11 @@ class _CallSiteProbeJudgeKind:
 
     def evaluate(self, **kwargs: Any) -> JudgeResult:
         type(self).calls.append(kwargs)
-        options = kwargs["options"]
         return JudgeResult(
             status=JudgeStatus.COMPLETED,
             usage=JudgeUsage(),
             reasons="call_site_probe reached",
             score=1.0,
-            evidence="state" if options.transcript_evidence is None else "transcript",
         )
 
 
@@ -163,12 +160,7 @@ _CUSTOMIZATION = JudgeCustomization(
 """Every field away from its default, so a dropped or defaulted one is visible."""
 
 _EXPECTED_OPTIONS = JudgeTrialOptions(
-    disable_knowledge_search=True,
-    custom_system_prompt="Grade against the probe's own voice.",
-    include_agent_system_prompt=False,
-    judge_snippet_chars=None,
-    transcript_evidence=TranscriptEvidence(tool_result_chars=500),
-    tool_effects=ToolEffects.from_schemas(_AGENT_TOOLS),
+    customization=_CUSTOMIZATION, tool_effects=ToolEffects.from_schemas(_AGENT_TOOLS)
 )
 
 _LOOSE_OPTION_KEYWORDS = frozenset(
@@ -260,11 +252,12 @@ def test_runner_side_composite_reads_judge_kind_and_forwards_kind_config_verbati
             ),
             service._loop,
         )
-        result = fut.result(timeout=5.0)
+        grading = fut.result(timeout=5.0)
     finally:
         service.shutdown()
 
-    assert result.reasons == "call_site_probe reached"
+    assert grading.result.reasons == "call_site_probe reached"
+    assert grading.customization == _CUSTOMIZATION
     assert len(_CallSiteProbeJudgeKind.calls) == 1
     passed_kind_config = _CallSiteProbeJudgeKind.calls[0]["kind_config"]
     # Pydantic coerces dict[str, Any] into a fresh dict on model construction,
@@ -476,8 +469,8 @@ def test_offline_replay_reads_judge_kind_and_forwards_the_recorded_options(
 ) -> None:
     """Offline replay (:func:`replay_trial` over :func:`read_replay_inputs`) reads the
     kind and every option from the recorded bundle and hands the kind one
-    :class:`JudgeTrialOptions`. Replay's knowledge-search gate is the bundle's
-    recorded ``judge_kb_gating``, so the bundle records the gate it ran under."""
+    :class:`JudgeTrialOptions`, its customization the bundle's
+    ``judge_inputs.yaml`` record."""
     from tolokaforge.core.grading.replay import read_replay_inputs, replay_trial
     from tolokaforge.core.models import Grade, GradeComponents, JudgeInputs, JudgeKbGating
     from tolokaforge.core.models import JudgeStatus as JudgeStatusEnum
@@ -528,8 +521,8 @@ def test_offline_replay_reads_judge_kind_and_forwards_the_recorded_options(
             score=1.0,
             components=GradeComponents(llm_judge=1.0),
             judge_status=JudgeStatusEnum.COMPLETED,
-            judge_inputs=JudgeInputs(read_tools_offered=[]),
-            judge_kb_gating=JudgeKbGating(knowledge_search_disabled=True, offered=[], withheld=[]),
+            judge_inputs=JudgeInputs(read_tools_offered=[], customization=_CUSTOMIZATION),
+            judge_kb_gating=JudgeKbGating(offered=[], withheld=[]),
         ),
     )
 

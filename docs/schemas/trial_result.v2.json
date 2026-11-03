@@ -246,43 +246,6 @@
           "default": null,
           "title": "Custom Checks Details"
         },
-        "judge_agent_prompt_included": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Judge Agent Prompt Included"
-        },
-        "judge_custom_prompt": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Judge Custom Prompt"
-        },
-        "judge_evidence": {
-          "anyOf": [
-            {
-              "const": "transcript",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Judge Evidence"
-        },
         "judge_inputs": {
           "anyOf": [
             {
@@ -527,10 +490,93 @@
       "title": "GradingStateSnapshots",
       "type": "object"
     },
+    "JudgeCustomization": {
+      "additionalProperties": false,
+      "description": "Judge tool-surface customization, sibling of ``rubric`` under ``llm_judge``.\n\nTri-state ``disable_knowledge_search``: ``None`` (unset) means the faithful\ndefault (the judge is offered whatever knowledge-search tools the agent had);\n``True`` withholds every knowledge-search tool from the judge's surface;\n``False`` explicitly keeps them (so a task can override a project default that\ndisabled them). Layered project \u2192 task \u2192 run (``grader.judge``) \u2192 replay\n(``--grading``) by :func:`~tolokaforge.core.project_loader.layer_judge_customization`.\n\n``system_prompt`` replaces the default judge system-prompt body; the harness\nalways appends the marker contract, so a custom prompt can never break\n``submit_report`` validation. ``None`` (unset) keeps the default prompt; a task\nsets ``null`` to reset a project-level custom prompt back to the default. An\nempty or whitespace-only string is rejected at load \u2014 a marker-only prompt is\nalmost certainly a mistake.\n\nTri-state ``include_agent_system_prompt``: ``None`` (unset) and ``True`` both\nembed the agent's policy / system prompt in the judge's opening-message\nevidence (today's behaviour); ``False`` omits that section so a self-contained\nrubric grades without the agent's framing. Evidence gating, distinct from\n``system_prompt`` (which is the judge's own wording). A task sets ``true`` or\n``null`` to re-include over a project ``false``.\n\n``judge_snippet_chars`` is how much of each hit the judge's ``search_kb`` shows:\nthe first that many characters (``200`` by default), or ``null`` for whole\ndocuments \u2014 what a ``bm25`` task whose rubric reads a document's exact wording\nneeds. Not tri-state: ``null`` is a value, so a task resets a project's figure\nby writing ``200``. Left off the dump at its default\n(:attr:`OMITTED_AT_DEFAULT`), so a task that declares nothing serialises\nwithout it and an older image, which forbids a key it does not declare,\naccepts it.\n\n``evidence`` is what the judge grades from. ``state`` (the default) grades\nfrom the ``initial \u2192 final`` state diff and the read-only DB and workspace\ntools. ``transcript`` withholds every view of the final state: the judge reads\nthe transcript with each tool result numbered ``[call N]`` and cut at\n``transcript_tool_chars`` characters, the agent's calls that can change state\nwith how each ended, and ``show_call``, which returns a cut result in full. A\ncall can change state unless its tool's ``mutates_state`` declaration\n(:attr:`ToolSchema.mutates_state`, ADR-0061) says it reads. ``transcript_tool_chars``\nis read by the ``transcript`` judge alone and is inert under ``state``. Both are\nleft off the dump at their default.\n\n:func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns\na customization into the\n:class:`~tolokaforge.core.grading.judge_kinds.JudgeTrialOptions` a judge kind\nreceives.",
+      "properties": {
+        "disable_knowledge_search": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disable Knowledge Search"
+        },
+        "evidence": {
+          "default": "state",
+          "enum": [
+            "state",
+            "transcript"
+          ],
+          "title": "Evidence",
+          "type": "string"
+        },
+        "include_agent_system_prompt": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Include Agent System Prompt"
+        },
+        "judge_snippet_chars": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 200,
+          "title": "Judge Snippet Chars"
+        },
+        "system_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System Prompt"
+        },
+        "transcript_tool_chars": {
+          "default": 2000,
+          "minimum": 1,
+          "title": "Transcript Tool Chars",
+          "type": "integer"
+        }
+      },
+      "title": "JudgeCustomization",
+      "type": "object"
+    },
     "JudgeInputs": {
       "additionalProperties": false,
-      "description": "The judge's non-derivable ``LLMJudge.run()`` inputs, recorded for offline replay.\n\nThe transcript, agent policy, rubric, and judge model are already structured in\nsibling artifacts (``trajectory.yaml``, ``prompts.yaml``, ``task.yaml``); this\nrecords only what a replay cannot otherwise reconstruct: the exact\n``state_diff`` string the judge saw (``None`` when no diff was built) and its\nnon-KB read-tool surface (``get_db_state`` / ``query_db`` / ``read_file`` \u2014 the\nKB surface lives in :class:`JudgeKbGating`). Written to a sidecar\n``judge_inputs.yaml``, never inlined in ``grade.yaml`` (the diff can be large).\nSee docs/OUTPUT_FORMAT.md.",
+      "description": "The judge's non-derivable ``LLMJudge.run()`` inputs, recorded for offline replay.\n\nThe transcript, agent policy, rubric, and judge model are already structured in\nsibling artifacts (``trajectory.yaml``, ``prompts.yaml``, ``task.yaml``); this\nrecords only what a replay cannot otherwise reconstruct: the exact\n``state_diff`` string the judge saw (``None`` when no diff was built), its\nnon-KB read-tool surface (``get_db_state`` / ``query_db`` / ``read_file`` \u2014 the\nKB surface lives in :class:`JudgeKbGating`), and the effective\n``customization`` the judge graded under, after the project, task and run\nlayers (``None`` only from a sender that predates the record). Written to a\nsidecar ``judge_inputs.yaml``, never inlined in ``grade.yaml`` (the diff can be\nlarge). See docs/OUTPUT_FORMAT.md.",
       "properties": {
+        "customization": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JudgeCustomization"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "read_tools_offered": {
           "items": {
             "type": "string"
@@ -556,12 +602,8 @@
     },
     "JudgeKbGating": {
       "additionalProperties": false,
-      "description": "The rubric judge's knowledge-search gating for this trial (host-side model).\n\nKept distinct from :class:`JudgeUsage` (which stays strictly token/cost\naccounting): this is the audit + replay record of *which* KB tools the judge\nwas offered and which config withheld. ``knowledge_search_disabled`` is the\nauthoritative replay signal \u2014 ``True`` means\n``grading.llm_judge.customization.disable_knowledge_search`` withheld KB,\nregardless of whether the agent had a KB tool this trial. ``offered`` /\n``withheld`` are supporting audit detail; an empty ``withheld`` on a disabled\njudge means the agent had no KB tool to gate.",
+      "description": "The rubric judge's knowledge-search surface for this trial (host-side model).\n\nKept distinct from :class:`JudgeUsage` (which stays strictly token/cost\naccounting): this is the audit + replay record of *which* KB tools the judge\nwas offered and which the customization withheld. An empty ``withheld`` on a\njudge whose customization disabled knowledge search means the agent had no KB\ntool to gate; the setting itself is ``judge_inputs.customization``.",
       "properties": {
-        "knowledge_search_disabled": {
-          "title": "Knowledge Search Disabled",
-          "type": "boolean"
-        },
         "offered": {
           "items": {
             "type": "string"
@@ -578,7 +620,6 @@
         }
       },
       "required": [
-        "knowledge_search_disabled",
         "offered",
         "withheld"
       ],

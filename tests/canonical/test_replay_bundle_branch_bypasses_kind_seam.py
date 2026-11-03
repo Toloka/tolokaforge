@@ -23,15 +23,15 @@ from tolokaforge.core.grading import replay as replay_mod
 from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
+    CustomizationRecord,
     FidelityMode,
-    KnowledgeSearchMode,
     ProvenanceSource,
     ReplayInputs,
     ReplayProvenance,
     replay_trial,
 )
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.runner.models import Criterion, Rubric
+from tolokaforge.runner.models import Criterion, JudgeCustomization, Rubric
 
 pytestmark = pytest.mark.canonical
 
@@ -61,13 +61,10 @@ def _provenance() -> ReplayProvenance:
         judge_model="openrouter/openai/gpt-4.1-mini",
         judge_model_source=ProvenanceSource.RECORDED,
         rubric_source=ProvenanceSource.RECORDED,
-        knowledge_search_mode=KnowledgeSearchMode.RECORDED,
-        knowledge_search_disabled=False,
-        custom_system_prompt=False,
-        custom_prompt_source=None,
+        customization=JudgeCustomization(),
+        customization_sources={},
+        customization_record=CustomizationRecord.JUDGE_INPUTS,
         judge_prompt_source=None,
-        include_agent_system_prompt=True,
-        agent_prompt_source=None,
         fidelity_mode=FidelityMode.FULL,
         judge_kind="single_shot_rubric",
         judge_kind_source=ProvenanceSource.RECORDED,

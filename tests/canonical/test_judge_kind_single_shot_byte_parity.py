@@ -186,9 +186,6 @@ def test_single_shot_kind_matches_rubric_evaluator_field_by_field() -> None:
     assert pre.criterion_results == new.criterion_results
     assert pre.kb_tools_offered == new.kb_tools_offered
     assert pre.kb_tools_withheld == new.kb_tools_withheld
-    assert pre.knowledge_search_disabled == new.knowledge_search_disabled
-    assert pre.custom_system_prompt == new.custom_system_prompt
-    assert pre.include_agent_system_prompt == new.include_agent_system_prompt
     assert pre.read_tools_offered == new.read_tools_offered
     assert pre.state_diff == new.state_diff
     assert pre.transcript == new.transcript

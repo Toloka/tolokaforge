@@ -24,17 +24,17 @@ Bundle-native replay side:
     (4) Recorded ``judge_prompt`` is reused byte-for-byte: no doubled marker,
         provenance stamped ``bundle``.
     (5) Bundle with no ``judge_prompt`` key but a recorded ``customization.
-        system_prompt``: replay falls through to the legacy resolver and composes
-        at run time; provenance stamps ``custom_prompt_source == "recorded"``.
+        system_prompt``: replay composes the recorded body at run time;
+        provenance stamps ``customization_sources.system_prompt == "recorded"``.
     (6) Bundle with no ``judge_prompt`` key and no customisation anywhere:
-        replay grades under the engine default and stamps every prompt source
-        ``None`` — the one-way ``BUNDLE ⟹ (no legacy source)`` implication on
+        replay grades under the engine default and stamps no prompt source — the
+        one-way ``BUNDLE ⟹ (no system_prompt source)`` implication on
         ``ReplayProvenance`` admits this shape (a biconditional would red it).
     (7) Mutual-exclusion invariants: ``LLMJudge(explicit_system_prompt=...,
         custom_system_prompt=...)`` refuses construction, and
-        ``ReplayProvenance(judge_prompt_source=BUNDLE, custom_prompt_source=
-        RECORDED, custom_system_prompt=True)`` refuses validation — bundle-source
-        with legacy-source together is a caller bug.
+        ``ReplayProvenance(judge_prompt_source=BUNDLE)`` beside a
+        ``system_prompt`` source refuses validation — the bundle prompt standing
+        in for a customization body that is also in effect is a caller bug.
 
 The write path is driven end-to-end: ``InProcessConductor._write_artifacts``
 runs against a real ``FileArtifactWriter``, a real ``GradingConfig`` carrying an
@@ -65,8 +65,8 @@ from tests.utils.conductor_phases import (
 )
 from tolokaforge.core.grading.judge import LLMJudge
 from tolokaforge.core.grading.replay import (
+    CustomizationRecord,
     FidelityMode,
-    KnowledgeSearchMode,
     ProvenanceSource,
     ReplayProvenance,
     read_replay_inputs,
@@ -290,8 +290,8 @@ def _write_replay_bundle(
         )
     else:
         # Pre-`judge_prompt` bundle shape — hand-written to omit the ``judge_prompt``
-        # key entirely, so ``_resolve_bundle_judge_prompt`` sees an absent key
-        # and falls through to the legacy resolver.
+        # key entirely, so ``_recorded_judge_prompt`` sees an absent key
+        # and replay composes the resolved system_prompt.
         (trial_dir / "prompts.yaml").write_text(
             yaml.safe_dump(
                 {
@@ -339,7 +339,7 @@ def _replay(tmp_path: Path, trial_dir: Path) -> tuple[ScriptedClient, Path]:
     own transcript can be reloaded from YAML — the same shape a real batch
     replay produces. Returns the scripted client (its ``seen_system`` records
     the composed prompt handed to the judge) and the replay-artifact dir."""
-    inputs = read_replay_inputs(trial_dir, knowledge_search=KnowledgeSearchMode.OFF)
+    inputs = read_replay_inputs(trial_dir)
     client = _submit_report_client()
     result = replay_trial(inputs, judge_client=client)
 
@@ -347,7 +347,7 @@ def _replay(tmp_path: Path, trial_dir: Path) -> tuple[ScriptedClient, Path]:
     dest.mkdir(parents=True, exist_ok=True)
     from tolokaforge.core.grading.replay import build_replay_grade  # local — no re-export
 
-    FileArtifactWriter().write_grade(dest, build_replay_grade(result))
+    FileArtifactWriter().write_grade(dest, build_replay_grade(result, inputs.options.customization))
     (dest / "replay_provenance.yaml").write_text(
         yaml.safe_dump(
             inputs.provenance.model_dump(mode="json"),
@@ -390,22 +390,20 @@ def test_bundle_recorded_judge_prompt_is_reused_verbatim_with_no_doubled_marker(
 
     provenance = _load_replay_provenance(dest)
     assert provenance["judge_prompt_source"] == "bundle"
-    assert provenance["custom_prompt_source"] is None
-    assert provenance["custom_system_prompt"] is False
+    assert "system_prompt" not in provenance["customization_sources"]
+    assert provenance["customization"]["system_prompt"] is None
 
 
-def test_legacy_bundle_customized_body_falls_through_to_the_legacy_resolver(
+def test_a_bundle_without_a_judge_prompt_composes_the_recorded_body(
     tmp_path: Path,
 ) -> None:
     """A pre-`judge_prompt` bundle (no ``judge_prompt`` key) with a recorded
-    ``customization.system_prompt`` falls through to the legacy composer: the
-    body is composed at run time (marker appended once), and provenance stamps
-    the legacy source.
+    ``customization.system_prompt``: the body is composed at run time (marker
+    appended once), and provenance stamps it recorded.
 
-    Locks that the bundle path returning ``(None, None)`` really does fall
-    through to ``_resolve_custom_prompt`` and its downstream composition —
-    a regression that eagerly stamped ``judge_prompt_source`` would trigger
-    the mutual-exclusion validator and red this trial."""
+    Locks that a bundle recording no composed prompt really does compose the
+    recorded body — a regression that eagerly stamped ``judge_prompt_source``
+    would trigger the mutual-exclusion validator and red this trial."""
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_replay_bundle(
         trial_dir,
@@ -423,22 +421,22 @@ def test_legacy_bundle_customized_body_falls_through_to_the_legacy_resolver(
 
     provenance = _load_replay_provenance(dest)
     assert provenance["judge_prompt_source"] is None
-    assert provenance["custom_prompt_source"] == "recorded"
-    assert provenance["custom_system_prompt"] is True
+    assert provenance["customization_sources"]["system_prompt"] == "recorded"
+    assert provenance["customization"]["system_prompt"] == "LEGACY BODY."
 
 
 def test_legacy_bundle_with_no_customization_replays_under_the_engine_default(
     tmp_path: Path,
 ) -> None:
     """A pre-`judge_prompt` bundle with NO recorded customisation anywhere replays
-    under the engine default and stamps every prompt source ``None`` — the
-    one-way ``BUNDLE ⟹ no-legacy-source`` implication on ``ReplayProvenance``
+    under the engine default and stamps no prompt source — the one-way
+    ``BUNDLE ⟹ no system_prompt source`` implication on ``ReplayProvenance``
     admits this shape.
 
     The regression this test locks against is a mistaken biconditional
-    formalisation of the implication: a strict ``iff`` (``bundle IFF no
-    legacy source``) would reject the all-None shape a legitimate legacy
-    default-prompt trial produces, and every such replay would red."""
+    formalisation of the implication: a strict ``iff`` would reject the
+    source-less shape a default-prompt trial produces, and every such replay
+    would red."""
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_replay_bundle(
         trial_dir,
@@ -455,8 +453,8 @@ def test_legacy_bundle_with_no_customization_replays_under_the_engine_default(
 
     provenance = _load_replay_provenance(dest)
     assert provenance["judge_prompt_source"] is None
-    assert provenance["custom_prompt_source"] is None
-    assert provenance["custom_system_prompt"] is False
+    assert provenance["customization_sources"] == {}
+    assert provenance["customization"]["system_prompt"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -476,28 +474,18 @@ def test_llm_judge_construction_refuses_both_explicit_and_custom_system_prompts(
         )
 
 
-def test_replay_provenance_refuses_bundle_source_beside_a_legacy_source() -> None:
-    """Stamping both a bundle source AND a legacy source together is a caller
-    bug — the bundle-recorded composed prompt supersedes any legacy
-    customization, so the two cannot coexist on a coherent stamp. The one-way
-    validator rejects the impossible shape; the pre-existing
-    ``_custom_prompt_fields_coherent`` biconditional it composes with still
-    holds (both ``custom_system_prompt`` and ``custom_prompt_source`` name a
-    legacy source, so they pass that check but fail this one)."""
-    with pytest.raises(
-        ValidationError,
-        match="judge_prompt_source=BUNDLE forbids any legacy custom-prompt source",
-    ):
+def test_replay_provenance_refuses_bundle_source_beside_a_system_prompt_source() -> None:
+    """Stamping a bundle source AND a ``system_prompt`` source together is a caller
+    bug — the bundle-recorded composed prompt stands in for the customization's
+    body, so the two cannot coexist on a coherent stamp."""
+    with pytest.raises(ValidationError, match="judge_prompt_source=bundle forbids"):
         ReplayProvenance(
             judge_model="openrouter/openai/gpt-4.1-mini",
             judge_model_source=ProvenanceSource.RECORDED,
             rubric_source=ProvenanceSource.RECORDED,
-            knowledge_search_mode=KnowledgeSearchMode.OFF,
-            knowledge_search_disabled=True,
-            custom_system_prompt=True,
-            custom_prompt_source=ProvenanceSource.RECORDED,
+            customization=JudgeCustomization(system_prompt="LEGACY BODY."),
+            customization_sources={"system_prompt": ProvenanceSource.RECORDED},
+            customization_record=CustomizationRecord.JUDGE_INPUTS,
             judge_prompt_source=ProvenanceSource.BUNDLE,
-            include_agent_system_prompt=True,
-            agent_prompt_source=None,
             fidelity_mode=FidelityMode.FULL,
         )

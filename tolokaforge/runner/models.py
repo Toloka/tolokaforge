@@ -2407,7 +2407,8 @@ class JudgeCustomization(BaseModel):
     default (the judge is offered whatever knowledge-search tools the agent had);
     ``True`` withholds every knowledge-search tool from the judge's surface;
     ``False`` explicitly keeps them (so a task can override a project default that
-    disabled them). Layered project→task by :func:`resolve_effective_judge_customization`.
+    disabled them). Layered project → task → run (``grader.judge``) → replay
+    (``--grading``) by :func:`~tolokaforge.core.project_loader.layer_judge_customization`.
 
     ``system_prompt`` replaces the default judge system-prompt body; the harness
     always appends the marker contract, so a custom prompt can never break

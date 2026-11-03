@@ -877,7 +877,9 @@ redaction stamp alone, where the caller wrote no metrics of its own (see
 [`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)) —
 such a bundle is refused offline anyway. Generation 8 bundles record each tool's
 `mutates_state` declaration on its
-[`tools_schemas.yaml`](#trialstask_idtrial_indextools_schemasyaml) entry.
+[`tools_schemas.yaml`](#trialstask_idtrial_indextools_schemasyaml) entry, and the
+judge customization a trial was graded under as
+[`judge_inputs.yaml`](#trialstask_idtrial_indexjudge_inputsyaml) `customization`.
 Generation 7 bundles record what became
 of the reasoning the trial was billed for: `reasoning_recovered_by_fallback`,
 `reasoning_channel_unknown`, `reasoning_replay_dropped`, and `capture_only` on
@@ -1515,12 +1517,9 @@ judge_usage:                    # the judge's OWN token spend; null unless an LL
   billed_cost_usd: 0.0142      # what the providers stated they charged; null unless every call stated it
   tool_calls: 4
   consistency_rejections: 0    # submit_report attempts rejected for a verdict/justification mismatch
-judge_kb_gating:                # the judge's knowledge-search gating; null unless an LLM judge ran
-  knowledge_search_disabled: false  # config withheld the judge's KB tools (authoritative replay signal)
-  offered: [search_kb]         # KB-tagged tools the judge was offered (audit detail)
-  withheld: []                 # KB-tagged tools withheld by config (audit detail)
-judge_custom_prompt: false      # null (no judge) | false (default prompt) | true (custom prompt)
-judge_agent_prompt_included: true  # null (no judge) | false (agent policy gated out) | true (included)
+judge_kb_gating:                # the judge's knowledge-search surface; null unless an LLM judge ran
+  offered: [search_kb]         # KB-tagged tools the judge was offered
+  withheld: []                 # KB-tagged tools its customization withheld
 synthesized_by_termination_reason: null  # null on every grade produced by a real evaluator;
                                 # named ``TerminationReason`` (e.g. ``stuck_detected``,
                                 # ``context_window_exceeded``, ``error``) when a
@@ -1624,9 +1623,8 @@ so a gate can never open by omission.
 
 ### Rubric-judge fields
 
-`criterion_results`, `judge_status`, `judge_usage`, `judge_kb_gating`,
-`judge_custom_prompt`, and `judge_agent_prompt_included` are populated only when an
-LLM rubric judge ran (`grading.llm_judge` configured). See
+`criterion_results`, `judge_status`, `judge_usage`, and `judge_kb_gating` are
+populated only when an LLM rubric judge ran (`grading.llm_judge` configured). See
 [`docs/GRADING.md`](GRADING.md) for the rubric mechanism and the two weighting
 layers.
 
@@ -1654,36 +1652,18 @@ layers.
   unless every call stated one (or the runner image predates the field);
   `cost_usd` stays the eval's own figure. A `grade.yaml` written before it existed has no such key and loads it
   as `null`.
-* `judge_kb_gating` — the judge's knowledge-search gating for this trial,
-  kept separate from `judge_usage` (which stays strictly token/cost).
-  `knowledge_search_disabled` is the **authoritative signal**:
-  `true` means `grading.llm_judge.customization.disable_knowledge_search`
-  withheld the judge's KB tools, regardless of whether the agent had any KB
-  tool. `offered` and `withheld` are supporting audit detail — the KB-tagged
-  tools the judge actually got, and those config withheld. An empty
-  `withheld` on a disabled judge means the agent had no KB tool to gate. See
+* `judge_kb_gating` — the judge's knowledge-search surface for this trial,
+  kept separate from `judge_usage` (which stays strictly token/cost): the
+  KB-tagged tools the judge actually got (`offered`) and those its customization
+  withheld (`withheld`). An empty `withheld` under
+  `customization.disable_knowledge_search: true` means the agent had no KB tool
+  to gate. The customization the judge graded under — its system prompt,
+  knowledge-search and agent-policy settings, evidence — is recorded once, in
+  [`judge_inputs.yaml`](#trialstask_idtrial_indexjudge_inputsyaml), not echoed
+  here; the composed system prompt itself is
+  [`prompts.yaml`](#trialstask_idtrial_indexpromptsyaml)'s `judge_prompt` key. See
   [`docs/GRADING.md`](GRADING.md#judge-kb-faithfulness).
-* `judge_custom_prompt` — whether the judge ran with a custom system-prompt
-  body (`grading.llm_judge.customization.system_prompt`). Tri-state: `null`
-  when no judge ran, `false` when the judge used the default prompt, `true`
-  when a custom prompt replaced the default body (the marker contract is always
-  appended regardless). The composed prompt itself is recorded in
-  [`prompts.yaml`](#trialstask_idtrial_indexpromptsyaml)'s `judge_prompt` key,
-  so a reviewer sees the exact text the judge ran under without opening
-  `task.yaml`. The bool remains a fast filter for analytics dashboards; the
-  string is the auditable evidence.
-  See [`docs/GRADING.md`](GRADING.md#customizing-the-judges-system-prompt).
-* `judge_agent_prompt_included` — whether the harness embedded the agent's policy /
-  system prompt in the judge's opening-message evidence
-  (`grading.llm_judge.customization.include_agent_system_prompt`). Tri-state: `null`
-  when no judge ran, `false` when the agent policy was gated out of the judge's
-  evidence, `true` when it was included. Records the effective *setting*, not
-  whether a block physically appeared — a trial with an empty agent prompt still
-  reads `true` under the default. See
-  [`docs/GRADING.md`](GRADING.md#gating-the-agents-policy-out-of-the-judges-evidence).
-* `judge_evidence` — `transcript` when a
-  [transcript-only judge](GRADING.md#transcript-only-judge) graded the trial; the key is
-  absent for a judge over the final state and when no judge ran.
+
 ### Custom-checks fields
 
 `components.custom_checks` and `custom_checks_details` are populated only when
@@ -1819,6 +1799,10 @@ state_diff_text: |
 read_tools_offered:
   - get_db_state
   - query_db
+customization:
+  disable_knowledge_search: null
+  system_prompt: Grade strictly against the refund policy.
+  include_agent_system_prompt: false
 ```
 
 * `state_diff_text` — the exact `initial → final` state-delta string the
@@ -1832,6 +1816,15 @@ read_tools_offered:
   and `read_file` (a workspace existed). The KB read surface lives in
   `grade.yaml` `judge_kb_gating`. A replay declares which of these live
   backends it must shim offline.
+* `customization` — the effective
+  [judge customization](CONFIG.md#grading-specification-gradingyaml) the trial was graded under, after
+  the project `grading_defaults`, the task's own block and, for the `judge_only`
+  grader, the run-level `grader.judge` layer. Keys at their default may be left
+  out. Written by the code that resolved the judge's options, so it is the value
+  the judge ran with, not a copy of the task's config. Offline replay layers a
+  `--grading` customization over it. `null` only on a bundle written before the
+  record existed, which replay reads from `task.yaml` instead (see
+  [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#judge-customization)).
 
 ## `trials/{task_id}/{trial_index}/logs.yaml`
 
@@ -1885,55 +1878,35 @@ How one trial's replay inputs were resolved:
 judge_model: openrouter/openai/gpt-4.1-mini
 judge_model_source: override        # or "recorded"
 rubric_source: recorded             # or "override"
-knowledge_search_mode: recorded     # recorded | on | off
-knowledge_search_disabled: false
-custom_system_prompt: false         # whether a legacy custom body fragment was in effect
-custom_prompt_source: null          # "recorded" | "override" | null (default prompt or bundle-recorded)
-judge_prompt_source: bundle         # "bundle" | null — bundle-recorded composed prompt path
-include_agent_system_prompt: true   # whether the agent policy was embedded in the judge's evidence
-agent_prompt_source: null           # "recorded" | "override" | null (defaulted to include)
-judge_snippet_chars: 200            # characters of each hit the judge's search_kb showed; null = whole documents
-judge_snippet_chars_source: null    # "recorded" | "override" | null (defaulted to 200)
-judge_evidence: state               # "state" | "transcript": what the judge graded from
-judge_evidence_source: null         # "recorded" | "override" | null (defaulted to state)
-judge_evidence_mode: recorded       # the --evidence value: recorded | state | transcript
+customization:                      # the judge customization the replay graded under
+  disable_knowledge_search: true
+  system_prompt: null
+  include_agent_system_prompt: false
+customization_sources:              # dotted key path -> the layer that set it; absent = default
+  disable_knowledge_search: override
+  include_agent_system_prompt: recorded
+customization_record: judge_inputs  # "judge_inputs" | "task_yaml" (a bundle predating the record)
+judge_prompt_source: bundle         # "bundle" | null — the bundle's composed prompt used verbatim
 fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)
+judge_kind: single_shot_rubric
+judge_kind_source: recorded
 ```
 
-`judge_prompt_source` names how the judge's system prompt was resolved: `bundle`
-when replay used the composed prompt recorded in the bundle's
-[`prompts.yaml`](#trialstask_idtrial_indexpromptsyaml) `judge_prompt` key
-verbatim (no re-composition), or `null` when replay fell back to the legacy
-task.yaml / `--grading` customization path (which composes at run time). The
-two prompt sources are mutually exclusive: on a `bundle`-sourced trial
-`custom_system_prompt` is always `false` and `custom_prompt_source` is `null`;
-on a legacy-sourced trial `judge_prompt_source` is `null` and
-`custom_system_prompt` / `custom_prompt_source` name whether and where a body
-fragment was recorded (`recorded`) or supplied by override (`override`).
+`customization` is the recorded customization (`customization_record`) with the
+`--grading` override's `llm_judge.customization` layered over it key by key: a key
+the override sets carries `override` in `customization_sources`, one only the
+record sets carries `recorded`, and a key neither sets is absent there and holds its
+default. A rubric-only override therefore leaves every key `recorded`.
+`customization_record: task_yaml` marks a bundle without `judge_inputs.yaml
+customization`, read from `task.yaml`, which misses a run-level `grader.judge`
+layer.
 
-`custom_system_prompt` / `custom_prompt_source` are resolved independently of the
-rubric: a `--grading` override replaces the body fragment only when it carries
-its own `llm_judge.customization.system_prompt`, so a rubric-only override over a
-custom-prompted legacy bundle reads `rubric_source: override` while
-`custom_prompt_source: recorded`. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
-
-`include_agent_system_prompt` / `agent_prompt_source` follow the same independent
-resolution for the agent-policy gating: a `--grading` override flips the gating only
-when it carries its own `llm_judge.customization.include_agent_system_prompt`, and
-`agent_prompt_source` is `null` exactly when the gating defaulted to include (no
-recorded value, no override). See
-[`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#agent-policy-evidence-gating).
-
-`judge_snippet_chars` / `judge_snippet_chars_source` resolve the same way: a
-`--grading` override sets the length only when it carries its own
-`llm_judge.customization.judge_snippet_chars` (`null` included), and
-`judge_snippet_chars_source` is `null` exactly when the length defaulted to `200`.
-
-`judge_evidence` / `judge_evidence_source` resolve the same way from
-`llm_judge.customization.evidence`: a `--grading` override sets it only when it carries
-its own `evidence` (and takes `transcript_tool_chars` with it),
-`--evidence state|transcript` forces it (`judge_evidence_source: override`), and
-`judge_evidence_source` is `null` exactly when the judge defaulted to `state`.
+`judge_prompt_source` is `bundle` when replay used the composed prompt recorded in
+the bundle's [`prompts.yaml`](#trialstask_idtrial_indexpromptsyaml) `judge_prompt`
+key verbatim (no re-composition): the prompt in effect was the one it was composed
+from. The bundle prompt then stands in for `customization.system_prompt`, which is
+`null` with no source. `null` when replay composed the resolved `system_prompt` at
+run time. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#judge-system-prompt).
 
 ### `replay_report.yaml`
 

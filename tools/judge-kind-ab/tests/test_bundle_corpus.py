@@ -241,7 +241,7 @@ def test_a_transcript_judges_bundle_builds_no_state_diff_and_reads_the_agent_too
     entry = corpus_entry_from_bundle(out_dir)
 
     assert entry.state_diff is None
-    assert entry.options.transcript_evidence is not None
+    assert entry.options.customization.evidence == "transcript"
     assert entry.options.tool_effects.can_change_state("get_seat", "{}") is False
     assert entry.options.tool_effects.can_change_state("move_seat", "{}") is True
 

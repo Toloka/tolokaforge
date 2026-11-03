@@ -940,6 +940,13 @@ declares one for every task through a `task_defaults.tools.<actor>.<name>` block
 which reaches only the tasks that enable the tool. See
 [GRADING.md](GRADING.md#transcript-only-judge).
 
+The project and task layers are the first two of the customization's layers. The
+run-level `grader.judge` block of the `judge_only` grader lays a third over them
+([GRADER_SERVICE.md](GRADER_SERVICE.md)), and `tolokaforge rejudge --grading` a
+fourth over the result a trial recorded
+([JUDGE_REPLAY.md](JUDGE_REPLAY.md#judge-customization)) — one layering, key by key,
+throughout.
+
 ### Full override — replace entirely
 
 Some fields replace instead of merge:

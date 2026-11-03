@@ -497,10 +497,10 @@ message JudgeReport {
   double cost_usd = 5;         // the judge's own spend, as the eval prices it
   int32 tool_calls = 6;        // read-only tool calls the judge made
   string transcript_json = 7;  // judge message transcript (audit channel), JSON
-  // fields 8-15: verdict-consistency rejections, the knowledge-search gating, the
-  // replay inputs and the prompt customisation (see runner.proto); 16 is reserved
+  // fields 8, 10-13: verdict-consistency rejections, the KB tools offered / withheld
+  // and the replay inputs (see runner.proto); 9, 14, 15 and 16 are reserved
   optional double billed_cost_usd = 17;  // what the providers stated they charged; absent unless every call stated one
-  optional string judge_evidence = 19;  // "transcript" for a transcript judge; absent for a state judge
+  string customization_json = 18;  // the effective JudgeCustomization, as JSON; "" from a runner predating it
 }
 
 message GradeComponents {
@@ -979,13 +979,16 @@ the sentinel **`-1.0`**. `trace_checks` uses **explicit presence** (proto3
 it omits the field, and proto3 would decode that omission as `0.0` — recording a
 scored zero for a runner that cannot evaluate trace checks at all. The
 `RegisterTrial` version lock does not cover this direction, because a newer
-engine registers happily against an older runner. `include_agent_system_prompt`
-and `billed_cost_usd` on `JudgeReport` and `Grade.trace_checks_summary` carry the
-same reasoning (an absent `billed_cost_usd` reads back as "no complete charge
+engine registers happily against an older runner. `billed_cost_usd` on
+`JudgeReport` and `Grade.trace_checks_summary` carry the same reasoning (an absent `billed_cost_usd` reads back as "no complete charge
 stated", never as a bill of `0.0`): the
 summary is a *message* so that an absent one is distinguishable from one
 reporting that no gate failed, which is the difference between "this runner
 cannot evaluate a gate" and "the gate held".
+
+`JudgeReport.customization_json` reaches the same answer without presence: an
+older runner sends the empty string, which the host reads as no record, never as
+a default customization, so replay falls back to `task.yaml` and says so.
 
 The host reads presence, not just the value, so three things all reach `None`:
 the `-1.0` sentinel, an absent `components` submessage, and a presence-carrying

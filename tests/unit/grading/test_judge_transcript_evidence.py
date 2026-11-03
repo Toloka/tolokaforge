@@ -25,7 +25,6 @@ import pytest
 import yaml
 
 from tests.unit.grading.test_judge import MessageCapturingClient, ScriptedClient
-from tests.utils.wire_grades import lower_wire_grade
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.conductor import _with_mutates_state
 from tolokaforge.core.grading.composite import (
@@ -43,15 +42,13 @@ from tolokaforge.core.grading.judge_transcript import (
     TranscriptEvidence,
     call_result_head,
     number_tool_results,
+    resolve_transcript_evidence,
     state_changing_calls,
 )
 from tolokaforge.core.grading.transcript_wire import (
     encode_transcript_wire,
 )
 from tolokaforge.core.models import (
-    Grade,
-    GradeComponents,
-    JudgeInputs,
     Message,
     MessageRole,
     ModelConfig,
@@ -59,15 +56,9 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
-from tolokaforge.core.models import JudgeStatus as CoreJudgeStatus
-from tolokaforge.core.models import JudgeUsage as CoreJudgeUsage
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.output_writer import TOOLS_SCHEMAS_FILENAME, TRIAL_BUNDLE_SCHEMA_VERSION
 from tolokaforge.core.tool_effects import ToolEffects
-from tolokaforge.core.trial_grader import _parse_grade_result
-from tolokaforge.grader.client import _grade_from_wire
-from tolokaforge.grader.service import _grade_to_wire
-from tolokaforge.runner import runner_pb2
 from tolokaforge.runner.models import (
     JudgeCustomization,
     LLMJudgeConfig,
@@ -567,7 +558,7 @@ def test_the_transcript_fields_are_inert_under_a_state_judge() -> None:
     customization = JudgeCustomization(transcript_tool_chars=500)
 
     assert customization.evidence == "state"
-    assert resolve_judge_trial_options(customization, agent_tools=()).transcript_evidence is None
+    assert resolve_transcript_evidence(customization) is None
 
 
 def test_the_transcript_fields_stay_off_the_dump_at_their_default() -> None:
@@ -587,12 +578,11 @@ def test_only_a_transcript_judges_options_read_the_tool_declarations() -> None:
 
     options = resolve_judge_trial_options(customization, agent_tools=tools)
 
-    assert options.transcript_evidence == TranscriptEvidence()
+    assert resolve_transcript_evidence(options.customization) == TranscriptEvidence()
     assert options.tool_effects.can_change_state("lookup_policy", "{}") is False
     state_options = resolve_judge_trial_options(JudgeCustomization(), agent_tools=tools)
-    assert state_options.transcript_evidence is None
     assert state_options.tool_effects == ToolEffects.empty()
-    assert resolve_judge_trial_options(None, agent_tools=tools).transcript_evidence is None
+    assert resolve_judge_trial_options(None, agent_tools=tools).tool_effects == ToolEffects.empty()
 
 
 # ---------------------------------------------------------------------------
@@ -605,26 +595,16 @@ class _ProbeJudgeKind:
 
     NAME: ClassVar[str] = "probe"
 
-    def __init__(self, *, honours_the_mode: bool = True) -> None:
+    def __init__(self) -> None:
         self.seen: dict[str, Any] = {}
-        self._honours_the_mode = honours_the_mode
 
     def evaluate(self, **kwargs: Any) -> JudgeResult:
         self.seen = kwargs
-        options = kwargs["options"]
-        transcript = options.transcript_evidence is not None and self._honours_the_mode
-        return JudgeResult(
-            status=JudgeStatus.COMPLETED,
-            usage=JudgeUsage(),
-            reasons="ok",
-            evidence="transcript" if transcript else "state",
-        )
+        return JudgeResult(status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok")
 
 
-def _grade(
-    config: LLMJudgeConfig, *, state_diff: str | None = None, kind: _ProbeJudgeKind | None = None
-) -> _ProbeJudgeKind:
-    kind = kind or _ProbeJudgeKind()
+def _grade(config: LLMJudgeConfig, *, state_diff: str | None = None) -> _ProbeJudgeKind:
+    kind = _ProbeJudgeKind()
     grade_llm_judge(
         trial_id="t:0",
         config=config,
@@ -656,15 +636,6 @@ def test_the_composite_hands_a_transcript_judge_no_state() -> None:
         _grade(config, state_diff="orders: 1 changed")
 
 
-def test_a_judge_kind_that_ignores_the_transcript_mode_is_refused() -> None:
-    config = LLMJudgeConfig(
-        rubric=_rubric(), customization=JudgeCustomization(evidence="transcript")
-    )
-
-    with pytest.raises(ValueError, match="without honouring options.transcript_evidence"):
-        _grade(config, kind=_ProbeJudgeKind(honours_the_mode=False))
-
-
 def test_no_state_diff_is_built_for_a_transcript_judge() -> None:
     substrate = MagicMock()
     config = LLMJudgeConfig(
@@ -693,7 +664,7 @@ def test_the_composite_hands_a_state_judge_its_state() -> None:
 
     assert judge_reads_final_state(config)
     assert seen["db_reader"] is not None and seen["state_diff"] == "orders: 1 changed"
-    assert seen["options"].transcript_evidence is None
+    assert seen["options"].customization.evidence == "state"
 
 
 # ---------------------------------------------------------------------------
@@ -785,46 +756,3 @@ def test_a_failed_call_reads_the_same_with_or_without_the_trials_records() -> No
         '[call 1] rest_call({"request": {"method": "POST", "url": "/tickets/7/comments"}})'
         " -> Error: Status: 403"
     ]
-
-
-def test_a_transcript_judge_is_recorded_as_one_over_the_runner_wire() -> None:
-    proto = runner_pb2.Grade(
-        binary_pass=True,
-        score=1.0,
-        judge_status=runner_pb2.JUDGE_STATUS_COMPLETED,
-        judge_report=runner_pb2.JudgeReport(calls=1, judge_evidence="transcript"),
-    )
-
-    grade = _parse_grade_result(lower_wire_grade(proto))
-
-    assert grade.judge_evidence == "transcript"
-
-
-def test_a_transcript_judge_is_recorded_as_one_over_the_grader_wire() -> None:
-    sent = Grade(
-        binary_pass=True,
-        score=1.0,
-        components=GradeComponents(llm_judge=1.0),
-        judge_status=CoreJudgeStatus.COMPLETED,
-        judge_usage=CoreJudgeUsage(calls=1),
-        judge_inputs=JudgeInputs(),
-        judge_evidence="transcript",
-    )
-
-    received = _parse_grade_result(_grade_from_wire(_grade_to_wire(sent)))
-
-    assert received.judge_evidence == "transcript"
-
-
-def test_a_state_judge_is_recorded_without_judge_evidence() -> None:
-    proto = runner_pb2.Grade(
-        binary_pass=True,
-        score=1.0,
-        judge_status=runner_pb2.JUDGE_STATUS_COMPLETED,
-        judge_report=runner_pb2.JudgeReport(calls=1),
-    )
-
-    grade = _parse_grade_result(lower_wire_grade(proto))
-
-    assert grade.judge_evidence is None
-    assert "judge_evidence" not in grade.model_dump()

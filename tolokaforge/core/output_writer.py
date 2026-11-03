@@ -25,7 +25,8 @@ TRIAL_BUNDLE_SCHEMA_VERSION = 8
 Version 8 bundles record each tool's ``mutates_state`` declaration (ADR-0061) as a
 top-level ``mutates_state`` on its ``tools_schemas.yaml`` entry, left out where the
 tool declares none — what an offline replay of a transcript-only judge reads to
-tell the agent's state-changing calls from its reads.
+tell the agent's state-changing calls from its reads — and the judge customization
+the trial was graded under, after every layer, as ``judge_inputs.yaml customization``.
 
 Version 7 bundles carry what became of the reasoning the run was billed for:
 ``reasoning_recovered_by_fallback`` on ``metrics``, ``reasoning_channel_unknown``

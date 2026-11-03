@@ -39,7 +39,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
 from tolokaforge.core.grading.judge_model_provider import JudgeModel
@@ -60,6 +60,7 @@ from tolokaforge.core.grading.judge_transcript import (
     call_result_head,
     message_text,
     number_tool_results,
+    resolve_transcript_evidence,
     state_changing_calls,
 )
 from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS, KnowledgeSearch
@@ -96,6 +97,9 @@ from tolokaforge.core.models import (
 from tolokaforge.core.tool_effects import ToolEffects
 from tolokaforge.runner.models import Criterion, CriterionResult, Rubric
 from tolokaforge.tools.registry import Tool, ToolExecutor, ToolRegistry
+
+if TYPE_CHECKING:
+    from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
 
 # ---------------------------------------------------------------------------
 # Budget defaults (plan: max_turns ~12-15 + wall-time)
@@ -786,6 +790,32 @@ class LLMJudge:
         self._llm_client = llm_client
         self._logger = logger
 
+    @classmethod
+    def from_options(
+        cls,
+        model_config: ModelConfig,
+        options: JudgeTrialOptions,
+        *,
+        explicit_system_prompt: str | None = None,
+        llm_client: JudgeModel | None = None,
+        logger: StructuredLogger | None = None,
+    ) -> LLMJudge:
+        """The judge a trial's options configure; ``explicit_system_prompt`` stands in
+        for ``options.customization.system_prompt``, which must then be unset."""
+        customization = options.customization
+        return cls(
+            model_config,
+            disable_knowledge_search=bool(customization.disable_knowledge_search),
+            custom_system_prompt=customization.system_prompt,
+            explicit_system_prompt=explicit_system_prompt,
+            include_agent_system_prompt=customization.include_agent_system_prompt is not False,
+            judge_snippet_chars=customization.judge_snippet_chars,
+            transcript_evidence=resolve_transcript_evidence(customization),
+            tool_effects=options.tool_effects,
+            llm_client=llm_client,
+            logger=logger,
+        )
+
     def run(
         self,
         *,
@@ -825,9 +855,6 @@ class LLMJudge:
             _refuse_state_for_transcript_judge(db_reader, workspace_dir, state_diff)
             numbered = number_tool_results(transcript, tool_result_chars=evidence.tool_result_chars)
             show_call = ShowCallTool(numbered, tool_result_chars=evidence.tool_result_chars)
-        evidence_mode: Literal["state", "transcript"] = (
-            "state" if evidence is None else "transcript"
-        )
         metrics = _JudgeMetricsSink()
         guarded_reader = _RefusalRecordingDBReader(db_reader) if db_reader is not None else None
 
@@ -907,12 +934,9 @@ class LLMJudge:
                     messages,
                     kb_tools_offered,
                     kb_tools_withheld,
-                    knowledge_search_disabled=self._disable_knowledge_search,
-                    custom_system_prompt=self._custom_system_prompt is not None,
-                    include_agent_system_prompt=self._include_agent_system_prompt,
+                    disable_knowledge_search=self._disable_knowledge_search,
                     read_tools_offered=read_tools_offered,
                     state_diff=state_diff,
-                    evidence=evidence_mode,
                 )
 
             if guarded_reader is not None:
@@ -927,12 +951,9 @@ class LLMJudge:
                     messages,
                     kb_tools_offered,
                     kb_tools_withheld,
-                    knowledge_search_disabled=self._disable_knowledge_search,
-                    custom_system_prompt=self._custom_system_prompt is not None,
-                    include_agent_system_prompt=self._include_agent_system_prompt,
+                    disable_knowledge_search=self._disable_knowledge_search,
                     read_tools_offered=read_tools_offered,
                     state_diff=state_diff,
-                    evidence=evidence_mode,
                 )
 
             try:
@@ -954,12 +975,9 @@ class LLMJudge:
                         messages,
                         kb_tools_offered,
                         kb_tools_withheld,
-                        knowledge_search_disabled=self._disable_knowledge_search,
-                        custom_system_prompt=self._custom_system_prompt is not None,
-                        include_agent_system_prompt=self._include_agent_system_prompt,
+                        disable_knowledge_search=self._disable_knowledge_search,
                         read_tools_offered=read_tools_offered,
                         state_diff=state_diff,
-                        evidence=evidence_mode,
                     )
                 logger.warning(
                     "Judge submit_report invalid; re-prompting", attempt=attempts, error=str(exc)
@@ -1003,12 +1021,8 @@ class LLMJudge:
                 failed_required_ids=aggregate.failed_required_ids,
                 kb_tools_offered=kb_tools_offered,
                 kb_tools_withheld=kb_tools_withheld,
-                knowledge_search_disabled=self._disable_knowledge_search,
-                custom_system_prompt=self._custom_system_prompt is not None,
-                include_agent_system_prompt=self._include_agent_system_prompt,
                 read_tools_offered=read_tools_offered,
                 state_diff=state_diff,
-                evidence=evidence_mode,
                 transcript=_serialize_judge_transcript(messages),
             )
 
@@ -1039,12 +1053,9 @@ def _build_errored_judge_result(
     kb_tools_offered: tuple[str, ...],
     kb_tools_withheld: tuple[str, ...],
     *,
-    knowledge_search_disabled: bool,
-    custom_system_prompt: bool,
-    include_agent_system_prompt: bool,
+    disable_knowledge_search: bool,
     read_tools_offered: tuple[str, ...],
     state_diff: str | None,
-    evidence: Literal["state", "transcript"],
 ) -> JudgeResult:
     """Build a fail-loud ERRORED result — no score, no criterion results.
 
@@ -1054,7 +1065,7 @@ def _build_errored_judge_result(
     factor in the failure. Echoes the read-tool surface + state_diff
     it was handed so an offline replay of an errored trial is still reconstructable.
     """
-    kb_note = _kb_note(kb_tools_offered, kb_tools_withheld, knowledge_search_disabled)
+    kb_note = _kb_note(kb_tools_offered, kb_tools_withheld, disable_knowledge_search)
     return JudgeResult(
         status=JudgeStatus.ERRORED,
         usage=metrics.snapshot(),
@@ -1063,12 +1074,8 @@ def _build_errored_judge_result(
         binary_pass=None,
         kb_tools_offered=kb_tools_offered,
         kb_tools_withheld=kb_tools_withheld,
-        knowledge_search_disabled=knowledge_search_disabled,
-        custom_system_prompt=custom_system_prompt,
-        include_agent_system_prompt=include_agent_system_prompt,
         read_tools_offered=read_tools_offered,
         state_diff=state_diff,
-        evidence=evidence,
         transcript=_serialize_judge_transcript(messages),
     )
 
@@ -1076,7 +1083,7 @@ def _build_errored_judge_result(
 def _kb_note(
     kb_tools_offered: tuple[str, ...],
     kb_tools_withheld: tuple[str, ...],
-    knowledge_search_disabled: bool,
+    disable_knowledge_search: bool,
 ) -> str:
     """The human-readable "graded with / without KB" signal (issue #95).
 
@@ -1086,7 +1093,7 @@ def _kb_note(
     by config)`` — distinguishing a deliberate gate from a rubric that simply
     needed no KB. Observability, not an error.
     """
-    if knowledge_search_disabled and kb_tools_withheld:
+    if disable_knowledge_search and kb_tools_withheld:
         return "Judge KB: none offered (disabled by config)"
     if kb_tools_offered:
         return f"Judge KB: {', '.join(kb_tools_offered)}"
@@ -1098,7 +1105,7 @@ def _build_judge_reasons(
     failed_required_ids: tuple[str, ...],
     kb_tools_offered: tuple[str, ...],
     kb_tools_withheld: tuple[str, ...],
-    knowledge_search_disabled: bool,
+    disable_knowledge_search: bool,
 ) -> str:
     """Compose the judge's human-readable reasons from its overall summary + gate.
 
@@ -1111,7 +1118,7 @@ def _build_judge_reasons(
         parts.append(overall.strip())
     if failed_required_ids:
         parts.append(f"FAILED required criteria: {', '.join(failed_required_ids)}")
-    parts.append(_kb_note(kb_tools_offered, kb_tools_withheld, knowledge_search_disabled))
+    parts.append(_kb_note(kb_tools_offered, kb_tools_withheld, disable_knowledge_search))
     return " | ".join(parts)
 
 

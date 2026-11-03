@@ -10,10 +10,11 @@ for a transcript judge (:func:`judge_reads_final_state`).
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge.core.grading.judge_kinds.options import resolve_judge_trial_options
-from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
+from tolokaforge.core.grading.judge_result import JudgeResult
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.transcript_wire import split_leading_system_message
@@ -25,7 +26,19 @@ if TYPE_CHECKING:
     from tolokaforge.core.grading.substrate import GradingSubstrate
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import ModelConfig
-    from tolokaforge.runner.models import LLMJudgeConfig, ToolSchema
+    from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, ToolSchema
+
+
+@dataclass(frozen=True)
+class JudgeGrading:
+    """A judge kind's verdict on one trial, with the customization it graded under.
+
+    ``customization`` is the effective value the options were resolved from, which a
+    caller records as ``judge_inputs.customization`` so a replay layers over it.
+    """
+
+    result: JudgeResult
+    customization: JudgeCustomization
 
 
 def judge_reads_final_state(config: LLMJudgeConfig) -> bool:
@@ -52,7 +65,7 @@ def grade_llm_judge(
     state_diff: str | None,
     agent_tools: Sequence[ToolSchema],
     logger: StructuredLogger,
-) -> JudgeResult:
+) -> JudgeGrading:
     """Run the read-only rubric judge against ``substrate`` and return its verdict.
 
     Deconstructs the substrate reads into the per-trial evidence kwargs
@@ -81,9 +94,7 @@ def grade_llm_judge(
 
     A transcript judge (``customization.evidence: transcript``) is handed no DB
     reader and no workspace, and a ``state_diff`` handed for it is refused —
-    :func:`build_judge_state_diff` builds none for it. A judge kind that grades a
-    transcript judge's trial without honouring ``options.transcript_evidence`` is
-    refused too: it would grade as a state judge that was handed no state.
+    :func:`build_judge_state_diff` builds none for it.
 
     Fail-loud contract: any judge malfunction — malformed
     ``submit_report`` past retries, budget/turn exhaustion, or a
@@ -108,6 +119,7 @@ def grade_llm_judge(
             "a state_diff was handed to a transcript judge (customization.evidence: "
             "transcript); build_judge_state_diff builds none for it"
         )
+    options = resolve_judge_trial_options(config.customization, agent_tools=agent_tools)
     result = judge_kind.evaluate(
         rubric=config.rubric,
         agent_system_prompt=agent_system_prompt,
@@ -119,18 +131,11 @@ def grade_llm_judge(
         state_diff=state_diff,
         judge_model_config=judge_model_config,
         judge_model_provider=judge_model_provider,
-        options=resolve_judge_trial_options(config.customization, agent_tools=agent_tools),
+        options=options,
         kind_config=kind_config,
         logger=logger,
     )
-    if not reads_state and result.status is JudgeStatus.COMPLETED and result.evidence == "state":
-        raise ValueError(
-            f"judge kind {config.judge_kind!r} completed a transcript judge's trial "
-            "(customization.evidence: transcript) without honouring "
-            "options.transcript_evidence; it graded with neither the state nor the "
-            "transcript view"
-        )
-    return result
+    return JudgeGrading(result=result, customization=options.customization)
 
 
 def build_judge_state_diff(

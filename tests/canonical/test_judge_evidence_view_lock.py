@@ -1,10 +1,10 @@
 """Lock what the rubric judge is shown: its opening message and its tool surface.
 
-Each fixture drives the public ``LLMJudge(...).run(...)`` with a scripted client and
-snapshots, per evidence combination, the opening message, the tool schemas the model
-was offered (in order), the results of any tool the script calls, and the surface
-facts the result records (``read_tools_offered``, the KB offered / withheld lists, the
-KB and agent-policy flags). Together the fixtures reach every branch of the opening
+Each fixture drives the public ``LLMJudge.from_options(...).run(...)`` with a scripted
+client and snapshots, per evidence combination, the opening message, the tool schemas
+the model was offered (in order), the results of any tool the script calls, the surface
+facts the result records (``read_tools_offered``, the KB offered / withheld lists), and
+the KB and agent-policy settings of the customization the judge was built from. Together the fixtures reach every branch of the opening
 message (policy shown / gated off / blank; state diff present / blank) and of the
 tool registry (DB reader; ``search_kb`` with a cut or whole snippet; KB-tagged and
 non-KB extra tools; KB withheld; workspace present / missing). One fixture grades
@@ -21,13 +21,13 @@ import pytest
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge import LLMJudge
+from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
-from tolokaforge.core.grading.judge_transcript import TranscriptEvidence
 from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.tool_effects import ToolEffects
-from tolokaforge.runner.models import Rubric, ToolSchema
+from tolokaforge.runner.models import JudgeCustomization, Rubric, ToolSchema
 
 pytestmark = pytest.mark.canonical
 
@@ -216,12 +216,12 @@ _FIXTURES: dict[str, dict[str, Any]] = {
         "script": [[_SEARCH_KB_CALL]],
     },
     "e_kb_whole_documents": {
-        "judge": {"judge_snippet_chars": None},
+        "customization": {"judge_snippet_chars": None},
         "evidence": {"kb": True},
         "script": [[_SEARCH_KB_CALL]],
     },
     "f_kb_disabled": {
-        "judge": {"disable_knowledge_search": True},
+        "customization": {"disable_knowledge_search": True},
         "evidence": {
             "kb": True,
             "extras": [_search_policy_passthrough, _order_lookup_passthrough],
@@ -229,7 +229,7 @@ _FIXTURES: dict[str, dict[str, Any]] = {
         },
     },
     "g_policy_off": {
-        "judge": {"include_agent_system_prompt": False},
+        "customization": {"include_agent_system_prompt": False},
         "evidence": {"db": True, "state_diff": _STATE_DIFF},
     },
     "h_user_tool_steps": {
@@ -237,16 +237,14 @@ _FIXTURES: dict[str, dict[str, Any]] = {
         "evidence": {"db": True},
     },
     "i_transcript_only": {
-        "judge": {
-            "transcript_evidence": TranscriptEvidence(),
-            "tool_effects": ToolEffects.from_schemas(
-                [
-                    _agent_tool("get_order", False),
-                    _agent_tool("refund_order", True),
-                    _agent_tool("notify_customer", None),
-                ]
-            ),
-        },
+        "customization": {"evidence": "transcript"},
+        "tool_effects": ToolEffects.from_schemas(
+            [
+                _agent_tool("get_order", False),
+                _agent_tool("refund_order", True),
+                _agent_tool("notify_customer", None),
+            ]
+        ),
         "transcript": _TRANSCRIPT_ONLY_TRANSCRIPT,
         "evidence": {"kb": True},
         "script": [[("show_call", {"calls": [1], "offset": 3000})]],
@@ -276,7 +274,12 @@ def _evidence_kwargs(evidence: dict[str, Any], tmp_path: Path) -> dict[str, Any]
 def test_default_judge_view_matches_snapshot(fixture_name: str, tmp_path: Path, canon_snapshot):
     fixture = _FIXTURES[fixture_name]
     client = _RecordingClient([*fixture.get("script", []), [_SUBMIT_REPORT]])
-    judge = LLMJudge(_JUDGE_MODEL, llm_client=client, **fixture.get("judge", {}))
+    customization = JudgeCustomization.model_validate(fixture.get("customization", {}))
+    options = JudgeTrialOptions(
+        customization=customization,
+        tool_effects=fixture.get("tool_effects", ToolEffects.empty()),
+    )
+    judge = LLMJudge.from_options(_JUDGE_MODEL, options, llm_client=client)
 
     result = judge.run(
         rubric=_rubric(),
@@ -297,7 +300,7 @@ def test_default_judge_view_matches_snapshot(fixture_name: str, tmp_path: Path, 
         "read_tools_offered": list(result.read_tools_offered),
         "kb_tools_offered": list(result.kb_tools_offered),
         "kb_tools_withheld": list(result.kb_tools_withheld),
-        "knowledge_search_disabled": result.knowledge_search_disabled,
-        "include_agent_system_prompt": result.include_agent_system_prompt,
+        "knowledge_search_disabled": bool(customization.disable_knowledge_search),
+        "include_agent_system_prompt": customization.include_agent_system_prompt is not False,
     }
     canon_snapshot(_SNAPSHOT_SET).assert_match(view, f"{fixture_name}.json")

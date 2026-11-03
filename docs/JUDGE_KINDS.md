@@ -61,11 +61,8 @@ class JudgeKind(Protocol):
 
 @dataclass(frozen=True)
 class JudgeTrialOptions:
-    disable_knowledge_search: bool = False
-    custom_system_prompt: str | None = None
-    include_agent_system_prompt: bool = True
-    judge_snippet_chars: int | None = 200
-    transcript_evidence: TranscriptEvidence | None = None
+    customization: JudgeCustomization = JudgeCustomization()
+    tool_effects: ToolEffects = ToolEffects.empty()
 ```
 
 **`NAME`** MUST equal the entry-point name the kind registers under — a
@@ -80,26 +77,23 @@ are construction inputs — the kind builds its own judge client(s) from
 them, once or many times per `evaluate` call.
 
 **`options: JudgeTrialOptions`** is the trial's per-trial customization, one
-frozen object (`tolokaforge.core.grading.judge_kinds`), every field of which a
-kind honours identically to `LLMJudge`; a kind that wraps another passes it on
-unchanged. The engine builds it once per trial from
-`grading.llm_judge.customization` with `resolve_judge_trial_options` (unset
-tri-state fields take their defaults; a run-level `grader.judge` override wins
-per field where it is set), and offline replay builds it from the recorded
-bundle. The fields:
+frozen object (`tolokaforge.core.grading.judge_kinds`) a kind honours identically
+to `LLMJudge` — `LLMJudge.from_options(model_config, options, ...)` builds the
+reference judge from it; a kind that wraps another passes it on unchanged. The
+engine builds it once per trial with `resolve_judge_trial_options` from the
+effective `grading.llm_judge.customization` — after the project, task and, for the
+`judge_only` grader, run-level `grader.judge` layers — and records that same
+customization on the grade as `judge_inputs.yaml customization`; offline replay
+builds it from that record with a `--grading` layer over it. The fields:
 
-| field | default | from `customization` |
+| field | default | meaning |
 |---|---|---|
-| `disable_knowledge_search` | `false` | `disable_knowledge_search` — withhold every knowledge-search tool from the judge |
-| `custom_system_prompt` | `null` | `system_prompt` — a body fragment replacing the default judge prompt; the marker contract is appended |
-| `include_agent_system_prompt` | `true` | `include_agent_system_prompt` — embed the agent's system prompt in the judge's evidence |
-| `judge_snippet_chars` | `200` | `judge_snippet_chars` — characters of each hit the judge's `search_kb` shows; `null` shows whole documents |
-| `transcript_evidence` | `null` | `evidence: transcript` with `transcript_tool_chars` — a [transcript-only judge](GRADING.md#transcript-only-judge). `null` is the judge over the state. The composite hands a transcript judge no `db_reader`, `workspace_dir` or `state_diff`, so a kind wrapping `LLMJudge` passes the object on unchanged |
+| `customization` | `JudgeCustomization()` | the effective [`customization`](CONFIG.md#grading-specification-gradingyaml): `disable_knowledge_search`, `system_prompt`, `include_agent_system_prompt`, `judge_snippet_chars`, `evidence` and `transcript_tool_chars`. Unset tri-state fields are their defaults. Under `evidence: transcript` the composite hands the kind no `db_reader`, `workspace_dir` or `state_diff`, so a kind wrapping `LLMJudge` passes the object on unchanged |
 | `tool_effects` | empty | not customization: the agent tools' `mutates_state` declarations ([`ToolEffects`](../tolokaforge/core/tool_effects.py)), from which a transcript judge tells the agent's state-changing calls from its reads. Built for a transcript judge only; empty (every call can change state) otherwise |
 
-A new customization knob is a field on `JudgeTrialOptions` whose default is
-the behaviour without the knob, so the `evaluate` signature does not change and
-a kind that does not read the field grades under that default.
+A new customization knob is a `JudgeCustomization` field whose default is the
+behaviour without the knob, so the `evaluate` signature does not change and a kind
+that does not read the field grades under that default.
 
 **`kind_config: Mapping[str, Any] | None`** is an opaque bag the Protocol
 itself does not interpret — each kind owns its own schema and validation.
@@ -495,7 +489,8 @@ Every fixture is one `entry.yaml` file in `ParityCorpusEntry` shape:
 judge_scripts}`, plus the optional option keys
 `disable_knowledge_search` (default `false`), `custom_system_prompt`
 (`null`), `include_agent_system_prompt` (`true`) and `judge_snippet_chars`
-(`200`), which the loader gathers into the entry's `JudgeTrialOptions`. The
+(`200`), which the loader gathers into the customization of the entry's
+`JudgeTrialOptions` (`custom_system_prompt` as its `system_prompt`). The
 `judge_scripts.<kind_name>` value is a list of turns; each turn is
 either a string (assistant text) or a list of tool-call dicts
 (`{name, arguments}`). The `single_shot_rubric` cassette is one turn

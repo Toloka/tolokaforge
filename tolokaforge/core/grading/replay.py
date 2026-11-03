@@ -28,7 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, ValidationError, model_validator
@@ -42,9 +42,7 @@ from tolokaforge.core.grading.judge import (
 from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeResult
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
-from tolokaforge.core.grading.judge_transcript import TranscriptEvidence
 from tolokaforge.core.grading.kb_search import (
-    DEFAULT_JUDGE_SNIPPET_CHARS,
     KnowledgeSearch,
     SearchHit,
 )
@@ -87,6 +85,7 @@ from tolokaforge.core.output_writer import (
     TRAJECTORY_FILENAME,
 )
 from tolokaforge.core.plugin_registry import load_judge_kind, load_judge_model_provider
+from tolokaforge.core.project_loader import customization_sources, layer_judge_customization
 from tolokaforge.core.tool_effects import ToolEffects, UnrecordedToolEffectsError
 from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
@@ -94,9 +93,8 @@ from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResul
 __all__ = [
     "REPLAY_UNAVAILABLE",
     "FidelityMode",
+    "CustomizationRecord",
     "GradingOverride",
-    "EvidenceMode",
-    "KnowledgeSearchMode",
     "MissingReplayInputError",
     "OfflineDBReader",
     "OfflineKnowledgeSearch",
@@ -128,32 +126,6 @@ def _unavailable(backend: str) -> str:
     return f"{REPLAY_UNAVAILABLE}: {backend}"
 
 
-class KnowledgeSearchMode(str, Enum):
-    """Tri-state KB-gating control for replay, mirroring ``--knowledge-search``.
-
-    ``RECORDED`` honours the bundle's recorded ``judge_kb_gating`` gating;
-    ``ON`` forces the judge to be offered KB tools; ``OFF`` forces them withheld.
-    """
-
-    RECORDED = "recorded"
-    ON = "on"
-    OFF = "off"
-
-
-class EvidenceMode(str, Enum):
-    """What a replayed judge grades from, mirroring ``--evidence``.
-
-    ``RECORDED`` honours the bundle's ``customization.evidence`` (or a ``--grading``
-    override setting it); ``STATE`` / ``TRANSCRIPT`` force it, keeping the recorded
-    (or overriding) ``transcript_tool_chars``. A bundle a transcript judge graded
-    carries no view of the state, so ``STATE`` refuses it.
-    """
-
-    RECORDED = "recorded"
-    STATE = "state"
-    TRANSCRIPT = "transcript"
-
-
 class TrialEligibility(str, Enum):
     """Whether a recorded trial is in scope for re-judging.
 
@@ -183,17 +155,28 @@ class FidelityMode(str, Enum):
 class ProvenanceSource(str, Enum):
     """Where a resolved replay input came from.
 
-    ``RECORDED`` is the bundle's task.yaml customization (a body fragment the
-    replay recomposes into the judge system prompt), ``OVERRIDE`` is a
-    ``--grading`` override (also a body fragment), and ``BUNDLE`` is the
-    ``prompts.yaml.judge_prompt`` string (a composed prompt used verbatim, no
-    re-composition). Only the judge-system-prompt seam distinguishes the three;
-    the other resolved-input seams use ``RECORDED`` / ``OVERRIDE`` alone.
+    ``RECORDED`` is the bundle, ``OVERRIDE`` a CLI override (``--grading``,
+    ``--judge-model``), and ``BUNDLE`` the ``prompts.yaml.judge_prompt`` string (a
+    composed prompt used verbatim, no re-composition). Only the judge-system-prompt
+    seam distinguishes ``BUNDLE``; every other input is ``RECORDED`` or ``OVERRIDE``.
     """
 
     RECORDED = "recorded"
     OVERRIDE = "override"
     BUNDLE = "bundle"
+
+
+class CustomizationRecord(str, Enum):
+    """Which record of the judge customization a replay layered its override over.
+
+    ``JUDGE_INPUTS`` is ``judge_inputs.yaml customization``: the effective value the
+    trial was graded under, after every layer. ``TASK_YAML`` is the fallback for a
+    bundle that predates that record, ``task.yaml grading_config.llm_judge.customization``,
+    which is taken before the run-level ``grader.judge`` layer and so can miss it.
+    """
+
+    JUDGE_INPUTS = "judge_inputs"
+    TASK_YAML = "task_yaml"
 
 
 class MissingReplayInputError(ValueError):
@@ -276,49 +259,23 @@ class ReplayProvenance(BaseModel):
     recorded bundle or a CLI override, plus the fidelity mode. Consumed by the
     replay artifact writer so a reviewer can tell a full-fidelity replay from a
     degraded one at a glance.
+
+    ``customization`` is the judge customization the replay graded under: the
+    ``customization_record`` with a ``--grading`` override layered over it.
+    ``customization_sources`` names, per dotted key path, the layer that set it
+    (``recorded`` / ``override``); a path it leaves out holds its default.
+    ``judge_prompt_source`` is ``bundle`` when the bundle's composed
+    ``prompts.yaml.judge_prompt`` stands in for ``customization.system_prompt``,
+    which is then unset with no source.
     """
 
     judge_model: str
     judge_model_source: ProvenanceSource
     rubric_source: ProvenanceSource
-    knowledge_search_mode: KnowledgeSearchMode
-    knowledge_search_disabled: bool
-    # Whether a custom judge system prompt was in effect for this replay, and where
-    # it came from — RECORDED (the bundle's task.yaml customization) or OVERRIDE (a
-    # --grading override carrying one). Resolved independently of the rubric: a
-    # rubric-only override never clears a recorded custom prompt.
-    custom_system_prompt: bool
-    custom_prompt_source: ProvenanceSource | None
-    # Where the composed judge system prompt was sourced from at replay time. Set
-    # to ``BUNDLE`` when the bundle's ``prompts.yaml.judge_prompt`` supplied the
-    # composed prompt verbatim (no re-composition); ``None`` when replay fell back
-    # to the legacy task.yaml / --grading customization path (which composes at
-    # run time). Bundle-branch trials leave ``custom_system_prompt=False`` and
-    # ``custom_prompt_source=None`` — the two seams are mutually exclusive, and
-    # the one-way ``_bundle_source_forbids_legacy_source`` validator below
-    # enforces "no bundle source AND legacy source together".
+    customization: JudgeCustomization
+    customization_sources: dict[str, ProvenanceSource]
+    customization_record: CustomizationRecord
     judge_prompt_source: ProvenanceSource | None = None
-    # Whether the agent policy was embedded in the judge's evidence for this replay,
-    # and where the decision came from — RECORDED (the bundle's task.yaml
-    # customization) or OVERRIDE (a --grading override carrying it); None when
-    # defaulted (no recorded value, no override), which is always the include
-    # default. Resolved independently of the rubric.
-    include_agent_system_prompt: bool
-    agent_prompt_source: ProvenanceSource | None
-    # How much of each hit the judge's ``search_kb`` shows (``None`` for whole
-    # documents), and where it came from — RECORDED (the bundle's task.yaml
-    # customization) or OVERRIDE (a --grading override carrying it); None when
-    # neither carries it, which is always the default length.
-    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
-    judge_snippet_chars_source: ProvenanceSource | None = None
-    # What the judge graded from — ``state`` or ``transcript``
-    # (``customization.evidence``) — and where it came from: RECORDED (the bundle's
-    # task.yaml customization) or OVERRIDE (a --grading override setting
-    # ``evidence``, or ``--evidence`` forcing it); None when nothing sets it, which
-    # is always ``state``. ``judge_evidence_mode`` is the ``--evidence`` value.
-    judge_evidence: Literal["state", "transcript"] = "state"
-    judge_evidence_source: ProvenanceSource | None = None
-    judge_evidence_mode: EvidenceMode = EvidenceMode.RECORDED
     fidelity_mode: FidelityMode
     # Which :class:`JudgeKind` this replay dispatched through and where the
     # decision came from. RECORDED — resolved from the bundle's
@@ -326,91 +283,39 @@ class ReplayProvenance(BaseModel):
     # LLMJudgeConfig's 'single_shot_rubric' default for legacy artifacts
     # that carry neither). ``--judge-kind`` at replay time is out of scope
     # (κ-parity kind A/B lives in the parity harness, not on the offline
-    # replay CLI), so no OVERRIDE case exists. The ``single_shot_rubric``
-    # default here mirrors ``LLMJudgeConfig``'s field default so a
-    # ``ReplayProvenance()`` construction that omits this field parses to
-    # the legacy-artifact shape it stamps for.
+    # replay CLI), so no OVERRIDE case exists.
     judge_kind: str = "single_shot_rubric"
     judge_kind_source: ProvenanceSource = ProvenanceSource.RECORDED
 
     model_config = {"extra": "forbid"}
 
     @model_validator(mode="after")
-    def _custom_prompt_fields_coherent(self) -> ReplayProvenance:
-        """``custom_prompt_source`` is set exactly when ``custom_system_prompt`` is
-        True — a source without a prompt (or a prompt without a source) is a bug in
-        the resolver, not a valid stamp."""
-        if self.custom_system_prompt != (self.custom_prompt_source is not None):
-            raise ValueError(
-                "custom_system_prompt must be True exactly when custom_prompt_source "
-                f"is set (got custom_system_prompt={self.custom_system_prompt}, "
-                f"custom_prompt_source={self.custom_prompt_source})"
-            )
+    def _customization_sources_are_layers(self) -> ReplayProvenance:
+        """A customization key comes from the record or the override, never the bundle."""
+        bundled = sorted(
+            path
+            for path, source in self.customization_sources.items()
+            if source is ProvenanceSource.BUNDLE
+        )
+        if bundled:
+            raise ValueError(f"customization_sources names bundle for {bundled}")
         return self
 
     @model_validator(mode="after")
-    def _bundle_source_forbids_legacy_source(self) -> ReplayProvenance:
-        """A one-way implication, deliberately NOT a biconditional.
+    def _bundle_prompt_replaces_system_prompt(self) -> ReplayProvenance:
+        """``judge_prompt_source=bundle`` ⟹ no ``system_prompt`` value and no source for it.
 
-        ``judge_prompt_source is BUNDLE`` ⟹ ``custom_prompt_source is None and
-        custom_system_prompt is False`` — a bundle-recorded composed prompt
-        supersedes both the task.yaml customization and the ``--grading`` override,
-        so stamping both a BUNDLE source and a legacy source is a caller bug.
-
-        The reverse implication does NOT hold. A bundle that predates the
-        ``judge_prompt`` key AND has no task-side customization records
-        ``judge_prompt_source=None, custom_prompt_source=None,
-        custom_system_prompt=False`` — the RHS holds and the LHS does not. A
-        biconditional would reject this shape and red every default-prompt
-        legacy replay.
+        The bundle's composed prompt stands in for the customization's body, so a
+        stamp carrying both is a resolver bug.
         """
         if self.judge_prompt_source is ProvenanceSource.BUNDLE and (
-            self.custom_prompt_source is not None or self.custom_system_prompt
+            "system_prompt" in self.customization_sources
+            or self.customization.system_prompt is not None
         ):
             raise ValueError(
-                "judge_prompt_source=BUNDLE forbids any legacy custom-prompt source "
-                "(the bundle-recorded prompt supersedes task.yaml customization and "
-                f"--grading overrides); got custom_prompt_source={self.custom_prompt_source}, "
-                f"custom_system_prompt={self.custom_system_prompt}"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _agent_prompt_fields_coherent(self) -> ReplayProvenance:
-        """A defaulted stamp (``agent_prompt_source is None``) can only be the
-        include default — an explicit ``true`` or ``false`` both carry a source. The
-        one-way implication ``source is None ⟹ include is True``; unlike the custom
-        prompt this is NOT a biconditional, because an explicit-true value carries a
-        source yet still includes."""
-        if self.agent_prompt_source is None and self.include_agent_system_prompt is not True:
-            raise ValueError(
-                "include_agent_system_prompt must be True when agent_prompt_source is "
-                f"None (got include_agent_system_prompt={self.include_agent_system_prompt})"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _evidence_fields_coherent(self) -> ReplayProvenance:
-        """A defaulted stamp (``judge_evidence_source is None``) can only be ``state``."""
-        if self.judge_evidence_source is None and self.judge_evidence != "state":
-            raise ValueError(
-                "judge_evidence must be 'state' when judge_evidence_source is None "
-                f"(got judge_evidence={self.judge_evidence!r})"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _snippet_fields_coherent(self) -> ReplayProvenance:
-        """A defaulted stamp (``judge_snippet_chars_source is None``) can only be the
-        default length; an explicit value, the default included, carries a source."""
-        if (
-            self.judge_snippet_chars_source is None
-            and self.judge_snippet_chars != DEFAULT_JUDGE_SNIPPET_CHARS
-        ):
-            raise ValueError(
-                f"judge_snippet_chars must be {DEFAULT_JUDGE_SNIPPET_CHARS} when "
-                "judge_snippet_chars_source is None (got "
-                f"judge_snippet_chars={self.judge_snippet_chars})"
+                "judge_prompt_source=bundle forbids a customization.system_prompt and a "
+                f"source for it; got system_prompt={self.customization.system_prompt!r}, "
+                f"source={self.customization_sources.get('system_prompt')}"
             )
         return self
 
@@ -428,12 +333,9 @@ class ReplayInputs:
     # The trial's judge options, resolved from the bundle (and a --grading
     # override) once, with each source stamped in ``provenance``.
     options: JudgeTrialOptions
-    # Mutually exclusive with ``options.custom_system_prompt``, mirroring
-    # ``LLMJudge.__init__``. The bundle path (``_resolve_bundle_judge_prompt``)
-    # sets ``explicit_system_prompt`` and leaves the options' custom prompt at
-    # ``None``; the task.yaml path (``_resolve_custom_prompt``) sets the options'
-    # custom prompt and leaves ``explicit_system_prompt`` at ``None``. Both
-    # ``None`` means the engine default composition is in effect.
+    # The bundle's composed judge prompt, set only when it stands in for
+    # ``options.customization.system_prompt`` (then unset), mirroring
+    # ``LLMJudge.__init__``'s two exclusive prompt seams.
     explicit_system_prompt: str | None
     # Which :class:`JudgeKind` this replay dispatches through, resolved from the
     # bundle's ``task.yaml.grading_config.llm_judge.judge_kind`` (defaulting to
@@ -487,35 +389,26 @@ def _carried_mapping(path: Path) -> dict[str, Any] | None:
 
 @dataclass(frozen=True)
 class GradingOverride:
-    """A ``--grading`` override: a rubric plus optional judge customization.
+    """A ``--grading`` override: a rubric, a judge customization layer, or both.
 
-    All live under ``llm_judge`` in the override document, so one file swaps the
-    rubric AND (when it carries them) the judge prompt / agent-policy gating /
-    snippet length. ``custom_system_prompt`` / ``include_agent_system_prompt`` are
-    ``None`` when the override carries neither, and ``carries_judge_snippet_chars``
-    says whether it sets ``judge_snippet_chars`` (whose ``None`` is a value: whole
-    documents) — a rubric-only override leaves every recorded value untouched at
-    resolution.
+    ``customization`` is the raw mapping of the keys the override's
+    ``llm_judge.customization`` sets, validated at load; replay layers it over the
+    recorded customization, so a key it leaves out keeps its recorded value.
+    ``None`` on either field leaves that input as recorded.
     """
 
-    rubric: Rubric
-    custom_system_prompt: str | None
-    include_agent_system_prompt: bool | None
-    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
-    carries_judge_snippet_chars: bool = False
-    # The override's customization when it sets ``evidence`` (with the transcript
-    # fields beside it); ``None`` leaves the recorded evidence untouched.
-    evidence_customization: JudgeCustomization | None = None
+    rubric: Rubric | None
+    customization: Mapping[str, Any] | None
 
 
 def load_grading_override(grading_path: Path) -> GradingOverride:
     """Parse a supplied ``grading.yaml`` override into a :class:`GradingOverride`.
 
-    Accepts either a full grading document (``llm_judge.rubric: …``, optionally with
-    ``llm_judge.customization``) or a bare ``rubric:`` mapping, so an
-    operator can point ``--grading`` at a task's grading file or a hand-authored
-    rubric snippet. Fails loud if neither carries a rubric. A bare ``rubric:``
-    mapping carries no custom prompt.
+    Accepts a grading document whose ``llm_judge`` carries a ``rubric``, a
+    ``customization``, or both — a task's grading file, or a customization-only
+    document for an A/B over the recorded rubric — or a bare ``rubric:`` mapping.
+    Fails loud when the document carries neither, and when a rubric-less
+    ``llm_judge`` block carries any key besides ``customization``.
     """
     data = _load_yaml(grading_path)
     if data is None:
@@ -523,36 +416,44 @@ def load_grading_override(grading_path: Path) -> GradingOverride:
     llm_judge = data.get("llm_judge")
     if isinstance(llm_judge, dict) and "rubric" in llm_judge:
         config = LLMJudgeConfig.model_validate(llm_judge)
-        customization = config.customization
-        custom = customization.system_prompt if customization else None
-        include_agent = customization.include_agent_system_prompt if customization else None
-        carries_snippet = (
-            customization is not None and "judge_snippet_chars" in customization.model_fields_set
-        )
-        carries_evidence = (
-            customization is not None and "evidence" in customization.model_fields_set
-        )
         return GradingOverride(
             rubric=config.rubric,
-            custom_system_prompt=custom,
-            include_agent_system_prompt=include_agent,
-            judge_snippet_chars=(
-                customization.judge_snippet_chars
-                if carries_snippet and customization is not None
-                else DEFAULT_JUDGE_SNIPPET_CHARS
-            ),
-            carries_judge_snippet_chars=carries_snippet,
-            evidence_customization=customization if carries_evidence else None,
+            customization=_override_customization(llm_judge, grading_path),
         )
+    if isinstance(llm_judge, dict) and "customization" in llm_judge:
+        stray = sorted(set(llm_judge) - {"customization"})
+        if stray:
+            raise MissingReplayInputError(
+                f"grading override {grading_path}: an llm_judge block without a rubric "
+                f"carries only customization; it also sets {stray}"
+            )
+        customization = _override_customization(llm_judge, grading_path)
+        if customization is None:
+            raise MissingReplayInputError(
+                f"grading override {grading_path}: llm_judge.customization is null, so the "
+                "document overrides nothing"
+            )
+        return GradingOverride(rubric=None, customization=customization)
     if "rubric" in data:
-        return GradingOverride(
-            rubric=Rubric.model_validate(data["rubric"]),
-            custom_system_prompt=None,
-            include_agent_system_prompt=None,
-        )
+        return GradingOverride(rubric=Rubric.model_validate(data["rubric"]), customization=None)
     raise MissingReplayInputError(
-        f"grading override {grading_path} has no llm_judge.rubric or rubric block"
+        f"grading override {grading_path} has no llm_judge.rubric, llm_judge.customization "
+        "or rubric block"
     )
+
+
+def _override_customization(
+    llm_judge: Mapping[str, Any], grading_path: Path
+) -> Mapping[str, Any] | None:
+    raw = llm_judge.get("customization")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise MissingReplayInputError(
+            f"grading override {grading_path}: llm_judge.customization is not a mapping"
+        )
+    JudgeCustomization.model_validate(raw)
+    return dict(raw)
 
 
 def classify_trial(trial_dir: Path) -> TrialEligibility:
@@ -640,207 +541,162 @@ def _resolve_judge_kind(
     return judge_kind, kind_config, ProvenanceSource.RECORDED
 
 
-def _resolve_bundle_judge_prompt(
-    trial_dir: Path, prompts: dict[str, Any]
-) -> tuple[str | None, ProvenanceSource | None]:
-    """Recover the composed judge prompt the bundle recorded, if any.
+def _recorded_judge_prompt(trial_dir: Path, prompts: dict[str, Any]) -> str | None:
+    """The composed judge prompt the bundle recorded, ``None`` where it recorded none.
 
-    Reads the ``judge_prompt`` key on the loaded ``prompts.yaml`` mapping. Returns
-    ``(prompt, ProvenanceSource.BUNDLE)`` when the key is present and holds a
-    non-empty string — the exact composed prompt (body + marker contract) the
-    original run's ``LLMJudgeConfig`` would have graded under, ready to feed
-    :class:`LLMJudge` verbatim through ``explicit_system_prompt``. Returns
-    ``(None, None)`` when the key is absent (a bundle that predates the
-    ``judge_prompt`` field) or is ``null`` (the bundle recorded no LLM judge) —
-    the caller then falls back to the legacy ``_resolve_custom_prompt`` path.
+    Reads ``prompts.yaml judge_prompt``: the exact composed prompt (body + marker
+    contract) the run's ``task.yaml`` grading config composes to. ``None`` when the
+    key is absent (a bundle that predates it) or ``null`` (no LLM judge).
 
-    Raises :class:`MissingReplayInputError` when the key is present but does not
-    hold a non-empty string. The writer emits only strings or ``null``, so any
-    other value is a corrupted or hand-edited bundle, not a state to guess at.
+    Raises :class:`MissingReplayInputError` when the key holds anything but a
+    non-empty string: the writer emits only strings or ``null``, so any other value
+    is a corrupted or hand-edited bundle, not a state to guess at.
     """
-    if "judge_prompt" not in prompts:
-        return None, None
-    recorded = prompts["judge_prompt"]
+    recorded = prompts.get("judge_prompt")
     if recorded is None:
-        return None, None
+        return None
     if not isinstance(recorded, str) or not recorded.strip():
         raise MissingReplayInputError(
             f"recorded judge_prompt in {trial_dir / 'prompts.yaml'} is blank or not a string"
         )
-    return recorded, ProvenanceSource.BUNDLE
+    return recorded
 
 
-def _resolve_custom_prompt(
-    trial_dir: Path, task: dict[str, Any] | None, grading_override: GradingOverride | None
-) -> tuple[str | None, ProvenanceSource | None]:
-    """Resolve the judge's custom system prompt independently of the rubric.
-
-    The override prompt wins only when the override actually carries one; otherwise
-    the recorded prompt survives — a rubric-only ``--grading`` override must never
-    silently clear a recorded custom prompt to the default. ``None`` (default
-    prompt) only when neither the override nor the recorded config carries one.
-    A recorded value that is blank or not a string fails loud — the writer never
-    records one, so it is a corrupted or hand-edited bundle, not a default prompt.
-    """
-    if grading_override is not None and grading_override.custom_system_prompt is not None:
-        return grading_override.custom_system_prompt, ProvenanceSource.OVERRIDE
+def _task_yaml_customization(trial_dir: Path, task: dict[str, Any] | None) -> JudgeCustomization:
+    """``task.yaml grading_config.llm_judge.customization``, the default when absent."""
     llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
-    customization = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
-    recorded = customization.get("system_prompt") if isinstance(customization, dict) else None
-    if recorded is None:
-        return None, None
-    if not isinstance(recorded, str) or not recorded.strip():
-        raise MissingReplayInputError(
-            f"recorded customization.system_prompt in {trial_dir / TASK_FILENAME} "
-            "is blank or not a string"
-        )
-    return recorded, ProvenanceSource.RECORDED
-
-
-def _resolve_include_agent_system_prompt(
-    trial_dir: Path, task: dict[str, Any] | None, grading_override: GradingOverride | None
-) -> tuple[bool, ProvenanceSource | None]:
-    """Resolve whether the agent policy is embedded in the judge's evidence.
-
-    The override wins only when it carries an explicit value; otherwise the
-    recorded task-config value survives — a rubric-only ``--grading`` override must
-    never silently flip a recorded gating. Defaults to ``(True, None)`` (include —
-    old bundles and bundles with no recorded value graded with the policy present).
-    A recorded value that is not a bool fails loud — the writer never records one,
-    so it is a corrupted or hand-edited bundle.
-    """
-    if grading_override is not None and grading_override.include_agent_system_prompt is not None:
-        return grading_override.include_agent_system_prompt, ProvenanceSource.OVERRIDE
-    llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
-    customization = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
-    recorded = (
-        customization.get("include_agent_system_prompt")
-        if isinstance(customization, dict)
-        else None
-    )
-    if recorded is None:
-        return True, None
-    if not isinstance(recorded, bool):
-        raise MissingReplayInputError(
-            f"recorded customization.include_agent_system_prompt in "
-            f"{trial_dir / TASK_FILENAME} is not a bool"
-        )
-    return recorded, ProvenanceSource.RECORDED
-
-
-def _resolve_judge_snippet_chars(
-    trial_dir: Path, task: dict[str, Any] | None, grading_override: GradingOverride | None
-) -> tuple[int | None, ProvenanceSource | None]:
-    """Resolve how much of each hit the judge's ``search_kb`` shows.
-
-    The override wins only when it sets the key; otherwise the recorded value
-    survives — a rubric-only ``--grading`` override must never silently change a
-    recorded length. Absent from both (a task that never set it) is
-    ``(DEFAULT_JUDGE_SNIPPET_CHARS, None)``; ``None`` is whole documents. A
-    recorded value that is not a positive integer or null fails loud — the writer
-    never records one, so it is a corrupted or hand-edited bundle.
-    """
-    if grading_override is not None and grading_override.carries_judge_snippet_chars:
-        return grading_override.judge_snippet_chars, ProvenanceSource.OVERRIDE
-    llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
-    customization = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
-    if not isinstance(customization, dict) or "judge_snippet_chars" not in customization:
-        return DEFAULT_JUDGE_SNIPPET_CHARS, None
-    recorded = customization["judge_snippet_chars"]
-    if recorded is not None and (
-        isinstance(recorded, bool) or not isinstance(recorded, int) or recorded < 1
-    ):
-        raise MissingReplayInputError(
-            f"recorded customization.judge_snippet_chars in {trial_dir / TASK_FILENAME} "
-            "is not a positive integer or null"
-        )
-    return recorded, ProvenanceSource.RECORDED
-
-
-def _resolve_judge_evidence(
-    trial_dir: Path,
-    task: dict[str, Any] | None,
-    grading_override: GradingOverride | None,
-    mode: EvidenceMode,
-) -> tuple[JudgeCustomization | None, ProvenanceSource | None]:
-    """Resolve what the judge grades from, with the transcript fields beside it.
-
-    Returns the customization carrying ``evidence`` with its
-    ``transcript_tool_chars``, or ``None`` for a judge over the state that nothing
-    configured. The override wins only when it sets ``evidence``,
-    so a rubric-only ``--grading`` override never changes a recorded mode; a forced
-    ``mode`` then replaces the evidence and keeps the fields beside it. A bundle a
-    transcript judge graded refuses a forced ``state``: it recorded no view of the
-    state to grade over. A recorded value the customization model refuses fails
-    loud — the writer never records one, so it is a corrupted or hand-edited bundle.
-    """
-    recorded = _recorded_evidence_customization(trial_dir, task)
-    if grading_override is not None and grading_override.evidence_customization is not None:
-        resolved, source = grading_override.evidence_customization, ProvenanceSource.OVERRIDE
-    elif recorded is not None and "evidence" in recorded.model_fields_set:
-        resolved, source = recorded, ProvenanceSource.RECORDED
-    else:
-        resolved, source = recorded, None
-    if mode is EvidenceMode.RECORDED:
-        return (resolved, source) if source is not None else (None, None)
-    if mode is EvidenceMode.STATE and recorded is not None and recorded.evidence == "transcript":
-        raise MissingReplayInputError(
-            f"--evidence state cannot replay {trial_dir}: a transcript judge graded it, "
-            "so the bundle recorded no state diff and no database reads to grade over"
-        )
-    base = resolved if resolved is not None else JudgeCustomization()
-    return base.model_copy(update={"evidence": mode.value}), ProvenanceSource.OVERRIDE
-
-
-def _recorded_evidence_customization(
-    trial_dir: Path, task: dict[str, Any] | None
-) -> JudgeCustomization | None:
-    """The bundle's recorded evidence fields, ``None`` when it recorded none of them."""
-    llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
-    customization = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
-    if not isinstance(customization, dict):
-        return None
-    fields = {key: customization[key] for key in _EVIDENCE_FIELDS if key in customization}
-    if not fields:
-        return None
+    raw = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
     try:
-        return JudgeCustomization.model_validate(fields)
+        return JudgeCustomization.model_validate(raw or {})
     except ValidationError as exc:
         raise MissingReplayInputError(
-            f"recorded customization evidence fields in {trial_dir / TASK_FILENAME} "
-            f"are invalid: {exc}"
+            f"recorded grading_config.llm_judge.customization in {trial_dir / TASK_FILENAME} "
+            f"is invalid: {exc}"
         ) from exc
 
 
-#: The customization fields that say what the judge grades from.
-_EVIDENCE_FIELDS = ("evidence", "transcript_tool_chars")
+def _recorded_customization(
+    trial_dir: Path, task: dict[str, Any] | None, judge_inputs: JudgeInputs | None
+) -> tuple[JudgeCustomization, CustomizationRecord]:
+    """The customization the trial was graded under, and which record says so."""
+    if judge_inputs is not None and judge_inputs.customization is not None:
+        return judge_inputs.customization, CustomizationRecord.JUDGE_INPUTS
+    return _task_yaml_customization(trial_dir, task), CustomizationRecord.TASK_YAML
 
 
-def _transcript_evidence(
-    customization: JudgeCustomization | None, trial_dir: Path
-) -> tuple[TranscriptEvidence | None, ToolEffects]:
-    """The replayed transcript judge's reading and the agent tools' declarations.
+@dataclass(frozen=True)
+class _ResolvedCustomization:
+    customization: JudgeCustomization
+    sources: dict[str, ProvenanceSource]
+    record: CustomizationRecord
+    bundle_judge_prompt: str | None
 
-    ``(None, empty)`` for a judge over the state, which reads no declaration, so the
-    bundle's ``tools_schemas.yaml`` is read only for a transcript judge.
+
+def _resolve_customization(
+    trial_dir: Path,
+    *,
+    task: dict[str, Any] | None,
+    prompts: dict[str, Any],
+    judge_inputs: JudgeInputs | None,
+    override: Mapping[str, Any] | None,
+) -> _ResolvedCustomization:
+    """Layer the ``--grading`` customization over the recorded one, once.
+
+    The bundle's composed ``judge_prompt`` stands in for ``system_prompt`` while the
+    prompt in effect is the one it was composed from — the ``task.yaml`` value, so
+    neither a run-level ``grader.judge`` layer nor the override changed it — which
+    keeps the default body of the engine that graded the trial.
+    """
+    recorded, record = _recorded_customization(trial_dir, task, judge_inputs)
+    layers = [
+        (ProvenanceSource.RECORDED, recorded.model_dump(mode="json", exclude_defaults=True)),
+        (ProvenanceSource.OVERRIDE, override),
+    ]
+    customization = layer_judge_customization(*(layer for _, layer in layers))
+    sources = customization_sources(layers)
+    _refuse_views_the_bundle_lacks(trial_dir, judge_inputs, recorded, customization)
+    bundle_prompt = _recorded_judge_prompt(trial_dir, prompts)
+    if (
+        bundle_prompt is None
+        or sources.get("system_prompt") is ProvenanceSource.OVERRIDE
+        or customization.system_prompt != _task_yaml_customization(trial_dir, task).system_prompt
+    ):
+        return _ResolvedCustomization(customization, sources, record, None)
+    sources.pop("system_prompt", None)
+    return _ResolvedCustomization(
+        customization.model_copy(update={"system_prompt": None}), sources, record, bundle_prompt
+    )
+
+
+#: The views of the final state a judge over it reads.
+_FINAL_STATE_VIEWS = frozenset({"db", "workspace", "state_diff"})
+
+
+def _final_state_views(customization: JudgeCustomization) -> frozenset[str]:
+    return _FINAL_STATE_VIEWS if customization.evidence == "state" else frozenset()
+
+
+def _recorded_views(trial_dir: Path, judge_inputs: JudgeInputs | None) -> frozenset[str]:
+    """The views of the final state the bundle recorded for its judge.
+
+    A bundle without ``judge_inputs.yaml`` recorded only that the trial had a
+    database (``env.yaml``).
+    """
+    if judge_inputs is None:
+        return frozenset({"db"}) if (trial_dir / ENV_FILENAME).exists() else frozenset()
+    offered = set(judge_inputs.read_tools_offered)
+    views = set()
+    if offered & _DB_READ_TOOLS:
+        views.add("db")
+    if "read_file" in offered:
+        views.add("workspace")
+    if judge_inputs.state_diff_text is not None:
+        views.add("state_diff")
+    return frozenset(views)
+
+
+def _refuse_views_the_bundle_lacks(
+    trial_dir: Path,
+    judge_inputs: JudgeInputs | None,
+    recorded: JudgeCustomization,
+    customization: JudgeCustomization,
+) -> None:
+    """Refuse an override that turns on a view of the final state the bundle never recorded.
+
+    Raises:
+        MissingReplayInputError: naming the key and the views replay cannot rebuild.
+    """
+    turned_on = _final_state_views(customization) - _final_state_views(recorded)
+    lacking = sorted(turned_on - _recorded_views(trial_dir, judge_inputs))
+    if lacking:
+        raise MissingReplayInputError(
+            f"cannot replay {trial_dir} with customization.evidence: {customization.evidence}: "
+            f"it turns on the judge's {', '.join(lacking)} view of the final state, which the "
+            f"bundle's {JUDGE_INPUTS_FILENAME} does not record (its judge read none of it)"
+        )
+
+
+def _tool_effects(customization: JudgeCustomization, trial_dir: Path) -> ToolEffects:
+    """The agent tools' declarations a transcript judge reads; empty for a judge over the state.
+
+    The bundle's ``tools_schemas.yaml`` is read only for a transcript judge.
 
     Raises:
         MissingReplayInputError: the bundle does not record which of the agent's
             calls can change state (:meth:`ToolEffects.from_recorded_schemas`).
     """
-    if customization is None or customization.evidence != "transcript":
-        return None, ToolEffects.empty()
+    if customization.evidence != "transcript":
+        return ToolEffects.empty()
     schemas_path = trial_dir / TOOLS_SCHEMAS_FILENAME
     metrics = _carried_mapping(trial_dir / METRICS_FILENAME) or {}
     try:
-        tool_effects = ToolEffects.from_recorded_schemas(
+        return ToolEffects.from_recorded_schemas(
             _parse_yaml(schemas_path) if schemas_path.exists() else None,
             schema_version=metrics.get("schema_version"),
             source=schemas_path,
         )
     except UnrecordedToolEffectsError as exc:
         raise MissingReplayInputError(f"a transcript judge cannot replay: {exc}") from exc
-    return TranscriptEvidence(tool_result_chars=customization.transcript_tool_chars), tool_effects
 
 
 def _resolve_judge_model(
@@ -858,40 +714,39 @@ def _resolve_judge_model(
     )
 
 
-def _resolve_knowledge_search(mode: KnowledgeSearchMode, kb_gating: dict[str, Any] | None) -> bool:
-    if mode is KnowledgeSearchMode.ON:
-        return False
-    if mode is KnowledgeSearchMode.OFF:
-        return True
-    return bool((kb_gating or {}).get("knowledge_search_disabled", False))
+#: The judge's read-only DB tools, offered together when it has a DB reader.
+_DB_READ_TOOLS = frozenset({"get_db_state", "query_db"})
 
 
 def _offline_read_surface(
-    trial_dir: Path, judge_inputs: JudgeInputs | None, kb_gating: dict[str, Any] | None
+    trial_dir: Path,
+    judge_inputs: JudgeInputs | None,
+    kb_gating: dict[str, Any] | None,
+    customization: JudgeCustomization,
 ) -> tuple[DBReader | None, KnowledgeSearch | None, list[Tool]]:
-    """Reconstruct the offline read-tool surface to match the recorded one.
+    """Reconstruct the offline read-tool surface the customization enables, as recorded.
 
-    New bundles carry the authoritative non-KB surface in ``judge_inputs.yaml``;
-    the KB surface is the union of ``grade.yaml`` ``judge_kb_gating`` ``offered`` +
-    ``withheld`` — a KB the recorded run withheld must still yield a shim, so a
-    forced ``--knowledge-search on`` can offer it and a ``recorded`` replay can
-    re-withhold it (:func:`_build_judge_registry`'s disable flag does the gating).
-    Old bundles lack both — ``env.yaml`` presence is the only signal that the
-    judge had DB reads.
+    New bundles carry the authoritative non-KB surface in ``judge_inputs.yaml``,
+    shimmed only for a judge over the final state; old bundles lack it, and
+    ``env.yaml`` presence is the only signal that the judge had DB reads. The KB
+    surface is the union of ``grade.yaml`` ``judge_kb_gating`` ``offered`` +
+    ``withheld`` — a KB the recorded run withheld must still yield a shim, so an
+    override turning knowledge search back on can offer it
+    (:func:`_build_judge_registry`'s disable flag does the gating).
     """
     db_reader: DBReader | None = None
     kb_search: KnowledgeSearch | None = None
     extra: list[Tool] = []
 
-    if judge_inputs is not None:
-        if set(judge_inputs.read_tools_offered) & {"get_db_state", "query_db"}:
+    if customization.evidence == "state" and judge_inputs is not None:
+        if set(judge_inputs.read_tools_offered) & _DB_READ_TOOLS:
             db_reader = OfflineDBReader()
         for name in judge_inputs.read_tools_offered:
             if name == "read_file":
                 extra.append(_OfflineReadTool(name, "workspace"))
-            elif name not in ("get_db_state", "query_db"):
+            elif name not in _DB_READ_TOOLS:
                 extra.append(_OfflineReadTool(name, name))
-    elif (trial_dir / ENV_FILENAME).exists():
+    elif customization.evidence == "state" and (trial_dir / ENV_FILENAME).exists():
         db_reader = OfflineDBReader()
 
     gating = kb_gating or {}
@@ -909,24 +764,25 @@ def read_replay_inputs(
     *,
     grading_override: GradingOverride | None = None,
     judge_model_override: str | None = None,
-    knowledge_search: KnowledgeSearchMode = KnowledgeSearchMode.RECORDED,
-    evidence: EvidenceMode = EvidenceMode.RECORDED,
 ) -> ReplayInputs:
     """Reconstruct the ``LLMJudge.run()`` inputs for one judge-eligible trial.
 
     Rebuilds the judge's transcript through the same
     :func:`encode_transcript_wire` + :func:`split_leading_system_message` the
     runner uses, so the reconstructed transcript is byte-identical to the live
-    grading path. Read tools are offline shims matching the recorded surface.
+    grading path. Read tools are offline shims matching the recorded surface. The
+    judge customization is the recorded one with the override's layered over it
+    (:func:`_resolve_customization`).
 
     Raises :class:`MissingReplayInputError`, naming what is missing, when the trial
     had a judge but the bundle lacks a required input and no override fills it (no
-    rubric and no ``--grading``; no transcript; no agent policy; no judge model and
-    no ``--judge-model``). A missing ``prompts.yaml`` means the agent policy is
-    unknown — the writer always emits the file, recording ``system_prompt: null``
-    when no agent prompt was set, so absence is a broken bundle, not a faithful
-    empty prompt. Callers must classify the trial first — this is only valid
-    for a judge-eligible trial.
+    rubric and no ``--grading`` rubric; no transcript; no agent policy; no judge
+    model and no ``--judge-model``), or when the override turns on a view of the
+    final state the bundle never recorded. A missing ``prompts.yaml`` means the
+    agent policy is unknown — the writer always emits the file, recording
+    ``system_prompt: null`` when no agent prompt was set, so absence is a broken
+    bundle, not a faithful empty prompt. Callers must classify the trial first —
+    this is only valid for a judge-eligible trial.
 
     Raises :class:`RedactedBundleError` for a bundle written under a redaction
     policy: the judge would be shown arguments the agent never sent.
@@ -946,79 +802,36 @@ def read_replay_inputs(
             f"no transcript: {trial_dir / TRAJECTORY_FILENAME} is missing"
         )
 
-    rubric_override = grading_override.rubric if grading_override is not None else None
-    rubric, rubric_source = _resolve_rubric(task, rubric_override)
+    override = grading_override or GradingOverride(rubric=None, customization=None)
+    rubric, rubric_source = _resolve_rubric(task, override.rubric)
     judge_kind, kind_config, judge_kind_source = _resolve_judge_kind(task)
-    explicit_system_prompt, judge_prompt_source = _resolve_bundle_judge_prompt(trial_dir, prompts)
-    if explicit_system_prompt is not None:
-        # Bundle-recorded composed prompt wins over any legacy customization: the
-        # recorded string is what the original run graded under, verbatim. Route
-        # it through ``LLMJudge.explicit_system_prompt`` so no second marker is
-        # appended, and leave ``custom_system_prompt`` untouched — the two seams
-        # are mutually exclusive.
-        custom_system_prompt: str | None = None
-        custom_prompt_source: ProvenanceSource | None = None
-    else:
-        custom_system_prompt, custom_prompt_source = _resolve_custom_prompt(
-            trial_dir, task, grading_override
-        )
-    include_agent_system_prompt, agent_prompt_source = _resolve_include_agent_system_prompt(
-        trial_dir, task, grading_override
-    )
     judge_model_config, judge_model_source = _resolve_judge_model(task, judge_model_override)
-    judge_snippet_chars, judge_snippet_chars_source = _resolve_judge_snippet_chars(
-        trial_dir, task, grading_override
-    )
-    evidence_customization, judge_evidence_source = _resolve_judge_evidence(
-        trial_dir, task, grading_override, evidence
-    )
-
-    trajectory = Trajectory.model_validate(trajectory_raw)
-    recorded_agent_prompt = prompts.get("system_prompt") or ""
-    wire = encode_transcript_wire(trajectory, recorded_agent_prompt)
-    if wire is None:
-        raise MissingReplayInputError(
-            f"no transcript: {trial_dir / TRAJECTORY_FILENAME} has no messages and no agent prompt"
-        )
-    agent_system_prompt, transcript = split_leading_system_message(json.loads(wire))
-
     judge_inputs = _load_judge_inputs(trial_dir)
-    kb_gating = (grade or {}).get("judge_kb_gating")
-    disable_knowledge_search = _resolve_knowledge_search(knowledge_search, kb_gating)
-    db_reader, kb_search, extra_read_tools = _offline_read_surface(
-        trial_dir, judge_inputs, kb_gating
+    resolved = _resolve_customization(
+        trial_dir,
+        task=task,
+        prompts=prompts,
+        judge_inputs=judge_inputs,
+        override=override.customization,
     )
+    customization = resolved.customization
 
-    state_diff = judge_inputs.state_diff_text if judge_inputs is not None else None
-    fidelity_mode = FidelityMode.FULL if judge_inputs is not None else FidelityMode.FALLBACK
-    transcript_evidence, tool_effects = _transcript_evidence(evidence_customization, trial_dir)
-    if transcript_evidence is not None:
-        # A transcript judge sees no view of the final state, whatever the bundle
-        # recorded for a judge over it: only knowledge-search shims stay.
-        db_reader, state_diff = None, None
-        extra_read_tools = [
-            tool for tool in extra_read_tools if getattr(tool, "is_knowledge_search", False)
-        ]
-
+    agent_system_prompt, transcript = _recorded_transcript(trial_dir, trajectory_raw, prompts)
+    db_reader, kb_search, extra_read_tools = _offline_read_surface(
+        trial_dir, judge_inputs, (grade or {}).get("judge_kb_gating"), customization
+    )
+    reads_state = customization.evidence == "state"
     provenance = ReplayProvenance(
         judge_model=f"{judge_model_config.provider}/{judge_model_config.name}",
         judge_model_source=judge_model_source,
         rubric_source=rubric_source,
-        knowledge_search_mode=knowledge_search,
-        knowledge_search_disabled=disable_knowledge_search,
-        custom_system_prompt=custom_system_prompt is not None,
-        custom_prompt_source=custom_prompt_source,
-        judge_prompt_source=judge_prompt_source,
-        include_agent_system_prompt=include_agent_system_prompt,
-        agent_prompt_source=agent_prompt_source,
-        judge_snippet_chars=judge_snippet_chars,
-        judge_snippet_chars_source=judge_snippet_chars_source,
-        judge_evidence=(
-            evidence_customization.evidence if evidence_customization is not None else "state"
+        customization=customization,
+        customization_sources=resolved.sources,
+        customization_record=resolved.record,
+        judge_prompt_source=(
+            ProvenanceSource.BUNDLE if resolved.bundle_judge_prompt is not None else None
         ),
-        judge_evidence_source=judge_evidence_source,
-        judge_evidence_mode=evidence,
-        fidelity_mode=fidelity_mode,
+        fidelity_mode=FidelityMode.FULL if judge_inputs is not None else FidelityMode.FALLBACK,
         judge_kind=judge_kind,
         judge_kind_source=judge_kind_source,
     )
@@ -1027,17 +840,14 @@ def read_replay_inputs(
         rubric=rubric,
         agent_system_prompt=agent_system_prompt,
         transcript=transcript,
-        state_diff=state_diff,
+        state_diff=(
+            judge_inputs.state_diff_text if reads_state and judge_inputs is not None else None
+        ),
         judge_model_config=judge_model_config,
         options=JudgeTrialOptions(
-            disable_knowledge_search=disable_knowledge_search,
-            custom_system_prompt=custom_system_prompt,
-            include_agent_system_prompt=include_agent_system_prompt,
-            judge_snippet_chars=judge_snippet_chars,
-            transcript_evidence=transcript_evidence,
-            tool_effects=tool_effects,
+            customization=customization, tool_effects=_tool_effects(customization, trial_dir)
         ),
-        explicit_system_prompt=explicit_system_prompt,
+        explicit_system_prompt=resolved.bundle_judge_prompt,
         judge_kind=judge_kind,
         kind_config=kind_config,
         db_reader=db_reader,
@@ -1046,6 +856,19 @@ def read_replay_inputs(
         workspace_dir=None,
         provenance=provenance,
     )
+
+
+def _recorded_transcript(
+    trial_dir: Path, trajectory_raw: dict[str, Any], prompts: dict[str, Any]
+) -> tuple[str, list[dict[str, Any]]]:
+    """The agent policy and transcript the judge reads, encoded as the runner encodes them."""
+    trajectory = Trajectory.model_validate(trajectory_raw)
+    wire = encode_transcript_wire(trajectory, prompts.get("system_prompt") or "")
+    if wire is None:
+        raise MissingReplayInputError(
+            f"no transcript: {trial_dir / TRAJECTORY_FILENAME} has no messages and no agent prompt"
+        )
+    return split_leading_system_message(json.loads(wire))
 
 
 def _load_judge_inputs(trial_dir: Path) -> JudgeInputs | None:
@@ -1077,15 +900,10 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
     from tolokaforge.core.grading.judge_only_helpers import _FixedClientJudgeModelProvider
 
     if inputs.explicit_system_prompt is not None:
-        judge = LLMJudge(
+        judge = LLMJudge.from_options(
             inputs.judge_model_config,
-            disable_knowledge_search=inputs.options.disable_knowledge_search,
-            custom_system_prompt=inputs.options.custom_system_prompt,
+            inputs.options,
             explicit_system_prompt=inputs.explicit_system_prompt,
-            include_agent_system_prompt=inputs.options.include_agent_system_prompt,
-            judge_snippet_chars=inputs.options.judge_snippet_chars,
-            transcript_evidence=inputs.options.transcript_evidence,
-            tool_effects=inputs.options.tool_effects,
             llm_client=judge_client,
         )
         return judge.run(
@@ -1159,14 +977,15 @@ class TrialReplayOutcome:
     artifacts_dir: Path | None = None
 
 
-def build_replay_grade(result: JudgeResult) -> Grade:
+def build_replay_grade(result: JudgeResult, customization: JudgeCustomization) -> Grade:
     """Materialise a persistable :class:`Grade` from a replay :class:`JudgeResult`.
 
     Judge-only: the ``llm_judge`` component carries the replay score after the
     required-criterion gate, as a live grade's does; an ``ERRORED`` judge leaves it
     unscored (the ``-1.0`` sentinel), never a fabricated ``0.0``. Echoes the judge's own
-    transcript, KB gating, and structured ``judge_inputs`` so the replay bundle is itself
-    a full, re-replayable bundle.
+    transcript and KB surface, and records the structured ``judge_inputs`` with the
+    ``customization`` the judge graded under, so the replay bundle is itself a full,
+    re-replayable bundle.
     """
     completed = result.status is JudgeRunStatus.COMPLETED
     gated = _gated_judge_score(result)
@@ -1188,17 +1007,14 @@ def build_replay_grade(result: JudgeResult) -> Grade:
         judge_usage=JudgeUsage(**dataclasses.asdict(result.usage)),
         judge_transcript=list(result.transcript) or None,
         judge_kb_gating=JudgeKbGating(
-            knowledge_search_disabled=result.knowledge_search_disabled,
             offered=list(result.kb_tools_offered),
             withheld=list(result.kb_tools_withheld),
         ),
         judge_inputs=JudgeInputs(
             state_diff_text=result.state_diff,
             read_tools_offered=list(result.read_tools_offered),
+            customization=customization,
         ),
-        judge_custom_prompt=result.custom_system_prompt,
-        judge_agent_prompt_included=result.include_agent_system_prompt,
-        judge_evidence="transcript" if result.evidence == "transcript" else None,
     )
 
 
@@ -1230,7 +1046,7 @@ def _write_replay_artifacts(
     writer: TrialArtifactWriter,
 ) -> None:
     dest.mkdir(parents=True, exist_ok=True)
-    writer.write_grade(dest, build_replay_grade(result))
+    writer.write_grade(dest, build_replay_grade(result, provenance.customization))
     with open(dest / "replay_provenance.yaml", "w") as f:
         yaml.dump(
             provenance.model_dump(mode="json"),
@@ -1294,8 +1110,6 @@ def run_replay_batch(
     trial: Path | None = None,
     grading_override: GradingOverride | None = None,
     judge_model_override: str | None = None,
-    knowledge_search: KnowledgeSearchMode = KnowledgeSearchMode.RECORDED,
-    evidence: EvidenceMode = EvidenceMode.RECORDED,
     dry_run: bool = False,
     judge_client: LLMClient | None = None,
     writer: TrialArtifactWriter | None = None,
@@ -1344,8 +1158,6 @@ def run_replay_batch(
                 bundle,
                 grading_override=grading_override,
                 judge_model_override=judge_model_override,
-                knowledge_search=knowledge_search,
-                evidence=evidence,
             )
         except (MissingReplayInputError, ValidationError, RedactedBundleError) as exc:
             # ``RedactedBundleError`` is deliberately not a ``ValueError`` (see

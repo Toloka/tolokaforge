@@ -73,7 +73,7 @@ from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, Judg
 from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.runner.models import CriterionResult, Rubric
+from tolokaforge.runner.models import CriterionResult, JudgeCustomization, Rubric
 
 pytestmark = pytest.mark.canonical
 
@@ -148,10 +148,12 @@ def _load_corpus_entry(path: Path) -> ParityCorpusEntry:
         state_diff=data.get("state_diff"),
         judge_scripts=normalised_scripts,
         options=JudgeTrialOptions(
-            disable_knowledge_search=bool(data.get("disable_knowledge_search", False)),
-            custom_system_prompt=data.get("custom_system_prompt"),
-            include_agent_system_prompt=bool(data.get("include_agent_system_prompt", True)),
-            judge_snippet_chars=data.get("judge_snippet_chars", DEFAULT_JUDGE_SNIPPET_CHARS),
+            customization=JudgeCustomization(
+                disable_knowledge_search=bool(data.get("disable_knowledge_search", False)),
+                system_prompt=data.get("custom_system_prompt"),
+                include_agent_system_prompt=bool(data.get("include_agent_system_prompt", True)),
+                judge_snippet_chars=data.get("judge_snippet_chars", DEFAULT_JUDGE_SNIPPET_CHARS),
+            )
         ),
     )
 

@@ -126,6 +126,7 @@ def test_full_grade_payload_round_trips_through_the_wire() -> None:
         TracePathResult,
     )
     from tolokaforge.core.models.grade import GradingStateSnapshots
+    from tolokaforge.runner.models import JudgeCustomization
 
     verdict = Grade(
         binary_pass=False,
@@ -168,17 +169,16 @@ def test_full_grade_payload_round_trips_through_the_wire() -> None:
             consistency_rejections=1,
         ),
         judge_transcript=[{"role": "user", "content": "hi"}],
-        judge_kb_gating=JudgeKbGating(
-            knowledge_search_disabled=True,
-            offered=["search_kb"],
-            withheld=["search_policy"],
-        ),
+        judge_kb_gating=JudgeKbGating(offered=["search_kb"], withheld=["search_policy"]),
         judge_inputs=JudgeInputs(
             state_diff_text="orders[1]: open -> shipped",
             read_tools_offered=["read_file", "get_db_state"],
+            customization=JudgeCustomization(
+                disable_knowledge_search=True,
+                system_prompt="Strict.",
+                include_agent_system_prompt=False,
+            ),
         ),
-        judge_custom_prompt=True,
-        judge_agent_prompt_included=False,
         trace_check_results=[
             TraceConstraintResult(
                 id="t1",
@@ -236,11 +236,11 @@ def test_full_grade_payload_round_trips_through_the_wire() -> None:
     report = grade_dict["judge_report"]
     assert report["calls"] == 2
     assert report["cost_usd"] == pytest.approx(0.0123)
-    assert report["knowledge_search_disabled"] is True
     assert report["kb_tools_withheld"] == ["search_policy"]
     assert report["state_diff_text"] == "orders[1]: open -> shipped"
-    assert report["custom_system_prompt"] is True
-    assert report["include_agent_system_prompt"] is False
+    assert JudgeCustomization.model_validate_json(report["customization_json"]) == (
+        verdict.judge_inputs.customization
+    )
     assert "transcript_json" in report
 
     # Trace-check round-trip — every sub-message field the encoder writes.
