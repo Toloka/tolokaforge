@@ -196,6 +196,37 @@ def test_every_status_member_has_a_producing_recording_path(
     assert response.error_message == ""
     observed.add(runner_service.trials[_timeout_trial].tool_call_history[-1].status)
 
+    refusing = MCPServerToolWrapper(
+        tool_schema=RunnerToolSchema(
+            name="native_refusal", description="A ToolError", parameters={}
+        ),
+        server_script="/unused/mcp_server.py",
+        db_client=DBServiceClient("http://db-service.invalid"),
+        trial_id=_timeout_trial,
+    )
+    monkeypatch.setattr(
+        refusing,
+        "_get_server",
+        lambda: SimpleNamespace(
+            send_request=lambda method, params, **_options: {
+                "content": [{"type": "text", "text": '{"error": "order is closed"}'}],
+                "isError": True,
+                "_meta": {"tolokaforge/error_category": "tool_error"},
+            }
+        ),
+    )
+    runner_service.trials[_timeout_trial].agent_tools["native_refusal"] = refusing
+    response = runner_service.ExecuteTool(
+        execute_request(
+            _timeout_trial, "native_refusal", call_id="toolu_native_refusal", timeout_seconds=1
+        ),
+        mock_grpc_context,
+    )
+    assert response.status == pb2.EXECUTION_STATUS_TOOL_ERROR
+    assert response.output == '{"error": "order is closed"}'
+    assert response.error_message == ""
+    observed.add(runner_service.trials[_timeout_trial].tool_call_history[-1].status)
+
     assert observed == set(ToolExecutionStatus), (
         "a ToolExecutionStatus member has no recording path that produces it, so a "
         f"matcher naming it could never fire: {sorted(m.value for m in set(ToolExecutionStatus) - observed)}"

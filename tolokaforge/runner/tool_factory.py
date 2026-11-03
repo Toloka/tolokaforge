@@ -45,6 +45,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from tolokaforge.core.mcp_error_categories import (
+    INVALID_ARGUMENTS_CATEGORY,
+    MCP_ERROR_CATEGORY_META,
+    TOOL_ERROR_CATEGORY,
+)
 from tolokaforge.core.search.backend import SearchIndex
 from tolokaforge.runner.compose_naming import compose_container_name
 from tolokaforge.runner.db_client import (
@@ -180,10 +185,8 @@ class ToolLifecycleContext:
     run_id: str = ""
 
 
-#: The one failure category a substrate can declare (see ``ToolCallOutcome.category``).
-INVALID_ARGUMENTS_CATEGORY = "invalid_arguments"
-#: ``CallToolResult._meta`` key through which an MCP tool declares its failure's category.
-MCP_ERROR_CATEGORY_META = "tolokaforge/error_category"
+#: The failure categories a substrate can declare (see ``ToolCallOutcome.category``).
+DECLARED_FAILURE_CATEGORIES = frozenset({INVALID_ARGUMENTS_CATEGORY, TOOL_ERROR_CATEGORY})
 #: JSON-RPC "Invalid params": the server refused the call's arguments.
 JSONRPC_INVALID_PARAMS = -32602
 
@@ -194,8 +197,9 @@ class ToolCallOutcome:
 
     ``category`` is set only when the substrate said why in a typed way:
     ``"invalid_arguments"`` means the caller's input was refused and nothing was
-    done, so the caller can correct it. A failure without a category stays an
-    environment failure.
+    done, so the caller can correct it; ``"tool_error"`` means the tool ran and
+    refused the request (a ``DomainToolRegistry`` ``ToolError``). A failure
+    without a category stays an environment failure.
     """
 
     output: str
@@ -1054,7 +1058,7 @@ def _declared_category(result: dict[str, Any]) -> str | None:
     """
     meta = result.get("_meta")
     category = meta.get(MCP_ERROR_CATEGORY_META) if isinstance(meta, dict) else None
-    return category if category == INVALID_ARGUMENTS_CATEGORY else None
+    return category if category in DECLARED_FAILURE_CATEGORIES else None
 
 
 # =============================================================================

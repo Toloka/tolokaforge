@@ -524,6 +524,26 @@ def test_tool_argument_classification():
     assert attribution["deterministic"] is True
 
 
+def test_a_tool_refusal_is_not_a_tool_execution_failure():
+    """A ``tool_error`` is the environment answering the agent's request: a trial that
+    met one and then failed on its state is the grader-contract failure it was before."""
+    traj = _base_trajectory()
+    assert traj.grade is not None
+    traj.tool_log = [
+        recorded_call(
+            "get_order",
+            status=ToolExecutionStatus.TOOL_ERROR,
+            output='{\n  "error": "Order \'O-9\' not found, validation failed"\n}',
+        )
+    ]
+    traj.grade.state_diff = {"orders.status": {"expected": "done", "actual": "pending"}}
+
+    attribution = attribute_failure(traj)
+
+    assert attribution["failure_class"] == "grader_contract"
+    assert not [ev for ev in attribution["evidence"] if ev["kind"] == "tool_log"]
+
+
 def test_grader_contract_classification():
     traj = _base_trajectory()
     assert traj.grade is not None

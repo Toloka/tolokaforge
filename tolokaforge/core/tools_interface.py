@@ -57,7 +57,11 @@ Notes
   MCP ``inputSchema``. In grading mode the caller passes ``data`` explicitly.
 - Raise ``ToolError`` instead of returning ``{"error": "..."}`` for business
   logic errors. The registry catches it and serialises it to the standard
-  ``{"error": "...", "details": [...]}`` response format.
+  ``{"error": "...", "details": [...]}`` response format. Over MCP that response
+  is a call the tool refused (``isError: true`` with the ``tool_error`` category),
+  which the runner records as ``tool_error`` and the agent reads verbatim; in
+  grading mode (``TOOLS[name].invoke``) it is the returned mapping, which golden
+  replay reads as a declared failure.
 - Nested Pydantic models in kwargs are auto-coerced: if the grading engine
   passes raw dicts for a parameter typed ``list[SomeModel]`` or ``SomeModel``,
   the registry validates them before calling the function.
@@ -76,8 +80,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
+import pydantic_core
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
+
+from tolokaforge.core.mcp_error_categories import MCP_ERROR_CATEGORY_META, TOOL_ERROR_CATEGORY
 
 from .mutates_state_meta import MUTATES_STATE_META_KEY, check_read_rule_shape
 
@@ -92,7 +99,14 @@ class ToolError(Exception):
     Raise instead of returning ``{"error": "..."}`` for explicit, structured
     error signalling.  ``DomainToolRegistry`` catches ``ToolError`` and
     converts it to ``{"error": str(e), "details": [...]}`` automatically,
-    so the response format stays consistent across all tools.
+    so the response format stays consistent across all tools. Over MCP the
+    call is answered with ``isError: true`` and the ``tool_error`` category in
+    ``_meta``: the tool ran and refused the request, which the runner records as
+    ``tool_error`` — apart from an untyped ``isError`` (``environment_error``:
+    FastMCP refusing the arguments, or an exception escaping the tool) and from
+    a refusal of the arguments (``invalid_arguments``). FastMCP's own
+    ``mcp.server.fastmcp.exceptions.ToolError`` is not this class: it answers an
+    untyped ``isError``.
 
     Parameters
     ----------
@@ -138,6 +152,21 @@ def _tool_error_to_dict(exc: ToolError) -> dict[str, Any]:
     if exc.details:
         result["details"] = exc.details
     return result
+
+
+def _tool_error_result(exc: ToolError) -> CallToolResult:
+    """The MCP answer to a call that raised ``ToolError``: a call the tool refused.
+
+    ``isError: true`` with the ``tool_error`` category, beside the very text FastMCP
+    renders for the same mapping returned as a value — so the agent reads the
+    response it always read, while the runner records the call as ``tool_error``.
+    """
+    text = pydantic_core.to_json(_tool_error_to_dict(exc), fallback=str, indent=2).decode()
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        isError=True,
+        _meta={MCP_ERROR_CATEGORY_META: TOOL_ERROR_CATEGORY},
+    )
 
 
 MutatesStateDeclaration = bool | Mapping[str, Any] | None
@@ -355,7 +384,7 @@ class DomainToolRegistry:
                 try:
                     return func(state_getter(), **kwargs)
                 except ToolError as exc:
-                    return _tool_error_to_dict(exc)
+                    return _tool_error_result(exc)
 
             _mcp_fn.__name__ = tool_name
             _mcp_fn.__qualname__ = tool_name
@@ -363,8 +392,16 @@ class DomainToolRegistry:
             _mcp_fn.__signature__ = new_sig
             _mcp_fn.__annotations__ = new_annotations
 
+            # No structured output: FastMCP validates a returned ``CallToolResult``'s
+            # ``structuredContent`` against the output schema it would derive from the
+            # return annotation, which a ``ToolError`` answer cannot satisfy. Nothing
+            # in the engine reads ``structuredContent``; the text content is the same
+            # either way.
             self._mcp.tool(
-                description=description, annotations=_annotations(declared), meta=_meta(declared)
+                description=description,
+                annotations=_annotations(declared),
+                meta=_meta(declared),
+                structured_output=False,
             )(_mcp_fn)
 
             return func

@@ -40,6 +40,7 @@ from tolokaforge.runner.models import ToolSchema
 from tolokaforge.runner.runner_pb2_grpc import add_RunnerServiceServicer_to_server
 from tolokaforge.runner.tool_factory import (
     INVALID_ARGUMENTS_CATEGORY,
+    TOOL_ERROR_CATEGORY,
     MCPProtocolError,
     MCPServerPool,
     MCPServerToolWrapper,
@@ -84,6 +85,8 @@ for line in sys.stdin:
         answer(request["id"], text({"error": "quantity must be positive"}, True, {"tolokaforge/error_category": "invalid_arguments"}))
     elif name == "set_quantity" and quantity == 99:
         answer(request["id"], text({"error": "backend unavailable"}, True))
+    elif name == "set_quantity" and quantity == 96:
+        answer(request["id"], text({"error": "order is closed"}, True, {"tolokaforge/error_category": "tool_error"}))
     elif name == "set_quantity" and quantity == 98:
         answer(request["id"], text({"error": "odd"}, True, {"tolokaforge/error_category": "made_up"}))
     else:
@@ -121,6 +124,7 @@ def _wrapper(name: str, script: str, pool: MCPServerPool, trial_id: str = "probe
     [
         ("set_quantity", 0, True, INVALID_ARGUMENTS_CATEGORY),
         ("strict_quantity", 0, True, INVALID_ARGUMENTS_CATEGORY),
+        ("set_quantity", 96, True, TOOL_ERROR_CATEGORY),
         ("set_quantity", 99, True, None),
         ("set_quantity", 98, True, None),
         ("set_quantity", 3, False, None),
@@ -201,15 +205,22 @@ def test_the_runner_records_argument_errors_apart_from_environment_errors(
     assert call("set_quantity", 0, "c1").status == pb2.EXECUTION_STATUS_INVALID_ARGUMENTS
     assert call("strict_quantity", 0, "c2").status == pb2.EXECUTION_STATUS_INVALID_ARGUMENTS
     assert call("set_quantity", 99, "c3").status == pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR
+    refused = call("set_quantity", 96, "c5")
+    assert refused.status == pb2.EXECUTION_STATUS_TOOL_ERROR
+    assert json.loads(refused.output) == {"error": "order is closed"}
+    assert refused.error_message == ""
     corrected = call("set_quantity", 2, "c4")
     assert corrected.status == pb2.EXECUTION_STATUS_SUCCESS
     assert json.loads(corrected.output) == {"quantity": 2}
-    assert [r.status for r in runner_service.trials[trial_id].tool_call_history] == [
+    history = runner_service.trials[trial_id].tool_call_history
+    assert [r.status for r in history] == [
         ToolExecutionStatus.INVALID_ARGUMENTS,
         ToolExecutionStatus.INVALID_ARGUMENTS,
         ToolExecutionStatus.ENVIRONMENT_ERROR,
+        ToolExecutionStatus.TOOL_ERROR,
         ToolExecutionStatus.SUCCESS,
     ]
+    assert json.loads(history[3].output) == {"error": "order is closed"}
 
 
 class _NullSink(MetricsSink):
@@ -277,3 +288,52 @@ def test_the_refusal_reaches_the_model_and_the_record_over_the_docker_path(
     record = runner_service.trials[trial_id].tool_call_history[-1]
     assert record.status is ToolExecutionStatus.INVALID_ARGUMENTS
     assert record.output == feedback
+
+
+def test_a_tool_error_reaches_the_model_verbatim_and_the_record_as_one(
+    runner_service, mock_grpc_context, server_script, pool, request
+):
+    """Runner service over gRPC → host client → agent loop: a call the tool refused
+    is a completed call, so the model reads the tool's own response with no
+    ``Error: `` prefix, while the trial records it as ``tool_error``."""
+    trial_id = f"{request.node.name}:0"
+    registered = runner_service.RegisterTrial(
+        register_request(
+            trial_spec_json(simple_task_description(), trial_id=trial_id), trial_id=trial_id
+        ),
+        mock_grpc_context,
+    )
+    assert registered.success is True, registered.error
+    runner_service.trials[trial_id].agent_tools["set_quantity"] = _wrapper(
+        "set_quantity", server_script, pool, trial_id
+    )
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    add_RunnerServiceServicer_to_server(runner_service, server)
+    port = server.add_insecure_port("localhost:0")
+    server.start()
+    client = GrpcRunnerClient(f"localhost:{port}")
+    messages: list = []
+    try:
+        client.connect(timeout=10.0, retry_interval=0.1)
+        ToolCallingLoop(
+            llm_client=_OneToolCall(
+                ToolCall(id="toolu_closed", name="set_quantity", arguments={"quantity": 96})
+            ),
+            tool_executor=DockerRunnerAdapter(client, trial_id),
+            tool_schemas=[],
+            config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
+            metrics=_NullSink(),
+            should_terminate=lambda result, turn, history: None,
+            classify_error=lambda exc: classify_loop_error(exc, ()),
+            logger=get_logger("tool-error", strict=False),
+            recorder=TrialToolCallRecorder(),
+        ).run("sys", messages, time.time())
+    finally:
+        client.close()
+        server.stop(grace=None)
+
+    (tool_message,) = [m for m in messages if m.role is MessageRole.TOOL]
+    assert json.loads(tool_message.content) == {"error": "order is closed"}
+    assert tool_message.tool_status is ToolExecutionStatus.TOOL_ERROR
+    record = runner_service.trials[trial_id].tool_call_history[-1]
+    assert record.status is ToolExecutionStatus.TOOL_ERROR

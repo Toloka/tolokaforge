@@ -174,10 +174,20 @@ class ToolExecutionStatus(str, Enum):
 
     SUCCESS = "success"
     ENVIRONMENT_ERROR = "environment_error"
+    TOOL_ERROR = "tool_error"
     ERROR = "error"
     TIMEOUT = "timeout"
     TOOL_NOT_FOUND = "tool_not_found"
     INVALID_ARGUMENTS = "invalid_arguments"
+
+
+#: Calls the environment completed with an error flag: an MCP ``isError`` reply,
+#: untyped (``ENVIRONMENT_ERROR``) or declared the tool's refusal of the request
+#: (``TOOL_ERROR``). The agent reads their response verbatim, and the trial's
+#: environment-error budget counts them.
+ENVIRONMENT_ERROR_STATUSES = frozenset(
+    {ToolExecutionStatus.ENVIRONMENT_ERROR, ToolExecutionStatus.TOOL_ERROR}
+)
 
 
 class ToolPolicy(BaseModel):

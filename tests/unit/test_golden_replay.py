@@ -76,7 +76,7 @@ from tolokaforge.runner.service import (
     _tool_registered_for_trial,
 )
 from tolokaforge.runner.state_read_limits import StateReadDeadlines
-from tolokaforge.runner.tool_factory import ToolCallOutcome
+from tolokaforge.runner.tool_factory import TOOL_ERROR_CATEGORY, ToolCallOutcome
 
 pytestmark = [pytest.mark.unit, pytest.mark.grading]
 
@@ -646,8 +646,10 @@ class _FlaggingTool:
     #860.
     """
 
-    def __init__(self, answer: str, *, declared_failure: bool) -> None:
-        self._outcome = ToolCallOutcome(output=answer, declared_failure=declared_failure)
+    def __init__(self, answer: str, *, declared_failure: bool, category: str | None = None) -> None:
+        self._outcome = ToolCallOutcome(
+            output=answer, declared_failure=declared_failure, category=category
+        )
 
     async def execute(self, _arguments: dict[str, Any]) -> str:
         return self._outcome.output
@@ -662,6 +664,11 @@ def _flagging_tool(answer: str) -> _FlaggingTool:
 
 def _unflagged_tool(answer: str) -> _FlaggingTool:
     return _FlaggingTool(answer, declared_failure=False)
+
+
+def _refusing_tool(answer: str) -> _FlaggingTool:
+    """A ``ToolError`` over MCP: flagged, with the ``tool_error`` category."""
+    return _FlaggingTool(answer, declared_failure=True, category=TOOL_ERROR_CATEGORY)
 
 
 def _answering_async_callable(answer: str) -> Callable[[dict[str, Any]], Awaitable[str]]:
@@ -858,6 +865,28 @@ async def test_the_runner_records_the_failure_its_tool_reported_in_what_it_retur
             ),
             id="unflagged-payload",
         ),
+        pytest.param(
+            _refusing_tool,
+            _DECLINED_PAYLOAD,
+            FailedGoldenAction(
+                index=0,
+                name="confirm_payment",
+                kind=GoldenActionFailure.REPORTED,
+                error="Order 'O-999' not found",
+            ),
+            id="refused-payload",
+        ),
+        pytest.param(
+            _refusing_tool,
+            _FLAGGED_PROSE,
+            FailedGoldenAction(
+                index=0,
+                name="confirm_payment",
+                kind=GoldenActionFailure.REPORTED,
+                error=_FLAGGED_PROSE,
+            ),
+            id="refused-prose",
+        ),
     ],
 )
 async def test_the_runner_records_one_failure_under_the_verb_of_whoever_declared_it(
@@ -875,10 +904,15 @@ async def test_the_runner_records_one_failure_under_the_verb_of_whoever_declared
     authored defect: the kind, the verb and the sentence's shape are shared, the message is
     whichever layer failed.
 
-    The last two rows carry the same answer and differ only in the flag, which is what pins
-    the reading order: a flagged call whose text the payload predicate would *also* read as a
-    failure records once, under the flag, and an unflagged one still records what its tool
-    reported.
+    The flagged-payload and unflagged-payload rows carry the same answer and differ only in
+    the flag, which is what pins the reading order: a flagged call whose text the payload
+    predicate would *also* read as a failure records once, under the flag, and an unflagged
+    one still records what its tool reported.
+
+    The refused rows are a ``ToolError`` over MCP — flagged with the ``tool_error`` category.
+    The tool ran and reported the failure, so they record as reported, the same as core reads
+    the ``{"error": ...}`` payload off ``invoke``; refused text that is no such payload is its
+    own message rather than a silent success.
     """
     result = await _replay_as_the_runner_does(answer, build_tool)
 
@@ -887,6 +921,15 @@ async def test_the_runner_records_one_failure_under_the_verb_of_whoever_declared
     assert "GOLDEN REPLAY ERRORS:" in reasons, reasons
     assert "1 of 1" in reasons, reasons
     assert f"[0] confirm_payment {expected.kind.value} {expected.error}" in reasons, reasons
+
+
+async def test_an_empty_tool_error_is_no_failure_on_either_substrate() -> None:
+    """``ToolError("")`` reaches the runner flagged with the ``tool_error`` category and
+    the payload ``{"error": ""}``, which core reads as no failure: the runner does too,
+    rather than taking the refused text for a message."""
+    replayed = await _replay_as_the_runner_does('{\n  "error": ""\n}', _refusing_tool)
+
+    assert replayed.golden_replay == GoldenReplayRecord(authored=1)
 
 
 @pytest.mark.parametrize(

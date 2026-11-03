@@ -447,8 +447,10 @@ max_trial_tokens: 2000000     # absent: no token budget
   JSON-RPC error `-32602` (Invalid params) or with `isError: true` and
   `_meta: {"tolokaforge/error_category": "invalid_arguments"}`, and the call is
   recorded as `invalid_arguments`, which the budget does not count — the caller can
-  correct its input. An untyped `isError`, or any other category, stays an
-  environment error.
+  correct its input. A tool's refusal of the request — `isError: true` with
+  `_meta: {"tolokaforge/error_category": "tool_error"}`, which `DomainToolRegistry`
+  answers a `ToolError` with — is recorded as `tool_error` and counted. An untyped
+  `isError`, or any other category, stays an environment error.
 - The budget is checked after a message that calls no tools and after each
   environment batch, never between a message and its tool results: a message's calls
   always run. The opening turn's steps count too.

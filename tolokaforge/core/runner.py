@@ -89,7 +89,12 @@ from tolokaforge.runner.tool_factory import (
     BACKSTOP_GRACE_S,
     wrap_episode_command_with_watchdog,
 )
-from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
+from tolokaforge.tools.registry import (
+    ENVIRONMENT_ERROR_STATUSES,
+    ToolExecuting,
+    resolve_tool_output,
+    resolve_tool_status,
+)
 
 if TYPE_CHECKING:
     from tolokaforge.observability.observer import LoopObserver
@@ -2196,7 +2201,7 @@ class TrialRunner:
                     self._simulation_budget.environment(errors=environment_errors)
                 raise
             tool_duration = time.time() - tool_start
-            if resolve_tool_status(tool_result) is ToolExecutionStatus.ENVIRONMENT_ERROR:
+            if resolve_tool_status(tool_result) in ENVIRONMENT_ERROR_STATUSES:
                 environment_errors += 1
             self.tool_call_recorder.record(
                 call_id=call.id,

@@ -183,14 +183,13 @@ def test_failed_call_tool_message_carries_the_error_prefix():
     assert recorder.recorded[0].output == "no such employee E9"
 
 
-def test_completed_environment_error_keeps_its_original_text_and_status():
+@pytest.mark.parametrize(
+    "status", [ToolExecutionStatus.ENVIRONMENT_ERROR, ToolExecutionStatus.TOOL_ERROR]
+)
+def test_completed_environment_error_keeps_its_original_text_and_status(status):
     class EnvironmentErrorExecutor:
         def execute(self, tool_name, arguments, *, call_id, validation_schema=None):
-            return ToolResult(
-                success=True,
-                output="Error: case tool raised",
-                status=ToolExecutionStatus.ENVIRONMENT_ERROR,
-            )
+            return ToolResult(success=True, output="Error: case tool raised", status=status)
 
     recorder = TrialToolCallRecorder()
     funnel = _funnel(EnvironmentErrorExecutor(), recorder=recorder)
@@ -200,8 +199,8 @@ def test_completed_environment_error_keeps_its_original_text_and_status():
     funnel.execute(call, _appender(messages))
 
     assert messages[0].content == "Error: case tool raised"
-    assert messages[0].tool_status is ToolExecutionStatus.ENVIRONMENT_ERROR
-    assert recorder.recorded[0].status is ToolExecutionStatus.ENVIRONMENT_ERROR
+    assert messages[0].tool_status is status
+    assert recorder.recorded[0].status is status
     assert recorder.recorded[0].output == "Error: case tool raised"
     timeline = build_trial_timeline(
         [Message(role=MessageRole.ASSISTANT, tool_calls=[call]), *messages], [], None
@@ -209,7 +208,7 @@ def test_completed_environment_error_keeps_its_original_text_and_status():
     result_events = [event for event in timeline.events if event.kind is TraceEventKind.TOOL_RESULT]
     assert len(result_events) == 1
     assert result_events[0].result == "Error: case tool raised"
-    assert result_events[0].status is ToolExecutionStatus.ENVIRONMENT_ERROR
+    assert result_events[0].status is status
 
 
 def test_same_tool_calls_executed_out_of_declaration_order_keep_their_own_results():

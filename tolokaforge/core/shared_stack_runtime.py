@@ -54,6 +54,7 @@ from tolokaforge.runner.grpc_limits import (
 )
 from tolokaforge.runner.models import PlanShape
 from tolokaforge.runner.protocol import (
+    COMPLETED_EXECUTION_STATUSES,
     ENGINE_PROTOCOL_VERSION,
     TrialNotRegisteredError,
     recorded_status,
@@ -562,10 +563,7 @@ class GrpcRunnerClient:
             # cannot arrive here and be recorded as an ordinary failure.
             status = recorded_status(response.status)
 
-            success = response.status in (
-                ExecutionStatus.EXECUTION_STATUS_SUCCESS,
-                ExecutionStatus.EXECUTION_STATUS_ENVIRONMENT_ERROR,
-            )
+            success = response.status in COMPLETED_EXECUTION_STATUSES
             error = None
             if not success:
                 error = response.error_message or self._status_to_error(response.status)

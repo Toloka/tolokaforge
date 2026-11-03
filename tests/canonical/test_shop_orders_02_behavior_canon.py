@@ -46,7 +46,11 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output_writer import OutputWriter
 from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.models import ToolSchema as RunnerToolSchema
-from tolokaforge.runner.tool_factory import MCPServerPool, MCPServerToolWrapper
+from tolokaforge.runner.tool_factory import (
+    TOOL_ERROR_CATEGORY,
+    MCPServerPool,
+    MCPServerToolWrapper,
+)
 
 pytestmark = pytest.mark.canonical
 
@@ -1083,18 +1087,22 @@ class TestShopOrders02McpWrapperContract:
         assert outcome.output.startswith("Error executing tool confirm_payment:")
         assert "order_id" in outcome.output
 
-    async def test_a_failure_the_tool_declared_is_not_a_substrate_failure(self, wrapper_for):
-        """A ``ToolError`` comes back as a payload with the flag unset.
+    async def test_a_failure_the_tool_declared_is_a_tool_error_not_a_substrate_failure(
+        self, wrapper_for
+    ):
+        """A ``ToolError`` comes back flagged, with the ``tool_error`` category.
 
         The tool ran and declined the request, which is a different defect from
-        the call never happening — the flag must not claim otherwise, or the two
-        populations collapse into one.
+        the call never happening (the argument typo above: flagged, no category).
+        The category keeps the two populations apart, and the response is the
+        tool's own payload, unchanged.
         """
         wrapper = wrapper_for("confirm_payment")
 
         outcome = await wrapper.execute_call({"order_id": "O-999"})
 
-        assert outcome.declared_failure is False
+        assert outcome.declared_failure is True
+        assert outcome.category == TOOL_ERROR_CATEGORY
         assert json.loads(outcome.output) == {"error": "Order 'O-999' not found"}
 
     async def test_a_read_that_succeeds_is_not_a_declared_failure(self, wrapper_for):

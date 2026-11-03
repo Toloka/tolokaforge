@@ -119,7 +119,9 @@ dependencies = [
     # images install the uv.lock version, but a plain ``pip install tolokaforge``
     # resolves this range itself, and an unbounded range there resolves a version
     # whose every tool call fails. Floored at 1.19, the first FastMCP whose
-    # ``tool()`` takes ``meta=``, which ``DomainToolRegistry.tool`` always passes.
+    # ``tool()`` takes ``meta=``, which ``DomainToolRegistry.tool`` always passes,
+    # and which passes a ``CallToolResult`` a tool returns through as it is — how
+    # the registry answers a ``ToolError`` (ADR-0067).
     "mcp>=1.19,<2",
     # The ``linear`` grading regex engine (RE2) behind
     # :mod:`tolokaforge.core.grading.regex_engine` (ADR-0055). The runner
@@ -559,6 +561,7 @@ only-include = [
     "tolokaforge/core/judge_prompt.py",
     "tolokaforge/core/logging.py",
     "tolokaforge/core/loop.py",
+    "tolokaforge/core/mcp_error_categories.py",
     "tolokaforge/core/model_data.py",
     "tolokaforge/core/mutates_state_meta.py",
     "tolokaforge/core/netpolicy_constants.py",

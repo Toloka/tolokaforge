@@ -21,10 +21,12 @@ from typing import Annotated, Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, ToolAnnotations
 from pydantic import BaseModel, Field
 
 from tolokaforge.core.tools_interface import (
+    MCP_ERROR_CATEGORY_META,
+    TOOL_ERROR_CATEGORY,
     DomainToolRegistry,
     ToolError,
     create_server,
@@ -209,7 +211,7 @@ class TestMcpFn:
         self.mock_mcp = MagicMock()
         self.captured_fn: Any = None
 
-        def capture_decorator(description, annotations=None, meta=None):
+        def capture_decorator(description, annotations=None, meta=None, structured_output=None):
             def inner(fn):
                 self.captured_fn = fn
                 return fn
@@ -242,14 +244,22 @@ class TestMcpFn:
         self.state["key"] = "updated"
         assert mcp_fn() == "updated"
 
-    def test_mcp_fn_tool_error_serialised(self):
+    def test_mcp_fn_answers_a_tool_error_as_a_refused_call(self):
+        """``isError`` with the ``tool_error`` category, beside the text FastMCP renders
+        for the same mapping returned as a value — the response the agent reads."""
+
         @self.registry.tool("Fail via MCP path.")
         def mcp_fail(data: dict) -> dict:
             raise ToolError("MCP error", details=["detail"])
 
-        mcp_fn = self.captured_fn
-        result = mcp_fn()
-        assert result == {"error": "MCP error", "details": ["detail"]}
+        result = self.captured_fn()
+
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        assert result.meta == {MCP_ERROR_CATEGORY_META: TOOL_ERROR_CATEGORY}
+        assert [c.text for c in result.content] == [
+            '{\n  "error": "MCP error",\n  "details": [\n    "detail"\n  ]\n}'
+        ]
 
     def test_mcp_fn_passes_kwargs(self):
         @self.registry.tool("Pass kwargs.")
@@ -306,7 +316,7 @@ class TestDecoratorSideEffects:
 
         assert self.mock_mcp.tool.call_count == count_before + 1
         assert self.mock_mcp.tool.call_args == call(
-            description="One tool.", annotations=None, meta=None
+            description="One tool.", annotations=None, meta=None, structured_output=False
         )
 
     def test_a_declared_mutates_state_becomes_the_read_only_hint(self):
@@ -315,7 +325,10 @@ class TestDecoratorSideEffects:
             return "x"
 
         assert self.mock_mcp.tool.call_args == call(
-            description="Read.", annotations=ToolAnnotations(readOnlyHint=True), meta=None
+            description="Read.",
+            annotations=ToolAnnotations(readOnlyHint=True),
+            meta=None,
+            structured_output=False,
         )
 
         @self.registry.tool("Write.", mutates_state=True)
@@ -323,7 +336,10 @@ class TestDecoratorSideEffects:
             return "x"
 
         assert self.mock_mcp.tool.call_args == call(
-            description="Write.", annotations=ToolAnnotations(readOnlyHint=False), meta=None
+            description="Write.",
+            annotations=ToolAnnotations(readOnlyHint=False),
+            meta=None,
+            structured_output=False,
         )
 
     def test_the_internal_state_tools_declare_themselves(self):
