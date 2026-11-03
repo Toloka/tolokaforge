@@ -13,6 +13,7 @@ import pytest
 from tests.unit.conftest import FakeMutatingDBClient
 from tolokaforge.runner.id_resolution import IdFieldResolutionError
 from tolokaforge.runner.service import RunnerServiceImpl
+from tolokaforge.runner.state_read_limits import StateReadDeadlines
 
 pytestmark = pytest.mark.unit
 
@@ -25,6 +26,7 @@ def _make_servicer(
     """Build a RunnerServiceImpl with the minimum state _sync_mcp_state_to_db reads."""
     servicer = RunnerServiceImpl.__new__(RunnerServiceImpl)
     servicer.db_client = FakeMutatingDBClient(state=current_state)
+    servicer.state_read_deadlines = StateReadDeadlines()
     trial = SimpleNamespace(
         task_description=SimpleNamespace(
             grading=SimpleNamespace(state_checks=SimpleNamespace(id_fields=dict(id_fields or {})))

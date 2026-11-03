@@ -382,6 +382,12 @@ it always outlasts the read and reports the read's own cause:
 | One `GradeTrial` call (at most three bounded holder calls, see below) | `3T + 540 s` | 600 s |
 | An app world's `GET /_admin/tables` HTTP read | `T + 5 s` | 25 s |
 
+The deadline bounds the db-service request itself, not only the wait around it. A
+mirror read or write, a judge query and every whole-state read hash grading makes
+wait for the db-service's answer as long as their deadline, so a large world that
+takes more than the DB client's default 30 s to answer is still read. Connecting to
+the db-service keeps that default, so one that is not there still fails fast.
+
 A hash-graded `GradeTrial` reads the holder before grading and again after the
 golden replay. When grading fails once the replay ran — that second read past
 the bound among the causes — the runner hands the trial's state back to the DB

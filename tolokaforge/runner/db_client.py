@@ -236,6 +236,18 @@ class DBServiceClient:
             timeout=httpx.Timeout(self.timeout),
         )
 
+    def _request_timeout(self, timeout: float | None) -> float | httpx.Timeout:
+        """The ``httpx`` timeout of one request given its own budget, if any.
+
+        A per-request budget bounds the wait for the answer, which a large state
+        may take long to produce. Reaching the service is no slower for it, so
+        the connect phase keeps the client's default and a service that is not
+        there still fails fast.
+        """
+        if timeout is None:
+            return self.timeout
+        return httpx.Timeout(timeout, connect=min(timeout, self.timeout))
+
     async def close(self) -> None:
         """Close the HTTP client (no-op since we create per-request clients)."""
         pass
@@ -393,7 +405,7 @@ class DBServiceClient:
                 response = await client.get(
                     f"/trials/{trial_id}/state",
                     params=params,
-                    timeout=timeout if timeout is not None else self.timeout,
+                    timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
@@ -424,7 +436,7 @@ class DBServiceClient:
             try:
                 response = await client.get(
                     f"/trials/{trial_id}/state/stable",
-                    timeout=timeout if timeout is not None else self.timeout,
+                    timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
@@ -476,6 +488,7 @@ class DBServiceClient:
         table_name: str,
         operations: list[dict[str, Any]],
         etag: str | None = None,
+        timeout: float | None = None,
     ) -> MutateResponse:
         """
         Apply mutations to a specific table.
@@ -487,6 +500,8 @@ class DBServiceClient:
             table_name: Name of the table to mutate
             operations: List of mutation operations (insert, update, delete, upsert)
             etag: Optional ETag for optimistic locking
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             MutateResponse with status, version, affected_rows, new_hash
@@ -506,6 +521,7 @@ class DBServiceClient:
                 response = await client.patch(
                     f"/trials/{trial_id}/state/{table_name}",
                     json=payload,
+                    timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
@@ -534,7 +550,7 @@ class DBServiceClient:
                 response = await client.post(
                     f"/trials/{trial_id}/update",
                     json={"ops": ops},
-                    timeout=timeout if timeout is not None else self.timeout,
+                    timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
@@ -680,7 +696,7 @@ class DBServiceClient:
                 response = await client.post(
                     f"/trials/{trial_id}/query",
                     json={"jsonpath": jsonpath},
-                    timeout=timeout if timeout is not None else self.timeout,
+                    timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")

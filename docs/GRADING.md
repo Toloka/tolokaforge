@@ -838,7 +838,10 @@ state: in `GradeTrial`, in the judge's `get_db_state` / `query_db` tools (the ju
 returns no verdict, even when it submitted one), and in `SubstrateService`, which
 answers `UNAVAILABLE` rather than `trial_not_found` when the db-service has lost a
 trial the runner holds. A judge DB read that does not come back within its bound
-(the state read bound plus 10 s, 30 s by default) is refused the same way. A read the db-service rejects as malformed — a
+(the state read bound plus 10 s, 30 s by default) is refused the same way. A
+trial left ungraded this way still accounts for the judge calls already made: the
+runner returns their usage as `failure_evidence.judge_usage`, and the trial records
+it as `grading_judge_usage`, which the run's judge cost counts. A read the db-service rejects as malformed — a
 jsonpath that does not parse, a table that is not there — is no lost state: the judge
 gets it as a tool error and can correct it. A task that provisions no database has no
 mirror: nothing is synced for its MCP subprocess, and its reads answer "no database"

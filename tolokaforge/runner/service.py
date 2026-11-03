@@ -63,7 +63,7 @@ from tolokaforge.core.grading.jsonpath_addressing import (
     unreachable_target,
 )
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
-from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
+from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch
 from tolokaforge.core.grading.kinds import GraderKindRefusedError
@@ -1944,7 +1944,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         except SubstrateUnreachableError as e:
             # The trial's state could not be read for grading. Book it ungradeable
             # and keep what a judge had already spent, so its cost is not lost.
-            logger.error(f"GradeTrial: State source unreachable: {e}")
+            logger.error(f"GradeTrial: State source unreachable: {e}", exc_info=True)
             message = f"Grading error: {type(e).__name__}: {e}"
             return pb2.GradeTrialResponse(
                 success=False,
@@ -2803,12 +2803,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         judge_reasons: str | None = None
         judge_gate_failed = False
         judge_report: pb2.JudgeReport | None = None
+        judge_spend: JudgeUsage | None = None
         if llm_judge_config:
             if llm_messages:
                 logger.info(f"GradeTrial: {trial_id} - Evaluating LLM judge")
                 judge_result = await self._grade_llm_judge(
                     trial_id, llm_judge_config, llm_messages, trial_context, substrate=substrate
                 )
+                judge_spend = judge_result.usage
                 accounted_keys[LLM_JUDGE_KEY] = EVALUATED
                 judge_reasons = judge_result.reasons
                 criterion_results = list(judge_result.criterion_results)
@@ -2859,13 +2861,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # when ``grading.custom_checks.enabled``; the aggregate score fills
         # ``components.custom_checks`` and the per-check breakdown rides
         # ``Grade.custom_checks`` (see ADR-0012).
-        (
-            custom_checks_score,
-            custom_check_wire_results,
-            custom_checks_reasons,
-        ) = await self._grade_custom_checks(
-            trial_id, trial_context, llm_messages, substrate=substrate
-        )
+        try:
+            (
+                custom_checks_score,
+                custom_check_wire_results,
+                custom_checks_reasons,
+            ) = await self._grade_custom_checks(
+                trial_id, trial_context, llm_messages, substrate=substrate
+            )
+        except SubstrateUnreachableError as exc:
+            # The checks may be the first to read the final state, after a judge that
+            # read none; the refusal then carries no spend, though the judge was paid.
+            if exc.judge_usage is None:
+                exc.judge_usage = judge_spend
+            raise
         components.custom_checks_score = custom_checks_score
         # A pack that wrote the block but left it off never reaches the executor,
         # so the key is populated with nothing consuming it — the same shape as
@@ -3425,10 +3434,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_state_raw: dict[str, Any] | None = None
         trial_full_state: dict[str, Any] | None = None
         if comparison_view is not None:
-            trial_full_state = (await self.db_client.get_state(trial_id)).data
+            trial_full_state = (
+                await self.db_client.get_state(trial_id, timeout=self._whole_state_read_s)
+            ).data
             logger.debug("GradeTrial: Trial full state fetched (comparison view declared)")
         elif client_side_hash:
-            trial_state_response = await self.db_client.get_stable_state(trial_id)
+            trial_state_response = await self.db_client.get_stable_state(
+                trial_id, timeout=self._whole_state_read_s
+            )
             trial_state_raw = trial_state_response.data
             logger.debug("GradeTrial: Trial state fetched (deferred hashing for compare_columns)")
         else:
@@ -3552,10 +3565,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 # Read only: the view runs after the restore below, when both full states
                 # are in memory, so a view that cannot be computed never leaves the golden
                 # state in the trial's database.
-                golden_full_state = (await self.db_client.get_state(trial_id)).data
+                golden_full_state = (
+                    await self.db_client.get_state(trial_id, timeout=self._whole_state_read_s)
+                ).data
                 logger.debug("GradeTrial: Golden full state fetched (comparison view declared)")
             elif client_side_hash:
-                golden_state_response = await self.db_client.get_stable_state(trial_id)
+                golden_state_response = await self.db_client.get_stable_state(
+                    trial_id, timeout=self._whole_state_read_s
+                )
                 golden_state_raw = golden_state_response.data
                 assert trial_state_raw is not None  # set in step 1 slow-path branch
                 trial_state_processed, golden_state_processed = apply_compare_columns_pipeline(
@@ -3625,12 +3642,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 trial_state = trial_state_raw
                 golden_state = golden_state_raw
             else:
-                trial_state_response = await self.db_client.get_stable_state(trial_id)
+                trial_state_response = await self.db_client.get_stable_state(
+                    trial_id, timeout=self._whole_state_read_s
+                )
                 trial_state = trial_state_response.data
 
                 await self.db_client.restore_snapshot(trial_id, "golden_result")
                 try:
-                    golden_state_response = await self.db_client.get_stable_state(trial_id)
+                    golden_state_response = await self.db_client.get_stable_state(
+                        trial_id, timeout=self._whole_state_read_s
+                    )
                 except BaseException:
                     # Only the database holds the golden world again here.
                     await self._restore_pre_golden_after_failure(trial_id, None)
@@ -3672,7 +3693,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         logger.debug("GradeTrial: Restored snapshot 'pre_golden'")
         if state_holder is None:
             return
-        trial_tables = (await self.db_client.get_state(trial_id)).data
+        trial_tables = (
+            await self.db_client.get_state(trial_id, timeout=self._whole_state_read_s)
+        ).data
         reset = _holder_call(state_holder, partial(state_holder.reset_state, trial_tables))
         if holder_timeout_s is None:
             await reset
@@ -3953,7 +3976,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_id:  Trial identifier used by db-service.
             mcp_state: Full state dict from MCPServerToolWrapper.get_state().
         """
-        current_response = await self.db_client.get_state(trial_id)
+        # Every caller waits on this sync within a state-read deadline; the mirror's
+        # requests take the longest of them, so the caller's own wait is what bounds them.
+        mirror_timeout_s = self.state_read_deadlines.final_state_read_s
+        current_response = await self.db_client.get_state(trial_id, timeout=mirror_timeout_s)
         current_state: dict[str, list[dict]] = current_response.data
         id_fields = self._id_fields_for_trial(trial_id)
 
@@ -3963,10 +3989,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 continue
             operations = compute_diff_ops(current_records, new_records, table_name, id_fields)
             if operations:
-                await self.db_client.mutate(trial_id, table_name, operations)
+                await self.db_client.mutate(
+                    trial_id, table_name, operations, timeout=mirror_timeout_s
+                )
                 logger.debug(
                     f"_sync_mcp_state_to_db: {trial_id}/{table_name} — {len(operations)} op(s)"
                 )
+
+    @property
+    def _whole_state_read_s(self) -> float:
+        """The db-service budget of one whole-state read, which a large world may take long to answer."""
+        return self.state_read_deadlines.final_state_read_s
 
     def _id_fields_for_trial(self, trial_id: str) -> dict[str, str | list[str]]:
         """Return the id_fields map declared by the trial's grading config, or ``{}``.

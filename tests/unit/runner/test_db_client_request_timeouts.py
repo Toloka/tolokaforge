@@ -1,4 +1,4 @@
-"""A state read's per-request ``timeout`` reaches the HTTP request.
+"""A state request's own ``timeout`` reaches the HTTP request.
 
 The runner bounds each grading read by its own deadline, which on a large world
 outlasts the client's default. A read that dropped the deadline would be cut at
@@ -18,6 +18,7 @@ from tolokaforge.runner.db_client import DBServiceClient
 _STATE = {"data": {}, "version": 1, "full_hash": "f", "stable_hash": "s"}
 _STABLE = {"data": {}, "version": 1, "stable_hash": "s", "filtered_fields": []}
 _QUERY = {"results": [], "count": 0}
+_MUTATE = {"status": "ok", "version": 2, "affected_rows": 0, "new_hash": "h"}
 
 
 class _RecordingClient:
@@ -28,7 +29,12 @@ class _RecordingClient:
 
     def _answer(self, method: str, url: str, kwargs: dict[str, Any]) -> httpx.Response:
         self.timeouts.append(kwargs.get("timeout"))
-        body = _QUERY if url.endswith("/query") else _STABLE if url.endswith("/stable") else _STATE
+        if method == "PATCH":
+            body = _MUTATE
+        elif url.endswith("/query"):
+            body = _QUERY
+        else:
+            body = _STABLE if url.endswith("/stable") else _STATE
         return httpx.Response(200, json=body, request=httpx.Request(method, f"http://t{url}"))
 
     async def get(self, url: str, **kwargs: Any) -> httpx.Response:
@@ -37,11 +43,15 @@ class _RecordingClient:
     async def post(self, url: str, **kwargs: Any) -> httpx.Response:
         return self._answer("POST", url, kwargs)
 
+    async def patch(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._answer("PATCH", url, kwargs)
+
 
 _READS = [
     pytest.param(lambda c, t: c.get_state("t:0", ["users"], timeout=t), id="get_state"),
     pytest.param(lambda c, t: c.get_stable_state("t:0", timeout=t), id="get_stable_state"),
     pytest.param(lambda c, t: c.query("t:0", "$.users", timeout=t), id="query"),
+    pytest.param(lambda c, t: c.mutate("t:0", "users", [], timeout=t), id="mutate"),
 ]
 
 
@@ -58,7 +68,11 @@ def test_a_reads_own_timeout_reaches_the_request(read) -> None:
 
     asyncio.run(read(client, 310.0))
 
-    assert recording.timeouts == [310.0]
+    [timeout] = recording.timeouts
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.read == timeout.write == timeout.pool == 310.0
+    # Reaching the service is no slower for a large state: connecting keeps the default.
+    assert timeout.connect == 30.0
 
 
 @pytest.mark.parametrize("read", _READS)

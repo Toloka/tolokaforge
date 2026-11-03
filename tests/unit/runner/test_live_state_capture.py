@@ -188,6 +188,70 @@ def _substrate(service: RunnerServiceImpl, trial_id: str, *, synced: bool = Fals
     return service._build_grading_substrate(trial_id, trial_context, live_state)
 
 
+class _RecordingRequests:
+    """Passes every db-service request through and records the ``timeout`` it carried."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.sent: list[tuple[str, str, Any]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def _send(self, method: str, url: str, kwargs: dict[str, Any]) -> httpx.Response:
+        self.sent.append((method, url, kwargs.get("timeout")))
+        return await getattr(self._inner, method)(url, **kwargs)
+
+    async def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self._send("get", url, kwargs)
+
+    async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self._send("post", url, kwargs)
+
+    async def patch(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self._send("patch", url, kwargs)
+
+
+class TestStateReadsCarryTheirDeadline:
+    """Every request a state read makes waits as long as its deadline, not the client's default."""
+
+    def test_the_sync_get_state_final_reads_and_grading_send_the_final_read_deadline(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        deadlines = StateReadDeadlines(holder_read_s=7.0)
+        monkeypatch.setattr(runner_service, "state_read_deadlines", deadlines)
+        db_client = runner_service.db_client
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+
+        assert _get_state(runner_service, mock_grpc_context, trial_id).success
+        assert runner_service.GetState(
+            pb2.GetStateRequest(trial_id=trial_id, include_unstable=False), mock_grpc_context
+        ).success
+        substrate = SubstrateServicer(runner_service)
+        substrate.ReadFinalDBState(
+            pb2.ReadFinalDBStateRequest(trial_id=trial_id), mock_grpc_context
+        )
+        substrate.ReadFinalDBStateStable(
+            pb2.ReadFinalDBStateStableRequest(trial_id=trial_id), mock_grpc_context
+        )
+        assert _grade(runner_service, mock_grpc_context, trial_id).success
+
+        state_requests = [
+            (method, url, timeout)
+            for method, url, timeout in recorder.sent
+            if url.endswith(("/state", "/state/stable")) or method == "patch"
+        ]
+        kinds = {(method, url.rsplit("/", 1)[-1]) for method, url, _ in state_requests}
+        assert {("get", "state"), ("get", "stable"), ("patch", "users")} <= kinds
+        for method, url, timeout in state_requests:
+            assert isinstance(timeout, httpx.Timeout), (method, url, timeout)
+            assert timeout.read == deadlines.final_state_read_s, (method, url, timeout)
+            assert timeout.connect == db_client.timeout, (method, url, timeout)
+
+
 class TestHealthyChild:
     def test_get_state_and_grade_read_what_the_agent_left(
         self, runner_service, mock_grpc_context, mcp_trial, trial_id
@@ -591,7 +655,9 @@ class _LateJudgeReads:
         return getattr(self._inner, name)
 
     async def _answer_late(self, kwargs: dict[str, Any]) -> None:
-        budget = kwargs.get("timeout") or self._db_client.timeout
+        timeout = kwargs.get("timeout") or self._db_client.timeout
+        # httpx cuts a server that is slow to answer at the read phase's timeout.
+        budget = timeout.read if isinstance(timeout, httpx.Timeout) else timeout
         if self._delay_s >= budget:
             await asyncio.sleep(budget)
             raise httpx.ReadTimeout("")

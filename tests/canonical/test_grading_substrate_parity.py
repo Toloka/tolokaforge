@@ -784,6 +784,7 @@ class _FixtureStateDBClient:
     async def get_state(
         self,
         trial_id: str,  # noqa: ARG002
+        tables: list[str] | None = None,  # noqa: ARG002
         timeout: float | None = None,  # noqa: ARG002
     ) -> runner_models.StateResponse:
         return runner_models.StateResponse(
