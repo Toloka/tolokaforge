@@ -93,12 +93,12 @@ from tolokaforge.core.models import (
     TranscriptRulesConfig,
     ValuePredicate,
 )
-from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_fields_findings
-from tolokaforge.runner.models import (
+from tolokaforge.core.value_predicate_operators import (
     TRACE_PREDICATE_BINDING_OPERATORS,
     TRACE_PREDICATE_REGEX_OPERATORS,
-    capture_group_count_refusal,
 )
+from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_fields_findings
+from tolokaforge.runner.models import capture_group_count_refusal
 
 logger = logging.getLogger(__name__)
 

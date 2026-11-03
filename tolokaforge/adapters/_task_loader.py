@@ -103,6 +103,7 @@ from tolokaforge.core.models import (
     TraceChecksConfig,
     TranscriptRulesConfig,
 )
+from tolokaforge.core.mutates_state_meta import MUTATES_STATE_META_KEY
 from tolokaforge.core.project_loader import (
     construct_config,
     deep_merge,
@@ -1017,6 +1018,35 @@ def compose_mutates_state(
     )
 
 
+def author_mutates_state(
+    declared: Any, *, tool_name: str, source: str
+) -> bool | MutatesStateRule | None:
+    """The author's ``mutates_state`` as a tool listing records it.
+
+    ``None`` (undeclared), a bool, or a read-rule mapping, which becomes a
+    :class:`~tolokaforge.runner.models.MutatesStateRule`. A wrong rule hides writes
+    from a reader that trusts it, so a malformed one is refused, not dropped.
+
+    Raises:
+        ValueError: Any other value, or a mapping the rule model refuses, naming the
+            tool and *source*.
+    """
+    if declared is None or isinstance(declared, bool):
+        return declared
+    if not isinstance(declared, Mapping):
+        raise ValueError(
+            f"tool {tool_name!r} in {source} declares mutates_state {declared!r}; it is "
+            "null, true, false or {read_when: {args: {<argument path>: <predicate>}}}"
+        )
+    try:
+        return MutatesStateRule.model_validate(declared)
+    except ValidationError as exc:
+        raise ValueError(
+            f"tool {tool_name!r} in {source} declares a mutates_state that is not a read "
+            f"rule: {exc}"
+        ) from exc
+
+
 def _declaration_text(value: bool | MutatesStateRule) -> str:
     return str(value).lower() if isinstance(value, bool) else "a read_when rule"
 
@@ -1694,6 +1724,8 @@ def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:
             ``tools/list`` errors, or the server returns no tools. A silent
             ``{}`` here reaches the LLM as parameter-less tool stubs and reads
             as an agent-reasoning bug.
+        ValueError: If a tool declares a ``mutates_state`` read rule that
+            :func:`_listed_mutates_state` refuses.
     """
     from tolokaforge.runner.tool_factory import MCPServerProcess
 
@@ -1733,28 +1765,9 @@ def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:
             "description": tool.get("description", f"Tool: {name}"),
             "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
         }
-        # ADR-0061: the server's ``readOnlyHint`` is the author's declaration; a tool
-        # carrying no hint stays undeclared (``None``) rather than defaulting either
-        # way. The key is always written, so a cache entry without it is one
-        # written before the field existed (``warn_tool_cache_predating_mutates_state``).
-        # Only a bool under an ``annotations`` mapping is a declaration: any other
-        # shape is reported and left undeclared, never read as one (a string
-        # "false" would otherwise record the tool as read-only).
-        schemas[name]["mutates_state"] = None
-        annotations = tool.get("annotations")
-        if annotations is None:
-            continue
-        read_only = annotations.get("readOnlyHint") if isinstance(annotations, Mapping) else None
-        if isinstance(read_only, bool):
-            schemas[name]["mutates_state"] = not read_only
-        elif not isinstance(annotations, Mapping) or read_only is not None:
-            logger.warning(
-                f"tools/list entry {name!r} from {mcp_server_path} carries annotations "
-                f"{annotations!r}, not a mapping with a bool readOnlyHint; "
-                "mutates_state stays undeclared for it",
-                tool_name=name,
-                server=str(mcp_server_path),
-            )
+        # The key is always written, so a cache entry without it is one written
+        # before the field existed (``warn_tool_cache_predating_mutates_state``).
+        schemas[name]["mutates_state"] = _listed_mutates_state(tool, mcp_server_path)
     if not schemas:
         raise RuntimeError(
             f"MCP server {mcp_server_path} returned no tools from tools/list "
@@ -1766,6 +1779,59 @@ def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:
         server=str(mcp_server_path),
     )
     return schemas
+
+
+def _listed_mutates_state(
+    tool: Mapping[str, Any], mcp_server_path: Path
+) -> bool | Mapping[str, Any] | None:
+    """The author's ``mutates_state`` (ADR-0061) as one ``tools/list`` entry declares it.
+
+    A bool ``readOnlyHint`` annotation declares a bool; a read rule rides in the
+    entry's ``_meta`` under :data:`~tolokaforge.core.mutates_state_meta.MUTATES_STATE_META_KEY`
+    beside a ``readOnlyHint`` of ``false`` or none, and is returned as the mapping the
+    server sent. A tool carrying neither is undeclared (``None``). Annotations of any
+    other shape beside no rule are reported and left undeclared, never read as a
+    declaration (a string ``"false"`` would otherwise record the tool as read-only).
+
+    Raises:
+        ValueError: A rule beside a ``readOnlyHint`` that is not ``false``, or a
+            rule the rule model refuses, naming the tool and the server.
+    """
+    name = tool["name"]
+    annotations = tool.get("annotations")
+    read_only = annotations.get("readOnlyHint") if isinstance(annotations, Mapping) else None
+    hint_malformed = annotations is not None and (
+        not isinstance(annotations, Mapping)
+        or not (read_only is None or isinstance(read_only, bool))
+    )
+    meta = tool.get("_meta")
+    if isinstance(meta, Mapping) and MUTATES_STATE_META_KEY in meta:
+        rule = meta[MUTATES_STATE_META_KEY]
+        if read_only is True or hint_malformed:
+            raise ValueError(
+                f"tools/list entry {name!r} from {mcp_server_path} declares a "
+                f"{MUTATES_STATE_META_KEY} read rule beside annotations {annotations!r}; a "
+                "rule says some calls change state, so its readOnlyHint is false"
+            )
+        if not isinstance(rule, Mapping):
+            raise ValueError(
+                f"tools/list entry {name!r} from {mcp_server_path} carries "
+                f"{MUTATES_STATE_META_KEY}={rule!r}; that key carries only a read rule, "
+                "and a bool is declared through readOnlyHint"
+            )
+        author_mutates_state(rule, tool_name=name, source=f"MCP server {mcp_server_path}")
+        return rule
+    if isinstance(read_only, bool):
+        return not read_only
+    if hint_malformed:
+        logger.warning(
+            f"tools/list entry {name!r} from {mcp_server_path} carries annotations "
+            f"{annotations!r}, not a mapping with a bool readOnlyHint; "
+            "mutates_state stays undeclared for it",
+            tool_name=name,
+            server=str(mcp_server_path),
+        )
+    return None
 
 
 def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_path: Path) -> None:

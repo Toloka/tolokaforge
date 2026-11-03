@@ -17,6 +17,7 @@ from tolokaforge.adapters._task_loader import (
     ToolActor,
     _detect_task_root,
     actor_tool_block,
+    author_mutates_state,
     build_tool_inventory,
     check_mutates_state_rule_paths,
     compose_mutates_state,
@@ -205,7 +206,8 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
         RuntimeError: If the block names an ``mcp_server`` script that is absent.
         ValueError: If a ``tools.<actor>.<name>`` block is not a mapping, or its
             ``mutates_state`` is malformed, overrides the author's declaration, or
-            names an argument path the tool's schema rules out.
+            names an argument path the tool's schema rules out; or if the author's
+            own read rule is malformed or names such a path.
     """
     from tolokaforge.runner.models import InvocationStyle, ToolSchema, ToolSource
     from tolokaforge.tools.builtin import registry as builtin_registry
@@ -280,7 +282,11 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
                     task,
                     actor,
                     tool_name,
-                    rich.get("mutates_state"),
+                    author_mutates_state(
+                        rich.get("mutates_state"),
+                        tool_name=tool_name,
+                        source=f"task {task.task_id!r}'s {task_dir / 'fixtures' / 'tools.json'}",
+                    ),
                     task_declared,
                     rich.get("parameters"),
                 ),
@@ -302,7 +308,11 @@ def _emitted_mutates_state(
         author, task_declared.get(tool_name), where=where, task_id=task.task_id
     )
     check_mutates_state_rule_paths(
-        declared, parameters, where=where, tool_name=tool_name, task_id=task.task_id
+        declared,
+        parameters,
+        where=where if tool_name in task_declared else f"the {tool_name} tool's own mutates_state",
+        tool_name=tool_name,
+        task_id=task.task_id,
     )
     return declared
 

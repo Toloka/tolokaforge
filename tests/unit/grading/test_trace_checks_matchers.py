@@ -53,7 +53,7 @@ from tolokaforge.core.models import (
     Trajectory,
     ValuePredicate,
 )
-from tolokaforge.runner.models import (
+from tolokaforge.core.value_predicate_operators import (
     TRACE_PREDICATE_BINDING_OPERATORS,
     TRACE_PREDICATE_MODIFIERS,
     TRACE_PREDICATE_OPERATORS,

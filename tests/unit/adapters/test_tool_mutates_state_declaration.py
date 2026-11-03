@@ -70,7 +70,7 @@ def _emitted(root: Path) -> dict[str, Any]:
     return {tool.name: tool.mutates_state for tool in description.agent_tools}
 
 
-def _cached(name: str, mutates_state: bool | None) -> dict[str, Any]:
+def _cached(name: str, mutates_state: bool | dict[str, Any] | None) -> dict[str, Any]:
     return {
         "name": name,
         "description": name,
@@ -116,6 +116,9 @@ def test_the_declaration_is_no_tool_init_kwarg(tmp_path: Path) -> None:
         (False, False, False),
         (True, False, False),
         (False, _GET_ONLY, False),
+        (_GET_ONLY, True, True),
+        (_GET_ONLY, False, False),
+        (_GET_ONLY, _GET_ONLY, False),
     ],
     ids=[
         "true-tightens",
@@ -123,10 +126,16 @@ def test_the_declaration_is_no_tool_init_kwarg(tmp_path: Path) -> None:
         "false-over-false",
         "false-over-true",
         "rule-over-false",
+        "true-over-an-author-rule",
+        "false-over-an-author-rule",
+        "rule-over-an-author-rule",
     ],
 )
 def test_only_true_is_declared_over_an_mcp_authors_declaration(
-    tmp_path: Path, author: bool | None, declared: bool | dict[str, Any], accepted: bool
+    tmp_path: Path,
+    author: bool | dict[str, Any] | None,
+    declared: bool | dict[str, Any],
+    accepted: bool,
 ) -> None:
     _pack(
         tmp_path,
@@ -143,6 +152,36 @@ def test_only_true_is_declared_over_an_mcp_authors_declaration(
     with pytest.raises(ValueError, match="overrides the tool author's own declaration") as caught:
         _emitted(tmp_path)
     assert "tools.agent.rest_call.mutates_state in task 'decl_task'" in str(caught.value)
+
+
+def test_an_mcp_authors_rule_reaches_the_tool_schema(tmp_path: Path) -> None:
+    _pack(tmp_path, {"enabled": ["rest_call"]}, mcp_cache=[_cached("rest_call", _GET_ONLY)])
+
+    assert _emitted(tmp_path)["rest_call"] == MutatesStateRule.model_validate(_GET_ONLY)
+
+
+@pytest.mark.parametrize(
+    ("author", "error"),
+    [
+        ("false", "declares mutates_state 'false'"),
+        ({"read_when": {"args": {"method": {"in": ["GET"]}}}}, "not a read rule"),
+        (
+            {"read_when": {"args": {"verb": {"equals": "GET"}}}},
+            "the rest_call tool's own mutates_state.read_when.args.verb",
+        ),
+    ],
+    ids=["a-string", "an-unknown-operator", "a-path-the-closed-schema-rules-out"],
+)
+def test_a_malformed_author_declaration_in_the_cache_is_refused(
+    tmp_path: Path, author: Any, error: str
+) -> None:
+    """The cache is the author's word on the wire; a rule it cannot read would hide
+    writes from the judge, so the description refuses it, naming the tool."""
+    _pack(tmp_path, {"enabled": ["rest_call"]}, mcp_cache=[_cached("rest_call", author)])
+
+    with pytest.raises(ValueError, match="rest_call") as caught:
+        _emitted(tmp_path)
+    assert error in str(caught.value)
 
 
 def test_a_rule_over_a_builtins_category_declaration_is_refused(tmp_path: Path) -> None:

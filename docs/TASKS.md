@@ -173,7 +173,7 @@ It takes three forms: `false` (every call reads), `true`, or a `read_when` rule 
 nothing). A call the rule does not foresee — a path it does not carry, a value outside the
 predicate — can change state. The task load refuses:
 
-- a declaration over the tool author's own (an MCP server's `readOnlyHint`, a builtin's
+- a declaration over the tool author's own (an MCP server's `readOnlyHint` or read rule, a builtin's
   category, the search tool's `false`), unless it is `true` — tightening is always safe,
   and is how a pack whose service changes state on a call the author calls a read says so;
 - a `read_when` path whose first segment the tool's schema does not declare, where the

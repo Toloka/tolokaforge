@@ -147,7 +147,12 @@ A tool that both reads and changes state declares a `MutatesStateRule` instead o
 bool: `{read_when: {args: {<dotted path>: <ValuePredicate>}}}`, the trace matcher's own
 `args` vocabulary. A call reads when every predicate holds over its arguments and can
 change state otherwise. The proto field carries a rule as `true`, since some calls do
-change state. The native adapter takes a declaration from the tool's author first; a
+change state. An MCP tool's author declares a rule through
+`DomainToolRegistry.tool(..., mutates_state={"read_when": ...})`, which carries it in the
+tool's `_meta` under `tolokaforge/mutates_state` beside `readOnlyHint: false`
+([MCP_INTEGRATION.md § A read rule](MCP_INTEGRATION.md#a-read-rule)); the native
+adapter reads it back from `tools/list` and caches it in `fixtures/tools.json`. The
+native adapter takes a declaration from the tool's author first; a
 task's `tools.<actor>.<name>.mutates_state` fills an undeclared tool or tightens any to
 `true` ([TASKS.md § Declaring which calls change state](TASKS.md#declaring-which-calls-change-state)).
 An image predating the rule form declares the field as a bool, so it refuses at

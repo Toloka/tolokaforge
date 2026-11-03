@@ -560,6 +560,7 @@ only-include = [
     "tolokaforge/core/logging.py",
     "tolokaforge/core/loop.py",
     "tolokaforge/core/model_data.py",
+    "tolokaforge/core/mutates_state_meta.py",
     "tolokaforge/core/netpolicy_constants.py",
     "tolokaforge/core/plugin_registry.py",
     "tolokaforge/core/pricing.py",
@@ -574,6 +575,7 @@ only-include = [
     "tolokaforge/core/tools_interface.py",
     "tolokaforge/core/trial.py",
     "tolokaforge/core/unknown_keys.py",
+    "tolokaforge/core/value_predicate_operators.py",
 ]
 exclude = [
     # RUNNER_SUBSET_EXCLUDED_FILES — orchestrator-only files inside an

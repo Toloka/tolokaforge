@@ -772,7 +772,8 @@ carry an optional `mutates_state: bool` — whether a call can change the graded
 state, as the tool's author declares it
 ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)). The field is
 tri-state. The runner sets it only when the task description declares it: an
-MCP tool's `readOnlyHint` annotation read back by the native adapter, a
+MCP tool's `readOnlyHint` annotation, or the read rule its `_meta` carries, read
+back by the native adapter, a
 builtin's `ToolPolicy.category` (`read` → `false`, `write` → `true`), the search
 tool's `false`, a task's `tools.<actor>.<name>.mutates_state`, or an adapter's own
 sources. A task-description declaration that is a `read_when` rule (some calls

@@ -209,7 +209,7 @@ class TestMcpFn:
         self.mock_mcp = MagicMock()
         self.captured_fn: Any = None
 
-        def capture_decorator(description, annotations=None):
+        def capture_decorator(description, annotations=None, meta=None):
             def inner(fn):
                 self.captured_fn = fn
                 return fn
@@ -305,7 +305,9 @@ class TestDecoratorSideEffects:
             return "x"
 
         assert self.mock_mcp.tool.call_count == count_before + 1
-        assert self.mock_mcp.tool.call_args == call(description="One tool.", annotations=None)
+        assert self.mock_mcp.tool.call_args == call(
+            description="One tool.", annotations=None, meta=None
+        )
 
     def test_a_declared_mutates_state_becomes_the_read_only_hint(self):
         @self.registry.tool("Read.", mutates_state=False)
@@ -313,7 +315,7 @@ class TestDecoratorSideEffects:
             return "x"
 
         assert self.mock_mcp.tool.call_args == call(
-            description="Read.", annotations=ToolAnnotations(readOnlyHint=True)
+            description="Read.", annotations=ToolAnnotations(readOnlyHint=True), meta=None
         )
 
         @self.registry.tool("Write.", mutates_state=True)
@@ -321,7 +323,22 @@ class TestDecoratorSideEffects:
             return "x"
 
         assert self.mock_mcp.tool.call_args == call(
-            description="Write.", annotations=ToolAnnotations(readOnlyHint=False)
+            description="Write.", annotations=ToolAnnotations(readOnlyHint=False), meta=None
+        )
+
+    def test_a_read_rule_rides_in_meta_beside_a_false_read_only_hint(self):
+        """Some calls of a tool declaring a read rule change state, so its bool
+        annotation says it is not read-only; the rule itself rides in ``_meta``."""
+        rule = {"read_when": {"args": {"request.method": {"in_": ["GET", "HEAD"]}}}}
+
+        @self.registry.tool("Call.", mutates_state=rule)
+        def rest_call(data: dict, request: dict) -> str:
+            return "x"
+
+        assert self.mock_mcp.tool.call_args == call(
+            description="Call.",
+            annotations=ToolAnnotations(readOnlyHint=False),
+            meta={"tolokaforge/mutates_state": rule},
         )
 
     def test_the_internal_state_tools_declare_themselves(self):
@@ -359,9 +376,74 @@ class TestDecoratorSideEffects:
         def legacy_tool(data: dict) -> str:
             return "x"
 
+        rule = {"read_when": {"args": {"mode": {"equals": "peek"}}}}
+
+        @self.registry.tool("Sometimes reads.", mutates_state=rule)
+        def rule_tool(data: dict, mode: str) -> str:
+            return "x"
+
+        rule["read_when"]["args"]["mode"]["equals"] = "changed after decorating"
+
         assert self.registry.TOOLS["read_tool"].mutates_state is False
         assert self.registry.TOOLS["write_tool"].mutates_state is True
         assert self.registry.TOOLS["legacy_tool"].mutates_state is None
+        assert self.registry.TOOLS["rule_tool"].mutates_state == {
+            "read_when": {"args": {"mode": {"equals": "peek"}}}
+        }
+
+    @pytest.mark.parametrize(
+        ("mutates_state", "complaint"),
+        [
+            pytest.param("false", "not 'false'", id="a-string"),
+            pytest.param({"args": {"m": {"equals": 1}}}, "read_when", id="no-read-when"),
+            pytest.param(
+                {"read_when": {"args": {"m": {"equals": 1}}, "bind": {}}},
+                "exactly args",
+                id="a-key-beside-args",
+            ),
+            pytest.param({"read_when": {"args": {}}}, "one or more", id="no-path"),
+            pytest.param(
+                {"read_when": {"args": {"a..b": {"equals": 1}}}}, "'a..b'", id="empty-segment"
+            ),
+            pytest.param(
+                {"read_when": {"args": {"m": "GET"}}}, "mapping of operators", id="bare-value"
+            ),
+            pytest.param(
+                {"read_when": {"args": {"m": {"in": ["GET"]}}}}, "names in", id="unknown-operator"
+            ),
+            pytest.param(
+                {"read_when": {"args": {"m": {"equals_binding": "x"}}}},
+                "binds nothing",
+                id="binding-operator",
+            ),
+            pytest.param(
+                {"read_when": {"args": {"m": {"regex_engine": "linear"}}}},
+                "declares no operator",
+                id="modifier-only",
+            ),
+            pytest.param(
+                {"read_when": {"args": {"m": {"equals": object()}}}},
+                "not JSON serializable",
+                id="not-json",
+            ),
+        ],
+    )
+    def test_a_malformed_declaration_is_refused_when_decorating(
+        self, mutates_state: Any, complaint: str
+    ):
+        """A rule that hides writes is worse than none, so the server refuses to
+        start with one it cannot carry, naming the tool, rather than emitting it."""
+        count_before = self.mock_mcp.tool.call_count
+
+        with pytest.raises(ValueError, match="'odd_tool'") as raised:
+
+            @self.registry.tool("Odd.", mutates_state=mutates_state)
+            def odd_tool(data: dict, m: str) -> str:
+                return "x"
+
+        assert complaint in str(raised.value)
+        assert "odd_tool" not in self.registry.TOOLS
+        assert self.mock_mcp.tool.call_count == count_before
 
     def test_data_stripped_from_mcp_signature(self):
         captured: list[Any] = []

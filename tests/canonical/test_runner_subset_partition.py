@@ -157,6 +157,9 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         # boot closure never names it; without it the tool calls of every
         # pack built on it fail inside the container (#1834).
         "tolokaforge/core/tools_interface.py",
+        # ``tools_interface`` checks and carries a tool's ``mutates_state`` read
+        # rule through it, inside that same server subprocess.
+        "tolokaforge/core/mutates_state_meta.py",
     }
 )
 

@@ -1,18 +1,21 @@
 """``mutates_state`` crosses every tool wire as its author declares it (ADR-0061).
 
 A tool declares it through ``DomainToolRegistry.tool(..., mutates_state=...)``,
-which sets MCP's ``readOnlyHint`` annotation on the server. The native adapter
-reads the annotation back from a real server's ``tools/list`` into
-``ToolSchema.mutates_state`` and into the ``fixtures/tools.json`` cache; the
-runner returns the flag in ``RegisterTrialResponse.tool_schemas``; and the
-engine's gRPC client hands it on. A tool that declares nothing carries no
-annotation, no key in the JSON wire and no field set on the proto wire.
+which sets MCP's ``readOnlyHint`` annotation on the server, and for a read rule
+also carries the rule in the tool's ``_meta``. The native adapter reads both back
+from a real server's ``tools/list`` into ``ToolSchema.mutates_state`` and into the
+``fixtures/tools.json`` cache; the runner returns the flag in
+``RegisterTrialResponse.tool_schemas`` (``true`` for a rule); and the engine's gRPC
+client hands it on. A tool that declares nothing carries no annotation, no key in
+the JSON wire and no field set on the proto wire.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +26,7 @@ from tests.utils.runner_requests import register_request, trial_spec_json
 from tests.utils.servicer_runtime import ServicerStub
 from tolokaforge.adapters._task_loader import _fetch_mcp_tool_schemas
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.mutates_state_meta import MUTATES_STATE_META_KEY
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import tool_factory
@@ -48,6 +52,14 @@ def write_record(data: dict, record_id: str) -> dict:
     return {"ok": True}
 
 
+@registry.tool(
+    "Peek at or purge one record.",
+    mutates_state={"read_when": {"args": {"action": {"in_": ["peek", "count"]}}}},
+)
+def handle_record(data: dict, record_id: str, action: str) -> dict:
+    return {"id": record_id, "action": action}
+
+
 @registry.tool("A tool that declares nothing.")
 def legacy_tool(data: dict) -> dict:
     return {}
@@ -57,11 +69,21 @@ if __name__ == "__main__":
     mcp.run(transport="stdio")
 """
 
-_DECLARED = {"read_record": False, "write_record": True, "legacy_tool": None}
+_RULE = {"read_when": {"args": {"action": {"in_": ["peek", "count"]}}}}
+
+_DECLARED = {
+    "read_record": False,
+    "write_record": True,
+    "handle_record": MutatesStateRule.model_validate(_RULE),
+    "legacy_tool": None,
+}
+
+_ON_THE_PROTO = {**_DECLARED, "handle_record": True}
+"""What the proto's bool carries: a rule is ``true``, since some of its calls change state."""
 
 
 def _records_pack(root: Path) -> Path:
-    """A flat native pack whose server declares two tools and leaves one undeclared.
+    """A flat native pack whose server declares three tools and leaves one undeclared.
 
     No ``fixtures/tools.json``: the adapter asks the live server and caches the answer.
     """
@@ -113,6 +135,7 @@ def test_the_annotation_round_trips_through_a_real_server(records_root: Path) ->
 
     assert schemas["read_record"]["mutates_state"] is False
     assert schemas["write_record"]["mutates_state"] is True
+    assert schemas["handle_record"]["mutates_state"] == _RULE
     # The key is always present: null is "declares nothing", which keeps a cache
     # written today apart from one written before the field existed.
     assert schemas["legacy_tool"]["mutates_state"] is None
@@ -181,6 +204,105 @@ def test_a_malformed_read_only_hint_leaves_the_tool_undeclared(
     assert not any("'fine'" in w or "'silent'" in w for w in warnings), warnings
 
 
+def test_meta_carries_a_read_rule_and_nothing_else(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rule needs no annotation beside it (MCP's ``readOnlyHint`` defaults to
+    false); ``_meta`` without the engine's key declares nothing."""
+    _listing(
+        monkeypatch,
+        [
+            {"name": "ruled", "_meta": {MUTATES_STATE_META_KEY: _RULE}},
+            {"name": "other_meta", "annotations": {"readOnlyHint": True}, "_meta": {"x/y": 1}},
+        ],
+    )
+
+    schemas = _fetch_mcp_tool_schemas(Path("/srv/mcp_server.py"))
+
+    assert schemas["ruled"]["mutates_state"] == _RULE
+    assert schemas["other_meta"]["mutates_state"] is False
+
+
+@pytest.mark.parametrize(
+    ("entry", "error"),
+    [
+        pytest.param(
+            {"annotations": {"readOnlyHint": True}, "_meta": {MUTATES_STATE_META_KEY: _RULE}},
+            "its readOnlyHint is false",
+            id="beside-read-only-hint-true",
+        ),
+        pytest.param(
+            {"annotations": {"readOnlyHint": "no"}, "_meta": {MUTATES_STATE_META_KEY: _RULE}},
+            "its readOnlyHint is false",
+            id="beside-a-malformed-hint",
+        ),
+        pytest.param(
+            {"annotations": {"readOnlyHint": False}, "_meta": {MUTATES_STATE_META_KEY: False}},
+            "carries only a read rule",
+            id="a-bool-under-the-key",
+        ),
+        pytest.param(
+            {
+                "annotations": {"readOnlyHint": False},
+                "_meta": {
+                    MUTATES_STATE_META_KEY: {
+                        "read_when": {"args": {"action": {"equals_binding": "x"}}}
+                    }
+                },
+            },
+            "binds nothing",
+            id="a-binding-operator",
+        ),
+    ],
+)
+def test_a_read_rule_the_listing_contradicts_or_malforms_is_refused(
+    monkeypatch: pytest.MonkeyPatch, entry: dict[str, Any], error: str
+) -> None:
+    """A wrong rule hides writes from the judge, so unlike a malformed bool hint,
+    which leaves the tool undeclared, it refuses the listing, naming the tool and
+    the server."""
+    _listing(monkeypatch, [{"name": "odd", **entry}, {"name": "fine"}])
+
+    with pytest.raises(ValueError, match="'odd'") as caught:
+        _fetch_mcp_tool_schemas(Path("/srv/mcp_server.py"))
+
+    assert "/srv/mcp_server.py" in str(caught.value)
+    assert error in str(caught.value)
+
+
+_IMPORT_CLOSURE_PROBE = """\
+import json, sys
+from tolokaforge.core.tools_interface import create_server
+
+mcp, registry, TOOLS = create_server(sys.argv[1], "probe")
+
+
+@registry.tool("Peek or purge.", mutates_state={rule!r})
+def handle_record(data: dict, action: str) -> dict:
+    return {{}}
+
+
+json.dump(sorted(m for m in sys.modules if m.startswith("tolokaforge")), sys.stdout)
+"""
+
+
+def test_a_server_declaring_a_read_rule_imports_none_of_the_engine_models(tmp_path: Path) -> None:
+    """A task's server checks its rules in its own process, which must not pay for,
+    or depend on, the engine's models and grading package."""
+    probe = _IMPORT_CLOSURE_PROBE.format(rule=_RULE)
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", probe, str(tmp_path / "mcp_server.py")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    loaded = json.loads(result.stdout)
+    assert "tolokaforge.core.mutates_state_meta" in loaded
+    assert not [
+        m for m in loaded if m.startswith(("tolokaforge.runner", "tolokaforge.core.grading"))
+    ]
+
+
 def _cache(task_dir: Path, entries: list[dict[str, Any]]) -> Path:
     path = task_dir / "fixtures" / "tools.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -221,6 +343,7 @@ def test_a_cache_predating_the_field_warns_once_per_description(
     assert {t.name: t.mutates_state for t in description.agent_tools} == {
         "read_record": None,
         "write_record": True,
+        "handle_record": None,
         "legacy_tool": None,
     }
     warnings = _stale_cache_warnings(caplog)
@@ -269,6 +392,7 @@ def test_the_native_adapter_reads_it_into_the_schema_and_the_cache(
     by_name = {entry["name"]: entry for entry in cached}
     assert by_name["read_record"]["mutates_state"] is False
     assert by_name["write_record"]["mutates_state"] is True
+    assert by_name["handle_record"]["mutates_state"] == _RULE
     assert "mutates_state" in by_name["legacy_tool"]
     assert by_name["legacy_tool"]["mutates_state"] is None
     assert by_name["_tolokaforge_get_state_"]["mutates_state"] is False
@@ -305,6 +429,8 @@ def test_the_description_json_carries_only_declared_flags(
 
     assert by_name["read_record"]["mutates_state"] is False
     assert by_name["write_record"]["mutates_state"] is True
+    rule = MutatesStateRule.model_validate(by_name["handle_record"]["mutates_state"])
+    assert rule == _DECLARED["handle_record"]
     assert "mutates_state" not in by_name["legacy_tool"]
 
 
@@ -329,6 +455,7 @@ def test_register_trial_returns_the_declared_flag_on_the_proto_wire(
         assert by_name["read_record"].HasField("mutates_state")
         assert by_name["read_record"].mutates_state is False
         assert by_name["write_record"].mutates_state is True
+        assert by_name["handle_record"].mutates_state is True
         assert not by_name["legacy_tool"].HasField("mutates_state")
     finally:
         runner_service.CleanupTrial(pb2.CleanupTrialRequest(trial_id=trial_id), mock_grpc_context)
@@ -345,7 +472,7 @@ def test_the_engine_client_hands_the_flag_on(
     result = client.register_trial(trial_id, spec_json)
     try:
         assert result["success"], result["error"]
-        assert {s["name"]: s["mutates_state"] for s in result["tool_schemas"]} == _DECLARED
+        assert {s["name"]: s["mutates_state"] for s in result["tool_schemas"]} == _ON_THE_PROTO
     finally:
         runner_service.CleanupTrial(pb2.CleanupTrialRequest(trial_id=trial_id), mock_grpc_context)
 
