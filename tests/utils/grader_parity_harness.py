@@ -311,6 +311,7 @@ class _FakeDBServiceClient:
         trial_id: str,  # noqa: ARG002
         *,
         numeric_string_fields: Any = None,  # noqa: ARG002
+        timeout: float | None = None,  # noqa: ARG002
     ) -> str:
         return self._STABLE_HASH
 
@@ -318,6 +319,7 @@ class _FakeDBServiceClient:
         self,
         trial_id: str,  # noqa: ARG002
         name: str,
+        timeout: float | None = None,  # noqa: ARG002
     ) -> SnapshotResponse:
         return SnapshotResponse(status="ok", snapshot_name=name, version=1, hash=self._STABLE_HASH)
 
@@ -325,12 +327,17 @@ class _FakeDBServiceClient:
         self,
         trial_id: str,  # noqa: ARG002
         name: str,
+        timeout: float | None = None,  # noqa: ARG002
     ) -> RestoreSnapshotResponse:
         return RestoreSnapshotResponse(
             status="ok", restored_from=name, version=1, hash=self._STABLE_HASH
         )
 
-    async def reset_trial(self, trial_id: str) -> ResetTrialResponse:  # noqa: ARG002
+    async def reset_trial(
+        self,
+        trial_id: str,  # noqa: ARG002
+        timeout: float | None = None,  # noqa: ARG002
+    ) -> ResetTrialResponse:
         return ResetTrialResponse(status="ok", version=1, hash=self._STABLE_HASH)
 
     async def health_check(self) -> Any:

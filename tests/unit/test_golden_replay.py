@@ -75,6 +75,7 @@ from tolokaforge.runner.service import (
     _LiveStateSync,
     _tool_registered_for_trial,
 )
+from tolokaforge.runner.state_read_limits import StateReadDeadlines
 from tolokaforge.runner.tool_factory import ToolCallOutcome
 
 pytestmark = [pytest.mark.unit, pytest.mark.grading]
@@ -546,6 +547,8 @@ class _RefusingDBClient:
 def _runner_over_a_refusing_db() -> tuple[RunnerServiceImpl, TrialContextRuntime]:
     service = RunnerServiceImpl.__new__(RunnerServiceImpl)
     service.db_client = _RefusingDBClient()
+    service.state_read_deadlines = StateReadDeadlines()
+    service._call_deadlines = {}
     context = TrialContextRuntime(
         trial_id="golden_replay_ordering:0",
         task_description=TaskDescription(
@@ -607,13 +610,13 @@ class _AnsweringDBClient:
     async def get_stable_hash(self, _trial_id: str, **_kwargs: Any) -> str:
         return "0" * 64
 
-    async def create_snapshot(self, _trial_id: str, _label: str) -> None:
+    async def create_snapshot(self, _trial_id: str, _label: str, **_kwargs: Any) -> None:
         return None
 
-    async def reset_trial(self, _trial_id: str) -> None:
+    async def reset_trial(self, _trial_id: str, **_kwargs: Any) -> None:
         return None
 
-    async def restore_snapshot(self, _trial_id: str, _label: str) -> None:
+    async def restore_snapshot(self, _trial_id: str, _label: str, **_kwargs: Any) -> None:
         return None
 
 
@@ -762,6 +765,8 @@ async def _replay_as_the_runner_does(
 ) -> HashGradingResult:
     service = RunnerServiceImpl.__new__(RunnerServiceImpl)
     service.db_client = _AnsweringDBClient()
+    service.state_read_deadlines = StateReadDeadlines()
+    service._call_deadlines = {}
     context = TrialContextRuntime(
         trial_id="golden_replay_failed:0",
         task_description=TaskDescription(

@@ -27,6 +27,7 @@ def _make_servicer(
     servicer = RunnerServiceImpl.__new__(RunnerServiceImpl)
     servicer.db_client = FakeMutatingDBClient(state=current_state)
     servicer.state_read_deadlines = StateReadDeadlines()
+    servicer._call_deadlines = {}
     trial = SimpleNamespace(
         task_description=SimpleNamespace(
             grading=SimpleNamespace(state_checks=SimpleNamespace(id_fields=dict(id_fields or {})))

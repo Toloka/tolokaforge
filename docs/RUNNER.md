@@ -383,10 +383,21 @@ it always outlasts the read and reports the read's own cause:
 | An app world's `GET /_admin/tables` HTTP read | `T + 5 s` | 25 s |
 
 The deadline bounds the db-service request itself, not only the wait around it. A
-mirror read or write, a judge query and every whole-state read hash grading makes
-wait for the db-service's answer as long as their deadline, so a large world that
-takes more than the DB client's default 30 s to answer is still read. Connecting to
-the db-service keeps that default, so one that is not there still fails fast.
+mirror read or write, a judge query, and every request hash grading makes on the
+whole state (the server-side hash, the snapshots, the reset and the restores among
+them) wait for the db-service's answer as long as their deadline, so a large world
+that takes more than the DB client's default 30 s to answer is still read.
+Connecting to the db-service keeps that default, so one that is not there still
+fails fast.
+
+One call may make more such requests than its own budget holds at their full
+deadlines: a `GradeTrial` syncs the mirror, then reads the state for each grader and
+around the golden replay. Inside `GradeTrial`, `GetState` and `ResetTrial`, a
+request is therefore cut to what the call has left, less 10 s for the call to
+answer. A slow world then fails the request with its own cause — the state could
+not be read, with what a judge had spent — rather than the call's bare timeout. The
+restore after a failed hash grading keeps its full deadline, so the golden world is
+not left behind.
 
 A hash-graded `GradeTrial` reads the holder before grading and again after the
 golden replay. When grading fails once the replay ran — that second read past
