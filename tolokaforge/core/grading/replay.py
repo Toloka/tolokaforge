@@ -43,6 +43,7 @@ from tolokaforge.core.grading.judge_evidence import REPLAYED_TOOL_OWNERS
 from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeResult
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
+from tolokaforge.core.grading.judge_tools import SEARCH_KB_TOOL_NAME, EvidenceOwnedTool
 from tolokaforge.core.grading.kb_search import (
     KnowledgeSearch,
     SearchHit,
@@ -95,8 +96,9 @@ from tolokaforge.runner.models import (
     JudgeEvidence,
     LLMJudgeConfig,
     Rubric,
+    without_unset_removed_keys,
 )
-from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
+from tolokaforge.tools.registry import ToolCategory, ToolPolicy, ToolResult
 
 __all__ = [
     "REPLAY_UNAVAILABLE",
@@ -228,7 +230,7 @@ class OfflineKnowledgeSearch:
         ]
 
 
-class _OfflineReadTool(Tool):
+class _OfflineReadTool(EvidenceOwnedTool):
     """A read tool offered to match the recorded surface but backed offline.
 
     Any call returns the explicit "unavailable in replay" marker. Used for the
@@ -242,9 +244,9 @@ class _OfflineReadTool(Tool):
             name=name,
             description=f"[replay] {name}: {_unavailable(backend)}",
             policy=ToolPolicy(timeout_s=15.0, category=ToolCategory.READ),
+            evidence_part=evidence_part,
         )
         self._backend = backend
-        self.evidence_part = evidence_part
 
     def get_schema(self) -> dict[str, Any]:
         return {
@@ -357,7 +359,7 @@ class ReplayInputs:
     provenance: ReplayProvenance
     db_reader: DBReader | None = None
     kb_search: KnowledgeSearch | None = None
-    extra_read_tools: list[Tool] = field(default_factory=list)
+    extra_read_tools: list[EvidenceOwnedTool] = field(default_factory=list)
     workspace_dir: Path | None = None
 
 
@@ -461,7 +463,7 @@ def _override_customization(
             f"grading override {grading_path}: llm_judge.customization is not a mapping"
         )
     JudgeCustomization.model_validate(raw)
-    return dict(raw)
+    return without_unset_removed_keys(raw)
 
 
 def classify_trial(trial_dir: Path) -> TrialEligibility:
@@ -744,7 +746,7 @@ def _offline_read_surface(
     judge_inputs: JudgeInputs | None,
     kb_gating: dict[str, Any] | None,
     customization: JudgeCustomization,
-) -> tuple[DBReader | None, KnowledgeSearch | None, list[Tool]]:
+) -> tuple[DBReader | None, KnowledgeSearch | None, list[EvidenceOwnedTool]]:
     """Reconstruct the offline read-tool surface the customization's parts enable, as recorded.
 
     New bundles carry the authoritative final-state read surface in
@@ -762,7 +764,7 @@ def _offline_read_surface(
     evidence = customization.evidence
     db_reader: DBReader | None = None
     kb_search: KnowledgeSearch | None = None
-    extra: list[Tool] = []
+    extra: list[EvidenceOwnedTool] = []
 
     if judge_inputs is not None:
         for name in judge_inputs.read_tools_offered:
@@ -781,7 +783,7 @@ def _offline_read_surface(
 
     gating = kb_gating or {}
     for name in [*(gating.get("offered") or []), *(gating.get("withheld") or [])]:
-        if name == "search_kb":
+        if name == SEARCH_KB_TOOL_NAME:
             kb_search = OfflineKnowledgeSearch()
         else:
             extra.append(

@@ -49,7 +49,7 @@ class JudgeKind(Protocol):
         db_reader: DBReader | None,
         kb_search: KnowledgeSearch | None,
         workspace_dir: Path | None,
-        extra_read_tools: list[Tool],
+        extra_read_tools: list[EvidenceOwnedTool],
         state_diff: str | None,
         judge_model_config: ModelConfig,
         judge_model_provider: JudgeModelProvider,
@@ -61,8 +61,8 @@ class JudgeKind(Protocol):
 
 @dataclass(frozen=True)
 class JudgeTrialOptions:
-    customization: JudgeCustomization = JudgeCustomization()
-    tool_effects: ToolEffects = ToolEffects.empty()
+    customization: JudgeCustomization = field(default_factory=JudgeCustomization)
+    tool_effects: ToolEffects = field(default_factory=ToolEffects.empty)
 ```
 
 **`NAME`** MUST equal the entry-point name the kind registers under — a
@@ -72,8 +72,9 @@ raises), never silently at judge time.
 **`evaluate` is kwargs-only.** Every field on the per-trial evidence
 surface (`rubric` through `state_diff`) mirrors `LLMJudge.run`'s own
 inputs verbatim, so a kind that just wraps `LLMJudge` (`single_shot_rubric`)
-needs no translation layer. Each `extra_read_tools` entry names the evidence part
-that owns it in its `evidence_part` attribute (a `search_policy` passthrough is
+needs no translation layer. Each `extra_read_tools` entry is an
+`EvidenceOwnedTool` (`tolokaforge.core.grading.judge_tools`), a `Tool` naming the
+evidence part that owns it in `evidence_part` (a `search_policy` passthrough is
 `DelegatingReadTool(..., evidence_part=EvidencePartName.KNOWLEDGE_SEARCH)`); `LLMJudge`
 offers it only while that part is on and refuses one that names no part owning tools. `judge_model_config` + `judge_model_provider`
 are construction inputs — the kind builds its own judge client(s) from

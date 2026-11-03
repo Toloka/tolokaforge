@@ -40,8 +40,8 @@ class ModelCertificate:
     model_id:
         Stable filesystem-safe slug — MUST equal
         ``tolokaforge.core.output.artifacts.model_id_slug(provider, name)``
-        so per-trial ``results/tools_schemas/<task>__<model_id>.json``
-        sidecars and the capability tests share the same identifier.
+        so the certificate, the capability tests and every artifact path that
+        needs a filesystem-safe model identifier share the same identifier.
         Validated by the canonical capability-registry test.
     provider:
         litellm-style provider key — e.g. ``"openrouter"``, ``"nova"``.

@@ -927,13 +927,13 @@ named parts; each is `false` (off), `true` (on with its default options) or a ma
 | `db` | `true` | `get_db_state` / `query_db` over the final database state |
 | `workspace` | `true` | `read_file` over the agent's workspace, when one exists |
 | `tool_results` | `false` | every tool result numbered `[call N]` and cut at `{max_chars: N}` (default `2000`), with `show_call` returning it in full |
-| `state_changing_calls` | `false` | the agent's calls that can change state, by each tool's `mutates_state` declaration in `task.yaml`; on without `tool_results`, the results are numbered and not cut |
+| `state_changing_calls` | `false` | the agent's calls that can change state, by each tool's `mutates_state`: declared by the tool's author (an MCP server's `readOnlyHint` or `_meta` read rule, a builtin's `ToolPolicy`), and by the task only where the author is silent or to tighten it to `true` (see [TASKS.md § Declaring which calls change state](TASKS.md#declaring-which-calls-change-state), [MCP_INTEGRATION.md § A read rule](MCP_INTEGRATION.md#a-read-rule)); on without `tool_results`, the results are numbered and not cut |
 
 Turning a part off removes it — a tool is absent from the judge's schema, not
 stubbed — and the *agent's* tools are untouched. A judge from the transcript alone is
 `{state_diff: false, db: false, workspace: false, tool_results: true,
 state_changing_calls: true}`; see [GRADING.md § Judge evidence](GRADING.md#judge-evidence).
-Omitting the block leaves the judge at the faithful default. Every judge kind receives
+Omitting the block leaves the judge over the final state. Every judge kind receives
 these settings resolved as one `JudgeTrialOptions` (see
 [JUDGE_KINDS.md](JUDGE_KINDS.md#protocol-contract)). All fields layer project → task →
 run → replay, key by key and part by part: a project default under
@@ -955,8 +955,10 @@ a message naming its replacement:
 | `disable_knowledge_search: true` / `false` | `evidence.knowledge_search: false` / `true` |
 | `include_agent_system_prompt: false` / `true` | `evidence.agent_policy: false` / `true` |
 | `judge_snippet_chars: N` / `null` | `evidence.knowledge_search: {snippet_chars: N}` / `{snippet_chars: null}` |
-| `transcript_tool_chars: N` | `evidence.tool_results: {max_chars: N}` |
-| `evidence: state` / `evidence: transcript` | no `evidence` / the transcript-only parts above |
+
+A `disable_knowledge_search: null` or `include_agent_system_prompt: null` meant unset,
+and reads as the key's absence; it is what every customization recorded before
+`evidence` carries.
 
 See [GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the
 two weighting layers, and the fail-loud ERRORED status.

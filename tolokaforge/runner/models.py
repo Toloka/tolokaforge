@@ -73,7 +73,11 @@ from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, Compa
 from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
-from tolokaforge.core.grading.regex_engine import RegexEngineKind
+from tolokaforge.core.grading.regex_engine import (
+    CompiledPatterns,
+    RegexEngineKind,
+    UncompilablePattern,
+)
 from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     refuse_probes_beside_another_state_source,
@@ -1069,6 +1073,18 @@ class ValuePredicate(BaseModel):
         authored = getattr(self, operator)
         return (authored,) if isinstance(authored, str) else tuple(authored)
 
+    def compiled_patterns(self, section: RegexEngineKind) -> dict[str, CompiledPatterns]:
+        """Each pattern operator it declares, compiled under :meth:`regex_engine_under`.
+
+        Raises:
+            UncompilablePattern: a pattern its engine refuses.
+        """
+        engine = self.regex_engine_under(section)
+        return {
+            name: CompiledPatterns.compile(self.patterns_of(name), engine)
+            for name in sorted(self.declared_operators() & self.PATTERN_OPERATORS)
+        }
+
     def declared_operators(self) -> frozenset[str]:
         """The operators this predicate asserts, which it is the conjunction of."""
         return frozenset(
@@ -1145,13 +1161,25 @@ class MutatesStateReadWhen(BaseModel):
     :class:`ValuePredicate`, the trace matcher's own vocabulary, read through the
     same resolver (:mod:`tolokaforge.core.grading.argument_predicates`): a path the
     call does not carry fails every operator but ``omitted`` / ``exists``. A
-    pattern runs on the ``linear`` engine unless its predicate names another. A
-    rule has no ``bind``, so the binding operators are refused.
+    pattern runs on :attr:`REGEX_ENGINE` unless its predicate names another, and one
+    its engine cannot compile is refused here. A rule has no ``bind``, so the binding
+    operators are refused.
     """
+
+    REGEX_ENGINE: ClassVar[RegexEngineKind] = RegexEngineKind.LINEAR
 
     args: dict[str, ValuePredicate] = Field(min_length=1)
 
     model_config = {"extra": "forbid", "frozen": True}
+
+    @model_validator(mode="after")
+    def _patterns_compile(self) -> MutatesStateReadWhen:
+        try:
+            for predicate in self.args.values():
+                predicate.compiled_patterns(self.REGEX_ENGINE)
+        except UncompilablePattern as exc:
+            raise ValueError(f"read_when.args: {exc}") from exc
+        return self
 
     @field_validator("args")
     @classmethod
@@ -2469,17 +2497,7 @@ class JudgeEvidence(BaseModel):
     the trial views a caller builds for them.
     """
 
-    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset(
-        {
-            "agent_policy",
-            "knowledge_search",
-            "state_diff",
-            "db",
-            "workspace",
-            "tool_results",
-            "state_changing_calls",
-        }
-    )
+    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]]
     """Fields the dump leaves out while they hold their default value: every part."""
 
     agent_policy: StrictBool = True
@@ -2545,6 +2563,15 @@ class JudgeEvidence(BaseModel):
         return data
 
 
+JudgeEvidence.OMITTED_AT_DEFAULT = frozenset(JudgeEvidence.model_fields)
+
+if set(JudgeEvidence.model_fields) != {part.value for part in EvidencePartName}:
+    raise TypeError(
+        f"JudgeEvidence fields {sorted(JudgeEvidence.model_fields)} are not the "
+        f"EvidencePartName values {sorted(part.value for part in EvidencePartName)}"
+    )
+
+
 def _part_options[Options: BaseModel](
     value: bool | Options, options_type: type[Options]
 ) -> Options | None:
@@ -2552,11 +2579,6 @@ def _part_options[Options: BaseModel](
         return None
     return options_type() if value is True else value
 
-
-_TRANSCRIPT_ONLY_EVIDENCE = (
-    "{state_diff: false, db: false, workspace: false, tool_results: true, "
-    "state_changing_calls: true}"
-)
 
 _REMOVED_CUSTOMIZATION_KEYS: dict[str, str] = {
     "disable_knowledge_search": (
@@ -2572,23 +2594,34 @@ _REMOVED_CUSTOMIZATION_KEYS: dict[str, str] = {
         "write evidence.knowledge_search: {snippet_chars: N}, or "
         "evidence.knowledge_search: {snippet_chars: null} for whole documents"
     ),
-    "transcript_tool_chars": "write evidence.tool_results: {max_chars: N}",
 }
+
+_REMOVED_TRI_STATE_KEYS: frozenset[str] = frozenset(
+    {"disable_knowledge_search", "include_agent_system_prompt"}
+)
+"""Removed keys whose ``null`` meant unset, and so still reads as the key's absence.
+
+Every customization the engine recorded before ``evidence`` dumps both as ``null``.
+"""
+
+
+def without_unset_removed_keys(data: Mapping[str, Any]) -> dict[str, Any]:
+    """*data* without a removed tri-state key that holds ``null``."""
+    return {
+        key: value
+        for key, value in data.items()
+        if not (key in _REMOVED_TRI_STATE_KEYS and value is None)
+    }
 
 
 def _refuse_removed_customization_keys(data: Any) -> Any:
     """Refuse a customization key that ``evidence`` replaced, naming its replacement."""
     if not isinstance(data, Mapping):
         return data
+    data = without_unset_removed_keys(data)
     for key, remedy in _REMOVED_CUSTOMIZATION_KEYS.items():
         if key in data:
             raise ValueError(f"customization.{key} is removed; {remedy}")
-    if isinstance(data.get("evidence"), str):
-        raise ValueError(
-            f"customization.evidence: {data['evidence']} is removed; evidence is a mapping "
-            "of parts. The judge over the final state is the default (omit evidence); a "
-            f"judge from the transcript alone is evidence: {_TRANSCRIPT_ONLY_EVIDENCE}"
-        )
     return data
 
 
@@ -2606,7 +2639,9 @@ class JudgeCustomization(BaseModel):
     dump while every part holds its default. Layered project → task → run
     (``grader.judge``) → replay (``--grading``) by
     :func:`~tolokaforge.core.project_loader.layer_judge_customization`, part by part.
-    A key ``evidence`` replaced is refused naming its replacement.
+    A key ``evidence`` replaced is refused naming its replacement, except a
+    ``disable_knowledge_search`` or ``include_agent_system_prompt`` that holds
+    ``null``, which meant unset and reads as absent.
 
     :func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns
     a customization into the

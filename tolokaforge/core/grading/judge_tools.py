@@ -30,8 +30,12 @@ if TYPE_CHECKING:
     from tolokaforge.runner.models import EvidencePartName
 
 __all__ = [
+    "GET_DB_STATE_TOOL_NAME",
+    "QUERY_DB_TOOL_NAME",
+    "READ_FILE_TOOL_NAME",
     "SEARCH_KB_TOOL_NAME",
     "DelegatingReadTool",
+    "EvidenceOwnedTool",
     "GetDbStateTool",
     "QueryDbTool",
     "ReadFileTool",
@@ -45,6 +49,10 @@ __all__ = [
 #: episode evidence, so the two modules share one constant instead of two
 #: independently-typed magic strings.
 SEARCH_KB_TOOL_NAME = "search_kb"
+
+GET_DB_STATE_TOOL_NAME = "get_db_state"
+QUERY_DB_TOOL_NAME = "query_db"
+READ_FILE_TOOL_NAME = "read_file"
 
 #: Cap on file/db output returned to the judge so a huge state can't blow the
 #: context window. Truncation is flagged in the output, never silent.
@@ -66,7 +74,7 @@ class GetDbStateTool(Tool):
 
     def __init__(self, db_reader: DBReader):
         super().__init__(
-            name="get_db_state",
+            name=GET_DB_STATE_TOOL_NAME,
             description=(
                 "LAST RESORT — returns the ENTIRE final database state as raw JSON, "
                 "which can be very large and is truncated at a fixed size. Prefer the "
@@ -111,7 +119,7 @@ class QueryDbTool(Tool):
 
     def __init__(self, db_reader: DBReader):
         super().__init__(
-            name="query_db",
+            name=QUERY_DB_TOOL_NAME,
             description=(
                 "Query the final database state with a JSONPath expression, "
                 "including filter expressions to look up a specific row — e.g. "
@@ -157,7 +165,7 @@ class ReadFileTool(Tool):
 
     def __init__(self, workspace_dir: Path):
         super().__init__(
-            name="read_file",
+            name=READ_FILE_TOOL_NAME,
             description=(
                 "Read a text file the agent produced, relative to its workspace. "
                 "Read-only; paths are sandboxed to the workspace."
@@ -294,7 +302,27 @@ class SearchKbTool(Tool):
         return text[: self._snippet_chars] + "..."
 
 
-class DelegatingReadTool(Tool):
+class EvidenceOwnedTool(Tool):
+    """A read tool a caller hands the judge beside its own, owned by an evidence part.
+
+    ``evidence_part`` names the part of the judge's evidence that owns the tool: it
+    is offered only while that part is on, and classified by this tag, never by its
+    name.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        policy: ToolPolicy | None = None,
+        *,
+        evidence_part: EvidencePartName,
+    ) -> None:
+        super().__init__(name=name, description=description, policy=policy)
+        self.evidence_part = evidence_part
+
+
+class DelegatingReadTool(EvidenceOwnedTool):
     """Read-only judge tool that passes a call THROUGH to a foreign tool verbatim.
 
     Generic by construction — it owns no backend, no I/O format, and no
@@ -330,13 +358,15 @@ class DelegatingReadTool(Tool):
         *,
         evidence_part: EvidencePartName,
     ):
-        """``evidence_part`` is the part of the judge's evidence that owns the tool
-        (``knowledge_search`` for a ``search_policy`` passthrough): it is offered only
-        while that part is on, and classified by this tag, never by its name."""
-        super().__init__(name=name, description=description, policy=read_only_policy())
+        """``evidence_part`` is ``knowledge_search`` for a ``search_policy`` passthrough."""
+        super().__init__(
+            name=name,
+            description=description,
+            policy=read_only_policy(),
+            evidence_part=evidence_part,
+        )
         self._parameters = parameters
         self._invoke = invoke
-        self.evidence_part = evidence_part
 
     def get_schema(self) -> dict[str, Any]:
         return {

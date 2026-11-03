@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from tolokaforge.core.grading.regex_engine import UncompilablePattern
 from tolokaforge.core.tool_effects import ToolEffects, UnrecordedToolEffectsError
 from tolokaforge.runner.models import MutatesStateRule, ToolSchema
 
@@ -85,15 +84,23 @@ def test_an_undeclared_or_unknown_tool_can_change_state() -> None:
     assert _changes(ToolEffects.empty(), "lookup", {}) is True
 
 
-def test_the_first_schema_of_a_name_is_the_one_read() -> None:
+@pytest.mark.parametrize(
+    ("first", "second", "changes"),
+    [(False, True, False), (None, False, True)],
+    ids=["declared-then-declared", "undeclared-then-declared"],
+)
+def test_the_first_schema_of_a_name_is_the_one_read(
+    first: bool | None, second: bool, changes: bool
+) -> None:
+    """An agent tool shadows a same-named user tool even where it declares nothing."""
     effects = ToolEffects.from_schemas(
         [
-            ToolSchema(name="lookup", description="", parameters={}, mutates_state=False),
-            ToolSchema(name="lookup", description="", parameters={}, mutates_state=True),
+            ToolSchema(name="lookup", description="", parameters={}, mutates_state=first),
+            ToolSchema(name="lookup", description="", parameters={}, mutates_state=second),
         ]
     )
 
-    assert _changes(effects, "lookup", {}) is False
+    assert _changes(effects, "lookup", {}) is changes
 
 
 def test_unparseable_arguments_fail_loud() -> None:
@@ -122,13 +129,20 @@ def test_a_malformed_rule_is_refused(args: dict[str, Any], error: str) -> None:
         _rule(args)
 
 
-def test_a_rule_pattern_runs_on_the_linear_engine_unless_it_names_another() -> None:
-    lookahead = {"regex": "^(?=GET)"}
-
-    with pytest.raises(UncompilablePattern, match="linear"):
-        _effects(rest_call=_rule({"method": lookahead}))
-    effects = _effects(rest_call=_rule({"method": {**lookahead, "regex_engine": "backtracking"}}))
-    assert _changes(effects, "rest_call", {"method": "GET"}) is False
+@pytest.mark.parametrize(
+    ("pattern", "call"), [("^(?=GET)", "GET"), (r"^(\w)\1$", "GG")], ids=["lookahead", "backref"]
+)
+def test_a_rule_pattern_runs_on_the_linear_engine_unless_it_names_another(
+    pattern: str, call: str
+) -> None:
+    """A pattern its engine cannot compile is refused where the rule is declared,
+    not when a grade first builds the declarations."""
+    with pytest.raises(ValidationError, match="the linear regex engine cannot compile"):
+        _rule({"method": {"regex": pattern}})
+    effects = _effects(
+        rest_call=_rule({"method": {"regex": pattern, "regex_engine": "backtracking"}})
+    )
+    assert _changes(effects, "rest_call", {"method": call}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +169,7 @@ def test_a_generation_8_record_gives_back_its_declarations() -> None:
             _entry("lookup", mutates_state=False),
             _entry("search"),
             _entry("lookup", mutates_state=True),
+            _entry("search", mutates_state=False),
         ]
     )
 
@@ -177,9 +192,18 @@ def test_a_record_predating_the_declarations_is_refused(schema_version: Any) -> 
     [
         (None, "records no tool list"),
         ([_entry("rest_call", mutates_state={"read_when": {}})], "no rule validates"),
+        (
+            [
+                _entry(
+                    "rest_call",
+                    mutates_state={"read_when": {"args": {"method": {"regex": r"(\w)\1"}}}},
+                )
+            ],
+            "linear regex engine cannot compile",
+        ),
         ([{"type": "function", "function": {}}], "records no function.name"),
     ],
-    ids=["no-file", "bad-rule", "no-name"],
+    ids=["no-file", "bad-rule", "uncompilable-pattern", "no-name"],
 )
 def test_a_record_that_cannot_say_is_refused(entries: Any, error: str) -> None:
     with pytest.raises(UnrecordedToolEffectsError, match=error):

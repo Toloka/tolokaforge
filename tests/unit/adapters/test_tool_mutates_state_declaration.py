@@ -24,7 +24,7 @@ from tolokaforge.adapters._task_loader import (
 )
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.runner.models import MutatesStateRule
-from tolokaforge.tools.builtin.http_request import SAFE_METHODS_READ
+from tolokaforge.tools.builtin.http_request import safe_methods_read
 
 pytestmark = pytest.mark.unit
 
@@ -219,7 +219,7 @@ def test_http_request_carries_its_policys_rule_unless_the_task_declares_true(
     )
 
     assert _emitted(tmp_path / "silent")["http_request"] == MutatesStateRule.model_validate(
-        SAFE_METHODS_READ
+        safe_methods_read()
     )
     assert _emitted(tmp_path / "tightened")["http_request"] is True
 

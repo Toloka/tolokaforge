@@ -23,16 +23,20 @@ REDACTED_CREDENTIAL = "***REDACTED***"
 MAX_REDIRECTS = 5
 """Hops a credentialed request follows before it is refused as a redirect loop."""
 
-SAFE_METHODS_READ = {"read_when": {"args": {"method": {"in_": ["GET", "HEAD", "OPTIONS"]}}}}
-"""The tool's ``mutates_state`` (ADR-0061): a call with a safe method (RFC 9110 §9.2.1) reads.
 
-The match is on the method as the call spells it, so a lower-case ``get`` — which
-httpx sends as ``GET`` — reads as a call that can change state, the conservative
-direction. A task whose service changes state on a safe method declares
-``tools.<actor>.http_request.mutates_state: true``.
-"""
+def safe_methods_read() -> dict[str, Any]:
+    """The tool's ``mutates_state`` (ADR-0061): a call with a safe method (RFC 9110 §9.2.1) reads.
 
-__all__ = ["HTTPRequestTool", "host_listed", "unreachable_hosts"]
+    A fresh mapping on every call, so no policy shares one another could mutate. The
+    match is on the method as the call spells it, so a lower-case ``get`` — which
+    httpx sends as ``GET`` — reads as a call that can change state, the conservative
+    direction. A task whose service changes state on a safe method declares
+    ``tools.<actor>.http_request.mutates_state: true``.
+    """
+    return {"read_when": {"args": {"method": {"in_": ["GET", "HEAD", "OPTIONS"]}}}}
+
+
+__all__ = ["HTTPRequestTool", "host_listed", "safe_methods_read", "unreachable_hosts"]
 """The host helpers live in :mod:`tolokaforge.core.hosts`; they stay importable here."""
 
 
@@ -51,7 +55,7 @@ class HTTPRequestTool(Tool):
         policy = ToolPolicy(
             timeout_s=20.0,
             category=ToolCategory.COMPUTE,
-            mutates_state=SAFE_METHODS_READ,
+            mutates_state=safe_methods_read(),
         )
         super().__init__(
             name="http_request",

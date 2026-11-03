@@ -61,7 +61,8 @@ segment, each predicate a mapping of one or more predicate operators, the bindin
 operators (`equals_binding`, `contains_binding`) excluded since a rule binds
 nothing. The native adapter validates the rule in full when it reads the listing,
 and refuses the task at load, naming the tool and the server, when the rule is
-malformed, sits beside `readOnlyHint: true`, or names an argument its tool's closed
+malformed (a pattern the `linear` engine cannot compile included, unless its
+predicate names another `regex_engine`), sits beside `readOnlyHint: true`, or names an argument its tool's closed
 schema rules out. A wrong rule hides writes, so it is refused where a malformed
 `readOnlyHint` only leaves the tool undeclared with a warning. `_meta` without the
 key declares nothing.

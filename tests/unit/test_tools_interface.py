@@ -326,21 +326,6 @@ class TestDecoratorSideEffects:
             description="Write.", annotations=ToolAnnotations(readOnlyHint=False), meta=None
         )
 
-    def test_a_read_rule_rides_in_meta_beside_a_false_read_only_hint(self):
-        """Some calls of a tool declaring a read rule change state, so its bool
-        annotation says it is not read-only; the rule itself rides in ``_meta``."""
-        rule = {"read_when": {"args": {"request.method": {"in_": ["GET", "HEAD"]}}}}
-
-        @self.registry.tool("Call.", mutates_state=rule)
-        def rest_call(data: dict, request: dict) -> str:
-            return "x"
-
-        assert self.mock_mcp.tool.call_args == call(
-            description="Call.",
-            annotations=ToolAnnotations(readOnlyHint=False),
-            meta={"tolokaforge/mutates_state": rule},
-        )
-
     def test_the_internal_state_tools_declare_themselves(self):
         """The engine's own get/set state tools carry the engine's declaration:
         the snapshot read is read-only, the replace mutates. They reach

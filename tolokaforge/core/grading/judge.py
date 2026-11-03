@@ -49,7 +49,7 @@ from tolokaforge.core.grading.judge_evidence import (
 )
 from tolokaforge.core.grading.judge_model_provider import JudgeModel
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
-from tolokaforge.core.grading.judge_tools import SubmitReportTool
+from tolokaforge.core.grading.judge_tools import EvidenceOwnedTool, SubmitReportTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch
 from tolokaforge.core.grading.rubric import (
     GRADED_MET_THRESHOLD,
@@ -90,7 +90,7 @@ from tolokaforge.runner.models import (
     JudgeEvidence,
     Rubric,
 )
-from tolokaforge.tools.registry import Tool, ToolExecutor, ToolRegistry
+from tolokaforge.tools.registry import ToolExecutor, ToolRegistry
 
 # ---------------------------------------------------------------------------
 # Budget defaults (plan: max_turns ~12-15 + wall-time)
@@ -406,7 +406,7 @@ class Judge(Protocol):
         transcript: list[dict[str, Any]],
         db_reader: DBReader | None = None,
         kb_search: KnowledgeSearch | None = None,
-        extra_read_tools: list[Tool] | None = None,
+        extra_read_tools: list[EvidenceOwnedTool] | None = None,
         workspace_dir: Path | None = None,
         state_diff: str | None = None,
     ) -> JudgeResult: ...
@@ -441,8 +441,8 @@ class LLMJudge:
         self,
         model_config: ModelConfig,
         *,
-        customization: JudgeCustomization = JudgeCustomization(),
-        tool_effects: ToolEffects = ToolEffects.empty(),
+        customization: JudgeCustomization | None = None,
+        tool_effects: ToolEffects | None = None,
         explicit_system_prompt: str | None = None,
         max_turns: int = DEFAULT_JUDGE_MAX_TURNS,
         episode_timeout_s: int = DEFAULT_JUDGE_EPISODE_TIMEOUT_S,
@@ -450,6 +450,7 @@ class LLMJudge:
         llm_client: JudgeModel | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
+        customization = JudgeCustomization() if customization is None else customization
         if explicit_system_prompt is not None and customization.system_prompt is not None:
             raise ValueError(
                 "LLMJudge accepts explicit_system_prompt (a composed prompt used "
@@ -461,7 +462,7 @@ class LLMJudge:
             )
         self._model_config = model_config
         self._customization = customization
-        self._tool_effects = tool_effects
+        self._tool_effects = ToolEffects.empty() if tool_effects is None else tool_effects
         self._explicit_system_prompt = explicit_system_prompt
         self._max_turns = max_turns
         self._episode_timeout_s = episode_timeout_s
@@ -477,7 +478,7 @@ class LLMJudge:
         transcript: list[dict[str, Any]],
         db_reader: DBReader | None = None,
         kb_search: KnowledgeSearch | None = None,
-        extra_read_tools: list[Tool] | None = None,
+        extra_read_tools: list[EvidenceOwnedTool] | None = None,
         workspace_dir: Path | None = None,
         state_diff: str | None = None,
     ) -> JudgeResult:
@@ -818,7 +819,7 @@ class InMemoryJudge:
         transcript: list[dict[str, Any]],
         db_reader: DBReader | None = None,
         kb_search: KnowledgeSearch | None = None,
-        extra_read_tools: list[Tool] | None = None,
+        extra_read_tools: list[EvidenceOwnedTool] | None = None,
         workspace_dir: Path | None = None,
         state_diff: str | None = None,
     ) -> JudgeResult:

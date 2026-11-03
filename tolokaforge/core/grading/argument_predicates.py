@@ -65,11 +65,9 @@ def compile_predicate_patterns(
     :class:`~tolokaforge.core.grading.regex_engine.UncompilablePattern`.
     """
     return {
-        (field, name): CompiledPatterns.compile(
-            predicate.patterns_of(name), predicate.regex_engine_under(section)
-        )
+        (field, name): compiled
         for field, predicate in predicates
-        for name in sorted(predicate.declared_operators() & predicate.PATTERN_OPERATORS)
+        for name, compiled in predicate.compiled_patterns(section).items()
     }
 
 

@@ -170,7 +170,9 @@ tools:
 It takes three forms: `false` (every call reads), `true`, or a `read_when` rule whose
 `args` map dotted argument paths to [trace-matcher predicates](GRADING.md#operators)
 (`equals`, `in_`, `regex`, …; the binding operators are refused, since a rule binds
-nothing). A call the rule does not foresee — a path it does not carry, a value outside the
+nothing). A pattern runs on the `linear` engine unless its predicate names another
+`regex_engine`, and one its engine cannot compile is refused where the rule is declared.
+A call the rule does not foresee — a path it does not carry, a value outside the
 predicate — can change state. The task load refuses:
 
 - a declaration over the tool author's own (an MCP server's `readOnlyHint` or read rule, a builtin's

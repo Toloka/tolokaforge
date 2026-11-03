@@ -25,7 +25,6 @@ from tolokaforge.core.grading.argument_predicates import (
     compile_predicate_patterns,
     predicate_holds,
 )
-from tolokaforge.core.grading.regex_engine import RegexEngineKind
 from tolokaforge.runner.models import MutatesStateRule
 
 if TYPE_CHECKING:
@@ -39,8 +38,6 @@ __all__ = [
 
 TOOL_EFFECTS_BUNDLE_VERSION = 8
 """The first trial-bundle generation whose ``tools_schemas.yaml`` records ``mutates_state``."""
-
-_RULE_ENGINE = RegexEngineKind.LINEAR
 
 
 class UnrecordedToolEffectsError(ValueError):
@@ -56,7 +53,10 @@ class _ReadRule:
 
     @classmethod
     def compile(cls, rule: MutatesStateRule) -> _ReadRule:
-        return cls(rule, compile_predicate_patterns(rule.read_when.args.items(), _RULE_ENGINE))
+        return cls(
+            rule,
+            compile_predicate_patterns(rule.read_when.args.items(), rule.read_when.REGEX_ENGINE),
+        )
 
     def reads(self, arguments: Any) -> bool:
         return all(
@@ -80,10 +80,13 @@ class ToolEffects:
     def from_schemas(cls, schemas: Iterable[ToolSchema]) -> ToolEffects:
         """The declarations of *schemas*; the first schema of a name is the one read."""
         declared: dict[str, bool | _ReadRule] = {}
+        seen: set[str] = set()
         for schema in schemas:
-            if schema.name in declared or schema.mutates_state is None:
+            if schema.name in seen:
                 continue
-            declared[schema.name] = _compiled(schema.mutates_state)
+            seen.add(schema.name)
+            if schema.mutates_state is not None:
+                declared[schema.name] = _compiled(schema.mutates_state)
         return cls(MappingProxyType(declared))
 
     @classmethod
@@ -116,9 +119,13 @@ class ToolEffects:
                 "state is not recorded"
             )
         declared: dict[str, bool | _ReadRule] = {}
+        seen: set[str] = set()
         for index, entry in enumerate(entries):
             name, raw = _recorded_declaration(source, index, entry)
-            if name in declared or raw is None:
+            if name in seen:
+                continue
+            seen.add(name)
+            if raw is None:
                 continue
             try:
                 value = raw if isinstance(raw, bool) else MutatesStateRule.model_validate(raw)

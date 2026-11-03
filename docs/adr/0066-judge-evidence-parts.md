@@ -63,11 +63,13 @@ We will adopt **Option 4**.
   replacement.
 - Each part is an `EvidencePart` (`core/grading/judge_evidence.py`): its section of
   the opening message, its closing instruction, the tools it offers, the recorded
-  tools replay shims for it, and whether it reads the numbered transcript. One
+  tools replay shims for it, whether it reads the numbered transcript, and its rank
+  among the offered tools, the sections and the closing instructions. One
   composition builds the opening message and the tool surface from the parts that are
-  on; the opening message names only tools that are offered. An extra read tool a
-  caller hands the judge names the part that owns it, and is offered only while that
-  part is on.
+  on, in their ranks' order; the opening message names only tools that are offered.
+  An extra read tool a caller hands the judge is an `EvidenceOwnedTool`
+  (`core/grading/judge_tools.py`) naming the part that owns it, and is offered only
+  while that part is on.
 - `JudgeEvidence.needs` (`runner/models.py`) is the one mapping from parts to the
   trial views a caller builds — the state diff, the DB reader, the workspace, the
   tools' declarations. The runner, the grader service, the `judge_only` grader and
@@ -106,15 +108,26 @@ We will adopt **Option 4**.
 - A pack switches the judge to the transcript alone, or keeps any subset of the
   views, with keys of one vocabulary, and can A/B it over a recorded run with a
   customization-only `tolokaforge rejudge --grading` document.
-- One composition, one part-to-view mapping and one record of the customization:
-  adding a view is adding a part.
+- One composition, one part-to-view mapping and one record of the customization.
+  Adding a part touches an `EvidencePartName` member, the `JudgeEvidence` field of
+  the same name (a mismatch between the two fails at import), and one registered
+  part class in `judge_evidence.py` declaring its section, tools, closing and ranks.
+  The dump's omission, the parts the composition iterates and their order, the extra
+  tools a part may own and the tools replay shims all derive from those. A part that
+  reads a trial view no part reads yet also adds an `EvidenceInput` member, its
+  `JudgeEvidence.needs` entry, and the code in each caller that builds the view.
 - The first runtime consumer of ADR-0061's `mutates_state`.
 - Every judge kind gains the parts without a change.
 
 ### Negative / Trade-offs
 
 - Three shipped task-pack keys are renamed into `evidence.*`; a pack carrying one is
-  refused at load until migrated, and so is a bundle recorded with one at replay.
+  refused at load until migrated. A bundle recorded before `evidence` carries
+  `disable_knowledge_search: null` and `include_agent_system_prompt: null` in every
+  `task.yaml` customization; that `null` meant unset and reads as absent, so the
+  bundle replays. One whose customization set `disable_knowledge_search` or
+  `include_agent_system_prompt` to `true` or `false`, or set `judge_snippet_chars`
+  at all, is refused at replay, a `--grading` override included.
 - A judge without the final-state parts cannot verify a claim the transcript does not
   settle; such a criterion belongs in deterministic checks.
 - An undeclared tool's reads are listed as state-changing until the tool or its task

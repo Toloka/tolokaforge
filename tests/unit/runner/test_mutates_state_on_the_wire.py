@@ -251,6 +251,18 @@ def test_meta_carries_a_read_rule_and_nothing_else(monkeypatch: pytest.MonkeyPat
             "binds nothing",
             id="a-binding-operator",
         ),
+        pytest.param(
+            {
+                "annotations": {"readOnlyHint": False},
+                "_meta": {
+                    MUTATES_STATE_META_KEY: {
+                        "read_when": {"args": {"action": {"regex": r"(\w)\1"}}}
+                    }
+                },
+            },
+            "the linear regex engine cannot compile",
+            id="an-uncompilable-pattern",
+        ),
     ],
 )
 def test_a_read_rule_the_listing_contradicts_or_malforms_is_refused(

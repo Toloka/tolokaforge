@@ -4453,11 +4453,18 @@ tools.
 A call can change state unless its tool's `mutates_state` declaration
 ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)) says it reads: `false` (every
 call reads), or a `read_when` rule whose every `args` predicate holds over the call's
-arguments. A tool that declares nothing, or `true`, can change state on every call. The
-builtin `http_request` declares its safe methods (`GET`, `HEAD`, `OPTIONS`) as reads, so
-its other calls are the ones listed. Another tool that both reads and writes declares the
-rule on its task block, in the [trace matcher's `args` vocabulary](#matchers), read
-through the matcher's own resolver:
+arguments, in the [trace matcher's `args` vocabulary](#matchers), read through the
+matcher's own resolver. A tool that declares nothing, or `true`, can change state on
+every call.
+
+The tool's author declares it: an MCP server through `readOnlyHint` or, for a read
+rule, the `_meta` key `tolokaforge/mutates_state`
+([MCP_INTEGRATION.md § A read rule](MCP_INTEGRATION.md#a-read-rule)), and a builtin
+through its `ToolPolicy` — `http_request` declares its safe methods (`GET`, `HEAD`,
+`OPTIONS`) as reads, so its other calls are the ones listed. A task declares it on
+`tools.<actor>.<name>.mutates_state` only where the author is silent, or tightens the
+author's declaration to `true`
+([TASKS.md § Declaring which calls change state](TASKS.md#declaring-which-calls-change-state)):
 
 ```yaml
 # task.yaml
@@ -4467,9 +4474,6 @@ tools:
     rest_call:
       mutates_state: {read_when: {args: {request.method: {in_: [GET, HEAD, OPTIONS]}}}}
 ```
-
-Where the declaration comes from, and when a task may make one, is
-[`TASK_DESCRIPTION_SCHEMA.md` § `mutates_state`](TASK_DESCRIPTION_SCHEMA.md#toolschemamutates_state).
 
 Every part layers project→task part by part and is left off the wire at its default.
 The effective parts a trial was graded under are recorded in its bundle's

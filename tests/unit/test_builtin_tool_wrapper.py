@@ -17,7 +17,7 @@ from tolokaforge.adapters._task_loader import (
 from tolokaforge.core.tool_effects import ToolEffects
 from tolokaforge.runner.models import MutatesStateRule, ToolSchema
 from tolokaforge.tools.builtin import registry as builtin_registry
-from tolokaforge.tools.builtin.http_request import SAFE_METHODS_READ
+from tolokaforge.tools.builtin.http_request import safe_methods_read
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ class TestBuiltinToolSchemas:
         another case, can change state."""
         declared = _builtin_tool_schemas(["http_request"])["http_request"]["mutates_state"]
 
-        assert declared == MutatesStateRule.model_validate(SAFE_METHODS_READ)
+        assert declared == MutatesStateRule.model_validate(safe_methods_read())
         effects = ToolEffects.from_schemas(
             [ToolSchema(name="http_request", description="", parameters={}, mutates_state=declared)]
         )

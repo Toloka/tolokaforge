@@ -17,20 +17,26 @@ tools' ``mutates_state`` declarations
 * ``show_call`` — :class:`ShowCallTool`, which returns the full results the cut
   hides, read from the same transcript, so a replay rebuilds it and never shims it.
 
-An extra read tool a caller hands the judge names the part that owns it in its
-``evidence_part`` attribute, and is offered only while that part is on.
+An extra read tool a caller hands the judge is an
+:class:`~tolokaforge.core.grading.judge_tools.EvidenceOwnedTool` naming the part that
+owns it, and is offered only while that part is on.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, Self
 
 from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
 from tolokaforge.core.grading.judge_tools import (
+    GET_DB_STATE_TOOL_NAME,
+    QUERY_DB_TOOL_NAME,
+    READ_FILE_TOOL_NAME,
+    EvidenceOwnedTool,
     GetDbStateTool,
     QueryDbTool,
     ReadFileTool,
@@ -56,6 +62,7 @@ __all__ = [
     "NumberedTranscript",
     "RecordedCall",
     "ShowCallTool",
+    "ToolRecord",
     "TrialEvidence",
     "call_arguments_brief",
     "call_result_head",
@@ -410,32 +417,40 @@ class TrialEvidence:
     state_diff: str | None
     db_reader: DBReader | None
     kb_search: KnowledgeSearch | None
-    extra_read_tools: tuple[Tool, ...]
+    extra_read_tools: tuple[EvidenceOwnedTool, ...]
     workspace_dir: Path | None
     tool_effects: ToolEffects
 
-    def extras_owned_by(self, part: EvidencePartName) -> tuple[Tool, ...]:
-        return tuple(
-            tool for tool in self.extra_read_tools if getattr(tool, "evidence_part", None) == part
-        )
+    def extras_owned_by(self, part: EvidencePartName) -> tuple[EvidenceOwnedTool, ...]:
+        return tuple(tool for tool in self.extra_read_tools if tool.evidence_part == part)
 
     def shown_diff(self) -> str:
         """The state diff the judge is shown, ``""`` for none."""
         return (self.state_diff or "").strip()
 
 
-ToolRecord = Literal["read_tools", "kb_tools"]
-"""Which surface list a part's tools are recorded in: the final-state read tools a
-replay shims, or the knowledge-search tools (offered or withheld)."""
+class ToolRecord(str, Enum):
+    """Which surface list a part's tools are recorded in."""
+
+    READ_TOOLS = "read_tools"
+    """The final-state read tools a replay shims."""
+    KB_TOOLS = "kb_tools"
+    """The knowledge-search tools, offered or withheld."""
 
 
 class EvidencePart(Protocol):
     """One part of the judge's evidence.
 
     ``tools`` are the tools the part would offer for this trial; the composition
-    offers them while the part is on, and records a ``kb_tools`` part's as withheld
+    offers them while the part is on, and records a ``KB_TOOLS`` part's as withheld
     while it is off. ``replayed_tools`` are the recorded tool names an offline replay
-    shims for the part.
+    shims for the part; ``owns_extras`` whether an extra read tool may name it.
+
+    The composition orders the parts by their ranks, and a part whose rank is
+    ``None`` takes no place in that order: ``tool_rank`` among the offered tools,
+    ``section_rank`` among the sections (before the transcript where
+    ``opens_message``, after it otherwise), and ``closing_rank`` among the parts
+    asked for the closing instruction, where the first that gives one wins.
     """
 
     @property
@@ -453,6 +468,21 @@ class EvidencePart(Protocol):
     @property
     def replayed_tools(self) -> frozenset[str]: ...
 
+    @property
+    def owns_extras(self) -> bool: ...
+
+    @property
+    def opens_message(self) -> bool: ...
+
+    @property
+    def tool_rank(self) -> int | None: ...
+
+    @property
+    def section_rank(self) -> int | None: ...
+
+    @property
+    def closing_rank(self) -> int | None: ...
+
     def tools(self, trial: TrialEvidence) -> tuple[Tool, ...]: ...
 
     def section(self, trial: TrialEvidence) -> str: ...
@@ -466,21 +496,58 @@ _INSPECT_THE_FINAL_STATE = (
     f"Use your read-only tools to inspect the final state, then {_GRADE_AND_SUBMIT}"
 )
 
-_DB_READS = frozenset({"get_db_state", "query_db"})
+_DB_READS = frozenset({GET_DB_STATE_TOOL_NAME, QUERY_DB_TOOL_NAME})
 
 
 @dataclass(frozen=True)
-class AgentPolicyPart:
-    """The agent's policy / system prompt, shown unless it is blank."""
+class _Part:
+    """What every part shares: on or off, and the defaults of a part that adds nothing.
+
+    A part reads its own field of :class:`JudgeEvidence` (:meth:`of`), and is
+    composed once it is registered (:func:`_registered`).
+    """
 
     enabled: bool
-    name: ClassVar[EvidencePartName] = EvidencePartName.AGENT_POLICY
+    name: ClassVar[EvidencePartName]
     numbers_transcript: ClassVar[bool] = False
     recorded_as: ClassVar[ToolRecord | None] = None
     replayed_tools: ClassVar[frozenset[str]] = frozenset()
+    owns_extras: ClassVar[bool] = False
+    opens_message: ClassVar[bool] = False
+    tool_rank: ClassVar[int | None] = None
+    section_rank: ClassVar[int | None] = None
+    closing_rank: ClassVar[int | None] = None
+
+    @classmethod
+    def of(cls, evidence: JudgeEvidence) -> Self:
+        return cls(enabled=evidence.enabled(cls.name))
 
     def tools(self, trial: TrialEvidence) -> tuple[Tool, ...]:
-        return ()
+        return trial.extras_owned_by(self.name) if self.owns_extras else ()
+
+    def section(self, trial: TrialEvidence) -> str:
+        return ""
+
+    def closing(self, trial: TrialEvidence, offered: frozenset[str]) -> str | None:
+        return None
+
+
+_PART_TYPES: dict[EvidencePartName, type[_Part]] = {}
+
+
+def _registered[PartType: type[_Part]](part_type: PartType) -> PartType:
+    _PART_TYPES[part_type.name] = part_type
+    return part_type
+
+
+@_registered
+@dataclass(frozen=True)
+class AgentPolicyPart(_Part):
+    """The agent's policy / system prompt, shown unless it is blank."""
+
+    name: ClassVar[EvidencePartName] = EvidencePartName.AGENT_POLICY
+    opens_message: ClassVar[bool] = True
+    section_rank: ClassVar[int | None] = 0
 
     def section(self, trial: TrialEvidence) -> str:
         policy = trial.agent_system_prompt.strip()
@@ -491,20 +558,25 @@ class AgentPolicyPart:
             f"---\n{neutralise_judge_delimiters(policy)}\n---\n\n"
         )
 
-    def closing(self, trial: TrialEvidence, offered: frozenset[str]) -> str | None:
-        return None
 
-
+@_registered
 @dataclass(frozen=True)
-class KnowledgeSearchPart:
+class KnowledgeSearchPart(_Part):
     """The knowledge-search tools the agent had: ``search_kb`` and the extras this part owns."""
 
-    enabled: bool
     snippet_chars: int | None
     name: ClassVar[EvidencePartName] = EvidencePartName.KNOWLEDGE_SEARCH
-    numbers_transcript: ClassVar[bool] = False
-    recorded_as: ClassVar[ToolRecord | None] = "kb_tools"
-    replayed_tools: ClassVar[frozenset[str]] = frozenset()
+    recorded_as: ClassVar[ToolRecord | None] = ToolRecord.KB_TOOLS
+    owns_extras: ClassVar[bool] = True
+    tool_rank: ClassVar[int | None] = 2
+
+    @classmethod
+    def of(cls, evidence: JudgeEvidence) -> Self:
+        options = evidence.knowledge_search_options()
+        return cls(
+            enabled=options is not None,
+            snippet_chars=options.snippet_chars if options else None,
+        )
 
     def tools(self, trial: TrialEvidence) -> tuple[Tool, ...]:
         search: tuple[Tool, ...] = (
@@ -512,27 +584,17 @@ class KnowledgeSearchPart:
             if trial.kb_search is not None
             else ()
         )
-        return (*search, *trial.extras_owned_by(self.name))
-
-    def section(self, trial: TrialEvidence) -> str:
-        return ""
-
-    def closing(self, trial: TrialEvidence, offered: frozenset[str]) -> str | None:
-        return None
+        return (*search, *super().tools(trial))
 
 
+@_registered
 @dataclass(frozen=True)
-class StateDiffPart:
+class StateDiffPart(_Part):
     """The ``initial → final`` diff of the database state: the agent's own edits."""
 
-    enabled: bool
     name: ClassVar[EvidencePartName] = EvidencePartName.STATE_DIFF
-    numbers_transcript: ClassVar[bool] = False
-    recorded_as: ClassVar[ToolRecord | None] = None
-    replayed_tools: ClassVar[frozenset[str]] = frozenset()
-
-    def tools(self, trial: TrialEvidence) -> tuple[Tool, ...]:
-        return ()
+    section_rank: ClassVar[int | None] = 1
+    closing_rank: ClassVar[int | None] = 0
 
     def section(self, trial: TrialEvidence) -> str:
         diff = trial.shown_diff()
@@ -554,20 +616,22 @@ class StateDiffPart:
         return (
             "The diff shows changes, not the complete final state. For criteria "
             "about what must NOT change, invariants, absence, or the quality of a "
-            "full final value, inspect the relevant state directly with query_db "
-            f"(or get_db_state as a last resort). Then {_GRADE_AND_SUBMIT}"
+            f"full final value, inspect the relevant state directly with {QUERY_DB_TOOL_NAME} "
+            f"(or {GET_DB_STATE_TOOL_NAME} as a last resort). Then {_GRADE_AND_SUBMIT}"
         )
 
 
+@_registered
 @dataclass(frozen=True)
-class DbPart:
-    """``get_db_state`` / ``query_db`` over the final database state, and the extras it owns."""
+class DbPart(_Part):
+    """The final database state's reads, and the extras this part owns."""
 
-    enabled: bool
     name: ClassVar[EvidencePartName] = EvidencePartName.DB
-    numbers_transcript: ClassVar[bool] = False
-    recorded_as: ClassVar[ToolRecord | None] = "read_tools"
+    recorded_as: ClassVar[ToolRecord | None] = ToolRecord.READ_TOOLS
     replayed_tools: ClassVar[frozenset[str]] = _DB_READS
+    owns_extras: ClassVar[bool] = True
+    tool_rank: ClassVar[int | None] = 1
+    closing_rank: ClassVar[int | None] = 1
 
     def tools(self, trial: TrialEvidence) -> tuple[Tool, ...]:
         reads: tuple[Tool, ...] = (
@@ -575,78 +639,72 @@ class DbPart:
             if trial.db_reader is not None
             else ()
         )
-        return (*reads, *trial.extras_owned_by(self.name))
-
-    def section(self, trial: TrialEvidence) -> str:
-        return ""
+        return (*reads, *super().tools(trial))
 
     def closing(self, trial: TrialEvidence, offered: frozenset[str]) -> str | None:
         return _INSPECT_THE_FINAL_STATE
 
 
+@_registered
 @dataclass(frozen=True)
-class WorkspacePart:
-    """``read_file`` over the agent's workspace when one exists, and the extras it owns."""
+class WorkspacePart(_Part):
+    """The workspace file reader when a workspace exists, and the extras this part owns."""
 
-    enabled: bool
     name: ClassVar[EvidencePartName] = EvidencePartName.WORKSPACE
-    numbers_transcript: ClassVar[bool] = False
-    recorded_as: ClassVar[ToolRecord | None] = "read_tools"
-    replayed_tools: ClassVar[frozenset[str]] = frozenset({"read_file"})
+    recorded_as: ClassVar[ToolRecord | None] = ToolRecord.READ_TOOLS
+    replayed_tools: ClassVar[frozenset[str]] = frozenset({READ_FILE_TOOL_NAME})
+    owns_extras: ClassVar[bool] = True
+    tool_rank: ClassVar[int | None] = 3
+    closing_rank: ClassVar[int | None] = 2
 
     def tools(self, trial: TrialEvidence) -> tuple[Tool, ...]:
         workspace = trial.workspace_dir
         reader: tuple[Tool, ...] = (
             (ReadFileTool(workspace),) if workspace is not None and workspace.exists() else ()
         )
-        return (*trial.extras_owned_by(self.name), *reader)
-
-    def section(self, trial: TrialEvidence) -> str:
-        return ""
+        return (*super().tools(trial), *reader)
 
     def closing(self, trial: TrialEvidence, offered: frozenset[str]) -> str | None:
         return _INSPECT_THE_FINAL_STATE
 
 
+@_registered
 @dataclass(frozen=True)
-class ToolResultsPart:
+class ToolResultsPart(_Part):
     """Every tool result numbered and cut at ``max_chars``, with ``show_call`` for the rest."""
 
-    enabled: bool
     max_chars: int | None
     name: ClassVar[EvidencePartName] = EvidencePartName.TOOL_RESULTS
     numbers_transcript: ClassVar[bool] = True
-    recorded_as: ClassVar[ToolRecord | None] = None
-    replayed_tools: ClassVar[frozenset[str]] = frozenset()
+    tool_rank: ClassVar[int | None] = 0
+    closing_rank: ClassVar[int | None] = 3
+
+    @classmethod
+    def of(cls, evidence: JudgeEvidence) -> Self:
+        options = evidence.tool_results_options()
+        return cls(enabled=options is not None, max_chars=options.max_chars if options else None)
 
     def tools(self, trial: TrialEvidence) -> tuple[Tool, ...]:
         if trial.numbered is None or self.max_chars is None:
             return ()
         return (ShowCallTool(trial.numbered, tool_result_chars=self.max_chars),)
 
-    def section(self, trial: TrialEvidence) -> str:
-        return ""
-
     def closing(self, trial: TrialEvidence, offered: frozenset[str]) -> str | None:
         return (
             "You cannot inspect the final state. Grade each criterion from this record, "
-            "reading a cut result in full with show_call where a criterion depends on it, "
-            "then call submit_report."
+            f"reading a cut result in full with {SHOW_CALL_TOOL_NAME} where a criterion "
+            "depends on it, then call submit_report."
         )
 
 
+@_registered
 @dataclass(frozen=True)
-class StateChangingCallsPart:
+class StateChangingCallsPart(_Part):
     """The agent's calls that can change state, each with the first line of its result."""
 
-    enabled: bool
     name: ClassVar[EvidencePartName] = EvidencePartName.STATE_CHANGING_CALLS
     numbers_transcript: ClassVar[bool] = True
-    recorded_as: ClassVar[ToolRecord | None] = None
-    replayed_tools: ClassVar[frozenset[str]] = frozenset()
-
-    def tools(self, trial: TrialEvidence) -> tuple[Tool, ...]:
-        return ()
+    section_rank: ClassVar[int | None] = 0
 
     def section(self, trial: TrialEvidence) -> str:
         if trial.numbered is None:
@@ -666,9 +724,6 @@ class StateChangingCallsPart:
             "===== END STATE-CHANGING CALLS =====\n\n"
         )
 
-    def closing(self, trial: TrialEvidence, offered: frozenset[str]) -> str | None:
-        return None
-
 
 def _state_changing_call_line(call: RecordedCall) -> str:
     reference = f"[call {call.number}]" if call.number is not None else "[no result]"
@@ -677,63 +732,31 @@ def _state_changing_call_line(call: RecordedCall) -> str:
     )
 
 
+if _unregistered := sorted(part.value for part in set(EvidencePartName) - set(_PART_TYPES)):
+    raise TypeError(f"evidence parts with no registered EvidencePart: {_unregistered}")
+
+
 def evidence_parts(evidence: JudgeEvidence) -> tuple[EvidencePart, ...]:
-    """The seven parts ``evidence`` configures, on or off."""
-    knowledge_search = evidence.knowledge_search_options()
-    tool_results = evidence.tool_results_options()
-    return (
-        AgentPolicyPart(enabled=evidence.agent_policy),
-        KnowledgeSearchPart(
-            enabled=knowledge_search is not None,
-            snippet_chars=knowledge_search.snippet_chars if knowledge_search else None,
-        ),
-        StateDiffPart(enabled=evidence.state_diff),
-        DbPart(enabled=evidence.db),
-        WorkspacePart(enabled=evidence.workspace),
-        ToolResultsPart(
-            enabled=tool_results is not None,
-            max_chars=tool_results.max_chars if tool_results else None,
-        ),
-        StateChangingCallsPart(enabled=evidence.state_changing_calls),
-    )
+    """Every part ``evidence`` configures, on or off, in :class:`EvidencePartName` order."""
+    return tuple(_PART_TYPES[name].of(evidence) for name in EvidencePartName)
 
 
 #: The parts an extra read tool may name as its owner.
 EXTRA_TOOL_OWNERS: frozenset[EvidencePartName] = frozenset(
-    {EvidencePartName.KNOWLEDGE_SEARCH, EvidencePartName.DB, EvidencePartName.WORKSPACE}
+    name for name, part_type in _PART_TYPES.items() if part_type.owns_extras
 )
 
 #: The recorded tool names an offline replay shims, by the part that owns them.
 REPLAYED_TOOL_OWNERS: Mapping[str, EvidencePartName] = {
-    name: part.name for part in evidence_parts(JudgeEvidence()) for name in part.replayed_tools
+    tool_name: name
+    for name, part_type in _PART_TYPES.items()
+    for tool_name in part_type.replayed_tools
 }
 
 
 # ---------------------------------------------------------------------------
 # The composition
 # ---------------------------------------------------------------------------
-
-#: The order the parts' tools are offered in, after ``submit_report``.
-_TOOL_ORDER: tuple[EvidencePartName, ...] = (
-    EvidencePartName.TOOL_RESULTS,
-    EvidencePartName.DB,
-    EvidencePartName.KNOWLEDGE_SEARCH,
-    EvidencePartName.WORKSPACE,
-)
-
-#: The order the parts' sections follow the transcript in.
-_SECTION_ORDER: tuple[EvidencePartName, ...] = (
-    EvidencePartName.STATE_CHANGING_CALLS,
-    EvidencePartName.STATE_DIFF,
-)
-
-#: The order the parts are asked for the closing instruction; the first that gives one wins.
-_CLOSING_ORDER: tuple[EvidencePartName, ...] = (
-    EvidencePartName.STATE_DIFF,
-    EvidencePartName.DB,
-    EvidencePartName.WORKSPACE,
-    EvidencePartName.TOOL_RESULTS,
-)
 
 _CANNOT_INSPECT = (
     "You cannot inspect the final state. Grade each criterion from this record, "
@@ -765,7 +788,7 @@ def compose_evidence(
     state_diff: str | None,
     db_reader: DBReader | None,
     kb_search: KnowledgeSearch | None,
-    extra_read_tools: Sequence[Tool],
+    extra_read_tools: Sequence[EvidenceOwnedTool],
     workspace_dir: Path | None,
     tool_effects: ToolEffects,
 ) -> ComposedEvidence:
@@ -775,11 +798,11 @@ def compose_evidence(
         ValueError: an extra read tool names no part in :data:`EXTRA_TOOL_OWNERS`.
     """
     _refuse_unowned_extras(extra_read_tools)
-    parts = {part.name: part for part in evidence_parts(evidence)}
+    parts = evidence_parts(evidence)
     cut_chars = options.max_chars if (options := evidence.tool_results_options()) else None
     numbered = (
         number_tool_results(transcript, tool_result_chars=cut_chars)
-        if any(part.enabled and part.numbers_transcript for part in parts.values())
+        if any(part.enabled and part.numbers_transcript for part in parts)
         else None
     )
     trial = TrialEvidence(
@@ -793,19 +816,19 @@ def compose_evidence(
         workspace_dir=workspace_dir,
         tool_effects=tool_effects,
     )
-    tools, surface = _offered_tools([parts[name] for name in _TOOL_ORDER], trial)
+    offered = _OfferedTools.of(_ranked(parts, lambda part: part.tool_rank), trial)
     return ComposedEvidence(
         opening_message=_opening_message(
-            parts, trial, cut_chars, frozenset(tool.name for tool in tools)
+            parts, trial, cut_chars, frozenset(tool.name for tool in offered.tools)
         ),
-        tools=tools,
-        read_tools_offered=tuple(surface["read_tools"]),
-        kb_tools_offered=tuple(surface["kb_tools"]),
-        kb_tools_withheld=tuple(surface["kb_withheld"]),
+        tools=offered.tools,
+        read_tools_offered=offered.read_tools,
+        kb_tools_offered=offered.kb_tools,
+        kb_tools_withheld=offered.kb_tools_withheld,
     )
 
 
-def _refuse_unowned_extras(extra_read_tools: Sequence[Tool]) -> None:
+def _refuse_unowned_extras(extra_read_tools: Sequence[EvidenceOwnedTool]) -> None:
     for tool in extra_read_tools:
         owner = getattr(tool, "evidence_part", None)
         if owner not in EXTRA_TOOL_OWNERS:
@@ -816,43 +839,66 @@ def _refuse_unowned_extras(extra_read_tools: Sequence[Tool]) -> None:
             )
 
 
-def _offered_tools(
-    parts: Sequence[EvidencePart], trial: TrialEvidence
-) -> tuple[tuple[Tool, ...], dict[str, list[str]]]:
-    tools: list[Tool] = []
-    surface: dict[str, list[str]] = {"read_tools": [], "kb_tools": [], "kb_withheld": []}
-    for part in parts:
-        candidates = part.tools(trial)
-        names = [tool.name for tool in candidates]
-        if not part.enabled:
-            if part.recorded_as == "kb_tools":
-                surface["kb_withheld"] += names
-            continue
-        tools += candidates
-        if part.recorded_as is not None:
-            surface[part.recorded_as] += names
-    return tuple(tools), surface
+def _ranked(
+    parts: Sequence[EvidencePart], rank: Callable[[EvidencePart], int | None]
+) -> list[EvidencePart]:
+    """The parts *rank* places, in its order; a part it ranks ``None`` is left out."""
+    placed = [(position, part) for part in parts if (position := rank(part)) is not None]
+    return [part for _, part in sorted(placed, key=lambda placed_part: placed_part[0])]
+
+
+@dataclass(frozen=True)
+class _OfferedTools:
+    """The tools the parts that are on offer, and their names as each record lists them."""
+
+    tools: tuple[Tool, ...]
+    read_tools: tuple[str, ...]
+    kb_tools: tuple[str, ...]
+    kb_tools_withheld: tuple[str, ...]
+
+    @classmethod
+    def of(cls, parts: Sequence[EvidencePart], trial: TrialEvidence) -> _OfferedTools:
+        tools: list[Tool] = []
+        recorded: dict[ToolRecord, list[str]] = {record: [] for record in ToolRecord}
+        withheld: list[str] = []
+        for part in parts:
+            candidates = part.tools(trial)
+            names = [tool.name for tool in candidates]
+            if not part.enabled:
+                if part.recorded_as is ToolRecord.KB_TOOLS:
+                    withheld += names
+                continue
+            tools += candidates
+            if part.recorded_as is not None:
+                recorded[part.recorded_as] += names
+        return cls(
+            tools=tuple(tools),
+            read_tools=tuple(recorded[ToolRecord.READ_TOOLS]),
+            kb_tools=tuple(recorded[ToolRecord.KB_TOOLS]),
+            kb_tools_withheld=tuple(withheld),
+        )
 
 
 def _opening_message(
-    parts: Mapping[EvidencePartName, EvidencePart],
+    parts: Sequence[EvidencePart],
     trial: TrialEvidence,
     cut_chars: int | None,
     offered: frozenset[str],
 ) -> str:
-    policy = parts[EvidencePartName.AGENT_POLICY]
-    sections = "".join(parts[name].section(trial) for name in _SECTION_ORDER if parts[name].enabled)
+    sectioned = [part for part in _ranked(parts, lambda part: part.section_rank) if part.enabled]
+    opening = "".join(part.section(trial) for part in sectioned if part.opens_message)
+    sections = "".join(part.section(trial) for part in sectioned if not part.opens_message)
     closing = next(
         (
             clause
-            for name in _CLOSING_ORDER
-            if parts[name].enabled and (clause := parts[name].closing(trial, offered)) is not None
+            for part in _ranked(parts, lambda part: part.closing_rank)
+            if part.enabled and (clause := part.closing(trial, offered)) is not None
         ),
         _CANNOT_INSPECT,
     )
     shown = trial.numbered.messages if trial.numbered is not None else trial.transcript
     return (
-        f"{policy.section(trial) if policy.enabled else ''}"
+        f"{opening}"
         f"{_transcript_intro(trial.numbered, cut_chars)}\n"
         "===== TRANSCRIPT =====\n"
         f"{format_transcript(shown)}\n"

@@ -633,17 +633,45 @@ def test_batch_records_unreadable_grade_as_named_failure_and_continues(
     assert failed.reason is not None and reason_match in failed.reason
 
 
+def _corrupt_trajectory(trial_dir: Path) -> None:
+    _completed_bundle(trial_dir)
+    (trial_dir / "trajectory.yaml").write_text(yaml.dump({"task_id": "corrupt"}))
+
+
+def _uncompilable_read_rule(trial_dir: Path) -> None:
+    from tolokaforge.runner.models import JudgeCustomization
+
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(
+            read_tools_offered=["get_db_state", "query_db"],
+            customization=JudgeCustomization(evidence={"state_changing_calls": True}),
+        ),
+    )
+    _record_tool_schemas(
+        trial_dir,
+        schema_version=8,
+        get_order={"read_when": {"args": {"id": {"regex": r"(\w)\1"}}}},
+    )
+
+
+@pytest.mark.parametrize(
+    ("corrupt_bundle", "reason"),
+    [
+        (_corrupt_trajectory, "Trajectory"),
+        (_uncompilable_read_rule, "the linear regex engine cannot compile"),
+    ],
+    ids=["corrupt-trajectory", "uncompilable-read-rule"],
+)
 def test_batch_records_invalid_recorded_input_as_named_failure_and_continues(
-    tmp_path: Path,
+    tmp_path: Path, corrupt_bundle: Any, reason: str
 ) -> None:
-    """A recorded input that fails validation (here a corrupt ``trajectory.yaml``)
-    is a named per-trial FAILED — it must never abort the batch after other trials
-    have already spent judge tokens."""
+    """A recorded input that fails validation is a named per-trial FAILED — it must
+    never abort the batch after other trials have already spent judge tokens."""
     source = tmp_path / "run"
     _completed_bundle(source / "trials" / "good" / "0")
-    corrupt = source / "trials" / "corrupt" / "0"
-    _completed_bundle(corrupt)
-    (corrupt / "trajectory.yaml").write_text(yaml.dump({"task_id": "corrupt"}))
+    corrupt_bundle(source / "trials" / "corrupt" / "0")
 
     outcomes = run_replay_batch(source, replay_id="r1", dry_run=True)
 
@@ -651,7 +679,7 @@ def test_batch_records_invalid_recorded_input_as_named_failure_and_continues(
     assert by_name["good"].status is ReplayOutcomeStatus.WOULD_REPLAY
     failed = by_name["corrupt"]
     assert failed.status is ReplayOutcomeStatus.FAILED
-    assert failed.reason is not None and "Trajectory" in failed.reason
+    assert failed.reason is not None and reason in failed.reason
 
 
 def _checksums(root: Path) -> dict[str, str]:
@@ -1271,13 +1299,63 @@ def test_a_recorded_read_tool_no_part_owns_is_refused(tmp_path: Path) -> None:
         read_replay_inputs(trial_dir)
 
 
+_PRE_EVIDENCE_DUMP: dict[str, Any] = {
+    "disable_knowledge_search": None,
+    "system_prompt": None,
+    "include_agent_system_prompt": None,
+}
+"""``JudgeCustomization().model_dump()`` as the engine recorded it before ``evidence``."""
+
+
+@pytest.mark.parametrize("rubric", [False, True], ids=["recorded-rubric", "override-rubric"])
+@pytest.mark.parametrize(
+    ("recorded", "replayed"),
+    [
+        (_PRE_EVIDENCE_DUMP, {}),
+        (
+            {**_PRE_EVIDENCE_DUMP, "system_prompt": "Grade strictly."},
+            {"system_prompt": "Grade strictly."},
+        ),
+    ],
+    ids=["defaults", "system-prompt"],
+)
+def test_a_bundle_recorded_before_evidence_replays_its_unset_tri_states_as_absent(
+    tmp_path: Path, recorded: dict[str, Any], replayed: dict[str, Any], rubric: bool
+) -> None:
+    from tolokaforge.runner.models import JudgeCustomization
+
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(),
+        recorded_customization=recorded,
+    )
+
+    inputs = read_replay_inputs(trial_dir, grading_override=_override(rubric=rubric))
+
+    assert inputs.options.customization == JudgeCustomization.model_validate(replayed)
+    assert inputs.provenance.customization_sources == dict.fromkeys(
+        replayed, ProvenanceSource.RECORDED
+    )
+
+
 @pytest.mark.parametrize("rubric", [False, True], ids=["recorded-rubric", "override-rubric"])
 @pytest.mark.parametrize(
     ("renamed", "remedy"),
     [
-        ({"disable_knowledge_search": True}, "write evidence.knowledge_search: false"),
-        ({"include_agent_system_prompt": False}, "write evidence.agent_policy: false"),
-        ({"judge_snippet_chars": None}, "evidence.knowledge_search: {snippet_chars: null}"),
+        (
+            {**_PRE_EVIDENCE_DUMP, "disable_knowledge_search": True},
+            "write evidence.knowledge_search: false",
+        ),
+        (
+            {**_PRE_EVIDENCE_DUMP, "include_agent_system_prompt": False},
+            "write evidence.agent_policy: false",
+        ),
+        (
+            {**_PRE_EVIDENCE_DUMP, "judge_snippet_chars": None},
+            "evidence.knowledge_search: {snippet_chars: null}",
+        ),
     ],
     ids=["kb", "agent-policy", "snippet"],
 )

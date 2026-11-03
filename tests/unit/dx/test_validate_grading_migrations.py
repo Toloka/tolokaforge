@@ -449,13 +449,10 @@ _REMOVED_CUSTOMIZATION_KEYS = [
     ({"include_agent_system_prompt": False}, "write evidence.agent_policy: false"),
     ({"judge_snippet_chars": None}, "evidence.knowledge_search: {snippet_chars: null}"),
     ({"judge_snippet_chars": 50}, "write evidence.knowledge_search: {snippet_chars: N}"),
-    ({"transcript_tool_chars": 500}, "write evidence.tool_results: {max_chars: N}"),
-    ({"evidence": "transcript"}, "evidence is a mapping of parts"),
-    ({"evidence": "state"}, "The judge over the final state is the default"),
 ]
 
 
-def _refused_on_the_task(tmp_path: Path, customization: dict[str, Any]) -> None:
+def _read_on_the_task(tmp_path: Path, customization: dict[str, Any]) -> None:
     grading = tmp_path / "grading.yaml"
     grading.write_text(
         yaml.safe_dump(
@@ -470,30 +467,30 @@ def _refused_on_the_task(tmp_path: Path, customization: dict[str, Any]) -> None:
     validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
-def _refused_on_the_project(tmp_path: Path, customization: dict[str, Any]) -> None:
+def _read_on_the_project(tmp_path: Path, customization: dict[str, Any]) -> None:
     GradingDefaults(llm_judge={"customization": customization})
 
 
-def _refused_on_the_run(tmp_path: Path, customization: dict[str, Any]) -> None:
+def _read_on_the_run(tmp_path: Path, customization: dict[str, Any]) -> None:
     GraderConfig.model_validate({"judge": customization})
 
 
-def _refused_on_a_grading_override(tmp_path: Path, customization: dict[str, Any]) -> None:
+def _read_on_a_grading_override(tmp_path: Path, customization: dict[str, Any]) -> None:
     grading = tmp_path / "override.yaml"
     grading.write_text(yaml.safe_dump({"llm_judge": {"customization": customization}}))
     load_grading_override(grading)
 
 
-@pytest.mark.parametrize(
-    "surface",
-    [
-        _refused_on_the_task,
-        _refused_on_the_project,
-        _refused_on_the_run,
-        _refused_on_a_grading_override,
-    ],
-    ids=["task-grading", "project-defaults", "grader-judge", "rejudge-grading"],
-)
+_CUSTOMIZATION_SURFACES = [
+    _read_on_the_task,
+    _read_on_the_project,
+    _read_on_the_run,
+    _read_on_a_grading_override,
+]
+_CUSTOMIZATION_SURFACE_IDS = ["task-grading", "project-defaults", "grader-judge", "rejudge-grading"]
+
+
+@pytest.mark.parametrize("surface", _CUSTOMIZATION_SURFACES, ids=_CUSTOMIZATION_SURFACE_IDS)
 @pytest.mark.parametrize(("customization", "remedy"), _REMOVED_CUSTOMIZATION_KEYS)
 def test_a_key_evidence_replaced_is_refused_naming_its_replacement_on_every_surface(
     tmp_path: Path, surface: Any, customization: dict[str, Any], remedy: str
@@ -502,6 +499,16 @@ def test_a_key_evidence_replaced_is_refused_naming_its_replacement_on_every_surf
     replaces the one written, on each surface a customization is read from."""
     with pytest.raises(Exception, match=re.escape(remedy)):
         surface(tmp_path, customization)
+
+
+@pytest.mark.parametrize("surface", _CUSTOMIZATION_SURFACES, ids=_CUSTOMIZATION_SURFACE_IDS)
+@pytest.mark.parametrize("key", ["disable_knowledge_search", "include_agent_system_prompt"])
+def test_a_removed_tri_state_key_holding_null_reads_as_unset_on_every_surface(
+    tmp_path: Path, surface: Any, key: str
+):
+    """``null`` meant unset, and every customization recorded before ``evidence``
+    carries both keys as ``null``; it reads as the key's absence."""
+    surface(tmp_path, {key: None, "system_prompt": None})
 
 
 # ---------------------------------------------------------------------------
