@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from tolokaforge.core.tool_effects import ToolEffects
-from tolokaforge.runner.models import JudgeCustomization
+from tolokaforge.runner.models import EvidenceInput, JudgeCustomization
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import ToolSchema
@@ -34,15 +34,15 @@ __all__ = [
 class JudgeTrialOptions:
     """How a judge kind grades one trial, beyond the evidence it reads.
 
-    * ``customization`` — the trial's effective judge customization; its unset
-      tri-state fields are the defaults a task with no ``customization`` block is
-      graded with.
+    * ``customization`` — the trial's effective judge customization: its system
+      prompt and the parts of its ``evidence``.
     * ``tool_effects`` — the agent tools' ``mutates_state`` declarations, from
-      which a transcript judge tells the agent's state-changing calls from its
-      reads. Built only for a transcript judge; empty otherwise.
+      which the ``state_changing_calls`` part tells the agent's state-changing calls
+      from its reads. Built only while that part is on; empty otherwise.
 
-    A kind honours both as :meth:`~tolokaforge.core.grading.judge.LLMJudge.from_options`
-    does, and a kind wrapping another passes the object on unchanged.
+    A kind honours both by building
+    :class:`~tolokaforge.core.grading.judge.LLMJudge` from them, and a kind wrapping
+    another passes the object on unchanged.
     """
 
     customization: JudgeCustomization = field(default_factory=JudgeCustomization)
@@ -58,15 +58,15 @@ def resolve_judge_trial_options(
 
     ``None`` is a task with no ``customization`` block. ``agent_tools`` are the
     trial's agent tool schemas, whose ``mutates_state`` declarations become
-    ``tool_effects`` for a transcript judge. Required: a caller that forgot them
-    would have a transcript judge list every read as a state change.
+    ``tool_effects`` while ``evidence.needs(TOOL_EFFECTS)``. Required: a caller that
+    forgot them would have the judge list every read as a state change.
     """
     effective = customization if customization is not None else JudgeCustomization()
     return JudgeTrialOptions(
         customization=effective,
         tool_effects=(
             ToolEffects.from_schemas(agent_tools)
-            if effective.evidence == "transcript"
+            if effective.evidence.needs(EvidenceInput.TOOL_EFFECTS)
             else ToolEffects.empty()
         ),
     )

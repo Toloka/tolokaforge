@@ -734,8 +734,9 @@ task_defaults:
         llm_judge: 0.5
     llm_judge:                       # project-default judge customization (no rubric here)
       customization:
-        disable_knowledge_search: true  # withhold the judge's KB tools by default;
-                                        # a task may override with `false`
+        evidence:
+          knowledge_search: false       # withhold the judge's KB tools by default;
+                                        # a task may override with `true`
   timeouts:
     trial_seconds: 600
     tool_call_seconds: 60
@@ -853,19 +854,19 @@ The task's resolved manifest = resolve(`project.default_environment`,
 Touching `stack.inputs` alone deep-merges: the task stays on the
 project's compose file, with one substituted variable changed.
 
-The same deep-merge governs `grading_defaults.llm_judge.customization`. Its
-`disable_knowledge_search` is **tri-state**: unset (the faithful default — the
-judge keeps whatever KB tools the agent had), `true`, or `false`. A task's own
-`grading.yaml` under `llm_judge.customization` wins field-by-field, and because an
-unset task key never overrides a set project key, a task can flip a
-project-disabled judge back on with an explicit `false`:
+The same deep-merge governs `grading_defaults.llm_judge.customization`, part by part
+under its `evidence`. Each part is `false`, `true` or an options mapping; a task's own
+`grading.yaml` under `llm_judge.customization` wins part by part, and because a part
+the task leaves out never overrides a set project part, a task can turn a
+project-disabled knowledge search back on with an explicit `true`:
 
 ```yaml
 # tasks/self_contained_rubric/grading.yaml
 llm_judge:
   customization:
-    disable_knowledge_search: false   # this task's rubric needs the agent's KB;
-                                      # override a project default that disabled it
+    evidence:
+      knowledge_search: true   # this task's rubric needs the agent's KB;
+                               # override a project default that disabled it
   rubric:
     criteria:
       - id: cites_policy
@@ -874,7 +875,7 @@ llm_judge:
         weight: 1.0
 ```
 
-When neither layer sets the field, the config is byte-identical to a task with no
+When neither layer sets a part, the config is byte-identical to a task with no
 customization block at all. The block is judge-side only — it never changes the
 agent's tools (see [GRADING.md](GRADING.md#judge-kb-faithfulness)).
 
@@ -900,19 +901,19 @@ llm_judge:
         weight: 1.0
 ```
 
-`customization.include_agent_system_prompt` layers the same way. It is a `bool |
-None` that controls whether the harness embeds the agent's policy / system prompt
-in the judge's opening-message evidence. Unset and `true` both include it (today's
-behaviour); `false` omits it so a self-contained rubric grades without the agent's
-framing. A task **sets `include_agent_system_prompt: true` or `null` to re-include
-over a project `false`**, while **omitting the key inherits the project value** —
-the same present-null-resets / absent-inherits merge as every field:
+A part's options merge the same way, and a part written as a bool replaces a mapping
+below it. A task that omits `knowledge_search` inherits a project
+`{snippet_chars: 50}`; a task `{snippet_chars: null}` overrides it with whole
+documents; a task `knowledge_search: true` resets it to the default `200`. A project
+`{agent_policy: false, db: false}` under a task `{db: true}` grades without the
+agent's policy and with the DB tools:
 
 ```yaml
 # tasks/self_contained_rubric/grading.yaml
 llm_judge:
   customization:
-    include_agent_system_prompt: false   # grade this rubric without the agent's policy
+    evidence:
+      agent_policy: false   # grade this rubric without the agent's policy
   rubric:
     criteria:
       - id: cites_policy
@@ -921,24 +922,10 @@ llm_judge:
         weight: 1.0
 ```
 
-This gates *evidence*, not the judge's wording — distinct from `system_prompt`. It
-is judge-side only (see
-[GRADING.md](GRADING.md#gating-the-agents-policy-out-of-the-judges-evidence)).
-
-`customization.judge_snippet_chars` layers by the same merge but is **not**
-tri-state: it is a positive integer or `null`, default `200`, and `null` means
-whole documents in the judge's `search_kb`. A task that omits the key inherits the
-project figure; a task `null` overrides it with whole documents; a task undoes a
-project figure by writing `200`. See
-[GRADING.md](GRADING.md#llm-judge-rubric-grading).
-
-`customization.evidence` and `transcript_tool_chars` layer by the same merge.
-`transcript_tool_chars` is read by the transcript judge alone and is inert under
-`evidence: state`. Which of the agent's calls such a judge lists as state-changing is
-the tools' own `mutates_state` declaration, not judge customization; a project
-declares one for every task through a `task_defaults.tools.<actor>.<name>` block,
-which reaches only the tasks that enable the tool. See
-[GRADING.md](GRADING.md#transcript-only-judge).
+Which of the agent's calls the `state_changing_calls` part lists is the tools' own
+`mutates_state` declaration, not judge customization; a project declares one for
+every task through a `task_defaults.tools.<actor>.<name>` block, which reaches only
+the tasks that enable the tool. See [GRADING.md](GRADING.md#judge-evidence).
 
 The project and task layers are the first two of the customization's layers. The
 run-level `grader.judge` block of the `judge_only` grader lays a third over them

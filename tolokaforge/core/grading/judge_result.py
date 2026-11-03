@@ -89,8 +89,8 @@ class JudgeResult:
     # statically know a rubric needs KB — just an observability fact.
     kb_tools_offered: tuple[str, ...] = ()
     # KB-tagged tools the agent had this trial that the judge was constructed to
-    # withhold (``disable_knowledge_search``). Empty when nothing was gated — either
-    # the flag was off or the agent had no KB.
+    # withhold (``customization.evidence.knowledge_search: false``). Empty when
+    # nothing was gated — either the part was on or the agent had no KB.
     kb_tools_withheld: tuple[str, ...] = ()
     # Non-KB read-only tools the judge was offered this trial: ``get_db_state`` /
     # ``query_db`` (a DB reader was supplied), ``read_file`` (a workspace existed).

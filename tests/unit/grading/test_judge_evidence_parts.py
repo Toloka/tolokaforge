@@ -1,16 +1,19 @@
-"""The transcript-only judge (``grading.llm_judge.customization.evidence: transcript``).
+"""The parts of the judge's evidence (``grading.llm_judge.customization.evidence``).
 
-Locks what a transcript judge reads and what it never reads:
+Locks what each part shows the judge, and what a judge without the final-state parts
+never reads:
 
-* every tool result is numbered ``[call N]`` and cut at ``transcript_tool_chars``,
+* ``tool_results`` numbers every tool result ``[call N]`` and cuts it at ``max_chars``,
   and ``show_call`` returns the cut text in full from the same transcript;
-* the agent's state-changing calls are every call the agent tools'
-  ``mutates_state`` declarations (:class:`~tolokaforge.core.tool_effects.ToolEffects`)
-  do not read as a read, each with the first line of the result the agent received,
-  the same whichever path built the transcript;
-* the judge is offered no DB, workspace or state diff, and a caller handing one is
-  refused;
-* a transcript judge is recorded as one across both grade wires.
+* ``state_changing_calls`` lists every call the agent tools' ``mutates_state``
+  declarations (:class:`~tolokaforge.core.tool_effects.ToolEffects`) do not read as a
+  read, each with the first line of the result the agent received, the same whichever
+  path built the transcript; on without ``tool_results`` the results are numbered and
+  not cut;
+* with ``state_diff``, ``db`` and ``workspace`` off the judge is offered no view of the
+  final state, the composite hands it none, and a caller handing one is refused;
+* the parts default to the judge over the final state, layer one at a time, and stay
+  off the dump at their default.
 """
 
 from __future__ import annotations
@@ -27,24 +30,18 @@ import yaml
 from tests.unit.grading.test_judge import MessageCapturingClient, ScriptedClient
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.conductor import _with_mutates_state
-from tolokaforge.core.grading.composite import (
-    build_judge_state_diff,
-    grade_llm_judge,
-    judge_reads_final_state,
-)
+from tolokaforge.core.grading.composite import build_judge_state_diff, grade_llm_judge
 from tolokaforge.core.grading.judge import LLMJudge
+from tolokaforge.core.grading.judge_evidence import (
+    SHOW_CALL_MAX_CHARS,
+    ShowCallTool,
+    call_result_head,
+    number_tool_results,
+    state_changing_calls,
+)
 from tolokaforge.core.grading.judge_kinds import resolve_judge_trial_options
 from tolokaforge.core.grading.judge_kinds.single_shot import SingleShotRubricJudgeKind
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
-from tolokaforge.core.grading.judge_transcript import (
-    SHOW_CALL_MAX_CHARS,
-    ShowCallTool,
-    TranscriptEvidence,
-    call_result_head,
-    number_tool_results,
-    resolve_transcript_evidence,
-    state_changing_calls,
-)
 from tolokaforge.core.grading.transcript_wire import (
     encode_transcript_wire,
 )
@@ -60,7 +57,9 @@ from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.output_writer import TOOLS_SCHEMAS_FILENAME, TRIAL_BUNDLE_SCHEMA_VERSION
 from tolokaforge.core.tool_effects import ToolEffects
 from tolokaforge.runner.models import (
+    EvidenceInput,
     JudgeCustomization,
+    JudgeEvidence,
     LLMJudgeConfig,
     MutatesStateRule,
     RecordedToolCall,
@@ -77,6 +76,16 @@ _JUDGE_MODEL = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.
 _LONG_ANSWER = "t" * 3000
 
 _FORBIDDEN = "Error: Status: 403\nResponse (JSON):\n{'detail': 'agents may not comment'}"
+
+_TRANSCRIPT_ONLY = JudgeCustomization(
+    evidence={
+        "state_diff": False,
+        "db": False,
+        "workspace": False,
+        "tool_results": True,
+        "state_changing_calls": True,
+    }
+)
 
 _GET_RULE = MutatesStateRule.model_validate(
     {"read_when": {"args": {"request.method": {"in_": ["GET"]}}}}
@@ -295,7 +304,7 @@ def test_a_call_shows_the_first_line_of_its_result_and_long_arguments_are_cut(
 
     LLMJudge(
         _JUDGE_MODEL,
-        transcript_evidence=TranscriptEvidence(),
+        customization=_TRANSCRIPT_ONLY,
         tool_effects=_TOOL_EFFECTS,
         llm_client=client,
     ).run(rubric=_rubric(), agent_system_prompt="", transcript=transcript)
@@ -373,9 +382,8 @@ def test_the_state_changing_calls_leave_out_http_requests_safe_methods(
     tmp_path: Path, path: str, block: dict[str, Any], listed: list[int]
 ) -> None:
     agent_tools = _http_request_tools(tmp_path, block)
-    customization = JudgeCustomization(evidence="transcript")
     tool_effects = (
-        resolve_judge_trial_options(customization, agent_tools=agent_tools).tool_effects
+        resolve_judge_trial_options(_TRANSCRIPT_ONLY, agent_tools=agent_tools).tool_effects
         if path == "live"
         else _recorded_tool_effects(tmp_path / "trial", agent_tools)
     )
@@ -383,7 +391,7 @@ def test_the_state_changing_calls_leave_out_http_requests_safe_methods(
 
     LLMJudge(
         _JUDGE_MODEL,
-        transcript_evidence=TranscriptEvidence(),
+        customization=_TRANSCRIPT_ONLY,
         tool_effects=tool_effects,
         llm_client=client,
     ).run(rubric=_rubric(), agent_system_prompt="", transcript=_http_transcript())
@@ -458,7 +466,7 @@ def test_show_call_refuses_a_malformed_request(arguments: dict[str, Any], error:
 
 
 # ---------------------------------------------------------------------------
-# LLMJudge in transcript mode
+# LLMJudge without the final-state parts
 # ---------------------------------------------------------------------------
 
 
@@ -467,7 +475,7 @@ def test_the_transcript_judge_reads_the_numbered_record_and_no_state() -> None:
 
     result = LLMJudge(
         _JUDGE_MODEL,
-        transcript_evidence=TranscriptEvidence(),
+        customization=_TRANSCRIPT_ONLY,
         tool_effects=_TOOL_EFFECTS,
         llm_client=client,
     ).run(rubric=_rubric(), agent_system_prompt="Be helpful.", transcript=_transcript())
@@ -496,7 +504,7 @@ def test_a_record_without_state_changing_calls_says_so() -> None:
 
     LLMJudge(
         _JUDGE_MODEL,
-        transcript_evidence=TranscriptEvidence(),
+        customization=_TRANSCRIPT_ONLY,
         tool_effects=tool_effects,
         llm_client=client,
     ).run(rubric=_rubric(), agent_system_prompt="", transcript=_transcript())
@@ -521,7 +529,7 @@ def test_a_payload_cannot_close_the_state_changing_calls_block() -> None:
 
     LLMJudge(
         _JUDGE_MODEL,
-        transcript_evidence=TranscriptEvidence(),
+        customization=_TRANSCRIPT_ONLY,
         tool_effects=_TOOL_EFFECTS,
         llm_client=client,
     ).run(rubric=_rubric(), agent_system_prompt="", transcript=transcript)
@@ -537,15 +545,15 @@ def test_a_payload_cannot_close_the_state_changing_calls_block() -> None:
         {"state_diff": "orders: 1 changed"},
     ],
 )
-def test_the_transcript_judge_refuses_a_view_of_the_state(state: dict[str, Any]) -> None:
+def test_a_view_of_the_state_no_enabled_part_reads_is_refused(state: dict[str, Any]) -> None:
     judge = LLMJudge(
         _JUDGE_MODEL,
-        transcript_evidence=TranscriptEvidence(),
+        customization=_TRANSCRIPT_ONLY,
         tool_effects=_TOOL_EFFECTS,
         llm_client=ScriptedClient([]),
     )
 
-    with pytest.raises(ValueError, match="grades without the final state"):
+    with pytest.raises(ValueError, match="with the evidence part that reads each off"):
         judge.run(rubric=_rubric(), agent_system_prompt="", transcript=_transcript(), **state)
 
 
@@ -554,31 +562,103 @@ def test_the_transcript_judge_refuses_a_view_of_the_state(state: dict[str, Any])
 # ---------------------------------------------------------------------------
 
 
-def test_the_transcript_fields_are_inert_under_a_state_judge() -> None:
-    customization = JudgeCustomization(transcript_tool_chars=500)
+def test_state_changing_calls_without_tool_results_numbers_the_results_uncut() -> None:
+    client = MessageCapturingClient([_submit_report()])
+    customization = JudgeCustomization(
+        evidence={
+            "state_diff": False,
+            "db": False,
+            "workspace": False,
+            "state_changing_calls": True,
+        }
+    )
 
-    assert customization.evidence == "state"
-    assert resolve_transcript_evidence(customization) is None
+    LLMJudge(
+        _JUDGE_MODEL, customization=customization, tool_effects=_TOOL_EFFECTS, llm_client=client
+    ).run(rubric=_rubric(), agent_system_prompt="", transcript=_transcript())
+
+    opening = str(client.snapshots[0][0].content)
+    assert client.seen_tool_names == ["submit_report"]
+    assert f"[call 1] {_LONG_ANSWER}" in opening
+    assert "Each tool result starts with its number, [call N].\n" in opening
+    assert "show_call" not in opening
+    assert _state_changing_lines(opening)[0].startswith("[call 3] rest_call(")
+    assert opening.endswith(
+        "You cannot inspect the final state. Grade each criterion from this record, "
+        "then call submit_report."
+    )
 
 
-def test_the_transcript_fields_stay_off_the_dump_at_their_default() -> None:
-    assert JudgeCustomization().model_dump() == {
-        "disable_knowledge_search": None,
-        "system_prompt": None,
-        "include_agent_system_prompt": None,
+def test_tool_results_cuts_at_its_max_chars() -> None:
+    client = MessageCapturingClient([_submit_report()])
+    customization = JudgeCustomization(evidence={"tool_results": {"max_chars": 10}})
+
+    LLMJudge(_JUDGE_MODEL, customization=customization, llm_client=client).run(
+        rubric=_rubric(), agent_system_prompt="", transcript=_transcript()
+    )
+
+    opening = str(client.snapshots[0][0].content)
+    assert "[call 1] tttttttttt\n[... 2990 more characters; show_call returns them]" in opening
+    assert client.seen_tool_names == ["submit_report", "show_call"]
+    assert opening.endswith(
+        "Use your read-only tools to inspect the final state, then grade each criterion "
+        "and call submit_report."
+    )
+
+
+def test_every_part_defaults_to_the_judge_over_the_final_state() -> None:
+    evidence = JudgeEvidence()
+
+    assert evidence.agent_policy and evidence.state_diff and evidence.db and evidence.workspace
+    assert (
+        evidence.knowledge_search_options()
+        == JudgeEvidence(knowledge_search={"snippet_chars": 200}).knowledge_search_options()
+    )
+    assert evidence.tool_results_options() is None
+    assert evidence.state_changing_calls is False
+    assert JudgeEvidence(tool_results=True).tool_results_options().max_chars == 2000  # type: ignore[union-attr]
+
+
+def test_parts_at_their_default_stay_off_the_dump() -> None:
+    assert JudgeCustomization().model_dump() == {"system_prompt": None}
+    assert JudgeCustomization(evidence={"db": True, "tool_results": False}).model_dump() == {
+        "system_prompt": None
     }
-    dumped = JudgeCustomization(evidence="transcript", transcript_tool_chars=500).model_dump()
-    assert dumped["evidence"] == "transcript"
-    assert dumped["transcript_tool_chars"] == 500
+    assert _TRANSCRIPT_ONLY.model_dump(mode="json")["evidence"] == {
+        "state_diff": False,
+        "db": False,
+        "workspace": False,
+        "tool_results": True,
+        "state_changing_calls": True,
+    }
 
 
-def test_only_a_transcript_judges_options_read_the_tool_declarations() -> None:
-    customization = JudgeCustomization(evidence="transcript")
+@pytest.mark.parametrize(
+    ("evidence_input", "part"),
+    [
+        (EvidenceInput.STATE_DIFF, "state_diff"),
+        (EvidenceInput.DB, "db"),
+        (EvidenceInput.WORKSPACE, "workspace"),
+        (EvidenceInput.TOOL_EFFECTS, "state_changing_calls"),
+    ],
+)
+def test_needs_reads_the_one_part_each_input_is_built_for(
+    evidence_input: EvidenceInput, part: str
+) -> None:
+    defaults = JudgeEvidence()
+
+    flipped = JudgeEvidence(**{part: not getattr(defaults, part)})
+
+    assert flipped.needs(evidence_input) is not defaults.needs(evidence_input)
+    for other in set(EvidenceInput) - {evidence_input}:
+        assert flipped.needs(other) is defaults.needs(other)
+
+
+def test_only_a_judge_listing_state_changing_calls_reads_the_tool_declarations() -> None:
     tools = [_tool("lookup_policy", False), _tool("rest_call", None), _tool("close", True)]
 
-    options = resolve_judge_trial_options(customization, agent_tools=tools)
+    options = resolve_judge_trial_options(_TRANSCRIPT_ONLY, agent_tools=tools)
 
-    assert resolve_transcript_evidence(options.customization) == TranscriptEvidence()
     assert options.tool_effects.can_change_state("lookup_policy", "{}") is False
     state_options = resolve_judge_trial_options(JudgeCustomization(), agent_tools=tools)
     assert state_options.tool_effects == ToolEffects.empty()
@@ -623,23 +703,18 @@ def _grade(config: LLMJudgeConfig, *, state_diff: str | None = None) -> _ProbeJu
 
 
 def test_the_composite_hands_a_transcript_judge_no_state() -> None:
-    config = LLMJudgeConfig(
-        rubric=_rubric(), customization=JudgeCustomization(evidence="transcript")
-    )
+    config = LLMJudgeConfig(rubric=_rubric(), customization=_TRANSCRIPT_ONLY)
 
     seen = _grade(config).seen
 
-    assert not judge_reads_final_state(config)
     assert seen["db_reader"] is None and seen["workspace_dir"] is None
     assert seen["options"].tool_effects.can_change_state("lookup_policy", "{}") is False
-    with pytest.raises(ValueError, match="build_judge_state_diff builds none for it"):
-        _grade(config, state_diff="orders: 1 changed")
 
 
-def test_no_state_diff_is_built_for_a_transcript_judge() -> None:
+def test_no_state_diff_is_built_while_the_part_is_off() -> None:
     substrate = MagicMock()
     config = LLMJudgeConfig(
-        rubric=_rubric(), customization=JudgeCustomization(evidence="transcript")
+        rubric=_rubric(), customization=JudgeCustomization(evidence={"state_diff": False})
     )
 
     diff = build_judge_state_diff(
@@ -662,9 +737,8 @@ def test_the_composite_hands_a_state_judge_its_state() -> None:
 
     seen = _grade(config, state_diff="orders: 1 changed").seen
 
-    assert judge_reads_final_state(config)
     assert seen["db_reader"] is not None and seen["state_diff"] == "orders: 1 changed"
-    assert seen["options"].customization.evidence == "state"
+    assert seen["options"].customization.evidence == JudgeEvidence()
 
 
 # ---------------------------------------------------------------------------
@@ -730,9 +804,7 @@ def _opening_through_the_composite(trajectory: Trajectory) -> str:
     provider = _CapturingProvider()
     grade_llm_judge(
         trial_id="t:0",
-        config=LLMJudgeConfig(
-            rubric=_rubric(), customization=JudgeCustomization(evidence="transcript")
-        ),
+        config=LLMJudgeConfig(rubric=_rubric(), customization=_TRANSCRIPT_ONLY),
         substrate=MagicMock(),
         judge_kind=SingleShotRubricJudgeKind(),
         judge_model_provider=provider,

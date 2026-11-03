@@ -55,6 +55,7 @@ from pydantic import (
     Field,
     PrivateAttr,
     SerializerFunctionWrapHandler,
+    StrictBool,
     ValidationInfo,
     field_validator,
     model_serializer,
@@ -71,8 +72,6 @@ from tolokaforge.core.grading.combine_method import CombineMethod, validate_comb
 from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, ComparisonViewRecord
 from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
-from tolokaforge.core.grading.judge_transcript import DEFAULT_TRANSCRIPT_TOOL_CHARS
-from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
 from tolokaforge.core.grading.regex_engine import RegexEngineKind
 from tolokaforge.core.grading.state_composition import (
@@ -2400,15 +2399,201 @@ class CriterionResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class JudgeCustomization(BaseModel):
-    """Judge tool-surface customization, sibling of ``rubric`` under ``llm_judge``.
+class EvidenceInput(str, Enum):
+    """A view of the trial a caller builds for the judge only when a part needs it."""
 
-    Tri-state ``disable_knowledge_search``: ``None`` (unset) means the faithful
-    default (the judge is offered whatever knowledge-search tools the agent had);
-    ``True`` withholds every knowledge-search tool from the judge's surface;
-    ``False`` explicitly keeps them (so a task can override a project default that
-    disabled them). Layered project → task → run (``grader.judge``) → replay
-    (``--grading``) by :func:`~tolokaforge.core.project_loader.layer_judge_customization`.
+    STATE_DIFF = "state_diff"
+    DB = "db"
+    WORKSPACE = "workspace"
+    TOOL_EFFECTS = "tool_effects"
+
+
+class EvidencePartName(str, Enum):
+    """The parts of the judge's evidence, named as :class:`JudgeEvidence` fields."""
+
+    AGENT_POLICY = "agent_policy"
+    KNOWLEDGE_SEARCH = "knowledge_search"
+    STATE_DIFF = "state_diff"
+    DB = "db"
+    WORKSPACE = "workspace"
+    TOOL_RESULTS = "tool_results"
+    STATE_CHANGING_CALLS = "state_changing_calls"
+
+
+class KnowledgeSearchOptions(BaseModel):
+    """``evidence.knowledge_search`` options.
+
+    ``snippet_chars`` is how much of each hit the judge's ``search_kb`` shows: the
+    first that many characters, or ``null`` for whole documents.
+    """
+
+    snippet_chars: int | None = Field(default=200, ge=1, strict=True)
+
+    model_config = {"extra": "forbid"}
+
+
+class ToolResultsOptions(BaseModel):
+    """``evidence.tool_results`` options.
+
+    ``max_chars`` is how much of each tool result the transcript shows; ``show_call``
+    returns the rest.
+    """
+
+    max_chars: int = Field(default=2000, ge=1, strict=True)
+
+    model_config = {"extra": "forbid"}
+
+
+class JudgeEvidence(BaseModel):
+    """What the rubric judge is shown, as named parts (``customization.evidence``).
+
+    Every part reads ``false`` (off), ``true`` (on, default options) or a mapping (on,
+    with those options). The defaults are the judge over the final state:
+
+    * ``agent_policy`` — the agent's policy / system prompt in the opening message.
+    * ``knowledge_search`` — the knowledge-search tools the agent had (``search_kb``,
+      a ``search_policy`` passthrough); options :class:`KnowledgeSearchOptions`.
+    * ``state_diff`` — the ``initial → final`` diff of the database state.
+    * ``db`` — ``get_db_state`` / ``query_db`` over the final database state.
+    * ``workspace`` — ``read_file`` over the agent's workspace.
+    * ``tool_results`` — every tool result numbered ``[call N]`` and cut, with
+      ``show_call`` returning it in full; options :class:`ToolResultsOptions`. Off by
+      default.
+    * ``state_changing_calls`` — a block listing the agent's calls that can change
+      state, by the tools' ``mutates_state`` declarations
+      (:attr:`ToolSchema.mutates_state`, ADR-0061). Off by default; on without
+      ``tool_results``, the results are numbered and not cut.
+
+    Parts at their default are left off the dump, so a customization that sets none
+    serialises without ``evidence``. :meth:`needs` is the one mapping from parts to
+    the trial views a caller builds for them.
+    """
+
+    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset(
+        {
+            "agent_policy",
+            "knowledge_search",
+            "state_diff",
+            "db",
+            "workspace",
+            "tool_results",
+            "state_changing_calls",
+        }
+    )
+    """Fields the dump leaves out while they hold their default value: every part."""
+
+    agent_policy: StrictBool = True
+    knowledge_search: StrictBool | KnowledgeSearchOptions = True
+    state_diff: StrictBool = True
+    db: StrictBool = True
+    workspace: StrictBool = True
+    tool_results: StrictBool | ToolResultsOptions = False
+    state_changing_calls: StrictBool = False
+
+    model_config = {"extra": "forbid"}
+
+    _PART_NEEDING: ClassVar[dict[EvidenceInput, EvidencePartName]] = {
+        EvidenceInput.STATE_DIFF: EvidencePartName.STATE_DIFF,
+        EvidenceInput.DB: EvidencePartName.DB,
+        EvidenceInput.WORKSPACE: EvidencePartName.WORKSPACE,
+        EvidenceInput.TOOL_EFFECTS: EvidencePartName.STATE_CHANGING_CALLS,
+    }
+
+    @classmethod
+    def part_needing(cls, evidence_input: EvidenceInput) -> EvidencePartName:
+        """The part a caller builds ``evidence_input`` for."""
+        return cls._PART_NEEDING[evidence_input]
+
+    def needs(self, evidence_input: EvidenceInput) -> bool:
+        """Whether the judge is to be handed ``evidence_input``."""
+        return self.enabled(self.part_needing(evidence_input))
+
+    def enabled(self, part: EvidencePartName) -> bool:
+        """Whether ``part`` is on."""
+        return getattr(self, part.value) is not False
+
+    def reads_final_state(self) -> bool:
+        """Whether any part shows the judge the final state."""
+        return any(
+            self.needs(evidence_input)
+            for evidence_input in (
+                EvidenceInput.STATE_DIFF,
+                EvidenceInput.DB,
+                EvidenceInput.WORKSPACE,
+            )
+        )
+
+    def knowledge_search_options(self) -> KnowledgeSearchOptions | None:
+        """The ``knowledge_search`` options, ``None`` while the part is off."""
+        return _part_options(self.knowledge_search, KnowledgeSearchOptions)
+
+    def tool_results_options(self) -> ToolResultsOptions | None:
+        """The ``tool_results`` options, ``None`` while the part is off."""
+        return _part_options(self.tool_results, ToolResultsOptions)
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_parts_at_their_default(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        if not isinstance(self, JudgeEvidence):
+            return handler(self)
+        data = handler(self)
+        for name in self.OMITTED_AT_DEFAULT:
+            if getattr(self, name) == type(self).model_fields[name].get_default():
+                data.pop(name, None)
+        return data
+
+
+def _part_options[Options: BaseModel](
+    value: bool | Options, options_type: type[Options]
+) -> Options | None:
+    if value is False:
+        return None
+    return options_type() if value is True else value
+
+
+_TRANSCRIPT_ONLY_EVIDENCE = (
+    "{state_diff: false, db: false, workspace: false, tool_results: true, "
+    "state_changing_calls: true}"
+)
+
+_REMOVED_CUSTOMIZATION_KEYS: dict[str, str] = {
+    "disable_knowledge_search": (
+        "write evidence.knowledge_search: false to withhold the knowledge-search tools "
+        "(disable_knowledge_search: true), or evidence.knowledge_search: true to keep "
+        "them (disable_knowledge_search: false)"
+    ),
+    "include_agent_system_prompt": (
+        "write evidence.agent_policy: false to leave the agent's policy out of the "
+        "judge's evidence, or evidence.agent_policy: true to keep it"
+    ),
+    "judge_snippet_chars": (
+        "write evidence.knowledge_search: {snippet_chars: N}, or "
+        "evidence.knowledge_search: {snippet_chars: null} for whole documents"
+    ),
+    "transcript_tool_chars": "write evidence.tool_results: {max_chars: N}",
+}
+
+
+def _refuse_removed_customization_keys(data: Any) -> Any:
+    """Refuse a customization key that ``evidence`` replaced, naming its replacement."""
+    if not isinstance(data, Mapping):
+        return data
+    for key, remedy in _REMOVED_CUSTOMIZATION_KEYS.items():
+        if key in data:
+            raise ValueError(f"customization.{key} is removed; {remedy}")
+    if isinstance(data.get("evidence"), str):
+        raise ValueError(
+            f"customization.evidence: {data['evidence']} is removed; evidence is a mapping "
+            "of parts. The judge over the final state is the default (omit evidence); a "
+            f"judge from the transcript alone is evidence: {_TRANSCRIPT_ONLY_EVIDENCE}"
+        )
+    return data
+
+
+class JudgeCustomization(BaseModel):
+    """Judge customization, sibling of ``rubric`` under ``llm_judge``.
 
     ``system_prompt`` replaces the default judge system-prompt body; the harness
     always appends the marker contract, so a custom prompt can never break
@@ -2417,32 +2602,11 @@ class JudgeCustomization(BaseModel):
     empty or whitespace-only string is rejected at load — a marker-only prompt is
     almost certainly a mistake.
 
-    Tri-state ``include_agent_system_prompt``: ``None`` (unset) and ``True`` both
-    embed the agent's policy / system prompt in the judge's opening-message
-    evidence (today's behaviour); ``False`` omits that section so a self-contained
-    rubric grades without the agent's framing. Evidence gating, distinct from
-    ``system_prompt`` (which is the judge's own wording). A task sets ``true`` or
-    ``null`` to re-include over a project ``false``.
-
-    ``judge_snippet_chars`` is how much of each hit the judge's ``search_kb`` shows:
-    the first that many characters (``200`` by default), or ``null`` for whole
-    documents — what a ``bm25`` task whose rubric reads a document's exact wording
-    needs. Not tri-state: ``null`` is a value, so a task resets a project's figure
-    by writing ``200``. Left off the dump at its default
-    (:attr:`OMITTED_AT_DEFAULT`), so a task that declares nothing serialises
-    without it and an older image, which forbids a key it does not declare,
-    accepts it.
-
-    ``evidence`` is what the judge grades from. ``state`` (the default) grades
-    from the ``initial → final`` state diff and the read-only DB and workspace
-    tools. ``transcript`` withholds every view of the final state: the judge reads
-    the transcript with each tool result numbered ``[call N]`` and cut at
-    ``transcript_tool_chars`` characters, the agent's calls that can change state
-    with how each ended, and ``show_call``, which returns a cut result in full. A
-    call can change state unless its tool's ``mutates_state`` declaration
-    (:attr:`ToolSchema.mutates_state`, ADR-0061) says it reads. ``transcript_tool_chars``
-    is read by the ``transcript`` judge alone and is inert under ``state``. Both are
-    left off the dump at their default.
+    ``evidence`` is what the judge is shown (:class:`JudgeEvidence`), left off the
+    dump while every part holds its default. Layered project → task → run
+    (``grader.judge``) → replay (``--grading``) by
+    :func:`~tolokaforge.core.project_loader.layer_judge_customization`, part by part.
+    A key ``evidence`` replaced is refused naming its replacement.
 
     :func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns
     a customization into the
@@ -2450,19 +2614,18 @@ class JudgeCustomization(BaseModel):
     receives.
     """
 
-    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset(
-        {"judge_snippet_chars", "evidence", "transcript_tool_chars"}
-    )
+    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset({"evidence"})
     """Fields the dump leaves out while they hold their default value."""
 
-    disable_knowledge_search: bool | None = None
     system_prompt: str | None = None
-    include_agent_system_prompt: bool | None = None
-    judge_snippet_chars: int | None = Field(default=DEFAULT_JUDGE_SNIPPET_CHARS, ge=1, strict=True)
-    evidence: Literal["state", "transcript"] = "state"
-    transcript_tool_chars: int = Field(default=DEFAULT_TRANSCRIPT_TOOL_CHARS, ge=1, strict=True)
+    evidence: JudgeEvidence = Field(default_factory=JudgeEvidence)
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_keys(cls, data: Any) -> Any:
+        return _refuse_removed_customization_keys(data)
 
     @model_serializer(mode="wrap")
     @schema_from_the_fields

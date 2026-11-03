@@ -31,7 +31,8 @@ Bundle-native replay side:
         one-way ``BUNDLE ⟹ (no system_prompt source)`` implication on
         ``ReplayProvenance`` admits this shape (a biconditional would red it).
     (7) Mutual-exclusion invariants: ``LLMJudge(explicit_system_prompt=...,
-        custom_system_prompt=...)`` refuses construction, and
+        customization=JudgeCustomization(system_prompt=...))`` refuses
+        construction, and
         ``ReplayProvenance(judge_prompt_source=BUNDLE)`` beside a
         ``system_prompt`` source refuses validation — the bundle prompt standing
         in for a customization body that is also in effect is a caller bug.
@@ -368,7 +369,7 @@ def test_bundle_recorded_judge_prompt_is_reused_verbatim_with_no_doubled_marker(
     adds a second marker at ``LLMJudge.run`` time.
 
     Locks the two-resolver split. A regression that routed the bundle-recorded
-    string through ``LLMJudge(custom_system_prompt=...)`` would trigger
+    string through ``customization.system_prompt`` would trigger
     ``_compose_judge_system_prompt`` again — the composed prompt would end with
     the marker twice — which this test catches with a ``.count(marker) == 1``
     assertion after stripping the rubric brief."""
@@ -462,15 +463,17 @@ def test_legacy_bundle_with_no_customization_replays_under_the_engine_default(
 # ---------------------------------------------------------------------------
 
 
-def test_llm_judge_construction_refuses_both_explicit_and_custom_system_prompts() -> None:
+def test_llm_judge_construction_refuses_an_explicit_prompt_beside_a_customization_prompt() -> None:
     """The two prompt seams carry distinct semantics (composed-verbatim vs.
     body-fragment-composed-at-run-time); passing both is a caller bug the
     constructor names at once, not a silent precedence rule downstream."""
-    with pytest.raises(ValueError, match="explicit_system_prompt.*OR.*custom_system_prompt"):
+    with pytest.raises(
+        ValueError, match=r"explicit_system_prompt.*OR customization\.system_prompt"
+    ):
         LLMJudge(
             ModelConfig(provider="openrouter", name="openai/gpt-4.1-mini", temperature=0.0),
             explicit_system_prompt="X",
-            custom_system_prompt="Y",
+            customization=JudgeCustomization(system_prompt="Y"),
         )
 
 

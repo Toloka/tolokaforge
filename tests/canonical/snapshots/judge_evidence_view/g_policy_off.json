@@ -1,8 +1,6 @@
 {
-  "include_agent_system_prompt": false,
   "kb_tools_offered": [],
   "kb_tools_withheld": [],
-  "knowledge_search_disabled": false,
   "offered_tool_names": [
     "submit_report",
     "get_db_state",

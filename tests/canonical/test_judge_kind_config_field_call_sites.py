@@ -18,8 +18,9 @@ name-resolution (the site read ``judge_kind`` from config, not a
 hardcoded string), on the runner-side sub-test the verbatim identity of
 ``kind_config``, and at every site that the kind received exactly one
 :class:`JudgeTrialOptions` carrying every field of the task's
-``customization`` — each set away from its default, so a site that drops
-or defaults any one of them fails here.
+``customization`` — each evidence part set away from its default, so a site that
+drops or defaults any one of them fails here — and, the final-state parts being
+off, no DB reader, workspace or state diff although the substrate has all three.
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ from tolokaforge.grader.composite_dispatch import GraderCompositeDispatch
 from tolokaforge.runner.models import (
     Criterion,
     JudgeCustomization,
+    JudgeEvidence,
     LLMJudgeConfig,
     MutatesStateRule,
     Rubric,
@@ -150,27 +152,28 @@ _AGENT_TOOLS = [
 """The trial's agent tools, one of each ``mutates_state`` form."""
 
 _CUSTOMIZATION = JudgeCustomization(
-    disable_knowledge_search=True,
     system_prompt="Grade against the probe's own voice.",
-    include_agent_system_prompt=False,
-    judge_snippet_chars=None,
-    evidence="transcript",
-    transcript_tool_chars=500,
+    evidence={
+        "agent_policy": False,
+        "knowledge_search": {"snippet_chars": None},
+        "state_diff": False,
+        "db": False,
+        "workspace": False,
+        "tool_results": {"max_chars": 500},
+        "state_changing_calls": True,
+    },
 )
-"""Every field away from its default, so a dropped or defaulted one is visible."""
+"""Every field and part away from its default, so a dropped or defaulted one is visible."""
 
 _EXPECTED_OPTIONS = JudgeTrialOptions(
     customization=_CUSTOMIZATION, tool_effects=ToolEffects.from_schemas(_AGENT_TOOLS)
 )
 
 _LOOSE_OPTION_KEYWORDS = frozenset(
-    {
-        "disable_knowledge_search",
-        "custom_system_prompt",
-        "include_agent_system_prompt",
-        "judge_snippet_chars",
-    }
-)
+    {"customization", "evidence", "system_prompt", "tool_effects", *JudgeEvidence.model_fields}
+) - {"state_diff"}
+"""Option names that must not reach a kind as keywords of their own; ``state_diff`` is
+also the Protocol's own evidence keyword."""
 
 
 def _llm_judge_config(*, with_kind_config: bool) -> LLMJudgeConfig:
@@ -184,10 +187,12 @@ def _llm_judge_config(*, with_kind_config: bool) -> LLMJudgeConfig:
 
 def _assert_every_option_forwarded() -> None:
     """The site handed the kind one options object carrying the whole customization,
-    and — the customization asking for a transcript judge — no view of the state."""
+    and — its ``state_diff``, ``db`` and ``workspace`` parts off — no view of the state."""
     (call,) = _CallSiteProbeJudgeKind.calls
     assert call["options"] == _EXPECTED_OPTIONS
     assert isinstance(call["options"], JudgeTrialOptions)
+    assert call["options"].customization.evidence == _CUSTOMIZATION.evidence
+    assert call["options"].tool_effects == _EXPECTED_OPTIONS.tool_effects
     assert not _LOOSE_OPTION_KEYWORDS & set(call), "per-trial options travel in one object"
     assert call["db_reader"] is None
     assert call["workspace_dir"] is None
@@ -195,12 +200,13 @@ def _assert_every_option_forwarded() -> None:
 
 
 def _empty_substrate() -> InProcessGradingSubstrate:
+    """A substrate with a DB reader, a workspace and a state change to diff."""
     return InProcessGradingSubstrate(
         db_reader=MagicMock(),
         knowledge_search=None,
-        filesystem_root=None,
-        initial_state={},
-        final_state={},
+        filesystem_root=Path(__file__).parent,
+        initial_state={"orders": [{"id": "o1", "status": "open"}]},
+        final_state={"orders": [{"id": "o1", "status": "shipped"}]},
     )
 
 
@@ -521,7 +527,11 @@ def test_offline_replay_reads_judge_kind_and_forwards_the_recorded_options(
             score=1.0,
             components=GradeComponents(llm_judge=1.0),
             judge_status=JudgeStatusEnum.COMPLETED,
-            judge_inputs=JudgeInputs(read_tools_offered=[], customization=_CUSTOMIZATION),
+            judge_inputs=JudgeInputs(
+                read_tools_offered=["get_db_state", "query_db", "read_file"],
+                state_diff_text="orders: 1 modified",
+                customization=_CUSTOMIZATION,
+            ),
             judge_kb_gating=JudgeKbGating(offered=[], withheld=[]),
         ),
     )

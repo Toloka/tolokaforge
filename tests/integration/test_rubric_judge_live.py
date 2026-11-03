@@ -31,7 +31,7 @@ from tolokaforge.core.grading.judge import (
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.grading.rubric import SubmitReportValidationError, parse_submit_report
-from tolokaforge.runner.models import Rubric
+from tolokaforge.runner.models import JudgeCustomization, Rubric
 
 pytestmark = [
     pytest.mark.integration,
@@ -563,7 +563,7 @@ def test_rubric_judge_live_recovers_through_forced_retry(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Judge customization acceptance — disable_knowledge_search end-to-end
+# Judge customization acceptance — evidence.knowledge_search end-to-end
 # ---------------------------------------------------------------------------
 
 
@@ -571,8 +571,8 @@ class _StubKnowledgeSearch:
     """In-memory ``KnowledgeSearch`` giving the judge a KB tool to offer/withhold.
 
     The LLM is real; the KB backend is a stub (mirroring ``_DictDBReader`` for the
-    DB). Its presence is what matters: with the flag off the judge is offered
-    ``search_kb``; with it on the judge withholds it, so ``withheld`` is non-empty.
+    DB). Its presence is what matters: with the part on the judge is offered
+    ``search_kb``; with it off the judge withholds it, so ``withheld`` is non-empty.
     """
 
     def search(self, query: str, top_k: int = 5, alpha: float = 0.5) -> list[SearchHit]:
@@ -631,14 +631,14 @@ def _write_live_grade(tmp_path: Path, result) -> tuple[dict, dict]:
 
 @pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
 def test_rubric_judge_live_judge_customization_disabled(tmp_path):
-    """With ``disable_knowledge_search=True`` the real judge grades end-to-end with
+    """With ``evidence.knowledge_search: false`` the real judge grades end-to-end with
     NO KB tool in its surface: none offered, ``search_kb`` withheld, no KB call in
     the trajectory, and ``grade.yaml`` records the withheld surface."""
     judge = LLMJudge(
         model_config_from_ref(_MODEL_REF),
         max_turns=10,
         episode_timeout_s=180,
-        disable_knowledge_search=True,
+        customization=JudgeCustomization(evidence={"knowledge_search": False}),
     )
     result = judge.run(
         rubric=_rubric(),
@@ -665,7 +665,7 @@ def test_rubric_judge_live_judge_customization_disabled(tmp_path):
 
 @pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
 def test_rubric_judge_live_judge_customization_baseline(tmp_path):
-    """Without the flag the judge is offered the SAME KB tool the agent had —
+    """With the part at its default the judge is offered the SAME KB tool the agent had —
     the faithful baseline: ``search_kb`` offered and nothing withheld, in the result
     and in ``grade.yaml``."""
     judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
@@ -688,13 +688,13 @@ def test_rubric_judge_live_judge_customization_baseline(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Judge customization acceptance — include_agent_system_prompt end-to-end
+# Judge customization acceptance — evidence.agent_policy end-to-end
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
 def test_rubric_judge_live_agent_prompt_gating_omits_policy(tmp_path):
-    """With ``include_agent_system_prompt=False`` the real judge grades end-to-end
+    """With ``evidence.agent_policy: false`` the real judge grades end-to-end
     with NO agent-policy section in its opening-message evidence: grading completes,
     no consistency rejections, and the recorded ``judge_trajectory.yaml`` opening
     message carries neither the policy-framing sentence nor the agent prompt text."""
@@ -702,7 +702,7 @@ def test_rubric_judge_live_agent_prompt_gating_omits_policy(tmp_path):
         model_config_from_ref(_MODEL_REF),
         max_turns=10,
         episode_timeout_s=180,
-        include_agent_system_prompt=False,
+        customization=JudgeCustomization(evidence={"agent_policy": False}),
     )
     result = judge.run(
         rubric=_rubric(),

@@ -1213,7 +1213,8 @@ class GraderConfig(BaseModel):
     seam; see :class:`SnapshotBundleConfig`.
 
     ``judge`` is the ``judge_only`` grader's run-level customization layer:
-    a ``customization`` block layered over the trial's own, key by key.
+    a ``customization`` block layered over the trial's own, key by key (part by
+    part under ``evidence``).
     A key it sets — ``null`` included — replaces the task's value; a key it
     leaves out inherits it.
     """

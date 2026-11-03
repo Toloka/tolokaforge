@@ -23,7 +23,7 @@ from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import RagServiceKnowledgeSearch
 from tolokaforge.core.search.backend import SearchBackendContext
 from tolokaforge.core.search.stack_services import StackServices
-from tolokaforge.runner.models import ToolSchema
+from tolokaforge.runner.models import EvidencePartName, ToolSchema
 from tolokaforge.runner.rag_client import RAGServiceClient
 from tolokaforge.runner.rag_service_backend import RagServiceSearchIndex
 from tolokaforge.runner.service import RunnerServiceImpl
@@ -220,16 +220,16 @@ def test_search_policy_passthrough_offered_only_when_agent_had_it():
 
 
 def test_search_policy_passthrough_is_tagged_knowledge_search():
-    """The service tags each ``search_policy`` passthrough as knowledge-search so the
-    judge registry can gate it under ``disable_knowledge_search`` — classification is
-    by this declared tag, never by tool name."""
+    """The service tags each ``search_policy`` passthrough as owned by the
+    ``knowledge_search`` evidence part, so the judge offers it only while that part
+    is on — classification is by this declared tag, never by tool name."""
     service = _service(None)
     try:
         tools = service._build_judge_search_policy_tools(
             _trial_context_with({"search_policy": _FakeReconstructedSearchPolicy()})
         )
         assert len(tools) == 1
-        assert tools[0].is_knowledge_search is True
+        assert tools[0].evidence_part is EvidencePartName.KNOWLEDGE_SEARCH
     finally:
         service.shutdown()
 
@@ -411,9 +411,8 @@ def test_search_policy_passthrough_skips_namespaced_non_tool_wrapper(caplog):
 
 
 # ---------------------------------------------------------------------------
-# _grade_llm_judge wires the effective disable_knowledge_search flag from the
-# merged llm_judge config into LLMJudge construction. The agent's tool surface
-# is untouched; only the judge's construction flag changes.
+# _grade_llm_judge constructs LLMJudge from the merged llm_judge config's effective
+# customization. The agent's tool surface is untouched.
 # ---------------------------------------------------------------------------
 
 
@@ -457,7 +456,7 @@ def _empty_substrate():
 
 
 def _spy_judge(captured: dict, result: Any) -> type:
-    """An ``LLMJudge`` that records the knobs ``from_options`` constructs it with."""
+    """An ``LLMJudge`` that records the keyword arguments it is constructed with."""
     from tolokaforge.core.grading.judge import LLMJudge
 
     class _SpyJudge(LLMJudge):
@@ -471,52 +470,23 @@ def _spy_judge(captured: dict, result: Any) -> type:
 
 
 @pytest.mark.parametrize(
-    "customization, expected",
+    "customization",
     [
-        (
-            None,
-            {
-                "disable_knowledge_search": False,
-                "custom_system_prompt": None,
-                "include_agent_system_prompt": True,
-            },
-        ),
-        (
-            {
-                "disable_knowledge_search": None,
-                "include_agent_system_prompt": None,
-                "system_prompt": None,
-            },
-            {
-                "disable_knowledge_search": False,
-                "custom_system_prompt": None,
-                "include_agent_system_prompt": True,
-            },
-        ),
-        (
-            {"disable_knowledge_search": False, "include_agent_system_prompt": True},
-            {"disable_knowledge_search": False, "include_agent_system_prompt": True},
-        ),
-        (
-            {
-                "disable_knowledge_search": True,
-                "include_agent_system_prompt": False,
-                "system_prompt": "Grade against the refund policy.",
-            },
-            {
-                "disable_knowledge_search": True,
-                "custom_system_prompt": "Grade against the refund policy.",
-                "include_agent_system_prompt": False,
-            },
-        ),
+        None,
+        {"system_prompt": None},
+        {"evidence": {"knowledge_search": True, "agent_policy": True}},
+        {
+            "system_prompt": "Grade against the refund policy.",
+            "evidence": {"knowledge_search": False, "agent_policy": False},
+        },
     ],
     ids=["absent", "unset", "explicit_defaults", "every_key_set"],
 )
 def test_grade_llm_judge_constructs_the_judge_from_the_effective_customization(
-    monkeypatch, customization, expected
+    monkeypatch, customization
 ):
     """``_grade_llm_judge`` constructs the judge from the task's effective customization,
-    collapsing an unset tri-state to its default rather than to ``False``."""
+    the defaults for a task that sets none."""
     from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
@@ -533,7 +503,9 @@ def test_grade_llm_judge_constructs_the_judge_from_the_effective_customization(
         cfg = LLMJudgeConfig(
             rubric=rubric,
             customization=(
-                JudgeCustomization(**customization) if customization is not None else None
+                JudgeCustomization.model_validate(customization)
+                if customization is not None
+                else None
             ),
         )
         ctx = _JudgeCtx(ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0))
@@ -543,8 +515,8 @@ def test_grade_llm_judge_constructs_the_judge_from_the_effective_customization(
             service._loop,
         )
         grading = fut.result(timeout=5.0)
-        assert {key: captured[key] for key in expected} == expected
-        assert grading.customization == (cfg.customization or JudgeCustomization())
+        assert captured["customization"] == (cfg.customization or JudgeCustomization())
+        assert grading.customization == captured["customization"]
     finally:
         service.shutdown()
 
@@ -583,7 +555,7 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
 
     rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
     customization = JudgeCustomization(
-        disable_knowledge_search=True, include_agent_system_prompt=False, system_prompt="Strict."
+        system_prompt="Strict.", evidence={"knowledge_search": False, "agent_policy": False}
     )
     task_desc = TaskDescription(
         task_id="rubric_task",

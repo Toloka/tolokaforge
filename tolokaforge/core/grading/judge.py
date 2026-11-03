@@ -14,9 +14,10 @@ Design:
   Gemini / GPT-5 / …). API keys are read through
   :class:`SecretManager` inside ``LLMClient`` — never ``os.environ`` here.
 * **Harness-owned read-only allowlist.** NOT the agent's tools, NO category
-  filter, NO DB clone. The judge gets read-only DB tools, ``search_kb`` when the
-  task is RAG-backed, file readers only when a real workspace exists, and the
-  rubric-derived ``submit_report``.
+  filter, NO DB clone. The rubric-derived ``submit_report``, plus what the parts of
+  ``customization.evidence`` offer (:mod:`~tolokaforge.core.grading.judge_evidence`):
+  read-only DB tools, ``search_kb`` when the task is RAG-backed, a file reader only
+  when a real workspace exists, ``show_call`` over the numbered transcript.
 * **Narrow input surface.** :meth:`Judge.run` receives only
   ``{agent_system_prompt, transcript, rubric (incl. reference/expected),
   read-tools, state_diff}`` — never ``golden_actions`` / ``expect_initial_state`` /
@@ -39,31 +40,17 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
-from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
+from tolokaforge.core.grading.judge_evidence import (
+    ComposedEvidence,
+    compose_evidence,
+    format_transcript,
+)
 from tolokaforge.core.grading.judge_model_provider import JudgeModel
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
-from tolokaforge.core.grading.judge_tools import (
-    GetDbStateTool,
-    QueryDbTool,
-    ReadFileTool,
-    SearchKbTool,
-    SubmitReportTool,
-)
-from tolokaforge.core.grading.judge_transcript import (
-    NumberedTranscript,
-    RecordedCall,
-    ShowCallTool,
-    TranscriptEvidence,
-    call_arguments_brief,
-    call_result_head,
-    message_text,
-    number_tool_results,
-    resolve_transcript_evidence,
-    state_changing_calls,
-)
-from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS, KnowledgeSearch
+from tolokaforge.core.grading.judge_tools import SubmitReportTool
+from tolokaforge.core.grading.kb_search import KnowledgeSearch
 from tolokaforge.core.grading.rubric import (
     GRADED_MET_THRESHOLD,
     SUBMIT_REPORT_TOOL_NAME,
@@ -95,11 +82,15 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.tool_effects import ToolEffects
-from tolokaforge.runner.models import Criterion, CriterionResult, Rubric
+from tolokaforge.runner.models import (
+    Criterion,
+    CriterionResult,
+    EvidenceInput,
+    JudgeCustomization,
+    JudgeEvidence,
+    Rubric,
+)
 from tolokaforge.tools.registry import Tool, ToolExecutor, ToolRegistry
-
-if TYPE_CHECKING:
-    from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
 
 # ---------------------------------------------------------------------------
 # Budget defaults (plan: max_turns ~12-15 + wall-time)
@@ -319,86 +310,6 @@ def _answer_terminating_submit_report(
 # ---------------------------------------------------------------------------
 
 
-#: Delimiter strings the judge prompt uses to fence untrusted evidence
-#: (agent system prompt + transcript). Anything inside those slots that
-#: replays one of these exactly would break the judge out of the evidence
-#: section and let it read subsequent bytes as the harness's own
-#: instructions. Neutralised at interpolation time by
-#: :func:`_neutralise_judge_delimiters`.
-_JUDGE_UNTRUSTED_DELIMITERS: tuple[str, ...] = (
-    "===== TRANSCRIPT =====",
-    "===== END TRANSCRIPT =====",
-    "===== STATE-CHANGING CALLS =====",
-    "===== END STATE-CHANGING CALLS =====",
-)
-
-
-def _neutralise_judge_delimiters(text: str) -> str:
-    """Break exact matches of the judge prompt's own fence strings inside untrusted text.
-
-    Called on every model-controlled slot (``agent_system_prompt``, each
-    transcript message's ``content``, each tool call's ``arguments``) before
-    those slots are interpolated into the judge prompt. The replacement inserts
-    a zero-width space so the fence string is still human-readable in the
-    prompt (an operator debugging a run can spot the exact byte a payload used)
-    while no longer matching the delimiter the judge's own attention anchors on.
-
-    Only exact fence strings from :data:`_JUDGE_UNTRUSTED_DELIMITERS` are
-    neutralised — free-form Markdown (``---``, triple-backtick) is common in
-    honest agent output and blanket-neutralising it would garble every trial.
-    """
-    for delimiter in _JUDGE_UNTRUSTED_DELIMITERS:
-        text = text.replace(delimiter, delimiter.replace("=====", "===​==="))
-    return text
-
-
-def format_transcript(transcript: list[dict[str, Any]]) -> str:
-    """Render the agent transcript to a compact, judge-readable string.
-
-    Receives the same ``llm_messages`` list the runner already decoded for
-    grading (role/content/tool_calls dicts). Tool calls are summarised inline so
-    the judge sees what the agent *did*, not just what it said. Every
-    model-controlled slot (``content``, tool_call ``arguments``) is passed
-    through :func:`_neutralise_judge_delimiters` before it lands in the prompt,
-    so a payload that replays one of the judge prompt's own fence strings
-    cannot escape the transcript block and inject fake instructions.
-
-    A user's tool step (``actors.user.tool_turns: isolated``) and its results are
-    labelled as such: nobody in the dialogue read them, and a step carries no
-    text, so without its own line its calls would read as the agent's. A
-    transcript without steps renders exactly as it always has.
-    """
-    steps = user_tool_step_positions_of(transcript)
-    lines: list[str] = []
-    for index, msg in enumerate(transcript):
-        role = str(msg.get("role", "?")).upper()
-        content = message_text(msg.get("content"))
-        if index in steps:
-            lines.append(_user_tool_step_line(role, _neutralise_judge_delimiters(content)))
-            content = content or "(tool result)"
-        elif content:
-            lines.append(f"{role}: {_neutralise_judge_delimiters(content)}")
-        for tc in msg.get("tool_calls") or []:
-            fn = tc.get("function", tc) if isinstance(tc, dict) else {}
-            name = fn.get("name", "?")
-            args = fn.get("arguments", "")
-            lines.append(
-                f"  -> tool_call {_neutralise_judge_delimiters(str(name))}"
-                f"({_neutralise_judge_delimiters(str(args))})"
-            )
-        if msg.get("tool_call_id") and not content:
-            lines.append(f"{role}: (tool result)")
-    return "\n".join(lines) if lines else "(empty transcript)"
-
-
-def _user_tool_step_line(role: str, content: str) -> str:
-    """The line a message of a user tool step renders as: the step, or one of its results."""
-    if role == "USER":
-        label = "USER (tool step, not shown to the agent)"
-        return f"{label}: {content}" if content else label
-    return f"TOOL (result for the user): {content or '(tool result)'}"
-
-
 def _build_rubric_brief(rubric: Rubric) -> str:
     """Render the rubric (reference + per-criterion expected) for the judge.
 
@@ -447,217 +358,6 @@ def _serialize_judge_transcript(messages: list[Message]) -> tuple[dict[str, Any]
             entry["tool_call_id"] = msg.tool_call_id
         out.append(entry)
     return tuple(out)
-
-
-def _build_opening_message(
-    agent_system_prompt: str,
-    transcript: list[dict[str, Any]],
-    state_diff: str | None = None,
-    *,
-    include_agent_system_prompt: bool = True,
-) -> str:
-    """Inject the agent's policy (system prompt) + transcript into the judge context.
-
-    When a ``state_diff`` is supplied (the ``initial → final`` delta of the DB
-    state — exactly what the agent changed), it is injected as the judge's
-    default view of the outcome. It is deliberately NOT the trial-vs-golden diff:
-    it reveals nothing about the expected answer, only the agent's own edits. The
-    judge is steered to read the diff first and reach for ``get_db_state`` /
-    ``query_db`` only to confirm post-conditions the diff does not settle.
-
-    When ``include_agent_system_prompt`` is ``False`` the agent-policy section is
-    omitted from the evidence entirely (not blanked to a placeholder), regardless
-    of the ``agent_system_prompt`` content — self-contained rubrics that do not
-    want the agent's framing in the judge's context.
-    """
-    policy_block = _agent_policy_block(agent_system_prompt, include_agent_system_prompt)
-    if state_diff and state_diff.strip():
-        state_block = (
-            "Below is a diff of the database state the agent changed "
-            "(initial → final): the rows it added, removed, or modified, plus "
-            "which tables it left untouched. Use it as your starting point for "
-            "what the agent did.\n"
-            f"{state_diff.strip()}\n\n"
-        )
-        closing = (
-            "The diff shows changes, not the complete final state. For criteria "
-            "about what must NOT change, invariants, absence, or the quality of a "
-            "full final value, inspect the relevant state directly with query_db "
-            "(or get_db_state as a last resort). Then grade each criterion and "
-            "call submit_report."
-        )
-    else:
-        state_block = ""
-        closing = (
-            "Use your read-only tools to inspect the final state, then grade each "
-            "criterion and call submit_report."
-        )
-    return (
-        f"{policy_block}"
-        "Here is the full transcript of the agent's interaction:\n"
-        "===== TRANSCRIPT =====\n"
-        f"{format_transcript(transcript)}\n"
-        "===== END TRANSCRIPT =====\n\n"
-        f"{state_block}"
-        f"{closing}"
-    )
-
-
-def _agent_policy_block(agent_system_prompt: str, include_agent_system_prompt: bool) -> str:
-    """The opening message's agent-policy section, empty when gated off or blank."""
-    if not (include_agent_system_prompt and agent_system_prompt and agent_system_prompt.strip()):
-        return ""
-    return (
-        f"The agent under evaluation operated under this policy / system prompt:\n"
-        f"---\n{_neutralise_judge_delimiters(agent_system_prompt.strip())}\n---\n\n"
-    )
-
-
-def _build_transcript_opening_message(
-    agent_system_prompt: str,
-    numbered: NumberedTranscript,
-    evidence: TranscriptEvidence,
-    *,
-    tool_effects: ToolEffects,
-    include_agent_system_prompt: bool = True,
-) -> str:
-    """The opening message of a transcript judge: no view of the final state.
-
-    The transcript's tool results carry their ``[call N]`` and are cut at
-    ``evidence.tool_result_chars``; the agent's calls that can change state follow,
-    each with the first line of its result, so the judge reads what the agent did and wrote without
-    the state it left. ``show_call`` returns a cut result in full.
-    """
-    calls = state_changing_calls(numbered, tool_effects)
-    call_lines = (
-        "\n".join(_state_changing_call_line(call) for call in calls)
-        if calls
-        else "(none: the agent made no call that can change state)"
-    )
-    return (
-        f"{_agent_policy_block(agent_system_prompt, include_agent_system_prompt)}"
-        "Here is the full transcript of the agent's interaction. Each tool result "
-        "starts with its number, [call N], and a result longer than "
-        f"{evidence.tool_result_chars} characters is cut; show_call returns it in full.\n"
-        "===== TRANSCRIPT =====\n"
-        f"{format_transcript(numbered.messages)}\n"
-        "===== END TRANSCRIPT =====\n\n"
-        "Below are the agent's calls that can change state, in the order it made "
-        "them, each with the first line of the result the agent received. Long "
-        "arguments are cut here; the transcript shows each call in full.\n"
-        "===== STATE-CHANGING CALLS =====\n"
-        f"{call_lines}\n"
-        "===== END STATE-CHANGING CALLS =====\n\n"
-        "You cannot inspect the final state. Grade each criterion from this record, "
-        "reading a cut result in full with show_call where a criterion depends on it, "
-        "then call submit_report."
-    )
-
-
-def _state_changing_call_line(call: RecordedCall) -> str:
-    reference = f"[call {call.number}]" if call.number is not None else "[no result]"
-    return _neutralise_judge_delimiters(
-        f"{reference} {call.name}({call_arguments_brief(call)}) -> {call_result_head(call)}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Tool assembly — harness-owned read-only allowlist
-# ---------------------------------------------------------------------------
-
-
-def _build_judge_registry(
-    rubric: Rubric,
-    *,
-    db_reader: DBReader | None,
-    kb_search: KnowledgeSearch | None,
-    extra_read_tools: list[Tool] | None,
-    workspace_dir: Path | None,
-    disable_knowledge_search: bool,
-    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
-    show_call: ShowCallTool | None = None,
-    logger: StructuredLogger,
-) -> tuple[ToolRegistry, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    """Build the read-only tool registry offered to the judge.
-
-    Returns ``(registry, kb_offered, kb_withheld, read_tools_offered)`` —
-    ``read_tools_offered`` being the non-KB read surface (``get_db_state`` /
-    ``query_db`` / ``read_file`` / any non-KB ``extra_read_tools`` entry) an
-    offline replay must shim. A candidate tool is
-    knowledge-search iff it carries the declared ``is_knowledge_search`` tag
-    (``SearchKbTool`` intrinsically; a ``search_policy`` ``DelegatingReadTool``
-    when the runner tags it) — classification is by that tag, NEVER by tool name,
-    so a future KB backend is covered by declaring the tag and a non-KB read tool
-    in ``extra_read_tools`` is never gated by accident.
-
-    * ``kb_offered`` — KB-tagged tools actually registered (the issue-#95
-      observability signal: which knowledge base, if any, the judge could read —
-      the SAME one the agent had).
-    * ``kb_withheld`` — KB-tagged tools omitted because ``disable_knowledge_search``
-      is set. They never enter ``get_schemas()``; the tool is absent, not stubbed.
-
-    Which tools are offered, and when:
-
-    * ``submit_report`` — ALWAYS (the terminal rubric tool, schema from the rubric).
-    * ``get_db_state`` / ``query_db`` — when a ``db_reader`` is supplied (the task
-      routes state through the DB service). Strictly read-only, never KB.
-    * ``search_kb`` — iff a ``kb_search`` backend was resolved for this trial and
-      knowledge search is not disabled. Faithful gating: the agent had a KB tool
-      over the per-trial index ⇒ the judge gets the SAME KB; no backend ⇒ no tool.
-    * ``extra_read_tools`` — ready-made read-only tools the runner supplies for
-      this trial (e.g. a passthrough wrapping the agent's reconstructed
-      ``search_policy`` TypeSense tool). Registered verbatim under their own names;
-      the KB-tagged ones are withheld when disabled, non-KB ones always kept and
-      recorded in ``read_tools_offered`` so a replay of the resulting bundle
-      re-offers them.
-    * ``read_file`` — only when ``workspace_dir`` exists (the agent produced files).
-    * ``show_call`` — for a transcript judge. A pure function of the transcript, so
-      it is not in ``read_tools_offered``: a replay rebuilds it, never shims it.
-    """
-    registry = ToolRegistry()
-    registry.register(SubmitReportTool(build_submit_report_tool(rubric)))
-
-    offered = [SUBMIT_REPORT_TOOL_NAME]
-    if show_call is not None:
-        registry.register(show_call)
-        offered.append(show_call.name)
-    read_tools_offered: list[str] = []
-    if db_reader is not None:
-        registry.register(GetDbStateTool(db_reader))
-        registry.register(QueryDbTool(db_reader))
-        offered += ["get_db_state", "query_db"]
-        read_tools_offered += ["get_db_state", "query_db"]
-
-    kb_candidates: list[Tool] = []
-    if kb_search is not None:
-        kb_candidates.append(SearchKbTool(kb_search, snippet_chars=judge_snippet_chars))
-    kb_candidates.extend(extra_read_tools or [])
-
-    kb_offered: list[str] = []
-    kb_withheld: list[str] = []
-    for tool in kb_candidates:
-        if getattr(tool, "is_knowledge_search", False) and disable_knowledge_search:
-            kb_withheld.append(tool.name)
-            continue
-        registry.register(tool)
-        offered.append(tool.name)
-        if getattr(tool, "is_knowledge_search", False):
-            kb_offered.append(tool.name)
-        else:
-            read_tools_offered.append(tool.name)
-
-    if workspace_dir is not None and workspace_dir.exists():
-        registry.register(ReadFileTool(workspace_dir))
-        offered.append("read_file")
-        read_tools_offered.append("read_file")
-
-    logger.info(
-        "Judge read-only tools assembled",
-        tools=offered,
-        kb_tools=kb_offered,
-        kb_withheld=kb_withheld,
-    )
-    return registry, tuple(kb_offered), tuple(kb_withheld), tuple(read_tools_offered)
 
 
 def model_config_from_ref(model_ref: str) -> ModelConfig:
@@ -716,105 +416,58 @@ class LLMJudge:
     """Production :class:`Judge`: the read-only agentic rubric judge over an LLM.
 
     Construction-time config is *how to run the LLM judge* — the run-level
-    ``model_config``, the turn / wall-time / retry budgets, ``disable_knowledge_search``
-    (withhold every KB-tagged tool from the judge's surface, per ADR-0019), one of two
-    mutually exclusive prompt seams, ``include_agent_system_prompt`` (embed the
-    agent's policy in the judge's opening-message evidence — default on; gate off for
-    self-contained rubrics), an
-    optionally injected ``llm_client`` (any :class:`JudgeModel` — tests pass a
-    scripted client; production passes ``None`` and the judge builds one
-    ``LLMClient(model_config)`` per :meth:`run`), and the logger. :meth:`run`
-    carries only the per-trial evidence.
+    ``model_config``, the trial's ``customization`` (the system-prompt body and the
+    parts of its ``evidence``, composed by
+    :func:`~tolokaforge.core.grading.judge_evidence.compose_evidence`), the agent
+    tools' ``tool_effects`` (read by the ``state_changing_calls`` part), the turn /
+    wall-time / retry budgets, an optionally injected ``llm_client`` (any
+    :class:`JudgeModel` — tests pass a scripted client; production passes ``None``
+    and the judge builds one ``LLMClient(model_config)`` per :meth:`run`), and the
+    logger. :meth:`run` carries only the per-trial evidence.
 
     Two prompt seams, mutually exclusive:
 
-    * ``custom_system_prompt`` — a body fragment that replaces the default grading
-      stance; :func:`_compose_judge_system_prompt` appends the marker contract at
-      :meth:`run` time. The eval flow and legacy replay use this seam (they carry
-      the body, not the composed string).
-    * ``explicit_system_prompt`` — the already-composed prompt used verbatim in
-      place of the run-time composition. Bundle-native replay uses this seam so a
-      recorded ``prompts.yaml.judge_prompt`` (composed body + marker) reaches the
-      judge without a second marker being appended.
+    * ``customization.system_prompt`` — a body fragment that replaces the default
+      grading stance; :func:`_compose_judge_system_prompt` appends the marker
+      contract at :meth:`run` time.
+    * ``explicit_system_prompt`` — the already-composed prompt used verbatim. Bundle
+      replay uses this seam so a recorded ``prompts.yaml.judge_prompt`` (composed
+      body + marker) reaches the judge without a second marker being appended.
 
-    Passing both raises :class:`ValueError` at construction time — the two carry
-    distinct semantics, and mixing them can only be a caller bug.
-
-    ``transcript_evidence`` makes a transcript-only judge
-    (``customization.evidence: transcript``, see
-    :mod:`~tolokaforge.core.grading.judge_transcript`): it reads the numbered, cut
-    transcript and the agent's state-changing calls, and gets ``show_call``.
-    :meth:`run` refuses a DB reader, workspace or state diff for it — the caller
-    withholds the final state, so a view of it reaching the judge is a caller bug.
-    ``tool_effects`` are the agent tools' ``mutates_state`` declarations: a
-    transcript judge lists only the calls they say can change state.
+    Passing both raises :class:`ValueError` at construction time.
     """
 
     def __init__(
         self,
         model_config: ModelConfig,
         *,
+        customization: JudgeCustomization = JudgeCustomization(),
+        tool_effects: ToolEffects = ToolEffects.empty(),
+        explicit_system_prompt: str | None = None,
         max_turns: int = DEFAULT_JUDGE_MAX_TURNS,
         episode_timeout_s: int = DEFAULT_JUDGE_EPISODE_TIMEOUT_S,
         submit_report_retries: int = DEFAULT_SUBMIT_REPORT_RETRIES,
-        disable_knowledge_search: bool = False,
-        custom_system_prompt: str | None = None,
-        explicit_system_prompt: str | None = None,
-        include_agent_system_prompt: bool = True,
-        judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
-        transcript_evidence: TranscriptEvidence | None = None,
-        tool_effects: ToolEffects = ToolEffects.empty(),
         llm_client: JudgeModel | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
-        if explicit_system_prompt is not None and custom_system_prompt is not None:
+        if explicit_system_prompt is not None and customization.system_prompt is not None:
             raise ValueError(
                 "LLMJudge accepts explicit_system_prompt (a composed prompt used "
-                "verbatim, no marker re-appended) OR custom_system_prompt (a body "
+                "verbatim, no marker re-appended) OR customization.system_prompt (a body "
                 "fragment composed at run time with the marker contract appended); "
                 "these seams carry distinct semantics and passing both is a caller "
-                "bug — the bundle-native replay path uses the former, task.yaml "
-                "customization and --grading overrides use the latter."
+                "bug — bundle replay uses the former, task customization and "
+                "--grading overrides the latter."
             )
         self._model_config = model_config
+        self._customization = customization
+        self._tool_effects = tool_effects
+        self._explicit_system_prompt = explicit_system_prompt
         self._max_turns = max_turns
         self._episode_timeout_s = episode_timeout_s
         self._submit_report_retries = submit_report_retries
-        self._disable_knowledge_search = disable_knowledge_search
-        self._custom_system_prompt = custom_system_prompt
-        self._explicit_system_prompt = explicit_system_prompt
-        self._include_agent_system_prompt = include_agent_system_prompt
-        self._judge_snippet_chars = judge_snippet_chars
-        self._transcript_evidence = transcript_evidence
-        self._tool_effects = tool_effects
         self._llm_client = llm_client
         self._logger = logger
-
-    @classmethod
-    def from_options(
-        cls,
-        model_config: ModelConfig,
-        options: JudgeTrialOptions,
-        *,
-        explicit_system_prompt: str | None = None,
-        llm_client: JudgeModel | None = None,
-        logger: StructuredLogger | None = None,
-    ) -> LLMJudge:
-        """The judge a trial's options configure; ``explicit_system_prompt`` stands in
-        for ``options.customization.system_prompt``, which must then be unset."""
-        customization = options.customization
-        return cls(
-            model_config,
-            disable_knowledge_search=bool(customization.disable_knowledge_search),
-            custom_system_prompt=customization.system_prompt,
-            explicit_system_prompt=explicit_system_prompt,
-            include_agent_system_prompt=customization.include_agent_system_prompt is not False,
-            judge_snippet_chars=customization.judge_snippet_chars,
-            transcript_evidence=resolve_transcript_evidence(customization),
-            tool_effects=options.tool_effects,
-            llm_client=llm_client,
-            logger=logger,
-        )
 
     def run(
         self,
@@ -843,82 +496,74 @@ class LLMJudge:
         returns ``0.0`` / ``0.5`` on failure.
 
         Raises:
+            ValueError: a view of the trial was handed that no enabled part needs
+                (:meth:`~tolokaforge.runner.models.JudgeEvidence.needs`) — the caller
+                builds only what the evidence needs — or an extra read tool names no
+                part that owns it.
             SubstrateUnreachableError: a DB read through the judge's tools could
                 not reach the trial's final state. The verdict would rest on a
                 state the judge never saw, so none is returned.
         """
         logger = self._logger or get_logger("rubric_judge")
-        evidence = self._transcript_evidence
-        numbered: NumberedTranscript | None = None
-        show_call: ShowCallTool | None = None
-        if evidence is not None:
-            _refuse_state_for_transcript_judge(db_reader, workspace_dir, state_diff)
-            numbered = number_tool_results(transcript, tool_result_chars=evidence.tool_result_chars)
-            show_call = ShowCallTool(numbered, tool_result_chars=evidence.tool_result_chars)
-        metrics = _JudgeMetricsSink()
+        evidence = self._customization.evidence
+        _refuse_views_no_part_needs(
+            evidence, state_diff=state_diff, db_reader=db_reader, workspace_dir=workspace_dir
+        )
         guarded_reader = _RefusalRecordingDBReader(db_reader) if db_reader is not None else None
-
-        client: JudgeModel
-        if self._llm_client is not None:
-            client = self._llm_client
-        else:
-            client = LLMClient(self._model_config)
-
-        registry, kb_tools_offered, kb_tools_withheld, read_tools_offered = _build_judge_registry(
-            rubric,
+        composed = compose_evidence(
+            evidence,
+            agent_system_prompt=agent_system_prompt,
+            transcript=transcript,
+            state_diff=state_diff,
             db_reader=guarded_reader,
             kb_search=kb_search,
-            extra_read_tools=extra_read_tools,
+            extra_read_tools=extra_read_tools or [],
             workspace_dir=workspace_dir,
-            disable_knowledge_search=self._disable_knowledge_search,
-            judge_snippet_chars=self._judge_snippet_chars,
-            show_call=show_call,
+            tool_effects=self._tool_effects,
+        )
+        registry = ToolRegistry()
+        registry.register(SubmitReportTool(build_submit_report_tool(rubric)))
+        for tool in composed.tools:
+            registry.register(tool)
+        logger.info(
+            "Judge read-only tools assembled",
+            tools=[SUBMIT_REPORT_TOOL_NAME, *(tool.name for tool in composed.tools)],
+            kb_tools=list(composed.kb_tools_offered),
+            kb_withheld=list(composed.kb_tools_withheld),
+        )
+        return self._grade(
+            rubric,
+            registry,
+            composed,
+            guarded_reader=guarded_reader,
+            state_diff=state_diff,
             logger=logger,
         )
-        tool_executor = ToolExecutor(registry)
-        tool_schemas = registry.get_schemas(sanitize=False)
 
+    def _grade(
+        self,
+        rubric: Rubric,
+        registry: ToolRegistry,
+        composed: ComposedEvidence,
+        *,
+        guarded_reader: _RefusalRecordingDBReader | None,
+        state_diff: str | None,
+        logger: StructuredLogger,
+    ) -> JudgeResult:
+        """Drive the judge loop over ``registry`` until a valid ``submit_report``."""
+        metrics = _JudgeMetricsSink()
         termination = _SubmitReportTermination()
-        loop = ToolCallingLoop(
-            llm_client=client,
-            tool_executor=tool_executor,
-            tool_schemas=tool_schemas,
-            validation_schemas_by_tool=client.sanitize_tools_for_execution(tool_schemas),
-            tool_output_max_chars_by_tool=registry.output_max_chars_by_tool(),
-            # Bounded by max_turns + wall-time (episode_timeout_s). There is no
-            # per-turn loop timeout; the per-call LLM timeout lives in LLMClient.
-            config=LoopConfig(max_turns=self._max_turns, episode_timeout_s=self._episode_timeout_s),
-            metrics=metrics,
-            should_terminate=termination,
-            classify_error=client.classify_loop_error,
-            logger=logger,
-            user_turn=None,
-        )
-
-        opening = (
-            _build_transcript_opening_message(
-                agent_system_prompt,
-                numbered,
-                evidence,
-                tool_effects=self._tool_effects,
-                include_agent_system_prompt=self._include_agent_system_prompt,
-            )
-            if numbered is not None and evidence is not None
-            else _build_opening_message(
-                agent_system_prompt,
-                transcript,
-                state_diff,
-                include_agent_system_prompt=self._include_agent_system_prompt,
-            )
-        )
-        messages: list[Message] = [Message(role=MessageRole.USER, content=opening)]
-        rubric_brief = _build_rubric_brief(rubric)
+        loop = self._loop(registry, metrics, termination, logger)
+        messages: list[Message] = [Message(role=MessageRole.USER, content=composed.opening_message)]
         base_prompt = (
             self._explicit_system_prompt
             if self._explicit_system_prompt is not None
-            else _compose_judge_system_prompt(self._custom_system_prompt)
+            else _compose_judge_system_prompt(self._customization.system_prompt)
         )
-        system_prompt = f"{base_prompt}\n\n{rubric_brief}"
+        system_prompt = f"{base_prompt}\n\n{_build_rubric_brief(rubric)}"
+
+        def errored(reasons: str) -> JudgeResult:
+            return _build_errored_judge_result(metrics, reasons, messages, composed, state_diff)
 
         attempts = 0
         while True:
@@ -928,32 +573,16 @@ class LLMJudge:
                 if guarded_reader is not None:
                     guarded_reader.raise_refusal(metrics.snapshot())
                 logger.error("Judge loop raised", error=str(exc), error_type=type(exc).__name__)
-                return _build_errored_judge_result(
-                    metrics,
-                    f"Judge loop crashed: {type(exc).__name__}: {exc}",
-                    messages,
-                    kb_tools_offered,
-                    kb_tools_withheld,
-                    disable_knowledge_search=self._disable_knowledge_search,
-                    read_tools_offered=read_tools_offered,
-                    state_diff=state_diff,
-                )
+                return errored(f"Judge loop crashed: {type(exc).__name__}: {exc}")
 
             if guarded_reader is not None:
                 guarded_reader.raise_refusal(metrics.snapshot())
 
             if termination.captured_args is None:
                 # Loop ended without submit_report — turn / wall-time / API error.
-                return _build_errored_judge_result(
-                    metrics,
+                return errored(
                     f"Judge did not call submit_report "
-                    f"(termination={outcome.termination_reason}, status={outcome.status}).",
-                    messages,
-                    kb_tools_offered,
-                    kb_tools_withheld,
-                    disable_knowledge_search=self._disable_knowledge_search,
-                    read_tools_offered=read_tools_offered,
-                    state_diff=state_diff,
+                    f"(termination={outcome.termination_reason}, status={outcome.status})."
                 )
 
             try:
@@ -969,32 +598,13 @@ class LLMJudge:
                         attempts=attempts,
                         error=str(exc),
                     )
-                    return _build_errored_judge_result(
-                        metrics,
-                        f"submit_report invalid after {self._submit_report_retries} retries: {exc}",
-                        messages,
-                        kb_tools_offered,
-                        kb_tools_withheld,
-                        disable_knowledge_search=self._disable_knowledge_search,
-                        read_tools_offered=read_tools_offered,
-                        state_diff=state_diff,
+                    return errored(
+                        f"submit_report invalid after {self._submit_report_retries} retries: {exc}"
                     )
                 logger.warning(
                     "Judge submit_report invalid; re-prompting", attempt=attempts, error=str(exc)
                 )
-                if termination.captured_call_id is None:
-                    raise RuntimeError(
-                        "Judge retry invariant violated: submit_report was rejected but "
-                        "no terminating call id was captured."
-                    )
-                rejection = (
-                    f"Your submit_report was rejected: {exc}\n"
-                    "Fix the issue and call submit_report again with a verdict "
-                    "and justification for every criterion."
-                )
-                _answer_terminating_submit_report(messages, termination.captured_call_id, rejection)
-                termination.captured_args = None
-                termination.captured_call_id = None
+                _reprompt_after_rejection(messages, termination, exc)
                 continue
 
             logger.info(
@@ -1003,46 +613,94 @@ class LLMJudge:
                 gate_failed=aggregate.gate_failed,
                 failed_required=list(aggregate.failed_required_ids),
             )
-            reasons = _build_judge_reasons(
-                termination.captured_args,
-                aggregate.failed_required_ids,
-                kb_tools_offered,
-                kb_tools_withheld,
-                self._disable_knowledge_search,
-            )
             return JudgeResult(
                 status=JudgeStatus.COMPLETED,
                 usage=metrics.snapshot(),
-                reasons=reasons,
+                reasons=_build_judge_reasons(
+                    termination.captured_args, aggregate.failed_required_ids, composed
+                ),
                 score=aggregate.score,
                 binary_pass=aggregate.binary_pass,
                 gate_failed=aggregate.gate_failed,
                 criterion_results=tuple(results),
                 failed_required_ids=aggregate.failed_required_ids,
-                kb_tools_offered=kb_tools_offered,
-                kb_tools_withheld=kb_tools_withheld,
-                read_tools_offered=read_tools_offered,
+                kb_tools_offered=composed.kb_tools_offered,
+                kb_tools_withheld=composed.kb_tools_withheld,
+                read_tools_offered=composed.read_tools_offered,
                 state_diff=state_diff,
                 transcript=_serialize_judge_transcript(messages),
             )
 
+    def _loop(
+        self,
+        registry: ToolRegistry,
+        metrics: _JudgeMetricsSink,
+        termination: _SubmitReportTermination,
+        logger: StructuredLogger,
+    ) -> ToolCallingLoop:
+        client: JudgeModel = (
+            self._llm_client if self._llm_client is not None else LLMClient(self._model_config)
+        )
+        tool_schemas = registry.get_schemas(sanitize=False)
+        return ToolCallingLoop(
+            llm_client=client,
+            tool_executor=ToolExecutor(registry),
+            tool_schemas=tool_schemas,
+            validation_schemas_by_tool=client.sanitize_tools_for_execution(tool_schemas),
+            tool_output_max_chars_by_tool=registry.output_max_chars_by_tool(),
+            # Bounded by max_turns + wall-time (episode_timeout_s). There is no
+            # per-turn loop timeout; the per-call LLM timeout lives in LLMClient.
+            config=LoopConfig(max_turns=self._max_turns, episode_timeout_s=self._episode_timeout_s),
+            metrics=metrics,
+            should_terminate=termination,
+            classify_error=client.classify_loop_error,
+            logger=logger,
+            user_turn=None,
+        )
 
-def _refuse_state_for_transcript_judge(
-    db_reader: DBReader | None, workspace_dir: Path | None, state_diff: str | None
+
+def _reprompt_after_rejection(
+    messages: list[Message],
+    termination: _SubmitReportTermination,
+    exc: SubmitReportValidationError,
+) -> None:
+    """Answer the rejected ``submit_report`` with its rejection so the judge tries again."""
+    if termination.captured_call_id is None:
+        raise RuntimeError(
+            "Judge retry invariant violated: submit_report was rejected but "
+            "no terminating call id was captured."
+        )
+    rejection = (
+        f"Your submit_report was rejected: {exc}\n"
+        "Fix the issue and call submit_report again with a verdict "
+        "and justification for every criterion."
+    )
+    _answer_terminating_submit_report(messages, termination.captured_call_id, rejection)
+    termination.captured_args = None
+    termination.captured_call_id = None
+
+
+def _refuse_views_no_part_needs(
+    evidence: JudgeEvidence,
+    *,
+    state_diff: str | None,
+    db_reader: DBReader | None,
+    workspace_dir: Path | None,
 ) -> None:
     handed = [
-        name
-        for name, value in (
-            ("db_reader", db_reader),
-            ("workspace_dir", workspace_dir),
-            ("state_diff", state_diff),
+        evidence_input.value
+        for evidence_input, view in (
+            (EvidenceInput.STATE_DIFF, state_diff),
+            (EvidenceInput.DB, db_reader),
+            (EvidenceInput.WORKSPACE, workspace_dir),
         )
-        if value is not None
+        if view is not None and not evidence.needs(evidence_input)
     ]
     if handed:
         raise ValueError(
-            "a transcript judge (customization.evidence: transcript) grades without the "
-            f"final state, yet was handed {', '.join(handed)}; the caller must withhold them"
+            f"the judge was handed {', '.join(handed)} with the evidence part that reads "
+            "each off (customization.evidence); the caller builds only what "
+            "JudgeEvidence.needs"
         )
 
 
@@ -1050,11 +708,7 @@ def _build_errored_judge_result(
     metrics: _JudgeMetricsSink,
     reasons: str,
     messages: list[Message],
-    kb_tools_offered: tuple[str, ...],
-    kb_tools_withheld: tuple[str, ...],
-    *,
-    disable_knowledge_search: bool,
-    read_tools_offered: tuple[str, ...],
+    composed: ComposedEvidence,
     state_diff: str | None,
 ) -> JudgeResult:
     """Build a fail-loud ERRORED result — no score, no criterion results.
@@ -1065,47 +719,40 @@ def _build_errored_judge_result(
     factor in the failure. Echoes the read-tool surface + state_diff
     it was handed so an offline replay of an errored trial is still reconstructable.
     """
-    kb_note = _kb_note(kb_tools_offered, kb_tools_withheld, disable_knowledge_search)
     return JudgeResult(
         status=JudgeStatus.ERRORED,
         usage=metrics.snapshot(),
-        reasons=f"{reasons} | {kb_note}",
+        reasons=f"{reasons} | {_kb_note(composed)}",
         score=None,
         binary_pass=None,
-        kb_tools_offered=kb_tools_offered,
-        kb_tools_withheld=kb_tools_withheld,
-        read_tools_offered=read_tools_offered,
+        kb_tools_offered=composed.kb_tools_offered,
+        kb_tools_withheld=composed.kb_tools_withheld,
+        read_tools_offered=composed.read_tools_offered,
         state_diff=state_diff,
         transcript=_serialize_judge_transcript(messages),
     )
 
 
-def _kb_note(
-    kb_tools_offered: tuple[str, ...],
-    kb_tools_withheld: tuple[str, ...],
-    disable_knowledge_search: bool,
-) -> str:
+def _kb_note(composed: ComposedEvidence) -> str:
     """The human-readable "graded with / without KB" signal (issue #95).
 
     e.g. ``Judge KB: search_policy`` / ``Judge KB: search_kb`` / ``Judge KB:
-    none offered``. When knowledge search was disabled by config and the agent
+    none offered``. When the ``knowledge_search`` part is off and the agent
     actually had a KB tool to withhold, reads ``Judge KB: none offered (disabled
     by config)`` — distinguishing a deliberate gate from a rubric that simply
     needed no KB. Observability, not an error.
     """
-    if disable_knowledge_search and kb_tools_withheld:
+    if composed.kb_tools_withheld:
         return "Judge KB: none offered (disabled by config)"
-    if kb_tools_offered:
-        return f"Judge KB: {', '.join(kb_tools_offered)}"
+    if composed.kb_tools_offered:
+        return f"Judge KB: {', '.join(composed.kb_tools_offered)}"
     return "Judge KB: none offered"
 
 
 def _build_judge_reasons(
     tool_args: dict[str, Any],
     failed_required_ids: tuple[str, ...],
-    kb_tools_offered: tuple[str, ...],
-    kb_tools_withheld: tuple[str, ...],
-    disable_knowledge_search: bool,
+    composed: ComposedEvidence,
 ) -> str:
     """Compose the judge's human-readable reasons from its overall summary + gate.
 
@@ -1118,7 +765,7 @@ def _build_judge_reasons(
         parts.append(overall.strip())
     if failed_required_ids:
         parts.append(f"FAILED required criteria: {', '.join(failed_required_ids)}")
-    parts.append(_kb_note(kb_tools_offered, kb_tools_withheld, disable_knowledge_search))
+    parts.append(_kb_note(composed))
     return " | ".join(parts)
 
 

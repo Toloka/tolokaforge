@@ -168,9 +168,9 @@ describe its newly executed attempts.
   (`{read_when: {args: {method: {in_: [GET]}}}}`) — read from the trial's task
   description, each slice from its own actor's tools; an undeclared tool's entry has
   no such key. It is the only record of the declarations an offline replay reads:
-  a [transcript-only judge](GRADING.md#transcript-only-judge) replayed from a bundle
-  takes its state-changing calls from it, and a bundle below generation 8 records none,
-  so `rejudge` refuses to replay one as a transcript judge.
+  a judge replayed with the `state_changing_calls` [evidence part](GRADING.md#judge-evidence)
+  on takes its state-changing calls from it, and a bundle below generation 8 records
+  none, so `rejudge` refuses to replay one with that part on.
 * **Per-trial**: one file per trial, no dedup. Repeats of the same task
   on the same model write identical bytes to independent files —
   audit-friendly trade for ~150 KB extra per trial.
@@ -1656,9 +1656,9 @@ layers.
   kept separate from `judge_usage` (which stays strictly token/cost): the
   KB-tagged tools the judge actually got (`offered`) and those its customization
   withheld (`withheld`). An empty `withheld` under
-  `customization.disable_knowledge_search: true` means the agent had no KB tool
-  to gate. The customization the judge graded under — its system prompt,
-  knowledge-search and agent-policy settings, evidence — is recorded once, in
+  `customization.evidence.knowledge_search: false` means the agent had no KB tool
+  to gate. The customization the judge graded under — its system prompt and the
+  parts of its evidence — is recorded once, in
   [`judge_inputs.yaml`](#trialstask_idtrial_indexjudge_inputsyaml), not echoed
   here; the composed system prompt itself is
   [`prompts.yaml`](#trialstask_idtrial_indexpromptsyaml)'s `judge_prompt` key. See
@@ -1800,9 +1800,9 @@ read_tools_offered:
   - get_db_state
   - query_db
 customization:
-  disable_knowledge_search: null
   system_prompt: Grade strictly against the refund policy.
-  include_agent_system_prompt: false
+  evidence:
+    agent_policy: false
 ```
 
 * `state_diff_text` — the exact `initial → final` state-delta string the
@@ -1879,12 +1879,13 @@ judge_model: openrouter/openai/gpt-4.1-mini
 judge_model_source: override        # or "recorded"
 rubric_source: recorded             # or "override"
 customization:                      # the judge customization the replay graded under
-  disable_knowledge_search: true
   system_prompt: null
-  include_agent_system_prompt: false
+  evidence:
+    knowledge_search: false
+    agent_policy: false
 customization_sources:              # dotted key path -> the layer that set it; absent = default
-  disable_knowledge_search: override
-  include_agent_system_prompt: recorded
+  evidence.knowledge_search: override
+  evidence.agent_policy: recorded
 customization_record: judge_inputs  # "judge_inputs" | "task_yaml" (a bundle predating the record)
 judge_prompt_source: bundle         # "bundle" | null — the bundle's composed prompt used verbatim
 fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)

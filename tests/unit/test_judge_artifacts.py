@@ -99,9 +99,8 @@ def _judge_grade(
             _KB_DISABLED,
             {"offered": [], "withheld": ["search_kb", "search_policy"]},
             JudgeCustomization(
-                disable_knowledge_search=True,
                 system_prompt="Grade strictly.",
-                include_agent_system_prompt=False,
+                evidence={"knowledge_search": False, "agent_policy": False},
             ),
         ),
     ],

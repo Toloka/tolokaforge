@@ -190,9 +190,11 @@ class TestJudgeInputsRoundTrip:
         [
             (
                 JudgeCustomization(
-                    evidence="transcript", system_prompt="Strict."
+                    evidence={"db": False, "tool_results": True}, system_prompt="Strict."
                 ).model_dump_json(),
-                JudgeCustomization(evidence="transcript", system_prompt="Strict."),
+                JudgeCustomization(
+                    evidence={"db": False, "tool_results": True}, system_prompt="Strict."
+                ),
             ),
             ("", None),
         ],
@@ -222,7 +224,7 @@ class TestJudgeInputsRoundTrip:
             binary_pass=True,
             score=1.0,
             judge_inputs=JudgeInputs(
-                customization=JudgeCustomization(disable_knowledge_search=True)
+                customization=JudgeCustomization(evidence={"knowledge_search": False})
             ),
         )
 
@@ -234,7 +236,7 @@ class TestJudgeInputsRoundTrip:
         from tolokaforge.core.trial_grader import GradingFailedError, _parse_grade_result
         from tolokaforge.runner import runner_pb2
 
-        report = runner_pb2.JudgeReport(calls=1, customization_json='{"evidence": "vibes"}')
+        report = runner_pb2.JudgeReport(calls=1, customization_json='{"evidence": {"db": "vibes"}}')
         grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
 
         with pytest.raises(GradingFailedError, match="customization_json payload is not readable"):

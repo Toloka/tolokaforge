@@ -13,8 +13,8 @@ import pytest
 
 from tolokaforge.core.grading.judge import (
     LLMJudge,
-    _build_opening_message,
 )
+from tolokaforge.core.grading.judge_evidence import compose_evidence
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.judge_prompt import (
@@ -25,7 +25,8 @@ from tolokaforge.core.judge_prompt import (
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import ProviderRawCall, Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
-from tolokaforge.runner.models import Rubric
+from tolokaforge.core.tool_effects import ToolEffects
+from tolokaforge.runner.models import EvidencePartName, JudgeCustomization, JudgeEvidence, Rubric
 
 pytestmark = pytest.mark.unit
 
@@ -41,9 +42,8 @@ _LLM_JUDGE_CTOR_KEYS = (
     "max_turns",
     "episode_timeout_s",
     "submit_report_retries",
-    "disable_knowledge_search",
-    "custom_system_prompt",
-    "include_agent_system_prompt",
+    "customization",
+    "tool_effects",
     "logger",
 )
 
@@ -399,6 +399,7 @@ def test_extra_read_tool_offered_with_its_own_schema():
         description="Search the policy KB",
         parameters=_search_policy_schema(),
         invoke=lambda args: (calls.append(args) or "policy result text"),
+        evidence_part=EvidencePartName.KNOWLEDGE_SEARCH,
     )
 
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
@@ -450,6 +451,7 @@ def test_extra_read_tool_delegates_and_surfaces_output_verbatim():
         description="Search the policy KB",
         parameters=_search_policy_schema(),
         invoke=lambda args: (received.append(args) or "VERBATIM_POLICY_PAYLOAD"),
+        evidence_part=EvidencePartName.KNOWLEDGE_SEARCH,
     )
     client = ScriptedClient(
         [
@@ -488,6 +490,7 @@ def test_extra_read_tool_fails_loud_when_foreign_tool_raises():
         description="Search the policy KB",
         parameters=_search_policy_schema(),
         invoke=boom,
+        evidence_part=EvidencePartName.KNOWLEDGE_SEARCH,
     )
 
     res = tool.execute(question="anything")
@@ -527,6 +530,7 @@ def test_extra_read_tool_bridges_a_sync_call_into_an_async_invoke():
             description="Search the policy KB",
             parameters=_search_policy_schema(),
             invoke=bridged_invoke,
+            evidence_part=EvidencePartName.KNOWLEDGE_SEARCH,
         )
         res = tool.execute(question="refunds")
         assert res.success is True
@@ -568,7 +572,7 @@ def test_kb_observability_search_policy_offered():
         description="Search the policy KB",
         parameters=_search_policy_schema(),
         invoke=lambda args: "policy result text",
-        knowledge_search=True,
+        evidence_part=EvidencePartName.KNOWLEDGE_SEARCH,
     )
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
     result = _run_llm_judge(
@@ -624,8 +628,8 @@ def test_kb_note_surfaced_even_when_judge_errors():
 
 
 # ---------------------------------------------------------------------------
-# Construction-time KB gating: disable_knowledge_search withholds KB-tagged tools
-# (classification is by the declared tag, never by tool name)
+# The knowledge_search part: off withholds the tools it owns
+# (classification is by the declared evidence_part tag, never by tool name)
 # ---------------------------------------------------------------------------
 
 
@@ -639,14 +643,14 @@ def _kb_tagged_passthrough(name: str = "search_policy"):
         description="Search the policy KB",
         parameters=_search_policy_schema(),
         invoke=lambda args: "policy result text",
-        knowledge_search=True,
+        evidence_part=EvidencePartName.KNOWLEDGE_SEARCH,
     )
 
 
-def test_disable_knowledge_search_withholds_kb_tagged_tools():
-    """disable_knowledge_search=True withholds EVERY KB-tagged tool from the judge's
+def test_knowledge_search_off_withholds_the_tools_it_owns():
+    """``knowledge_search: false`` withholds EVERY tool the part owns from the judge's
     schema (rag search_kb + the tagged passthrough), records them in withheld with
-    an empty offered set, and leaves a non-KB extra read tool registered."""
+    an empty offered set, and leaves an extra the ``db`` part owns registered."""
     from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 
     rubric = _binary_rubric()
@@ -655,7 +659,8 @@ def test_disable_knowledge_search_withholds_kb_tagged_tools():
         description="Read the audit ledger",
         parameters=_search_policy_schema(),
         invoke=lambda args: "ledger",
-    )  # untagged → not knowledge-search → must never be gated
+        evidence_part=EvidencePartName.DB,
+    )
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
 
     result = _run_llm_judge(
@@ -666,7 +671,7 @@ def test_disable_knowledge_search_withholds_kb_tagged_tools():
         db_reader=FakeDBReader(),
         kb_search=FakeKnowledgeSearch(),
         extra_read_tools=[_kb_tagged_passthrough(), non_kb],
-        disable_knowledge_search=True,
+        customization=JudgeCustomization(evidence={"knowledge_search": False}),
         llm_client=client,
     )
 
@@ -682,8 +687,8 @@ def test_disable_knowledge_search_withholds_kb_tagged_tools():
     assert "Judge KB: none offered (disabled by config)" in result.reasons
 
 
-def test_disable_flag_false_is_byte_for_byte_default():
-    """disable_knowledge_search=False (the default) leaves the offered set, the
+def test_knowledge_search_on_is_byte_for_byte_default():
+    """``knowledge_search: true`` (the default) leaves the offered set, the
     (empty) withheld set, and the reasons note identical to the ungated judge."""
     rubric = _binary_rubric()
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
@@ -696,7 +701,7 @@ def test_disable_flag_false_is_byte_for_byte_default():
         db_reader=FakeDBReader(),
         kb_search=FakeKnowledgeSearch(),
         extra_read_tools=[_kb_tagged_passthrough()],
-        disable_knowledge_search=False,
+        customization=JudgeCustomization(evidence={"knowledge_search": True}),
         llm_client=client,
     )
 
@@ -707,10 +712,10 @@ def test_disable_flag_false_is_byte_for_byte_default():
     assert "Judge KB: search_kb, search_policy" in result.reasons
 
 
-def test_disable_flag_true_but_no_kb_records_an_empty_withheld():
-    """A disabled judge over a KB-less trial records an EMPTY withheld set (nothing
-    to gate) and the plain 'none offered' note: a config disable that withheld
-    nothing reads as the faithful none."""
+def test_knowledge_search_off_but_no_kb_records_an_empty_withheld():
+    """A judge without the part over a KB-less trial records an EMPTY withheld set
+    (nothing to gate) and the plain 'none offered' note: a part turned off that
+    withheld nothing reads as the faithful none."""
     rubric = _binary_rubric()
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
 
@@ -722,7 +727,7 @@ def test_disable_flag_true_but_no_kb_records_an_empty_withheld():
         db_reader=FakeDBReader(),
         kb_search=None,
         extra_read_tools=None,
-        disable_knowledge_search=True,
+        customization=JudgeCustomization(evidence={"knowledge_search": False}),
         llm_client=client,
     )
 
@@ -1261,32 +1266,51 @@ def test_state_diff_injected_into_opening_context():
     assert "STATE-DIFF-MARKER" in captured["first_user"]
 
 
+def _opening_message(
+    agent_system_prompt: str,
+    transcript: list[dict],
+    state_diff: str | None,
+    evidence: JudgeEvidence | None = None,
+) -> str:
+    return compose_evidence(
+        evidence or JudgeEvidence(),
+        agent_system_prompt=agent_system_prompt,
+        transcript=transcript,
+        state_diff=state_diff,
+        db_reader=None,
+        kb_search=None,
+        extra_read_tools=[],
+        workspace_dir=None,
+        tool_effects=ToolEffects.empty(),
+    ).opening_message
+
+
 def test_opening_message_default_embeds_agent_policy_byte_for_byte():
-    """The default embeds the agent-policy section, and passing the default kwarg
-    explicitly changes nothing — byte-for-byte the ungated call."""
+    """The default embeds the agent-policy section, and declaring the part explicitly
+    changes nothing — byte-for-byte the default."""
     transcript = [{"role": "user", "content": "do the thing"}]
-    ungated = _build_opening_message("AGENT-POLICY-MARKER", transcript, "orders: 1 modified")
-    explicit_default = _build_opening_message(
+    default = _opening_message("AGENT-POLICY-MARKER", transcript, "orders: 1 modified")
+    explicit_default = _opening_message(
         "AGENT-POLICY-MARKER",
         transcript,
         "orders: 1 modified",
-        include_agent_system_prompt=True,
+        JudgeEvidence(agent_policy=True),
     )
-    assert ungated == explicit_default
-    assert "The agent under evaluation operated under this policy" in ungated
-    assert "AGENT-POLICY-MARKER" in ungated
+    assert default == explicit_default
+    assert "The agent under evaluation operated under this policy" in default
+    assert "AGENT-POLICY-MARKER" in default
 
 
 def test_opening_message_gated_omits_agent_policy_section():
-    """When gated, the agent-policy section is absent entirely — neither the
+    """With ``agent_policy`` off the section is absent entirely — neither the
     policy-framing sentence nor the agent prompt text appears — while the
     transcript and state sections are untouched."""
     transcript = [{"role": "user", "content": "do the thing"}]
-    gated = _build_opening_message(
+    gated = _opening_message(
         "AGENT-POLICY-MARKER",
         transcript,
         "orders: 1 modified",
-        include_agent_system_prompt=False,
+        JudgeEvidence(agent_policy=False),
     )
     assert "The agent under evaluation operated under this policy" not in gated
     assert "AGENT-POLICY-MARKER" not in gated
@@ -1315,9 +1339,9 @@ def test_opening_message_ignores_the_tool_call_id_on_the_wire():
         result_message,
     ]
 
-    rendered = _build_opening_message("POLICY", with_id, "orders: 1 modified")
+    rendered = _opening_message("POLICY", with_id, "orders: 1 modified")
 
-    assert rendered == _build_opening_message("POLICY", without_id, "orders: 1 modified")
+    assert rendered == _opening_message("POLICY", without_id, "orders: 1 modified")
     assert 'tool_call refund({"payment_id": "PAY-1"})' in rendered
     assert "call_A" not in rendered
 
@@ -1386,7 +1410,7 @@ def test_marker_contract_is_the_single_source_of_the_tokens(token):
     assert token in _JUDGE_MARKER_CONTRACT
 
 
-def test_custom_system_prompt_heads_the_wire_system_prompt():
+def test_a_customization_system_prompt_heads_the_wire_system_prompt():
     """A judge constructed with a custom prompt sends the custom body at the head of
     the system prompt it puts on the wire, the marker contract after it."""
     rubric = _binary_rubric()
@@ -1397,7 +1421,7 @@ def test_custom_system_prompt_heads_the_wire_system_prompt():
         model_config=_JUDGE_MODEL,
         agent_system_prompt="",
         transcript=[],
-        custom_system_prompt="Grade only the refund.",
+        customization=JudgeCustomization(system_prompt="Grade only the refund."),
         llm_client=custom_client,
     )
     assert custom.status is JudgeStatus.COMPLETED
@@ -1406,8 +1430,8 @@ def test_custom_system_prompt_heads_the_wire_system_prompt():
     assert _JUDGE_MARKER_CONTRACT in custom_client.seen_system
 
 
-def test_include_agent_system_prompt_gates_the_policy_out_of_the_opening_message():
-    """A judge constructed gated withholds the agent-policy section from the
+def test_agent_policy_off_gates_the_policy_out_of_the_opening_message():
+    """A judge with ``agent_policy`` off withholds the agent-policy section from the
     opening message it sends; default construction embeds the policy."""
     rubric = _binary_rubric()
 
@@ -1418,7 +1442,7 @@ def test_include_agent_system_prompt_gates_the_policy_out_of_the_opening_message
         agent_system_prompt="SECRET-AGENT-POLICY-MARKER",
         transcript=[{"role": "user", "content": "do the thing"}],
         db_reader=FakeDBReader(),
-        include_agent_system_prompt=False,
+        customization=JudgeCustomization(evidence={"agent_policy": False}),
         llm_client=gated_client,
     )
     assert gated.status is JudgeStatus.COMPLETED

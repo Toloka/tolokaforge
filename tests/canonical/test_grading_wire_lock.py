@@ -130,8 +130,6 @@ _PREDATES_FLOOR: frozenset[str] = frozenset(
         "grading.grading_method",
         "grading.llm_judge",
         "grading.llm_judge.customization",
-        "grading.llm_judge.customization.disable_knowledge_search",
-        "grading.llm_judge.customization.include_agent_system_prompt",
         "grading.llm_judge.customization.system_prompt",
         "grading.llm_judge.rubric",
         "grading.llm_judge.rubric.criteria",
@@ -809,51 +807,118 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         wire_shape="JudgeCustomization | None",
     ),
     _WireKey(
-        path="grading.llm_judge.customization.disable_knowledge_search",
-        emitted_for="grading.llm_judge.customization",
-        wire_shape="bool | None",
-    ),
-    _WireKey(
         path="grading.llm_judge.customization.system_prompt",
         emitted_for="grading.llm_judge.customization",
         wire_shape="str | None",
     ),
     _WireKey(
-        path="grading.llm_judge.customization.include_agent_system_prompt",
-        emitted_for="grading.llm_judge.customization",
-        wire_shape="bool | None",
-    ),
-    _WireKey(
-        path="grading.llm_judge.customization.judge_snippet_chars",
-        emitted_for="grading.llm_judge.customization.judge_snippet_chars",
-        wire_shape="int | None [ge=1, strict=True]",
-        since=_UNRELEASED,
-        lock=_DocLock(
-            doc_key="grading.llm_judge.customization.judge_snippet_chars",
-            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
-            breadth="a pack setting `customization.judge_snippet_chars` other than 200",
-        ),
-    ),
-    _WireKey(
         path="grading.llm_judge.customization.evidence",
         emitted_for="grading.llm_judge.customization.evidence",
-        wire_shape="Literal['state', 'transcript']",
+        wire_shape="JudgeEvidence",
         since=_UNRELEASED,
         lock=_DocLock(
             doc_key="grading.llm_judge.customization.evidence",
             direction=_Direction.NEW_ENGINE_OLD_IMAGE,
-            breadth="a pack setting `customization.evidence: transcript`",
+            breadth="a pack setting a part of `customization.evidence` away from its default",
         ),
     ),
     _WireKey(
-        path="grading.llm_judge.customization.transcript_tool_chars",
-        emitted_for="grading.llm_judge.customization.transcript_tool_chars",
+        path="grading.llm_judge.customization.evidence.agent_policy",
+        emitted_for="grading.llm_judge.customization.evidence.agent_policy",
+        wire_shape="bool [strict=True]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.evidence.agent_policy",
+            direction=_Direction.BOTH,
+            breadth="a pack setting `customization.evidence.agent_policy: false`",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.evidence.knowledge_search",
+        emitted_for="grading.llm_judge.customization.evidence.knowledge_search",
+        wire_shape="Annotated[bool, strict=True] | KnowledgeSearchOptions",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.evidence.knowledge_search",
+            direction=_Direction.BOTH,
+            breadth="a pack setting `customization.evidence.knowledge_search` other than `true`",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.evidence.knowledge_search.snippet_chars",
+        emitted_for="grading.llm_judge.customization.evidence.knowledge_search",
+        wire_shape="int | None [ge=1, strict=True]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.evidence.knowledge_search.snippet_chars",
+            direction=_Direction.BOTH,
+            breadth="a pack setting `customization.evidence.knowledge_search.snippet_chars`",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.evidence.state_diff",
+        emitted_for="grading.llm_judge.customization.evidence.state_diff",
+        wire_shape="bool [strict=True]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.evidence.state_diff",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack setting `customization.evidence.state_diff: false`",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.evidence.db",
+        emitted_for="grading.llm_judge.customization.evidence.db",
+        wire_shape="bool [strict=True]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.evidence.db",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack setting `customization.evidence.db: false`",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.evidence.workspace",
+        emitted_for="grading.llm_judge.customization.evidence.workspace",
+        wire_shape="bool [strict=True]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.evidence.workspace",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack setting `customization.evidence.workspace: false`",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.evidence.tool_results",
+        emitted_for="grading.llm_judge.customization.evidence.tool_results",
+        wire_shape="Annotated[bool, strict=True] | ToolResultsOptions",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.evidence.tool_results",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack turning `customization.evidence.tool_results` on",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.evidence.tool_results.max_chars",
+        emitted_for="grading.llm_judge.customization.evidence.tool_results",
         wire_shape="int [ge=1, strict=True]",
         since=_UNRELEASED,
         lock=_DocLock(
-            doc_key="grading.llm_judge.customization.transcript_tool_chars",
+            doc_key="grading.llm_judge.customization.evidence.tool_results.max_chars",
             direction=_Direction.NEW_ENGINE_OLD_IMAGE,
-            breadth="a pack setting `customization.transcript_tool_chars` other than 2000",
+            breadth="a pack setting `customization.evidence.tool_results.max_chars`",
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.evidence.state_changing_calls",
+        emitted_for="grading.llm_judge.customization.evidence.state_changing_calls",
+        wire_shape="bool [strict=True]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.evidence.state_changing_calls",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack setting `customization.evidence.state_changing_calls: true`",
         ),
     ),
     _WireKey(
@@ -916,6 +981,19 @@ _RETIRED_WIRE_KEYS: tuple[_RetiredWireKey, ...] = (
         path="grading.transcript_rules.required_actions[].tool_name",
         reason="the element spells the tool it names `name` (#685)",
     ),
+    _RetiredWireKey(
+        path="grading.llm_judge.customization.disable_knowledge_search",
+        reason="the judge's knowledge-search tools are `customization.evidence.knowledge_search`",
+    ),
+    _RetiredWireKey(
+        path="grading.llm_judge.customization.include_agent_system_prompt",
+        reason="the agent's policy in the judge's evidence is `customization.evidence.agent_policy`",
+    ),
+    _RetiredWireKey(
+        path="grading.llm_judge.customization.judge_snippet_chars",
+        reason="the judge's snippet length is "
+        "`customization.evidence.knowledge_search.snippet_chars`",
+    ),
 )
 """Paths no current model may declare. Beside the core-side ``RETIRED_STATE_CHECK_KEYS``
 in ``tolokaforge/core/models/task_config.py``, which refuses the *authored* spellings;
@@ -966,10 +1044,26 @@ def _unwrap_optional(annotation: object) -> tuple[object, bool]:
 
 
 def _nested_model(annotation: object) -> type[BaseModel] | None:
+    """The model a field's value may be: the annotation itself, or the one model of a
+    union whose other members are scalars (``bool | Options``)."""
     inner, _ = _unwrap_optional(annotation)
     if isinstance(inner, type) and issubclass(inner, BaseModel):
         return inner
+    if typing.get_origin(inner) in (typing.Union, types.UnionType):
+        models = [
+            arg
+            for arg in typing.get_args(inner)
+            if isinstance(arg, type) and issubclass(arg, BaseModel)
+        ]
+        if len(models) == 1:
+            return models[0]
     return None
+
+
+def _model_or_scalar(annotation: object) -> bool:
+    """Whether a field's value is a model or, by another union member, a scalar."""
+    inner, _ = _unwrap_optional(annotation)
+    return _nested_model(annotation) is not None and inner is not _nested_model(annotation)
 
 
 def _element_model(annotation: object) -> type[BaseModel] | None:
@@ -1058,7 +1152,8 @@ def _walk_model(
             continue
         _, optional = _unwrap_optional(field.annotation)
         if nested is not None:
-            yield from _walk_model(nested, path, path if optional else gate)
+            gated_here = optional or _model_or_scalar(field.annotation)
+            yield from _walk_model(nested, path, path if gated_here else gate)
         elif element is not None:
             yield from _walk_model(element, f"{path}[]", path)
 

@@ -204,12 +204,12 @@ def test_corpus_entry_from_bundle_state_diff_matches_live_grading_path(
     assert "positions: 1 modified" in entry.state_diff
 
 
-def test_a_transcript_judges_bundle_builds_no_state_diff_and_reads_the_agent_tools(
+def test_a_bundle_whose_judge_leaves_out_the_diff_builds_none_and_reads_the_agent_tools(
     tmp_path: Path,
 ) -> None:
-    """A transcript judge grades with no view of the state, so the entry carries no
-    diff however much the state changed, and its options read the bundle's agent
-    tools' ``mutates_state`` declarations."""
+    """With ``evidence.state_diff`` off the entry carries no diff however much the
+    state changed, and with ``state_changing_calls`` on its options read the bundle's
+    agent tools' ``mutates_state`` declarations."""
     out_dir = tmp_path / "bundle"
     serialize_grade_bundle(
         out_dir,
@@ -222,7 +222,10 @@ def test_a_transcript_judges_bundle_builds_no_state_diff_and_reads_the_agent_too
         kb=None,
         trajectory=_TRAJECTORY,
         grading_config={
-            "llm_judge": {"rubric": _RUBRIC, "customization": {"evidence": "transcript"}}
+            "llm_judge": {
+                "rubric": _RUBRIC,
+                "customization": {"evidence": {"state_diff": False, "state_changing_calls": True}},
+            }
         },
         task_description={
             **_TASK_DESCRIPTION,
@@ -241,7 +244,7 @@ def test_a_transcript_judges_bundle_builds_no_state_diff_and_reads_the_agent_too
     entry = corpus_entry_from_bundle(out_dir)
 
     assert entry.state_diff is None
-    assert entry.options.customization.evidence == "transcript"
+    assert entry.options.customization.evidence.state_changing_calls is True
     assert entry.options.tool_effects.can_change_state("get_seat", "{}") is False
     assert entry.options.tool_effects.can_change_state("move_seat", "{}") is True
 

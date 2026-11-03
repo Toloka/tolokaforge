@@ -1,11 +1,9 @@
 {
-  "include_agent_system_prompt": true,
   "kb_tools_offered": [],
   "kb_tools_withheld": [
     "search_kb",
     "search_policy"
   ],
-  "knowledge_search_disabled": true,
   "offered_tool_names": [
     "submit_report",
     "get_db_state",

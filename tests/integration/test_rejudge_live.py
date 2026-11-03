@@ -65,10 +65,10 @@ _RUBRIC = {
 }
 
 
-def _write_recorded_bundle(trial_dir: Path, *, custom_system_prompt: str | None = None) -> None:
+def _write_recorded_bundle(trial_dir: Path, *, system_prompt: str | None = None) -> None:
     """A transcript-only trial whose recorded judge verdict is met=true.
 
-    When ``custom_system_prompt`` is set, it is recorded under
+    When ``system_prompt`` is set, it is recorded under
     ``grading_config.llm_judge.customization.system_prompt`` so a replay
     reconstructs the custom-prompted judge from the bundle.
     """
@@ -92,8 +92,8 @@ def _write_recorded_bundle(trial_dir: Path, *, custom_system_prompt: str | None 
     )
     writer.write_prompts(trial_dir, _AGENT_PROMPT, "user-sim prompt")
     llm_judge: dict = {"rubric": _RUBRIC}
-    if custom_system_prompt is not None:
-        llm_judge["customization"] = {"system_prompt": custom_system_prompt}
+    if system_prompt is not None:
+        llm_judge["customization"] = {"system_prompt": system_prompt}
     writer.write_task(
         trial_dir,
         {
@@ -163,7 +163,7 @@ def test_custom_prompted_judge_completes_with_marker_intact(tmp_path: Path) -> N
     source = tmp_path / "run"
     _write_recorded_bundle(
         source / "trials" / "refund_task" / "0",
-        custom_system_prompt=(
+        system_prompt=(
             "You are a meticulous refund auditor. Grade only whether the agent quoted "
             "the exact refund amount to the customer; ignore tone and everything else."
         ),

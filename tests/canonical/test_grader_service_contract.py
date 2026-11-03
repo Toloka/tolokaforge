@@ -174,9 +174,8 @@ def test_full_grade_payload_round_trips_through_the_wire() -> None:
             state_diff_text="orders[1]: open -> shipped",
             read_tools_offered=["read_file", "get_db_state"],
             customization=JudgeCustomization(
-                disable_knowledge_search=True,
                 system_prompt="Strict.",
-                include_agent_system_prompt=False,
+                evidence={"knowledge_search": False, "agent_policy": False},
             ),
         ),
         trace_check_results=[

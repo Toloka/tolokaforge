@@ -39,6 +39,7 @@ from tolokaforge.core.grading.judge import (
     LLMJudge,
     model_config_from_ref,
 )
+from tolokaforge.core.grading.judge_evidence import REPLAYED_TOOL_OWNERS
 from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeResult
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
@@ -87,7 +88,14 @@ from tolokaforge.core.output_writer import (
 from tolokaforge.core.plugin_registry import load_judge_kind, load_judge_model_provider
 from tolokaforge.core.project_loader import customization_sources, layer_judge_customization
 from tolokaforge.core.tool_effects import ToolEffects, UnrecordedToolEffectsError
-from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
+from tolokaforge.runner.models import (
+    EvidenceInput,
+    EvidencePartName,
+    JudgeCustomization,
+    JudgeEvidence,
+    LLMJudgeConfig,
+    Rubric,
+)
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
 __all__ = [
@@ -224,19 +232,19 @@ class _OfflineReadTool(Tool):
     """A read tool offered to match the recorded surface but backed offline.
 
     Any call returns the explicit "unavailable in replay" marker. Used for the
-    ``read_file`` workspace reader, any other recorded non-KB read tool the DB
-    shims don't cover, and any non-``search_kb`` KB passthrough (e.g.
-    ``search_policy``) the judge was recorded to have been offered.
+    ``read_file`` workspace reader (owned by the ``workspace`` part) and any
+    non-``search_kb`` KB passthrough (e.g. ``search_policy``, owned by
+    ``knowledge_search``) the judge was recorded to have been offered.
     """
 
-    def __init__(self, name: str, backend: str, *, is_knowledge_search: bool = False) -> None:
+    def __init__(self, name: str, backend: str, *, evidence_part: EvidencePartName) -> None:
         super().__init__(
             name=name,
             description=f"[replay] {name}: {_unavailable(backend)}",
             policy=ToolPolicy(timeout_s=15.0, category=ToolCategory.READ),
         )
         self._backend = backend
-        self.is_knowledge_search = is_knowledge_search
+        self.evidence_part = evidence_part
 
     def get_schema(self) -> dict[str, Any]:
         return {
@@ -484,7 +492,12 @@ def _resolve_rubric(
         return rubric_override, ProvenanceSource.OVERRIDE
     llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
     if isinstance(llm_judge, dict) and llm_judge.get("rubric") is not None:
-        return LLMJudgeConfig.model_validate(llm_judge).rubric, ProvenanceSource.RECORDED
+        try:
+            return LLMJudgeConfig.model_validate(llm_judge).rubric, ProvenanceSource.RECORDED
+        except ValidationError as exc:
+            raise MissingReplayInputError(
+                f"recorded grading_config.llm_judge in the bundle's task.yaml is invalid: {exc}"
+            ) from exc
     raise MissingReplayInputError(
         "no rubric: the bundle's task.yaml has no grading_config.llm_judge.rubric "
         "and no --grading override was supplied"
@@ -498,8 +511,8 @@ def _resolve_judge_kind(
 
     Reads ``judge_kind`` and ``kind_config`` off ``task.yaml.grading_config.llm_judge``
     directly rather than through :meth:`LLMJudgeConfig.model_validate` — the
-    isolated resolvers for the rubric, custom prompt, and agent gating each
-    surface their own field-shape errors, and pre-validating the whole
+    rubric and customization resolvers each surface their own field-shape
+    errors, and pre-validating the whole
     mapping here would collapse those into a single confusing message.
     Legacy trial artifacts without either field land on
     ``LLMJudgeConfig``'s ``("single_shot_rubric", None)`` defaults; an
@@ -628,31 +641,35 @@ def _resolve_customization(
     )
 
 
-#: The views of the final state a judge over it reads.
-_FINAL_STATE_VIEWS = frozenset({"db", "workspace", "state_diff"})
+#: The views of the final state a judge reads, each built only while its part needs it.
+_FINAL_STATE_INPUTS: tuple[EvidenceInput, ...] = (
+    EvidenceInput.STATE_DIFF,
+    EvidenceInput.DB,
+    EvidenceInput.WORKSPACE,
+)
 
 
-def _final_state_views(customization: JudgeCustomization) -> frozenset[str]:
-    return _FINAL_STATE_VIEWS if customization.evidence == "state" else frozenset()
-
-
-def _recorded_views(trial_dir: Path, judge_inputs: JudgeInputs | None) -> frozenset[str]:
+def _recorded_inputs(trial_dir: Path, judge_inputs: JudgeInputs | None) -> frozenset[EvidenceInput]:
     """The views of the final state the bundle recorded for its judge.
 
     A bundle without ``judge_inputs.yaml`` recorded only that the trial had a
     database (``env.yaml``).
     """
     if judge_inputs is None:
-        return frozenset({"db"}) if (trial_dir / ENV_FILENAME).exists() else frozenset()
-    offered = set(judge_inputs.read_tools_offered)
-    views = set()
-    if offered & _DB_READ_TOOLS:
-        views.add("db")
-    if "read_file" in offered:
-        views.add("workspace")
+        return frozenset({EvidenceInput.DB}) if (trial_dir / ENV_FILENAME).exists() else frozenset()
+    owners = {
+        REPLAYED_TOOL_OWNERS[name]
+        for name in judge_inputs.read_tools_offered
+        if name in REPLAYED_TOOL_OWNERS
+    }
+    recorded = {
+        evidence_input
+        for evidence_input in _FINAL_STATE_INPUTS
+        if JudgeEvidence.part_needing(evidence_input) in owners
+    }
     if judge_inputs.state_diff_text is not None:
-        views.add("state_diff")
-    return frozenset(views)
+        recorded.add(EvidenceInput.STATE_DIFF)
+    return frozenset(recorded)
 
 
 def _refuse_views_the_bundle_lacks(
@@ -661,31 +678,37 @@ def _refuse_views_the_bundle_lacks(
     recorded: JudgeCustomization,
     customization: JudgeCustomization,
 ) -> None:
-    """Refuse an override that turns on a view of the final state the bundle never recorded.
+    """Refuse an override that turns on a part whose view of the final state the bundle lacks.
 
     Raises:
-        MissingReplayInputError: naming the key and the views replay cannot rebuild.
+        MissingReplayInputError: naming each such ``evidence`` part.
     """
-    turned_on = _final_state_views(customization) - _final_state_views(recorded)
-    lacking = sorted(turned_on - _recorded_views(trial_dir, judge_inputs))
+    on_the_record = _recorded_inputs(trial_dir, judge_inputs)
+    lacking = [
+        f"evidence.{customization.evidence.part_needing(evidence_input).value}"
+        for evidence_input in _FINAL_STATE_INPUTS
+        if customization.evidence.needs(evidence_input)
+        and not recorded.evidence.needs(evidence_input)
+        and evidence_input not in on_the_record
+    ]
     if lacking:
         raise MissingReplayInputError(
-            f"cannot replay {trial_dir} with customization.evidence: {customization.evidence}: "
-            f"it turns on the judge's {', '.join(lacking)} view of the final state, which the "
-            f"bundle's {JUDGE_INPUTS_FILENAME} does not record (its judge read none of it)"
+            f"cannot replay {trial_dir} with {', '.join(lacking)} turned on: the bundle's "
+            f"{JUDGE_INPUTS_FILENAME} records no such view of the final state (its judge "
+            "read none of it)"
         )
 
 
 def _tool_effects(customization: JudgeCustomization, trial_dir: Path) -> ToolEffects:
-    """The agent tools' declarations a transcript judge reads; empty for a judge over the state.
+    """The agent tools' declarations the ``state_changing_calls`` part reads; empty while it is off.
 
-    The bundle's ``tools_schemas.yaml`` is read only for a transcript judge.
+    The bundle's ``tools_schemas.yaml`` is read only while that part is on.
 
     Raises:
         MissingReplayInputError: the bundle does not record which of the agent's
             calls can change state (:meth:`ToolEffects.from_recorded_schemas`).
     """
-    if customization.evidence != "transcript":
+    if not customization.evidence.needs(EvidenceInput.TOOL_EFFECTS):
         return ToolEffects.empty()
     schemas_path = trial_dir / TOOLS_SCHEMAS_FILENAME
     metrics = _carried_mapping(trial_dir / METRICS_FILENAME) or {}
@@ -696,7 +719,9 @@ def _tool_effects(customization: JudgeCustomization, trial_dir: Path) -> ToolEff
             source=schemas_path,
         )
     except UnrecordedToolEffectsError as exc:
-        raise MissingReplayInputError(f"a transcript judge cannot replay: {exc}") from exc
+        raise MissingReplayInputError(
+            f"evidence.state_changing_calls cannot replay: {exc}"
+        ) from exc
 
 
 def _resolve_judge_model(
@@ -714,39 +739,44 @@ def _resolve_judge_model(
     )
 
 
-#: The judge's read-only DB tools, offered together when it has a DB reader.
-_DB_READ_TOOLS = frozenset({"get_db_state", "query_db"})
-
-
 def _offline_read_surface(
     trial_dir: Path,
     judge_inputs: JudgeInputs | None,
     kb_gating: dict[str, Any] | None,
     customization: JudgeCustomization,
 ) -> tuple[DBReader | None, KnowledgeSearch | None, list[Tool]]:
-    """Reconstruct the offline read-tool surface the customization enables, as recorded.
+    """Reconstruct the offline read-tool surface the customization's parts enable, as recorded.
 
-    New bundles carry the authoritative non-KB surface in ``judge_inputs.yaml``,
-    shimmed only for a judge over the final state; old bundles lack it, and
-    ``env.yaml`` presence is the only signal that the judge had DB reads. The KB
-    surface is the union of ``grade.yaml`` ``judge_kb_gating`` ``offered`` +
-    ``withheld`` — a KB the recorded run withheld must still yield a shim, so an
-    override turning knowledge search back on can offer it
-    (:func:`_build_judge_registry`'s disable flag does the gating).
+    New bundles carry the authoritative final-state read surface in
+    ``judge_inputs.yaml``; each recorded tool is shimmed only while the part that owns
+    it (:data:`~tolokaforge.core.grading.judge_evidence.REPLAYED_TOOL_OWNERS`) is on.
+    Old bundles lack it, and ``env.yaml`` presence is the only signal that the judge
+    had DB reads. The KB surface is the union of ``grade.yaml`` ``judge_kb_gating``
+    ``offered`` + ``withheld``, shimmed whatever the ``knowledge_search`` part says:
+    the judge withholds them while the part is off and records them as withheld, as
+    the live judge did.
+
+    Raises:
+        MissingReplayInputError: ``judge_inputs.yaml`` records a read tool no part owns.
     """
+    evidence = customization.evidence
     db_reader: DBReader | None = None
     kb_search: KnowledgeSearch | None = None
     extra: list[Tool] = []
 
-    if customization.evidence == "state" and judge_inputs is not None:
-        if set(judge_inputs.read_tools_offered) & _DB_READ_TOOLS:
-            db_reader = OfflineDBReader()
+    if judge_inputs is not None:
         for name in judge_inputs.read_tools_offered:
-            if name == "read_file":
-                extra.append(_OfflineReadTool(name, "workspace"))
-            elif name not in _DB_READ_TOOLS:
-                extra.append(_OfflineReadTool(name, name))
-    elif customization.evidence == "state" and (trial_dir / ENV_FILENAME).exists():
+            owner = REPLAYED_TOOL_OWNERS.get(name)
+            if owner is None:
+                raise MissingReplayInputError(
+                    f"{trial_dir / JUDGE_INPUTS_FILENAME} records read tool {name!r}, which "
+                    f"no evidence part owns (known: {sorted(REPLAYED_TOOL_OWNERS)})"
+                )
+            if owner is EvidencePartName.DB and evidence.needs(EvidenceInput.DB):
+                db_reader = OfflineDBReader()
+            elif owner is EvidencePartName.WORKSPACE and evidence.needs(EvidenceInput.WORKSPACE):
+                extra.append(_OfflineReadTool(name, "workspace", evidence_part=owner))
+    elif evidence.needs(EvidenceInput.DB) and (trial_dir / ENV_FILENAME).exists():
         db_reader = OfflineDBReader()
 
     gating = kb_gating or {}
@@ -754,7 +784,9 @@ def _offline_read_surface(
         if name == "search_kb":
             kb_search = OfflineKnowledgeSearch()
         else:
-            extra.append(_OfflineReadTool(name, name, is_knowledge_search=True))
+            extra.append(
+                _OfflineReadTool(name, name, evidence_part=EvidencePartName.KNOWLEDGE_SEARCH)
+            )
 
     return db_reader, kb_search, extra
 
@@ -820,7 +852,6 @@ def read_replay_inputs(
     db_reader, kb_search, extra_read_tools = _offline_read_surface(
         trial_dir, judge_inputs, (grade or {}).get("judge_kb_gating"), customization
     )
-    reads_state = customization.evidence == "state"
     provenance = ReplayProvenance(
         judge_model=f"{judge_model_config.provider}/{judge_model_config.name}",
         judge_model_source=judge_model_source,
@@ -841,7 +872,9 @@ def read_replay_inputs(
         agent_system_prompt=agent_system_prompt,
         transcript=transcript,
         state_diff=(
-            judge_inputs.state_diff_text if reads_state and judge_inputs is not None else None
+            judge_inputs.state_diff_text
+            if judge_inputs is not None and customization.evidence.needs(EvidenceInput.STATE_DIFF)
+            else None
         ),
         judge_model_config=judge_model_config,
         options=JudgeTrialOptions(
@@ -900,9 +933,10 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
     from tolokaforge.core.grading.judge_only_helpers import _FixedClientJudgeModelProvider
 
     if inputs.explicit_system_prompt is not None:
-        judge = LLMJudge.from_options(
+        judge = LLMJudge(
             inputs.judge_model_config,
-            inputs.options,
+            customization=inputs.options.customization,
+            tool_effects=inputs.options.tool_effects,
             explicit_system_prompt=inputs.explicit_system_prompt,
             llm_client=judge_client,
         )

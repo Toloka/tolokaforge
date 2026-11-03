@@ -47,10 +47,11 @@ def test_no_customization_is_the_library_default() -> None:
 
 def test_the_options_carry_the_customization_they_were_resolved_from() -> None:
     customization = JudgeCustomization(
-        disable_knowledge_search=True,
         system_prompt="Grade strictly.",
-        include_agent_system_prompt=False,
-        judge_snippet_chars=None,
+        evidence={
+            "knowledge_search": {"snippet_chars": None},
+            "agent_policy": False,
+        },
     )
     assert resolve_judge_trial_options(customization, agent_tools=()).customization is (
         customization
@@ -90,24 +91,47 @@ def _judge_only_customization(
     ("task_customization", "run_judge", "recorded"),
     [
         (
-            {"system_prompt": "Task voice.", "include_agent_system_prompt": False},
+            {"system_prompt": "Task voice.", "evidence": {"agent_policy": False}},
             {"system_prompt": "Run voice."},
-            JudgeCustomization(system_prompt="Run voice.", include_agent_system_prompt=False),
+            JudgeCustomization(system_prompt="Run voice.", evidence={"agent_policy": False}),
         ),
         (
-            {"system_prompt": "Task voice.", "judge_snippet_chars": 50},
+            {
+                "system_prompt": "Task voice.",
+                "evidence": {"knowledge_search": {"snippet_chars": 50}},
+            },
             {"system_prompt": None},
-            JudgeCustomization(judge_snippet_chars=50),
+            JudgeCustomization(evidence={"knowledge_search": {"snippet_chars": 50}}),
         ),
-        ({"judge_snippet_chars": 50}, {"judge_snippet_chars": 200}, JudgeCustomization()),
+        (
+            {"evidence": {"knowledge_search": {"snippet_chars": 50}}},
+            {"evidence": {"knowledge_search": True}},
+            JudgeCustomization(),
+        ),
+        (
+            {"evidence": {"db": False, "tool_results": True}},
+            {"evidence": {"db": True}},
+            JudgeCustomization(evidence={"tool_results": True}),
+        ),
         (
             None,
-            {"disable_knowledge_search": True},
-            JudgeCustomization(disable_knowledge_search=True),
+            {"evidence": {"knowledge_search": False}},
+            JudgeCustomization(evidence={"knowledge_search": False}),
         ),
-        ({"evidence": "transcript"}, {}, JudgeCustomization(evidence="transcript")),
+        (
+            {"evidence": {"tool_results": {"max_chars": 9}}},
+            {},
+            JudgeCustomization(evidence={"tool_results": {"max_chars": 9}}),
+        ),
     ],
-    ids=["one-key-inherits", "null-resets-prompt", "default-resets-snippet", "over-none", "empty"],
+    ids=[
+        "one-key-inherits",
+        "null-resets-prompt",
+        "true-resets-snippet",
+        "one-part-inherits",
+        "over-none",
+        "empty",
+    ],
 )
 def test_the_run_level_layer_wins_on_the_keys_it_sets_and_the_grade_records_the_result(
     task_customization: dict[str, Any] | None,

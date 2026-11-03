@@ -751,8 +751,8 @@ or indexed text that tokenizes to no term at all.
 
 The judge's `search_kb` reads the same index with the same ranking and gets whole
 documents as `SearchHit.text`, with their titles; how much of each it shows is
-`grading.llm_judge.customization.judge_snippet_chars` (200 characters by default,
-`null` for whole documents). A built corpus is cached in the runner process by the
+`grading.llm_judge.customization.evidence.knowledge_search.snippet_chars` (200
+characters by default, `null` for whole documents). A built corpus is cached in the runner process by the
 corpus files' content and the config, so the trials of one task share one index.
 
 ```yaml
@@ -823,26 +823,27 @@ llm_judge:                                 # the judge MODEL is set once per run
                                            # performs no shape checks and never
                                            # walks expand_secret_refs over it.
   customization:                           # optional; sibling of rubric
-    disable_knowledge_search: true         # tri-state (unset | true | false):
-                                           # true withholds every knowledge-search
-                                           # tool from the JUDGE (agent untouched)
                                            # system_prompt (optional str | null):
                                            # replace the judge's default grading-stance
                                            # body; the marker contract is always
                                            # appended by the harness
     system_prompt: |
       Grade strictly against the policy.
-    include_agent_system_prompt: false     # tri-state (unset | true | false):
-                                           # false omits the agent's policy from the
-                                           # judge's opening-message evidence
-                                           # (evidence gating; agent untouched)
-    judge_snippet_chars: null              # int >= 1 | null (default 200): how
-                                           # much of each hit the judge's search_kb
-                                           # shows; null = whole documents
-    evidence: transcript                   # state (default) | transcript: grade
-                                           # from the transcript alone, no state
-    transcript_tool_chars: 2000            # int >= 1 (default 2000): each tool
-                                           # result's inline length (transcript only)
+    evidence:                              # what the judge is shown; each part is
+                                           # false (off), true (on, default options)
+                                           # or a mapping (on, with options)
+      agent_policy: false                  # default true: the agent's policy in the
+                                           # judge's opening message (agent untouched)
+      knowledge_search:                    # default true: the agent's KB tools
+        snippet_chars: null                # int >= 1 | null (default 200): how much
+                                           # of each hit search_kb shows; null = whole
+      state_diff: true                     # default true: the initial → final diff
+      db: true                             # default true: get_db_state / query_db
+      workspace: true                      # default true: read_file
+      tool_results: false                  # default false; true == {max_chars: 2000}:
+                                           # number results [call N], cut, show_call
+      state_changing_calls: false          # default false: list the agent's calls
+                                           # that can change state
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth
       The correct order total is $42.50 with apple_pay.
@@ -912,44 +913,52 @@ options bag; the framework performs zero shape checks on it and never walks
 own slice inside `evaluate`.
 
 `customization` is an optional block, sibling of `rubric`, holding judge-side
-settings. `disable_knowledge_search` is tri-state (`unset` | `true` | `false`):
-`true` removes every knowledge-search tool from the judge's schema (rag
-`search_kb`, the `search_policy` passthrough, any future KB backend) — the
-*agent's* tools are untouched. `system_prompt` (`str | None`) replaces the judge's
-default grading-stance body; the harness always appends the marker contract, so a
-custom prompt can never break `submit_report` validation.
-`include_agent_system_prompt` (`bool | None`) controls whether the agent's policy is
-embedded in the judge's opening-message evidence: unset/`true` include it (the
-default), `false` omits it (evidence gating, distinct from `system_prompt`'s
-wording). `judge_snippet_chars` (`int >= 1 | None`, default `200`) is how much of
-each hit's content the judge's `search_kb` shows: the first that many characters,
-or the whole document for `null`; it is not tri-state, so a task writes `200` to
-undo a project figure. It does not apply to a TypeSense task's `search_policy`
-passthrough (`DelegatingReadTool`), which renders the agent's own tool output
-verbatim. `evidence` (`state` | `transcript`, default `state`) is what the judge
-grades from: `transcript` gives it no view of the final state (no state diff, no DB
-or workspace tools) and grades from the transcript, the agent's state-changing calls
-and `show_call` — see [GRADING.md](GRADING.md#transcript-only-judge); which calls
-can change state is each tool's `mutates_state` declaration in `task.yaml`.
-`transcript_tool_chars` (`int >= 1`, default `2000`) is read by the `transcript` judge
-alone and is inert under `state`. Omitting the block leaves the judge at the faithful
-default. Every judge
-kind receives these settings resolved as one `JudgeTrialOptions` (see
-[JUDGE_KINDS.md](JUDGE_KINDS.md#protocol-contract)). All fields
-layer project → task → run → replay, key by key: a project default under
+settings. `system_prompt` (`str | None`) replaces the judge's default grading-stance
+body; the harness always appends the marker contract, so a custom prompt can never
+break `submit_report` validation. `evidence` is what the judge is shown, as seven
+named parts; each is `false` (off), `true` (on with its default options) or a mapping
+(on with those options), and the defaults are the judge over the final state:
+
+| part | default | what it shows the judge |
+|---|---|---|
+| `agent_policy` | `true` | the agent's policy / system prompt in the opening message |
+| `knowledge_search` | `true` | the knowledge-search tools the agent had (rag `search_kb`, the `search_policy` passthrough, any future KB backend); `{snippet_chars: N}` is how much of each hit `search_kb` shows (default `200`, `null` for whole documents — not for `search_policy`, which renders the agent's own tool output verbatim) |
+| `state_diff` | `true` | the `initial → final` diff of the database state |
+| `db` | `true` | `get_db_state` / `query_db` over the final database state |
+| `workspace` | `true` | `read_file` over the agent's workspace, when one exists |
+| `tool_results` | `false` | every tool result numbered `[call N]` and cut at `{max_chars: N}` (default `2000`), with `show_call` returning it in full |
+| `state_changing_calls` | `false` | the agent's calls that can change state, by each tool's `mutates_state` declaration in `task.yaml`; on without `tool_results`, the results are numbered and not cut |
+
+Turning a part off removes it — a tool is absent from the judge's schema, not
+stubbed — and the *agent's* tools are untouched. A judge from the transcript alone is
+`{state_diff: false, db: false, workspace: false, tool_results: true,
+state_changing_calls: true}`; see [GRADING.md § Judge evidence](GRADING.md#judge-evidence).
+Omitting the block leaves the judge at the faithful default. Every judge kind receives
+these settings resolved as one `JudgeTrialOptions` (see
+[JUDGE_KINDS.md](JUDGE_KINDS.md#protocol-contract)). All fields layer project → task →
+run → replay, key by key and part by part: a project default under
 `grading_defaults.llm_judge.customization`, the task's own block over it
-(`system_prompt: null` resets a project prompt; `include_agent_system_prompt: true`
-(explicit re-include) or `null` (reset) both override a project `false`, see
-[PROJECTS.md](PROJECTS.md#task-override-semantics)), the run-level `grader.judge`
-block of the `judge_only` grader over that (see
+(`system_prompt: null` resets a project prompt; `knowledge_search: true` resets a
+project's `snippet_chars`, see [PROJECTS.md](PROJECTS.md#task-override-semantics)), the
+run-level `grader.judge` block of the `judge_only` grader over that (see
 [GRADER_SERVICE.md](GRADER_SERVICE.md)), and a `tolokaforge rejudge --grading`
 document over the recorded result (see [JUDGE_REPLAY.md](JUDGE_REPLAY.md#judge-customization)).
 A key a layer sets wins, `null` included; a key it leaves out inherits. The
 effective customization a trial was graded under is recorded as
 [`judge_inputs.yaml customization`](OUTPUT_FORMAT.md#trialstask_idtrial_indexjudge_inputsyaml). A malformed value,
-an empty/whitespace-only `system_prompt`, or an unknown key under `customization`
-is rejected loudly at load. See
-[GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the
+an empty/whitespace-only `system_prompt`, or an unknown key or part under
+`customization` is rejected loudly at load, and so is a key `evidence` replaced, with
+a message naming its replacement:
+
+| written | replaced by |
+|---|---|
+| `disable_knowledge_search: true` / `false` | `evidence.knowledge_search: false` / `true` |
+| `include_agent_system_prompt: false` / `true` | `evidence.agent_policy: false` / `true` |
+| `judge_snippet_chars: N` / `null` | `evidence.knowledge_search: {snippet_chars: N}` / `{snippet_chars: null}` |
+| `transcript_tool_chars: N` | `evidence.tool_results: {max_chars: N}` |
+| `evidence: state` / `evidence: transcript` | no `evidence` / the transcript-only parts above |
+
+See [GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the
 two weighting layers, and the fail-loud ERRORED status.
 
 ## Environment Variables

@@ -49,7 +49,7 @@ uv run tolokaforge rejudge --source <run-dir> \
 
 # Re-judge under a different judge customization, keeping the recorded rubric.
 uv run tolokaforge rejudge --source <run-dir> --grading customization.yaml
-#   customization.yaml:  llm_judge: {customization: {disable_knowledge_search: true}}
+#   customization.yaml:  llm_judge: {customization: {evidence: {knowledge_search: false}}}
 ```
 
 | Flag | Meaning |
@@ -184,8 +184,10 @@ with the `--grading` document's `llm_judge.customization` layered over it by the
 layering every config layer goes through
 (`tolokaforge.core.project_loader.layer_judge_customization`). A key the override
 sets wins, `null` included; a key it leaves out keeps its recorded value; a key
-neither sets holds its default. A rubric-only override therefore changes no
-customization key, and a customization-only override keeps the recorded rubric.
+neither sets holds its default. The parts of `evidence` layer one at a time, so
+`{evidence: {db: false}}` changes that part alone. A rubric-only override therefore
+changes no customization key, and a customization-only override keeps the recorded
+rubric.
 
 **The record** is `judge_inputs.yaml customization`: the effective customization
 the trial was graded under, after the project, task and run-level `grader.judge`
@@ -221,28 +223,34 @@ resets it to the default body), and a `judge_only` trial whose run-level
 ### Read tools the customization turns on
 
 The offline read surface is the recorded one, filtered by the resolved
-customization: a judge over the final state gets the DB and `read_file` shims and
-the recorded `state_diff`; a [transcript judge](GRADING.md#transcript-only-judge)
-gets none of them, whatever the bundle recorded. Knowledge-search shims cover every
-KB tool the recorded judge was offered or withheld, so `disable_knowledge_search`
-in an override withholds a recorded KB and `false` offers back one the run
-withheld.
+[evidence parts](GRADING.md#judge-evidence): each recorded read tool is shimmed only
+while the part that owns it is on — `get_db_state` / `query_db` for `db`, `read_file`
+for `workspace` — and the recorded `state_diff` reaches the judge only while
+`state_diff` is on. A recorded read tool no part owns is refused. Knowledge-search
+shims cover every KB tool the recorded judge was offered or withheld, so
+`evidence.knowledge_search: false` in an override withholds a recorded KB and `true`
+offers back one the run withheld.
 
-An override that turns on a view of the final state the bundle never recorded is
-refused, naming `customization.evidence` and the missing views: a transcript judge
-read no state, so its bundle records no DB reads, workspace reads or state diff to
-rebuild one over. The test is the recorded surface (`judge_inputs.yaml
-read_tools_offered` and `state_diff_text`, or `env.yaml` on a bundle predating
-them).
+An override that turns on a part whose view of the final state the bundle never
+recorded is refused, naming each such `evidence.*` part: a judge without it read no
+state, so its bundle records no DB reads, workspace reads or state diff to rebuild
+one over. The test is the recorded surface (`judge_inputs.yaml read_tools_offered`
+and `state_diff_text`, or `env.yaml` on a bundle predating them), never the recorded
+customization.
 
 `show_call` is rebuilt from the recorded transcript, never shimmed. Which of the
 agent's calls can change state comes from each tool's `mutates_state` on its
 [`tools_schemas.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indextools_schemasyaml)
-entry, recorded whatever the judge graded from, so a state judge replayed as a
-transcript judge lists the same calls as a live transcript judge would. That file
-is read only for a transcript judge: a bundle below generation 8 records no
-declarations and is refused for a transcript replay, while it replays as a judge
-over the state.
+entry, recorded whatever the judge graded from, so a judge replayed with
+`state_changing_calls` on lists the same calls as a live one would. That file is read
+only while `state_changing_calls` is on: a bundle below generation 8 records no
+declarations and is refused for such a replay, while it replays under every other
+part.
+
+A bundle whose recorded customization carries a key `evidence` replaced
+(`disable_knowledge_search`, `include_agent_system_prompt`, `judge_snippet_chars`) is
+refused, naming the `evidence.*` key that replaces it; there is no reader for the
+old spelling.
 
 ## New-vs-old bundle replayability
 

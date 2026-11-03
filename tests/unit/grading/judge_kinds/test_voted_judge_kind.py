@@ -120,9 +120,9 @@ def test_k_identical_samples_merge_to_same_verdict() -> None:
     assert result.score == pytest.approx(1.0)
 
 
-def test_every_sample_of_a_transcript_judge_reads_the_transcript_view() -> None:
-    """The voted kind hands its options to every sample unchanged, so each sample is
-    a transcript judge: ``show_call`` offered, no DB tools."""
+def test_every_sample_reads_the_evidence_parts_of_its_options() -> None:
+    """The voted kind hands its options to every sample unchanged, so each sample
+    reads the same parts: ``show_call`` offered, no DB tools."""
     rubric = _binary_rubric(1)
     clients = [ScriptedClient([_submit_call(rubric.criteria)]) for _ in range(3)]
     provider = _QueuedProvider(list(clients))  # type: ignore[arg-type]
@@ -131,7 +131,17 @@ def test_every_sample_of_a_transcript_judge_reads_the_transcript_view() -> None:
         rubric,
         provider=provider,
         kind_config={"n_samples": 3},
-        options=JudgeTrialOptions(customization=JudgeCustomization(evidence="transcript")),
+        options=JudgeTrialOptions(
+            customization=JudgeCustomization(
+                evidence={
+                    "state_diff": False,
+                    "db": False,
+                    "workspace": False,
+                    "tool_results": True,
+                    "state_changing_calls": True,
+                }
+            )
+        ),
     )
 
     assert result.status is JudgeStatus.COMPLETED

@@ -153,8 +153,8 @@ rest.
 
 `mutates_state` on a tool block says whether the tool's calls can change the graded state
 ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)), where the tool's author has not
-said. The [transcript-only judge](GRADING.md#transcript-only-judge) reads it to list the
-agent's state-changing calls; an undeclared tool's every call counts as one.
+said. The judge's [`state_changing_calls` evidence part](GRADING.md#judge-evidence) reads
+it to list the agent's state-changing calls; an undeclared tool's every call counts as one.
 
 ```yaml
 tools:

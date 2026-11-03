@@ -61,8 +61,12 @@ class SingleShotRubricJudgeKind:
     ) -> JudgeResult:
         del kind_config  # reserved on the Protocol for downstream kinds
         judge_model = judge_model_provider.build(judge_model_config)
-        return LLMJudge.from_options(
-            judge_model_config, options, llm_client=judge_model, logger=logger
+        return LLMJudge(
+            judge_model_config,
+            customization=options.customization,
+            tool_effects=options.tool_effects,
+            llm_client=judge_model,
+            logger=logger,
         ).run(
             rubric=rubric,
             agent_system_prompt=agent_system_prompt,

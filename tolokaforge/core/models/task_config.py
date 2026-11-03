@@ -1169,8 +1169,9 @@ class LLMJudgeDefaults(BaseModel):
 
     Carries only ``customization`` — a project default never carries a rubric
     (that is required per-task on :class:`LLMJudgeConfig`). ``customization``
-    deep-merges under each task's own ``llm_judge.customization``, tri-state
-    preserved (an unset task key never overrides a set project key)."""
+    deep-merges under each task's own ``llm_judge.customization``, part by part
+    under ``evidence`` (a key the task leaves out never overrides a set project
+    key)."""
 
     customization: JudgeCustomization | None = None
 

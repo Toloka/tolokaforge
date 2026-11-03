@@ -22,12 +22,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
+    from tolokaforge.runner.models import EvidencePartName
 
 __all__ = [
     "SEARCH_KB_TOOL_NAME",
@@ -211,16 +211,9 @@ class SearchKbTool(Tool):
     the backend surfaces as a tool error (never silently empty results).
     """
 
-    #: Intrinsic knowledge-search tag: this tool always reads a knowledge base, so
-    #: the judge registry gates it under ``disable_knowledge_search``. Classification
-    #: is by this declared tag, never by tool name.
-    is_knowledge_search = True
-
-    def __init__(
-        self, kb_search: KnowledgeSearch, *, snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
-    ):
+    def __init__(self, kb_search: KnowledgeSearch, *, snippet_chars: int | None):
         """``snippet_chars`` is how much of each hit's text the judge reads
-        (``grading.llm_judge.customization.judge_snippet_chars``): the first that
+        (``customization.evidence.knowledge_search.snippet_chars``): the first that
         many characters with an ellipsis when cut, or the whole document for ``None``."""
         super().__init__(
             name=SEARCH_KB_TOOL_NAME,
@@ -335,16 +328,15 @@ class DelegatingReadTool(Tool):
         parameters: dict[str, Any],
         invoke: Callable[[dict[str, Any]], str],
         *,
-        knowledge_search: bool = False,
+        evidence_part: EvidencePartName,
     ):
+        """``evidence_part`` is the part of the judge's evidence that owns the tool
+        (``knowledge_search`` for a ``search_policy`` passthrough): it is offered only
+        while that part is on, and classified by this tag, never by its name."""
         super().__init__(name=name, description=description, policy=read_only_policy())
         self._parameters = parameters
         self._invoke = invoke
-        # Declared knowledge-search tag: the runner sets this True for the
-        # ``search_policy`` passthrough so the judge registry gates it under
-        # ``disable_knowledge_search``. A passthrough over a non-KB read tool leaves
-        # it False and is never gated. Classification is by this tag, never by name.
-        self.is_knowledge_search = knowledge_search
+        self.evidence_part = evidence_part
 
     def get_schema(self) -> dict[str, Any]:
         return {

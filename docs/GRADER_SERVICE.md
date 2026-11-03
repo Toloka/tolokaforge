@@ -121,9 +121,8 @@ grader:
     backend: in_memory
     worker_grader: grader_rpc  # each worker dials the standalone grader
   judge:                     # ignored while name != judge_only
-    disable_knowledge_search: true
     system_prompt: "Strict factual judge."
-    include_agent_system_prompt: false
+    evidence: {knowledge_search: false, agent_policy: false}
 ```
 
 Shipped source of truth:

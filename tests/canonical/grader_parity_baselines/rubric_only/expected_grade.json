@@ -21,7 +21,7 @@
     "completion_tokens": 5,
     "consistency_rejections": 0,
     "cost_usd": 0.001,
-    "customization_json": "{\"disable_knowledge_search\":null,\"system_prompt\":null,\"include_agent_system_prompt\":null}",
+    "customization_json": "{\"system_prompt\":null}",
     "kb_tools_offered": [],
     "kb_tools_withheld": [],
     "prompt_tokens": 10,

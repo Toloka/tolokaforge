@@ -26,9 +26,8 @@ transcript:
   - role: assistant
     content: '...'
 state_diff: null            # or a rendered diff string
-disable_knowledge_search: false
-custom_system_prompt: null
-include_agent_system_prompt: true
+customization:              # a JudgeCustomization: system_prompt, evidence parts
+  system_prompt: null
 judge_scripts:
   single_shot_rubric:
     - - name: submit_report

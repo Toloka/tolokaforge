@@ -21,7 +21,6 @@ import json
 from pathlib import Path
 
 from tolokaforge.core.grading.bundle import load_grade_bundle
-from tolokaforge.core.grading.composite import judge_reads_final_state
 from tolokaforge.core.grading.judge_kinds import resolve_judge_trial_options
 from tolokaforge.core.grading.judge_kinds.parity import ParityCorpusEntry
 from tolokaforge.core.grading.state_diff import render_state_diff
@@ -30,7 +29,7 @@ from tolokaforge.core.grading.transcript_wire import (
     split_leading_system_message,
 )
 from tolokaforge.core.models.trajectory import Trajectory
-from tolokaforge.runner.models import RunnerGradingConfig, TaskDescription
+from tolokaforge.runner.models import EvidenceInput, RunnerGradingConfig, TaskDescription
 
 
 def corpus_entry_from_bundle(bundle_dir: Path) -> ParityCorpusEntry:
@@ -68,9 +67,12 @@ def corpus_entry_from_bundle(bundle_dir: Path) -> ParityCorpusEntry:
     llm_messages = json.loads(wire_str) if wire_str else []
     agent_system_prompt, transcript = split_leading_system_message(llm_messages)
 
+    options = resolve_judge_trial_options(
+        grading_config.llm_judge.customization, agent_tools=task_description.agent_tools
+    )
     initial_state = json.loads(bundle.open_part("initial_state.json"))
     state_diff = None
-    if initial_state and judge_reads_final_state(grading_config.llm_judge):
+    if initial_state and options.customization.evidence.needs(EvidenceInput.STATE_DIFF):
         final_state = json.loads(bundle.open_part("final_state.json"))
         primary_keys: dict[str, str | list[str]] = {
             s.table_name: s.primary_key for s in task_description.initial_state.schemas
@@ -91,9 +93,7 @@ def corpus_entry_from_bundle(bundle_dir: Path) -> ParityCorpusEntry:
         transcript=transcript,
         state_diff=state_diff,
         judge_scripts={},
-        options=resolve_judge_trial_options(
-            grading_config.llm_judge.customization, agent_tools=task_description.agent_tools
-        ),
+        options=options,
     )
 
 

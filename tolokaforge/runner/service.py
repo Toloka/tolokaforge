@@ -171,6 +171,7 @@ from tolokaforge.runner.id_resolution import (
     compute_diff_ops,
 )
 from tolokaforge.runner.models import (
+    EvidencePartName,
     KeyAccountingRecord,
     RecordedToolCall,
     RunnerInitialStateConfig,
@@ -3311,7 +3312,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     description=schema.description,
                     parameters=schema.parameters,
                     invoke=_make_invoke(agent_tool),
-                    knowledge_search=True,
+                    evidence_part=EvidencePartName.KNOWLEDGE_SEARCH,
                 )
             )
 

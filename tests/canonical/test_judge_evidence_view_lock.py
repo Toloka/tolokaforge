@@ -1,19 +1,20 @@
 """Lock what the rubric judge is shown: its opening message and its tool surface.
 
-Each fixture drives the public ``LLMJudge.from_options(...).run(...)`` with a scripted
+Each fixture drives the public ``LLMJudge(customization=...).run(...)`` with a scripted
 client and snapshots, per evidence combination, the opening message, the tool schemas
-the model was offered (in order), the results of any tool the script calls, the surface
-facts the result records (``read_tools_offered``, the KB offered / withheld lists), and
-the KB and agent-policy settings of the customization the judge was built from. Together the fixtures reach every branch of the opening
-message (policy shown / gated off / blank; state diff present / blank) and of the
-tool registry (DB reader; ``search_kb`` with a cut or whole snippet; KB-tagged and
-non-KB extra tools; KB withheld; workspace present / missing). One fixture grades
-from the transcript alone: numbered, cut results, the state-changing calls block
-(a read left out, a failed write, an unanswered call) and ``show_call``.
+the model was offered (in order), the results of any tool the script calls, and the
+surface facts the result records (``read_tools_offered``, the KB offered / withheld
+lists). Together the fixtures reach every branch of the opening message (policy shown /
+gated off / blank; state diff present / blank) and of the tool surface (DB reader;
+``search_kb`` with a cut or whole snippet; extras owned by ``knowledge_search`` and by
+``db``; KB withheld; workspace present / missing). One fixture grades from the
+transcript alone: numbered, cut results, the state-changing calls block (a read left
+out, a failed write, an unanswered call) and ``show_call``.
 """
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 from typing import Any
 
@@ -21,13 +22,18 @@ import pytest
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge import LLMJudge
-from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.tool_effects import ToolEffects
-from tolokaforge.runner.models import JudgeCustomization, Rubric, ToolSchema
+from tolokaforge.runner.models import (
+    EvidenceInput,
+    EvidencePartName,
+    JudgeCustomization,
+    Rubric,
+    ToolSchema,
+)
 
 pytestmark = pytest.mark.canonical
 
@@ -169,7 +175,7 @@ def _search_policy_passthrough() -> DelegatingReadTool:
         "Search the shop policy",
         {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
         lambda args: f"policy hits for {args.get('q')}",
-        knowledge_search=True,
+        evidence_part=EvidencePartName.KNOWLEDGE_SEARCH,
     )
 
 
@@ -179,6 +185,7 @@ def _order_lookup_passthrough() -> DelegatingReadTool:
         "Read one order",
         {"type": "object", "properties": {"order_id": {"type": "string"}}},
         lambda args: f"order {args.get('order_id')}",
+        evidence_part=EvidencePartName.DB,
     )
 
 
@@ -216,12 +223,12 @@ _FIXTURES: dict[str, dict[str, Any]] = {
         "script": [[_SEARCH_KB_CALL]],
     },
     "e_kb_whole_documents": {
-        "customization": {"judge_snippet_chars": None},
+        "customization": {"evidence": {"knowledge_search": {"snippet_chars": None}}},
         "evidence": {"kb": True},
         "script": [[_SEARCH_KB_CALL]],
     },
     "f_kb_disabled": {
-        "customization": {"disable_knowledge_search": True},
+        "customization": {"evidence": {"knowledge_search": False}},
         "evidence": {
             "kb": True,
             "extras": [_search_policy_passthrough, _order_lookup_passthrough],
@@ -229,7 +236,7 @@ _FIXTURES: dict[str, dict[str, Any]] = {
         },
     },
     "g_policy_off": {
-        "customization": {"include_agent_system_prompt": False},
+        "customization": {"evidence": {"agent_policy": False}},
         "evidence": {"db": True, "state_diff": _STATE_DIFF},
     },
     "h_user_tool_steps": {
@@ -237,7 +244,15 @@ _FIXTURES: dict[str, dict[str, Any]] = {
         "evidence": {"db": True},
     },
     "i_transcript_only": {
-        "customization": {"evidence": "transcript"},
+        "customization": {
+            "evidence": {
+                "state_diff": False,
+                "db": False,
+                "workspace": False,
+                "tool_results": True,
+                "state_changing_calls": True,
+            }
+        },
         "tool_effects": ToolEffects.from_schemas(
             [
                 _agent_tool("get_order", False),
@@ -274,12 +289,12 @@ def _evidence_kwargs(evidence: dict[str, Any], tmp_path: Path) -> dict[str, Any]
 def test_default_judge_view_matches_snapshot(fixture_name: str, tmp_path: Path, canon_snapshot):
     fixture = _FIXTURES[fixture_name]
     client = _RecordingClient([*fixture.get("script", []), [_SUBMIT_REPORT]])
-    customization = JudgeCustomization.model_validate(fixture.get("customization", {}))
-    options = JudgeTrialOptions(
-        customization=customization,
+    judge = LLMJudge(
+        _JUDGE_MODEL,
+        customization=JudgeCustomization.model_validate(fixture.get("customization", {})),
         tool_effects=fixture.get("tool_effects", ToolEffects.empty()),
+        llm_client=client,
     )
-    judge = LLMJudge.from_options(_JUDGE_MODEL, options, llm_client=client)
 
     result = judge.run(
         rubric=_rubric(),
@@ -300,7 +315,97 @@ def test_default_judge_view_matches_snapshot(fixture_name: str, tmp_path: Path, 
         "read_tools_offered": list(result.read_tools_offered),
         "kb_tools_offered": list(result.kb_tools_offered),
         "kb_tools_withheld": list(result.kb_tools_withheld),
-        "knowledge_search_disabled": bool(customization.disable_knowledge_search),
-        "include_agent_system_prompt": customization.include_agent_system_prompt is not False,
     }
     canon_snapshot(_SNAPSHOT_SET).assert_match(view, f"{fixture_name}.json")
+
+
+_PART_NAMES = tuple(part.value for part in EvidencePartName)
+
+_NAMEABLE_TOOLS = (
+    "get_db_state",
+    "query_db",
+    "read_file",
+    "search_kb",
+    "search_policy",
+    "show_call",
+)
+
+
+def _handed_views(evidence: Any, fixture_evidence: dict[str, Any], tmp_path: Path) -> dict:
+    """What a caller hands the judge: each view only while a part needs it."""
+    handed = _evidence_kwargs(fixture_evidence, tmp_path)
+    for evidence_input, kwarg in (
+        (EvidenceInput.STATE_DIFF, "state_diff"),
+        (EvidenceInput.DB, "db_reader"),
+        (EvidenceInput.WORKSPACE, "workspace_dir"),
+    ):
+        if not evidence.needs(evidence_input):
+            handed[kwarg] = None
+    return handed
+
+
+@pytest.mark.parametrize("fixture_name", ["a_db_with_diff", "d_kb_snippet_200"])
+@pytest.mark.parametrize("enabled", list(itertools.product((False, True), repeat=7)))
+def test_every_combination_of_parts_names_only_the_tools_it_offers(
+    fixture_name: str, enabled: tuple[bool, ...], tmp_path: Path
+):
+    fixture = _FIXTURES[fixture_name]
+    customization = JudgeCustomization(evidence=dict(zip(_PART_NAMES, enabled, strict=True)))
+    evidence = customization.evidence
+    client = _RecordingClient([[_SUBMIT_REPORT]])
+
+    result = LLMJudge(_JUDGE_MODEL, customization=customization, llm_client=client).run(
+        rubric=_rubric(),
+        agent_system_prompt=_AGENT_POLICY,
+        transcript=_PLAIN_TRANSCRIPT,
+        **_handed_views(evidence, fixture["evidence"], tmp_path),
+    )
+
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    assert client.offered_tools is not None
+    offered = {tool["function"]["name"] for tool in client.offered_tools}
+    opening = result.transcript[0]["content"]
+    named = {name for name in _NAMEABLE_TOOLS if name in opening}
+    assert named <= offered, f"{customization.evidence!r} names {named - offered} unoffered"
+    says_it_cannot_inspect = "You cannot inspect the final state" in opening
+    if not evidence.reads_final_state():
+        assert says_it_cannot_inspect
+    if says_it_cannot_inspect:
+        assert not offered & {"get_db_state", "query_db", "read_file"}
+        assert "Below is a diff of the database state" not in opening
+    assert (_AGENT_POLICY.strip().splitlines()[0] in opening) is evidence.agent_policy
+
+    live_db = ["get_db_state", "query_db"] if fixture["evidence"].get("db") else []
+    assert list(result.read_tools_offered) == (live_db if evidence.db else [])
+    kb = ["search_kb", "search_policy"] if fixture["evidence"].get("kb") else []
+    knowledge_search = evidence.knowledge_search is not False
+    assert list(result.kb_tools_offered) == (kb if knowledge_search else [])
+    assert list(result.kb_tools_withheld) == ([] if knowledge_search else kb)
+    assert ("show_call" in offered) is (evidence.tool_results is not False)
+
+
+class _UntaggedReadTool(DelegatingReadTool):
+    def __init__(self) -> None:
+        super().__init__(
+            "lookup_order",
+            "Read one order",
+            {"type": "object"},
+            lambda args: "order",
+            evidence_part=EvidencePartName.DB,
+        )
+        del self.evidence_part
+
+
+@pytest.mark.parametrize("tag", [None, EvidencePartName.STATE_DIFF, "inventory"])
+def test_an_extra_no_owning_part_names_is_refused(tag: object):
+    extra = _UntaggedReadTool()
+    if tag is not None:
+        extra.evidence_part = tag  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="lookup_order.*names no evidence part"):
+        LLMJudge(_JUDGE_MODEL, llm_client=_RecordingClient([[_SUBMIT_REPORT]])).run(
+            rubric=_rubric(),
+            agent_system_prompt=_AGENT_POLICY,
+            transcript=_PLAIN_TRANSCRIPT,
+            extra_read_tools=[extra],
+        )

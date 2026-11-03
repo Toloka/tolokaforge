@@ -1,10 +1,10 @@
 """The judge's ``search_kb`` tool: what it shows of a hit, and how much.
 
-``judge_snippet_chars`` (``grading.llm_judge.customization``) is how much of each
-hit's text the judge reads. The default, 200 characters with an ellipsis when cut,
-is the output a task with no setting gets, pinned byte for byte; ``None`` shows
-whole documents; a hit with a title gets a title line. The
-customization model leaves the field off the wire at its default, so no
+``evidence.knowledge_search.snippet_chars`` (``grading.llm_judge.customization``) is
+how much of each hit's text the judge reads. The default, 200 characters with an
+ellipsis when cut, is the output a task with no setting gets, pinned byte for byte;
+``None`` shows whole documents; a hit with a title gets a title line. The
+customization model leaves the part off the wire at its default, so no
 ``TaskDescription`` moves, and reads ``null`` as a value.
 """
 
@@ -14,8 +14,8 @@ import pytest
 
 from tolokaforge.core.grading.judge_kinds import resolve_judge_trial_options
 from tolokaforge.core.grading.judge_tools import SearchKbTool
-from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS, SearchHit
-from tolokaforge.runner.models import JudgeCustomization
+from tolokaforge.core.grading.kb_search import SearchHit
+from tolokaforge.runner.models import JudgeCustomization, KnowledgeSearchOptions
 
 pytestmark = pytest.mark.unit
 
@@ -37,8 +37,9 @@ def _hit(text: str, *, title: str | None = None) -> SearchHit:
 
 
 def test_the_default_cut_is_two_hundred_characters_with_an_ellipsis() -> None:
-    assert DEFAULT_JUDGE_SNIPPET_CHARS == 200
-    result = SearchKbTool(_Hits([_hit(_LONG)])).execute(query="policy")
+    default = KnowledgeSearchOptions().snippet_chars
+    assert default == 200
+    result = SearchKbTool(_Hits([_hit(_LONG)]), snippet_chars=default).execute(query="policy")
     assert result.success is True
     assert result.output == (
         "Found 1 relevant documents:\n"
@@ -52,7 +53,7 @@ def test_the_default_cut_is_two_hundred_characters_with_an_ellipsis() -> None:
 
 
 def test_a_short_hit_is_not_cut_and_gets_no_ellipsis() -> None:
-    result = SearchKbTool(_Hits([_hit("short")])).execute(query="policy")
+    result = SearchKbTool(_Hits([_hit("short")]), snippet_chars=200).execute(query="policy")
     assert result.output.endswith("\n    Content: short")
 
 
@@ -69,7 +70,7 @@ def test_a_configured_length_cuts_there() -> None:
 
 def test_a_titled_hit_gets_a_title_line_between_document_and_source() -> None:
     hits = _Hits([_hit("text", title="Refund policy"), _hit("other")])
-    result = SearchKbTool(hits).execute(query="policy")
+    result = SearchKbTool(hits, snippet_chars=200).execute(query="policy")
     assert "\n[1] Document: doc-1\n    Title: Refund policy\n    Source: doc.md\n" in result.output
     assert "\n[2] Document: doc-1\n    Source: doc.md\n" in result.output, "no title, no line"
 
@@ -80,41 +81,48 @@ def test_the_tool_hands_the_judges_arguments_to_the_backend() -> None:
     assert hits.calls == [("refund", 3, 0.1)]
 
 
-class TestJudgeCustomizationSnippet:
+def _snippet_chars(customization: JudgeCustomization | None) -> int | None:
+    options = resolve_judge_trial_options(customization, agent_tools=())
+    search = options.customization.evidence.knowledge_search_options()
+    assert search is not None
+    return search.snippet_chars
+
+
+class TestKnowledgeSearchSnippet:
     def test_the_default_is_two_hundred_and_left_off_the_dump(self) -> None:
         customization = JudgeCustomization()
-        assert customization.judge_snippet_chars == 200
-        assert "judge_snippet_chars" not in customization.model_dump()
-        assert "judge_snippet_chars" not in customization.model_dump(mode="json")
-        assert JudgeCustomization(disable_knowledge_search=True).model_dump() == {
-            "disable_knowledge_search": True,
-            "system_prompt": None,
-            "include_agent_system_prompt": None,
-        }, "a pre-field dump, byte for byte"
+        assert _snippet_chars(customization) == 200
+        assert customization.model_dump() == {"system_prompt": None}
+        assert customization.model_dump(mode="json") == {"system_prompt": None}
 
     def test_null_is_a_value_and_rides_the_wire(self) -> None:
-        customization = JudgeCustomization.model_validate({"judge_snippet_chars": None})
-        assert customization.judge_snippet_chars is None
-        assert customization.model_dump()["judge_snippet_chars"] is None
+        customization = JudgeCustomization.model_validate(
+            {"evidence": {"knowledge_search": {"snippet_chars": None}}}
+        )
+        assert _snippet_chars(customization) is None
+        assert customization.model_dump()["evidence"] == {
+            "knowledge_search": {"snippet_chars": None}
+        }
         reloaded = JudgeCustomization.model_validate_json(customization.model_dump_json())
-        assert reloaded.judge_snippet_chars is None
+        assert _snippet_chars(reloaded) is None
 
     def test_a_figure_rides_the_wire_and_round_trips(self) -> None:
-        customization = JudgeCustomization(judge_snippet_chars=50)
-        assert customization.model_dump()["judge_snippet_chars"] == 50
+        customization = JudgeCustomization(evidence={"knowledge_search": {"snippet_chars": 50}})
+        assert customization.model_dump()["evidence"]["knowledge_search"] == {"snippet_chars": 50}
         assert JudgeCustomization.model_validate(customization.model_dump()) == customization
 
     @pytest.mark.parametrize("value", [0, -5, 2.5, "200", True])
     def test_anything_but_a_positive_integer_or_null_is_refused(self, value: object) -> None:
         with pytest.raises(ValueError):
-            JudgeCustomization.model_validate({"judge_snippet_chars": value})
+            JudgeCustomization.model_validate(
+                {"evidence": {"knowledge_search": {"snippet_chars": value}}}
+            )
 
     def test_the_trial_options_read_the_default_for_no_block(self) -> None:
-        def snippet(customization: JudgeCustomization | None) -> int | None:
-            options = resolve_judge_trial_options(customization, agent_tools=())
-            return options.customization.judge_snippet_chars
-
-        assert snippet(None) == 200
-        assert snippet(JudgeCustomization()) == 200
-        assert snippet(JudgeCustomization(judge_snippet_chars=None)) is None
-        assert snippet(JudgeCustomization(judge_snippet_chars=7)) == 7
+        assert _snippet_chars(None) == 200
+        assert _snippet_chars(JudgeCustomization()) == 200
+        assert _snippet_chars(JudgeCustomization(evidence={"knowledge_search": True})) == 200
+        assert (
+            _snippet_chars(JudgeCustomization(evidence={"knowledge_search": {"snippet_chars": 7}}))
+            == 7
+        )
