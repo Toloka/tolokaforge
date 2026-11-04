@@ -54,11 +54,11 @@ if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
     from tolokaforge.core.grading.judge_kinds._protocol import JudgeKind
     from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
+    from tolokaforge.core.grading.judge_tools import EvidenceOwnedTool
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner.models import Rubric
-    from tolokaforge.tools.registry import Tool
 
 __all__ = [
     "ParityCorpusEntry",
@@ -167,7 +167,7 @@ def measure_cross_kind_agreement(
     db_reader: DBReader | None = None,
     kb_search: KnowledgeSearch | None = None,
     workspace_dir: Path | None = None,
-    extra_read_tools: Sequence[Tool] = (),
+    extra_read_tools: Sequence[EvidenceOwnedTool] = (),
     kind_config: Mapping[str, Any] | None = None,
     logger: StructuredLogger | None = None,
 ) -> CalibrationReport:
@@ -238,7 +238,7 @@ def measure_self_consistency(
     db_reader: DBReader | None = None,
     kb_search: KnowledgeSearch | None = None,
     workspace_dir: Path | None = None,
-    extra_read_tools: Sequence[Tool] = (),
+    extra_read_tools: Sequence[EvidenceOwnedTool] = (),
     kind_config: Mapping[str, Any] | None = None,
     logger: StructuredLogger | None = None,
 ) -> CalibrationReport:
@@ -453,7 +453,7 @@ def _evaluate_kwargs(
     db_reader: DBReader | None,
     kb_search: KnowledgeSearch | None,
     workspace_dir: Path | None,
-    extra_read_tools: Sequence[Tool],
+    extra_read_tools: Sequence[EvidenceOwnedTool],
     kind_config: Mapping[str, Any] | None,
     logger: StructuredLogger,
 ) -> dict[str, Any]:

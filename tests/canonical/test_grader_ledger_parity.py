@@ -119,6 +119,7 @@ def test_llm_judge_no_messages_records_skip() -> None:
         llm_judge_config=llm_judge,
         judge_model_config=_JUDGE_MODEL,
         llm_messages=[],
+        agent_tools=[],
         substrate=_StubSubstrate(),  # type: ignore[arg-type]
         initial_state_schemas=[],
         id_fields={},

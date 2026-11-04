@@ -3,7 +3,7 @@
 Each composite recursively evaluates its nested expression through
 :mod:`~tolokaforge.core.grading.trace_checks.evaluator`. The recursion resolves
 via a lazy function-body import of ``_evaluate`` — the same pattern
-:func:`~tolokaforge.core.grading.trace_checks.matcher._operator_holds` uses for
+:func:`~tolokaforge.core.grading.argument_predicates.operator_holds` uses for
 :mod:`~tolokaforge.core.plugin_registry`.
 """
 

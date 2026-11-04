@@ -23,6 +23,7 @@ from tolokaforge.core.grading.default_rubric_evaluator import (
     LLMJudgeRubricEvaluator,
     _llm_judge_rubric_evaluator_factory,
 )
+from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.plugin_registry import (
@@ -41,6 +42,7 @@ def _context() -> RubricEvaluatorContext:
     :class:`MagicMock` is sufficient here."""
     return RubricEvaluatorContext(
         judge_model_provider=MagicMock(),
+        options=JudgeTrialOptions(),
         logger=StructuredLogger(name="test-load-rubric-evaluator"),
     )
 

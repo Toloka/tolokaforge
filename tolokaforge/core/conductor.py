@@ -85,10 +85,11 @@ from tolokaforge.observability.observer import (
     TrialObserver,
     safely,
 )
-from tolokaforge.runner.models import provisions_database
+from tolokaforge.runner.models import MutatesStateRule, provisions_database
 
 if TYPE_CHECKING:
     from tolokaforge.core.logging import StructuredLogger
+    from tolokaforge.runner.models import ToolSchema
 
 __all__ = [
     "DEFAULT_MAX_TURNS",
@@ -455,6 +456,29 @@ class InMemoryConductor:
 
     def trial_persisted(self, spec: TrialSpec) -> None:
         self.call_log.persisted.append(spec.trial_id)
+
+
+def _with_mutates_state(
+    entries: list[dict[str, Any]], declared_by: list[ToolSchema]
+) -> list[dict[str, Any]]:
+    """*entries* with each tool's ``mutates_state`` from *declared_by*, joined by name.
+
+    Left out where the tool declares none, so an entry without the key is an
+    undeclared tool. A read rule is written without its unset operators.
+    """
+    declarations = {tool.name: tool.mutates_state for tool in declared_by}
+    recorded: list[dict[str, Any]] = []
+    for entry in entries:
+        declared = declarations.get(entry["function"]["name"])
+        if declared is None:
+            recorded.append(entry)
+        elif isinstance(declared, MutatesStateRule):
+            recorded.append(
+                {**entry, "mutates_state": declared.model_dump(mode="json", exclude_none=True)}
+            )
+        else:
+            recorded.append({**entry, "mutates_state": declared})
+    return recorded
 
 
 def _bundle_dir_size_bytes(bundle_dir: Path) -> int:
@@ -1460,11 +1484,19 @@ class InProcessConductor:
         # in the agent provider's dialect rather than in whatever the simulator's own
         # provider was handed — the file records one trial's declared surface, not two
         # providers' wire payloads.
+        # Each entry also carries its tool's ``mutates_state`` (ADR-0061) where the
+        # task description declares one, read per slice: a name both actors serve
+        # may carry a different task-side declaration on each.
         agent_config = self.agent_client.config
         sanitized = self.agent_client.capabilities.schema_sanitizer.sanitize(
             setup.tool_schemas + setup.user_tool_schemas
         )
-        writer.write_tools_schemas(setup.trial_dir, sanitized)
+        agent_count = len(setup.tool_schemas)
+        writer.write_tools_schemas(
+            setup.trial_dir,
+            _with_mutates_state(sanitized[:agent_count], spec.task.agent_tools)
+            + _with_mutates_state(sanitized[agent_count:], spec.task.user_tools),
+        )
 
         # Persist the agent's effective (post-policy) system prompt, the
         # user simulator's system prompt, and the composed judge system

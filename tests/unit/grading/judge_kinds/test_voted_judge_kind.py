@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from tests.unit.grading.test_judge import ScriptedClient
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions, VotedRubricJudgeKind
 from tolokaforge.core.grading.judge_kinds._shared import member_failure_reason
@@ -30,7 +31,7 @@ from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.plugin_registry import UnknownImplementationError
-from tolokaforge.runner.models import Criterion, CriterionResult, Rubric
+from tolokaforge.runner.models import Criterion, CriterionResult, JudgeCustomization, Rubric
 
 pytestmark = pytest.mark.unit
 
@@ -83,6 +84,7 @@ def _evaluate(
     *,
     provider: _QueuedProvider,
     kind_config: dict[str, Any] | None,
+    options: JudgeTrialOptions | None = None,
 ) -> JudgeResult:
     """Drive :meth:`VotedRubricJudgeKind.evaluate` with a minimal input surface."""
     kind = VotedRubricJudgeKind()
@@ -97,7 +99,7 @@ def _evaluate(
         state_diff=None,
         judge_model_config=_JUDGE_MODEL,
         judge_model_provider=provider,
-        options=JudgeTrialOptions(),
+        options=options or JudgeTrialOptions(),
         kind_config=kind_config,
         logger=StructuredLogger(name="test-voted"),
     )
@@ -116,6 +118,34 @@ def test_k_identical_samples_merge_to_same_verdict() -> None:
     assert [cr.id for cr in result.criterion_results] == [c.id for c in rubric.criteria]
     assert all(cr.met and cr.score == pytest.approx(1.0) for cr in result.criterion_results)
     assert result.score == pytest.approx(1.0)
+
+
+def test_every_sample_reads_the_evidence_parts_of_its_options() -> None:
+    """The voted kind hands its options to every sample unchanged, so each sample
+    reads the same parts: ``show_call`` offered, no DB tools."""
+    rubric = _binary_rubric(1)
+    clients = [ScriptedClient([_submit_call(rubric.criteria)]) for _ in range(3)]
+    provider = _QueuedProvider(list(clients))  # type: ignore[arg-type]
+
+    result = _evaluate(
+        rubric,
+        provider=provider,
+        kind_config={"n_samples": 3},
+        options=JudgeTrialOptions(
+            customization=JudgeCustomization(
+                evidence={
+                    "state_diff": False,
+                    "db": False,
+                    "workspace": False,
+                    "tool_results": True,
+                    "state_changing_calls": True,
+                }
+            )
+        ),
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    assert all(client.seen_tool_names == ["submit_report", "show_call"] for client in clients)
 
 
 def test_default_wrapped_kind_is_single_shot_rubric() -> None:
@@ -150,9 +180,7 @@ def test_merges_composition_and_gate_fields() -> None:
     assert "\n\n" in result.reasons
     assert result.failed_required_ids == ("a1",)
     assert result.gate_failed is True
-    assert result.include_agent_system_prompt is True
-    assert result.custom_system_prompt is False
-    assert result.knowledge_search_disabled is False
+    assert result.kb_tools_offered == ()
     assert result.state_diff is None
     assert len(result.transcript) == 3 * 3  # 3 messages per sample loop turn
     assert result.transcript[0]["role"] == "user"
@@ -267,7 +295,7 @@ def test_construction_field_mismatch_raises() -> None:
         criterion_results=(
             CriterionResult(id="a0", met=True, score=1.0, justification="j\nVERDICT: MET"),
         ),
-        custom_system_prompt=False,
+        read_tools_offered=(),
     )
     divergent = JudgeResult(
         status=JudgeStatus.COMPLETED,
@@ -278,9 +306,9 @@ def test_construction_field_mismatch_raises() -> None:
         criterion_results=(
             CriterionResult(id="a0", met=True, score=1.0, justification="j\nVERDICT: MET"),
         ),
-        custom_system_prompt=True,
+        read_tools_offered=("read_file",),
     )
-    with pytest.raises(RuntimeError, match="custom_system_prompt"):
+    with pytest.raises(RuntimeError, match="read_tools_offered"):
         _merge_sample_results(rubric=rubric, sample_results=[good, divergent], aggregator="median")
 
 

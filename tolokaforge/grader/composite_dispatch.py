@@ -88,11 +88,12 @@ from tolokaforge.runner.grading_ledger import (
 from tolokaforge.runner.models import (
     RunnerGradingConfig,
     TaskDescription,
+    ToolSchema,
 )
 from tolokaforge.runner.protocol import parse_termination_reason
 
 if TYPE_CHECKING:
-    from tolokaforge.core.grading.judge_result import JudgeResult
+    from tolokaforge.core.grading.composite import JudgeGrading
     from tolokaforge.core.grading.substrate import GradingSubstrate
     from tolokaforge.core.grading.transcript import TranscriptEvaluationResult
     from tolokaforge.core.logging import StructuredLogger
@@ -290,7 +291,7 @@ class GraderCompositeDispatch:
         )
         accounted_keys.update(trace_result.accounted_keys)
         (
-            judge_result,
+            judge_grading,
             judge_status,
             judge_gate_failed,
             judge_accounting,
@@ -299,6 +300,7 @@ class GraderCompositeDispatch:
             llm_judge_config=grading_config.llm_judge,
             judge_model_config=judge_model_config,
             llm_messages=llm_messages,
+            agent_tools=task_description.agent_tools,
             substrate=substrate,
             initial_state_schemas=initial_state_schemas,
             id_fields=id_fields,
@@ -332,7 +334,8 @@ class GraderCompositeDispatch:
             transcript_result_dict=(
                 transcript_result.model_dump() if transcript_result is not None else None
             ),
-            judge_reasons=(judge_result.reasons if judge_result is not None else None) or None,
+            judge_reasons=(judge_grading.result.reasons if judge_grading is not None else None)
+            or None,
             trace_checks_result_dict=trace_result.model_dump(mode="json"),
             custom_checks_reasons=custom_reasons,
             judge_errored=judge_status is JudgeStatus.ERRORED,
@@ -346,7 +349,7 @@ class GraderCompositeDispatch:
             components=components,
             custom_check_results=custom_check_results,
             trace_result=trace_result,
-            judge_result=judge_result,
+            judge_grading=judge_grading,
             judge_status=judge_status,
         )
 
@@ -485,15 +488,16 @@ class GraderCompositeDispatch:
         llm_judge_config: Any,
         judge_model_config: ModelConfig | None,
         llm_messages: list[dict[str, Any]],
+        agent_tools: list[ToolSchema],
         substrate: GradingSubstrate,
         initial_state_schemas: list[Any],
         id_fields: dict[str, str | list[str]],
         unstable_fields: set[tuple[str, str]],
         components: CompositeGradeComponents,
-    ) -> tuple[JudgeResult | None, JudgeStatus, bool, dict[str, KeyAccountingRecord]]:
+    ) -> tuple[JudgeGrading | None, JudgeStatus, bool, dict[str, KeyAccountingRecord]]:
         """Load the judge-kind seam, render the state diff, and grade.
 
-        Returns ``(judge_result, wire_judge_status, judge_gate_failed, accounted_keys)``.
+        Returns ``(judge_grading, wire_judge_status, judge_gate_failed, accounted_keys)``.
         A skipped judge (missing config or empty transcript) reports
         :attr:`JudgeStatus.UNSPECIFIED` with a ``None`` result; a runner
         errored status maps to :attr:`JudgeStatus.ERRORED`. On a
@@ -511,13 +515,14 @@ class GraderCompositeDispatch:
         judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
         state_diff_text = composite.build_judge_state_diff(
             trial_id=trial_id,
+            config=llm_judge_config,
             substrate=substrate,
             initial_state_schemas=initial_state_schemas,
             id_fields=id_fields,
             unstable_fields=unstable_fields,
             logger=self._logger,
         )
-        judge_result = composite.grade_llm_judge(
+        judge_grading = composite.grade_llm_judge(
             trial_id=trial_id,
             config=llm_judge_config,
             substrate=substrate,
@@ -528,15 +533,17 @@ class GraderCompositeDispatch:
             judge_model_config=judge_model_config,
             extra_read_tools=[],
             state_diff=state_diff_text,
+            agent_tools=agent_tools,
             logger=self._logger,
         )
         accounted = {LLM_JUDGE_KEY: EVALUATED}
+        judge_result = judge_grading.result
         if judge_result.status is JudgeRunStatus.ERRORED:
-            return judge_result, JudgeStatus.ERRORED, False, accounted
+            return judge_grading, JudgeStatus.ERRORED, False, accounted
         judge_gate_failed = judge_result.gate_failed
         if judge_result.score is not None:
             components.llm_judge_score = judge_result.score
-        return judge_result, JudgeStatus.COMPLETED, judge_gate_failed, accounted
+        return judge_grading, JudgeStatus.COMPLETED, judge_gate_failed, accounted
 
 
 def _build_grade(
@@ -545,7 +552,7 @@ def _build_grade(
     components: CompositeGradeComponents,
     custom_check_results: list[CheckResult],
     trace_result: TraceChecksResult,
-    judge_result: JudgeResult | None,
+    judge_grading: JudgeGrading | None,
     judge_status: JudgeStatus,
 ) -> Grade:
     """Assemble the Python :class:`Grade` from the fold result + dispatch outputs.
@@ -609,10 +616,9 @@ def _build_grade(
     judge_transcript = None
     judge_kb_gating = None
     judge_inputs = None
-    judge_custom_prompt = None
-    judge_agent_prompt_included = None
     criterion_results = None
-    if judge_result is not None:
+    if judge_grading is not None:
+        judge_result = judge_grading.result
         judge_usage = JudgeUsage(
             calls=judge_result.usage.calls,
             prompt_tokens=judge_result.usage.prompt_tokens,
@@ -625,16 +631,14 @@ def _build_grade(
         )
         judge_transcript = list(judge_result.transcript)
         judge_kb_gating = JudgeKbGating(
-            knowledge_search_disabled=judge_result.knowledge_search_disabled,
             offered=list(judge_result.kb_tools_offered),
             withheld=list(judge_result.kb_tools_withheld),
         )
         judge_inputs = JudgeInputs(
             state_diff_text=judge_result.state_diff,
             read_tools_offered=list(judge_result.read_tools_offered),
+            customization=judge_grading.customization,
         )
-        judge_custom_prompt = judge_result.custom_system_prompt
-        judge_agent_prompt_included = judge_result.include_agent_system_prompt
         criterion_results = list(judge_result.criterion_results)
 
     return Grade(
@@ -651,6 +655,4 @@ def _build_grade(
         judge_transcript=judge_transcript,
         judge_kb_gating=judge_kb_gating,
         judge_inputs=judge_inputs,
-        judge_custom_prompt=judge_custom_prompt,
-        judge_agent_prompt_included=judge_agent_prompt_included,
     )

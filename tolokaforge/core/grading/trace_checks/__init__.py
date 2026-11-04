@@ -58,7 +58,6 @@ from tolokaforge.core.grading.trace_checks.evaluator import (
 from tolokaforge.core.grading.trace_checks.matcher import (
     MatcherOutcome,
     _binding_operator_names,
-    _operator_holds,
     select_events,
 )
 from tolokaforge.core.grading.trace_checks.resolver import _FAILURE_DETAIL
@@ -73,7 +72,6 @@ __all__ = [
     "_binding_operator_names",
     "_candidates",
     "_extracted",
-    "_operator_holds",
     "compile_trace_check_patterns",
     "evaluate_trace_checks",
     "select_events",

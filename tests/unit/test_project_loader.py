@@ -18,6 +18,7 @@ from tolokaforge.core.project_loader import (
     CANONICAL_RUN_CONFIGS_DIR,
     LEGACY_RUN_CONFIG_DIR,
     PROJECT_FILENAME,
+    customization_sources,
     deep_merge,
     detect_project_layout,
     find_project_yaml,
@@ -364,3 +365,20 @@ class TestResolveEffectiveGradingCombine:
             {"weights": {"llm_judge": 1.0}}, {"weights": {"llm_judge": 0.5}}
         )
         assert combine.weights == {"llm_judge": 0.5}
+
+
+def test_customization_sources_follow_the_merge_that_layers_the_values() -> None:
+    """A key path goes to the last layer setting it; a value that replaces a mapping
+    takes the mapping's nested paths with it, exactly as ``deep_merge`` replaces it."""
+    layers = [
+        ("recorded", {"a": 1, "b": {"x": 1, "y": 2}, "c": {"z": 1}}),
+        ("override", {"b": {"x": None}, "c": True}),
+        ("empty", None),
+    ]
+
+    assert customization_sources(layers) == {
+        "a": "recorded",
+        "b.x": "override",
+        "b.y": "recorded",
+        "c": "override",
+    }

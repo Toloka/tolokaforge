@@ -9,10 +9,17 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, TypeAlias
+from typing import Any
 
+from tolokaforge.core.grading.argument_predicates import (
+    MISSING,
+    PredicatePatterns,
+    argument_at,
+    compile_predicate_patterns,
+    predicate_holds,
+)
 from tolokaforge.core.grading.predicates import ever_satisfiable, json_type_of
-from tolokaforge.core.grading.regex_engine import CompiledPatterns, RegexEngineKind
+from tolokaforge.core.grading.regex_engine import RegexEngineKind
 from tolokaforge.core.grading.trace_checks.truth import _Truth
 from tolokaforge.core.grading.trace_timeline import (
     TraceEvent,
@@ -20,7 +27,6 @@ from tolokaforge.core.grading.trace_timeline import (
     TrialTimeline,
 )
 from tolokaforge.core.models import TraceMatcher, ValuePredicate
-from tolokaforge.runner.models import TRACE_PREDICATE_REGEX_OPERATORS
 
 
 class _Makeability(str, Enum):
@@ -133,11 +139,6 @@ def _missing_evidence(fields: Iterable[str], positions: Iterable[int]) -> str:
     )
 
 
-_RegexOperands: TypeAlias = Mapping[tuple[str, str], CompiledPatterns]
-"""Each ``regex`` / ``not_regex`` a matcher declares, compiled, keyed by the field
-its predicate reads and the operator name."""
-
-
 def select_events(
     timeline: TrialTimeline,
     matcher: TraceMatcher,
@@ -209,15 +210,9 @@ def _unreadable_when_none(outcome: TraceEvent | None) -> frozenset[str]:
     return _RECORD_ONLY_FIELDS | {"result"}
 
 
-def _regex_operands(matcher: TraceMatcher, section: RegexEngineKind) -> _RegexOperands:
+def _regex_operands(matcher: TraceMatcher, section: RegexEngineKind) -> PredicatePatterns:
     """Every pattern the matcher declares, compiled under its predicate's effective engine."""
-    return {
-        (field, name): CompiledPatterns.compile(
-            predicate.patterns_of(name), predicate.regex_engine_under(section)
-        )
-        for field, predicate in _declared_predicates(matcher)
-        for name in sorted(predicate.declared_operators() & TRACE_PREDICATE_REGEX_OPERATORS)
-    }
+    return compile_predicate_patterns(_declared_predicates(matcher), section)
 
 
 def _resolve(
@@ -225,7 +220,7 @@ def _resolve(
     event: TraceEvent,
     results: Mapping[str, TraceEvent],
     bindings: Mapping[str, Any],
-    regexes: _RegexOperands,
+    regexes: PredicatePatterns,
 ) -> tuple[_Truth, frozenset[str], list[_ComparisonRecord]]:
     """What this event decides, what it left unread, and what it compared.
 
@@ -253,7 +248,7 @@ def _resolve(
     unreadable_when_none = _unreadable_when_none(outcome)
     readings = _predicate_readings(matcher, event, outcome)
     records = [
-        _comparison_records(field, None if value is _MISSING else value, predicate, bindings, event)
+        _comparison_records(field, None if value is MISSING else value, predicate, bindings, event)
         for field, value, predicate in readings
     ]
     unread = {
@@ -278,7 +273,7 @@ def _rejections(
     records: list[list[_ComparisonRecord]],
     unread: set[int],
     bindings: Mapping[str, Any],
-    regexes: _RegexOperands,
+    regexes: PredicatePatterns,
 ) -> tuple[bool, frozenset[int]]:
     """Whether some reading fails, and the rejecting readings that settle the records.
 
@@ -300,7 +295,7 @@ def _rejections(
     for index in sorted(set(range(len(readings))) - unread, key=lambda i: _cost(readings[i][0])):
         field, value, predicate = readings[index]
         could_reject = all(record.state is _Makeability.MADE for record in records[index])
-        if (failed and not could_reject) or _predicate_holds(
+        if (failed and not could_reject) or predicate_holds(
             field, predicate, value, bindings, regexes
         ):
             continue
@@ -401,7 +396,7 @@ _EVENT_FIELDS: Mapping[str, Callable[[TraceEvent, TraceEvent | None], Any]] = {
     "text": lambda event, outcome: event.text,
 }
 """The value each field a matcher predicate reads takes on one event; ``args`` paths
-resolve through :func:`_argument_at` instead."""
+resolve through :func:`~tolokaforge.core.grading.argument_predicates.argument_at` instead."""
 
 _ARGS_PREFIX = "args."
 
@@ -431,7 +426,7 @@ def _predicate_readings(
 
 def _value_read(field: str, event: TraceEvent, outcome: TraceEvent | None) -> Any:
     if field.startswith(_ARGS_PREFIX):
-        return _argument_at(event.arguments, field.removeprefix(_ARGS_PREFIX))
+        return argument_at(event.arguments, field.removeprefix(_ARGS_PREFIX))
     return _EVENT_FIELDS[field](event, outcome)
 
 
@@ -448,100 +443,6 @@ def _results_by_call_id(timeline: TrialTimeline) -> dict[str, TraceEvent]:
         for event in timeline.events
         if event.kind is TraceEventKind.TOOL_RESULT and event.call_id is not None
     }
-
-
-_MISSING: Any = object()
-"""What an argument path resolves to where the key was never sent — distinct from
-JSON ``null``, which resolves to ``None``. Only ``omitted`` reads the difference
-between the two; every other operator receives ``None`` for both. The sentinel
-never leaves this module: :func:`_operator_holds` reads it directly for
-``is_null`` / ``omitted`` and collapses it to ``None`` for every other operator,
-:func:`_resolve` collapses it at the tuple boundary before
-:func:`_comparison_records` — the one transit path that would otherwise reach
-``json_type_of`` — and :func:`~tolokaforge.core.grading.trace_checks.bindings._binder_reading`
-collapses it at the extraction boundary."""
-
-
-def _argument_at(arguments: Mapping[str, Any] | None, path: str) -> Any:
-    """The value a dotted argument path addresses.
-
-    Returns the :data:`_MISSING` sentinel where the path does not resolve — an
-    ancestor that is not a mapping, or a segment absent from the mapping that
-    carries it. Every operator but ``omitted`` reads the sentinel as ``None`` at
-    :func:`_operator_holds`'s dispatch gate, so the key-absent path becomes the
-    same reading a JSON ``null`` already had. ``omitted`` is what makes the two
-    tellable apart, and reads the sentinel directly.
-    """
-    value: Any = arguments
-    for segment in path.split("."):
-        if not isinstance(value, Mapping) or segment not in value:
-            return _MISSING
-        value = value[segment]
-    return value
-
-
-def _predicate_holds(
-    field: str,
-    predicate: ValuePredicate,
-    value: Any,
-    bindings: Mapping[str, Any],
-    regexes: _RegexOperands,
-) -> bool:
-    """Whether every operator the predicate declares holds — it is their conjunction.
-
-    A predicate declaring no operator is rejected at load, so the conjunction is
-    never over the empty set and never vacuously true. A pattern operator reads its
-    compiled form out of ``regexes``; every other operator reads the authored value.
-    """
-    return all(
-        _operator_holds(
-            name,
-            value,
-            (
-                regexes[(field, name)]
-                if name in TRACE_PREDICATE_REGEX_OPERATORS
-                else getattr(predicate, name)
-            ),
-            bindings,
-        )
-        for name in predicate.declared_operators()
-    )
-
-
-def _operator_holds(name: str, value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
-    """One operator over one value.
-
-    ``is_null`` reads whether the field held an explicit JSON ``null``, and
-    ``omitted`` whether the key was never sent — the pair whose meaning turns on
-    the argument's state before the reading. Both are special-cased ahead of the
-    entry-point dispatch: the :data:`_MISSING` sentinel that separates the two
-    is private to this module, so the seam cannot answer for them; their
-    registered callables are stubs kept only to keep the frozenset and the
-    entry-point registry in lockstep. Every other operator reads a ``_MISSING``
-    as ``None`` — so a JSON ``null`` and an absent key collapse to one reading
-    at the seam and the sentinel never reaches a registered callable.
-
-    Only ``exists`` reads a ``None``. Every other operator is false there rather
-    than answering about a value the trial does not have — ``not_equals`` against
-    an absent argument would otherwise hold, which is the vacuous truth the
-    timeline contract forbids. The gate is a dispatch invariant declared once
-    here rather than repeated inside every registered operator.
-
-    ``name`` resolves through the ``tolokaforge.trace_check_operators``
-    entry-point group — the only dispatch table this evaluator reads.
-    """
-    if name == "is_null":
-        return (value is None) is expected
-    if name == "omitted":
-        return (value is _MISSING) is expected
-    if value is _MISSING:
-        value = None
-    if value is None and name != "exists":
-        return False
-    from tolokaforge.core.plugin_registry import load_trace_check_operator
-
-    op = load_trace_check_operator(name)
-    return op(value, expected, bindings)
 
 
 def _binding_operator_names() -> list[str]:

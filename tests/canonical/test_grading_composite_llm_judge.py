@@ -177,8 +177,9 @@ def _drive_grade_llm_judge(
         judge_model_config=_JUDGE_MODEL,
         extra_read_tools=[],
         state_diff=state_diff,
+        agent_tools=[],
         logger=_logger(),
-    )
+    ).result
 
 
 class TestGradeLlmJudgeVerdicts:

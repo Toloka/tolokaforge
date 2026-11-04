@@ -64,25 +64,25 @@ class TestMemberFailureReason:
 
 class TestAssertConstructionFieldsMatch:
     def test_matching_fields_across_results_do_not_raise(self) -> None:
-        results = [_completed(custom_system_prompt=True), _completed(custom_system_prompt=True)]
+        results = [
+            _completed(kb_tools_offered=("search_kb",)),
+            _completed(kb_tools_offered=("search_kb",)),
+        ]
         assert_construction_fields_match(
-            results, ("custom_system_prompt",), kind_label="voted_rubric", unit_noun="sample"
+            results, ("kb_tools_offered",), kind_label="voted_rubric", unit_noun="sample"
         )
 
     def test_divergent_field_raises_naming_field_and_both_values(self) -> None:
-        results = [
-            _completed(custom_system_prompt=False),
-            _completed(custom_system_prompt=True),
-        ]
+        results = [_completed(kb_tools_offered=()), _completed(kb_tools_offered=("search_kb",))]
         with pytest.raises(RuntimeError) as excinfo:
             assert_construction_fields_match(
-                results, ("custom_system_prompt",), kind_label="voted_rubric", unit_noun="sample"
+                results, ("kb_tools_offered",), kind_label="voted_rubric", unit_noun="sample"
             )
         message = str(excinfo.value)
         assert "voted_rubric construction-field mismatch across samples" in message
-        assert "'custom_system_prompt'" in message
-        assert "sample 0 is False" in message
-        assert "sample 1 is True" in message
+        assert "'kb_tools_offered'" in message
+        assert "sample 0 is ()" in message
+        assert "sample 1 is ('search_kb',)" in message
 
     def test_unit_noun_and_kind_label_are_parametrised_into_the_message(self) -> None:
         results = [_completed(state_diff="a"), _completed(state_diff="b")]

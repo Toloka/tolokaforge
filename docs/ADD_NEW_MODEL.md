@@ -238,9 +238,10 @@ Pick `required` and `known_unsupported` from the
 - **Slug discipline.** `model_id` MUST equal
   `model_id_slug(provider, name)` from
   [`tolokaforge/core/output/artifacts.py`](../tolokaforge/core/output/artifacts.py).
-  The canonical test pins this so per-trial
-  `results/tools_schemas/<task>__<model_id>.json` sidecars share the
-  same identifier as the registry.
+  The canonical test pins this so a certificate names its model by the
+  slug every artifact path needing a filesystem-safe model identifier
+  uses (a trial's tool list is its bundle's `tools_schemas.yaml`, which
+  carries no slug).
 - **Overlap is a bug.** Listing the same capability in both `required`
   and `known_unsupported` raises `ValueError` at construction time.
 

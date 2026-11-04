@@ -169,6 +169,7 @@ from tolokaforge.core.grading.golden_replay import resolve_initial_state
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.hash_grading_result import HashGradingResult
 from tolokaforge.core.grading.jsonpath_evaluators import evaluate_jsonpath_checks
+from tolokaforge.core.grading.judge import LLMJudge
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
@@ -3525,7 +3526,7 @@ _HASH_TRANSCRIPT = json.dumps([{"role": "assistant", "content": "Order O1 is shi
 _PROBE_ROWS = [{"reason_code": "CAPA-01", "status": "open"}]
 
 
-class _StubJudge:
+class _StubJudge(LLMJudge):
     """Stands in for the LLM call the reference :class:`LLMJudge` would make.
 
     :class:`LLMJudgeRubricEvaluator` constructs one of these per

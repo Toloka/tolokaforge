@@ -33,7 +33,7 @@ import yaml
 from click.testing import CliRunner
 from pydantic import ValidationError
 
-from tests.unit.grading.test_judge import ScriptedClient
+from tests.unit.grading.test_judge import MessageCapturingClient, ScriptedClient
 from tests.utils.five_shape_run import write_five_shape_run
 from tests.utils.provision_failure import write_provision_failure_bundle
 from tolokaforge.core.conductor import InProcessConductor
@@ -41,9 +41,9 @@ from tolokaforge.core.failure_attribution import TrialOutcomeClass
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
     REPLAY_UNAVAILABLE,
+    CustomizationRecord,
     FidelityMode,
     GradingOverride,
-    KnowledgeSearchMode,
     MissingReplayInputError,
     OfflineDBReader,
     OfflineKnowledgeSearch,
@@ -86,6 +86,8 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
+from tolokaforge.core.tool_effects import ToolEffects
+from tolokaforge.runner.models import FINAL_STATE_INPUTS, JudgeEvidence, ToolResultsOptions
 
 pytestmark = pytest.mark.unit
 
@@ -149,36 +151,28 @@ def _conductor_written_model_config(judge: ModelConfig, output_dir: Path) -> dic
     return conductor._serialize_model_config(agent_config=agent, judge_config=judge)
 
 
-_NOT_RECORDED = object()
-"""The bundle's customization carries no ``judge_snippet_chars`` key at all."""
-
-
 def _write_recorded_inputs(
     trial_dir: Path,
     trajectory: Trajectory,
     *,
     judge: ModelConfig = _JUDGE_MODEL,
     with_rubric: bool = True,
-    recorded_system_prompt: str | None = None,
-    recorded_include_agent_system_prompt: bool | None = None,
-    recorded_judge_snippet_chars: int | None | object = _NOT_RECORDED,
+    recorded_customization: dict[str, Any] | None = None,
+    judge_prompt: str | None = None,
 ) -> None:
-    """Write everything a bundle records except its grade, via the real writer."""
+    """Write everything a bundle records except its grade, via the real writer.
+
+    *recorded_customization* is the ``task.yaml`` customization; *judge_prompt* the
+    ``prompts.yaml`` composed judge prompt.
+    """
     writer = FileArtifactWriter()
     writer.write_trajectory(trial_dir, trajectory)
-    writer.write_prompts(trial_dir, _AGENT_PROMPT, "user-sim prompt")
+    writer.write_prompts(trial_dir, _AGENT_PROMPT, "user-sim prompt", judge_prompt=judge_prompt)
 
     if with_rubric:
         llm_judge: dict = {"rubric": _RUBRIC}
-        customization: dict = {}
-        if recorded_system_prompt is not None:
-            customization["system_prompt"] = recorded_system_prompt
-        if recorded_include_agent_system_prompt is not None:
-            customization["include_agent_system_prompt"] = recorded_include_agent_system_prompt
-        if recorded_judge_snippet_chars is not _NOT_RECORDED:
-            customization["judge_snippet_chars"] = recorded_judge_snippet_chars
-        if customization:
-            llm_judge["customization"] = customization
+        if recorded_customization:
+            llm_judge["customization"] = recorded_customization
         grading_config = {"llm_judge": llm_judge}
     else:
         grading_config = {"llm_judge": None}
@@ -201,9 +195,8 @@ def _write_bundle(
     judge: ModelConfig = _JUDGE_MODEL,
     with_rubric: bool = True,
     kb_gating: JudgeKbGating | None = None,
-    recorded_system_prompt: str | None = None,
-    recorded_include_agent_system_prompt: bool | None = None,
-    recorded_judge_snippet_chars: int | None | object = _NOT_RECORDED,
+    recorded_customization: dict[str, Any] | None = None,
+    judge_prompt: str | None = None,
 ) -> Trajectory:
     """Write a new-shape bundle via the real writer; return the source trajectory."""
     trajectory = _trajectory()
@@ -212,9 +205,8 @@ def _write_bundle(
         trajectory,
         judge=judge,
         with_rubric=with_rubric,
-        recorded_system_prompt=recorded_system_prompt,
-        recorded_include_agent_system_prompt=recorded_include_agent_system_prompt,
-        recorded_judge_snippet_chars=recorded_judge_snippet_chars,
+        recorded_customization=recorded_customization,
+        judge_prompt=judge_prompt,
     )
     FileArtifactWriter().write_grade(
         trial_dir,
@@ -230,21 +222,22 @@ def _write_bundle(
     return trajectory
 
 
+_SUBMIT_REPORT_SCRIPT = [
+    [
+        (
+            "submit_report",
+            {
+                "reasons": "Refund quoted correctly.",
+                "refund_amount": True,
+                "refund_amount_justification": "Reply quotes $328.50. VERDICT: MET",
+            },
+        )
+    ]
+]
+
+
 def _submit_report_client() -> ScriptedClient:
-    return ScriptedClient(
-        [
-            [
-                (
-                    "submit_report",
-                    {
-                        "reasons": "Refund quoted correctly.",
-                        "refund_amount": True,
-                        "refund_amount_justification": "Reply quotes $328.50. VERDICT: MET",
-                    },
-                )
-            ]
-        ]
-    )
+    return ScriptedClient(_SUBMIT_REPORT_SCRIPT)
 
 
 def test_reconstructed_transcript_is_byte_identical_to_live_path(tmp_path: Path) -> None:
@@ -471,7 +464,7 @@ def test_replay_trial_uses_injected_client_and_produces_result(tmp_path: Path) -
         judge_status=JudgeStatus.COMPLETED,
         judge_inputs=JudgeInputs(
             state_diff_text="orders[O-1]: refunded false -> true",
-            read_tools_offered=["get_db_state", "query_db", "read_file", "fetch_ticket"],
+            read_tools_offered=["get_db_state", "query_db", "read_file"],
         ),
     )
     inputs = read_replay_inputs(trial_dir)
@@ -484,310 +477,11 @@ def test_replay_trial_uses_injected_client_and_produces_result(tmp_path: Path) -
     # The one production judge was driven by the injected client — no network.
     assert client.calls == 1
     # And it echoes the reconstructed state_diff + the FULL offline read surface —
-    # including read_file and the recorded name outside the known set
-    # (fetch_ticket), which enter replay via generic non-KB shims — so a replay
-    # bundle is itself re-replayable without losing tools.
+    # read_file included, shimmed for the workspace part — so a replay bundle is
+    # itself re-replayable without losing tools.
     assert result.state_diff == "orders[O-1]: refunded false -> true"
-    assert result.read_tools_offered == ("get_db_state", "query_db", "read_file", "fetch_ticket")
+    assert result.read_tools_offered == ("get_db_state", "query_db", "read_file")
     assert result.kb_tools_offered == ()
-
-
-def test_knowledge_search_override_forces_gating(tmp_path: Path) -> None:
-    """A bundle whose recorded run WITHHELD the KB (disabled gating) must still
-    yield a KB shim: ``on`` actually offers ``search_kb`` to the judge, and
-    ``recorded`` reproduces the recorded withheld surface — the tool surface, not
-    just the boolean flags."""
-    trial_dir = tmp_path / "trials" / "refund_task" / "0"
-    _write_bundle(
-        trial_dir,
-        judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        kb_gating=JudgeKbGating(knowledge_search_disabled=True, offered=[], withheld=["search_kb"]),
-    )
-
-    off = read_replay_inputs(trial_dir, knowledge_search=KnowledgeSearchMode.OFF)
-    on = read_replay_inputs(trial_dir, knowledge_search=KnowledgeSearchMode.ON)
-    recorded = read_replay_inputs(trial_dir, knowledge_search=KnowledgeSearchMode.RECORDED)
-
-    assert off.options.disable_knowledge_search is True
-    assert on.options.disable_knowledge_search is False
-    assert recorded.options.disable_knowledge_search is True
-    assert off.provenance.knowledge_search_mode is KnowledgeSearchMode.OFF
-
-    # Forced `on` OFFERS the offline KB shim in the judge's tool surface.
-    on_result = replay_trial(on, judge_client=_submit_report_client())
-    assert on_result.kb_tools_offered == ("search_kb",)
-    assert on_result.kb_tools_withheld == ()
-
-    # `recorded` re-withholds it, matching the original audit record.
-    recorded_result = replay_trial(recorded, judge_client=_submit_report_client())
-    assert recorded_result.kb_tools_offered == ()
-    assert recorded_result.kb_tools_withheld == ("search_kb",)
-
-
-def _grading_override(
-    system_prompt: str | None = None,
-    include_agent_system_prompt: bool | None = None,
-    judge_snippet_chars: int | None | object = _NOT_RECORDED,
-) -> GradingOverride:
-    from tolokaforge.runner.models import Rubric
-
-    carries_snippet = judge_snippet_chars is not _NOT_RECORDED
-    return GradingOverride(
-        rubric=Rubric.model_validate(_RUBRIC),
-        custom_system_prompt=system_prompt,
-        include_agent_system_prompt=include_agent_system_prompt,
-        judge_snippet_chars=judge_snippet_chars if carries_snippet else 200,  # type: ignore[arg-type]
-        carries_judge_snippet_chars=carries_snippet,
-    )
-
-
-def test_recorded_custom_prompt_is_reconstructed_and_stamped(tmp_path: Path) -> None:
-    """A bundle whose task.yaml records a custom system prompt reconstructs it, the
-    judge is constructed with it, and provenance stamps RECORDED."""
-    trial_dir = tmp_path / "trials" / "refund_task" / "0"
-    _write_bundle(
-        trial_dir,
-        judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        recorded_system_prompt="Grade strictly against the refund policy handbook.",
-    )
-
-    inputs = read_replay_inputs(trial_dir)
-
-    assert (
-        inputs.options.custom_system_prompt == "Grade strictly against the refund policy handbook."
-    )
-    assert inputs.provenance.custom_system_prompt is True
-    assert inputs.provenance.custom_prompt_source is ProvenanceSource.RECORDED
-
-    # The one production judge is actually constructed with the custom prompt.
-    result = replay_trial(inputs, judge_client=_submit_report_client())
-    assert result.custom_system_prompt is True
-
-
-def test_grading_override_custom_prompt_wins_over_recorded(tmp_path: Path) -> None:
-    """A --grading override carrying its own customization.system_prompt replaces
-    the recorded prompt; provenance stamps OVERRIDE."""
-    trial_dir = tmp_path / "trials" / "refund_task" / "0"
-    _write_bundle(
-        trial_dir,
-        judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        recorded_system_prompt="Recorded judge voice.",
-    )
-
-    inputs = read_replay_inputs(
-        trial_dir, grading_override=_grading_override("Override judge voice.")
-    )
-
-    assert inputs.options.custom_system_prompt == "Override judge voice."
-    assert inputs.provenance.custom_system_prompt is True
-    assert inputs.provenance.custom_prompt_source is ProvenanceSource.OVERRIDE
-
-
-def test_no_recorded_customization_yields_no_custom_prompt(tmp_path: Path) -> None:
-    """An old-shape bundle with no recorded customization ⇒ default prompt: None,
-    provenance False, source None (the declared fallback)."""
-    trial_dir = tmp_path / "trials" / "refund_task" / "0"
-    _write_bundle(
-        trial_dir,
-        judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-    )
-
-    inputs = read_replay_inputs(trial_dir)
-
-    assert inputs.options.custom_system_prompt is None
-    assert inputs.provenance.custom_system_prompt is False
-    assert inputs.provenance.custom_prompt_source is None
-
-
-def test_rubric_only_override_preserves_recorded_custom_prompt(tmp_path: Path) -> None:
-    """A --grading override supplying a rubric but NO customization.system_prompt,
-    over a bundle that DOES record a custom prompt.
-    The recorded prompt survives (source RECORDED) while the rubric is OVERRIDE —
-    rubric and prompt resolution are independent; a rubric-only override never
-    clears the recorded prompt."""
-    trial_dir = tmp_path / "trials" / "refund_task" / "0"
-    _write_bundle(
-        trial_dir,
-        judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        recorded_system_prompt="Recorded judge voice.",
-    )
-
-    inputs = read_replay_inputs(trial_dir, grading_override=_grading_override(None))
-
-    assert inputs.options.custom_system_prompt == "Recorded judge voice."
-    assert inputs.provenance.custom_prompt_source is ProvenanceSource.RECORDED
-    assert inputs.provenance.rubric_source is ProvenanceSource.OVERRIDE
-
-
-@pytest.mark.parametrize("bad_value", ["", "   ", 7], ids=["empty", "whitespace", "non-string"])
-def test_blank_or_non_string_recorded_custom_prompt_fails_loud(
-    tmp_path: Path, bad_value: object
-) -> None:
-    """A recorded ``customization.system_prompt`` that is blank or not a string is a
-    corrupted or hand-edited bundle, not a default prompt — replay refuses it with a
-    named error instead of silently judging with an unintended prompt.
-
-    Exercised under a rubric-only ``--grading`` override: that path skips the
-    ``LLMJudgeConfig`` validation of the recorded block (which already rejects a
-    blank prompt when no override is supplied), so the prompt resolver is the only
-    guard left."""
-    trial_dir = tmp_path / "trials" / "refund_task" / "0"
-    _write_bundle(
-        trial_dir,
-        judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        recorded_system_prompt="Recorded judge voice.",
-    )
-    task = yaml.safe_load((trial_dir / "task.yaml").read_text())
-    task["grading_config"]["llm_judge"]["customization"]["system_prompt"] = bad_value
-    (trial_dir / "task.yaml").write_text(yaml.safe_dump(task))
-
-    with pytest.raises(MissingReplayInputError, match="blank or not a string"):
-        read_replay_inputs(trial_dir, grading_override=_grading_override(None))
-
-
-def test_provenance_rejects_incoherent_custom_prompt_stamp() -> None:
-    """``ReplayProvenance`` machine-enforces its invariant: ``custom_prompt_source``
-    is set exactly when ``custom_system_prompt`` is True."""
-    with pytest.raises(ValidationError, match="custom_prompt_source"):
-        ReplayProvenance(
-            judge_model="openrouter/openai/gpt-4.1-mini",
-            judge_model_source=ProvenanceSource.RECORDED,
-            rubric_source=ProvenanceSource.RECORDED,
-            knowledge_search_mode=KnowledgeSearchMode.RECORDED,
-            knowledge_search_disabled=False,
-            custom_system_prompt=False,
-            custom_prompt_source=ProvenanceSource.RECORDED,
-            include_agent_system_prompt=True,
-            agent_prompt_source=None,
-            fidelity_mode=FidelityMode.FULL,
-        )
-
-
-def test_recorded_agent_prompt_gating_is_reconstructed_and_stamped(tmp_path: Path) -> None:
-    """A bundle whose task.yaml records ``include_agent_system_prompt: false``
-    reconstructs the gating, the judge is constructed with it, and provenance stamps
-    RECORDED."""
-    trial_dir = tmp_path / "trials" / "refund_task" / "0"
-    _write_bundle(
-        trial_dir,
-        judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        recorded_include_agent_system_prompt=False,
-    )
-
-    inputs = read_replay_inputs(trial_dir)
-
-    assert inputs.options.include_agent_system_prompt is False
-    assert inputs.provenance.include_agent_system_prompt is False
-    assert inputs.provenance.agent_prompt_source is ProvenanceSource.RECORDED
-
-    result = replay_trial(inputs, judge_client=_submit_report_client())
-    assert result.include_agent_system_prompt is False
-
-
-def test_grading_override_agent_prompt_gating_wins_over_recorded(tmp_path: Path) -> None:
-    """A --grading override carrying an explicit include_agent_system_prompt replaces
-    the recorded value; provenance stamps OVERRIDE."""
-    trial_dir = tmp_path / "trials" / "refund_task" / "0"
-    _write_bundle(
-        trial_dir,
-        judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        recorded_include_agent_system_prompt=False,
-    )
-
-    inputs = read_replay_inputs(
-        trial_dir, grading_override=_grading_override(include_agent_system_prompt=True)
-    )
-
-    assert inputs.options.include_agent_system_prompt is True
-    assert inputs.provenance.include_agent_system_prompt is True
-    assert inputs.provenance.agent_prompt_source is ProvenanceSource.OVERRIDE
-
-
-def test_no_recorded_agent_prompt_gating_yields_include_default(tmp_path: Path) -> None:
-    """A bundle with no recorded gating ⇒ include default: True, source None (old
-    bundles graded with the policy present)."""
-    trial_dir = tmp_path / "trials" / "refund_task" / "0"
-    _write_bundle(
-        trial_dir,
-        judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-    )
-
-    inputs = read_replay_inputs(trial_dir)
-
-    assert inputs.options.include_agent_system_prompt is True
-    assert inputs.provenance.include_agent_system_prompt is True
-    assert inputs.provenance.agent_prompt_source is None
-
-
-def test_rubric_only_override_preserves_recorded_agent_prompt_gating(tmp_path: Path) -> None:
-    """A --grading override supplying a rubric but NO include_agent_system_prompt,
-    over a bundle that DOES record ``false``: the recorded gating survives (source
-    RECORDED) while the rubric is OVERRIDE — gating and rubric resolve
-    independently; a rubric-only override never flips a recorded gating."""
-    trial_dir = tmp_path / "trials" / "refund_task" / "0"
-    _write_bundle(
-        trial_dir,
-        judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        recorded_include_agent_system_prompt=False,
-    )
-
-    inputs = read_replay_inputs(trial_dir, grading_override=_grading_override(None))
-
-    assert inputs.options.include_agent_system_prompt is False
-    assert inputs.provenance.agent_prompt_source is ProvenanceSource.RECORDED
-    assert inputs.provenance.rubric_source is ProvenanceSource.OVERRIDE
-
-
-def test_non_bool_recorded_agent_prompt_gating_fails_loud(tmp_path: Path) -> None:
-    """A recorded ``customization.include_agent_system_prompt`` that is not a bool is
-    a corrupted or hand-edited bundle — replay refuses it with a named error rather
-    than silently defaulting. Exercised under a rubric-only ``--grading`` override so
-    the resolver is the only guard (that path skips ``LLMJudgeConfig`` validation of
-    the recorded block)."""
-    trial_dir = tmp_path / "trials" / "refund_task" / "0"
-    _write_bundle(
-        trial_dir,
-        judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        recorded_include_agent_system_prompt=False,
-    )
-    task = yaml.safe_load((trial_dir / "task.yaml").read_text())
-    task["grading_config"]["llm_judge"]["customization"][
-        "include_agent_system_prompt"
-    ] = "sometimes"
-    (trial_dir / "task.yaml").write_text(yaml.safe_dump(task))
-
-    with pytest.raises(MissingReplayInputError, match="include_agent_system_prompt"):
-        read_replay_inputs(trial_dir, grading_override=_grading_override(None))
-
-
-def test_provenance_rejects_incoherent_agent_prompt_stamp() -> None:
-    """``ReplayProvenance`` machine-enforces the one-way implication: a defaulted
-    stamp (``agent_prompt_source`` None) can only carry the include default, so
-    ``include_agent_system_prompt=False`` with no source is rejected."""
-    with pytest.raises(ValidationError, match="include_agent_system_prompt"):
-        ReplayProvenance(
-            judge_model="openrouter/openai/gpt-4.1-mini",
-            judge_model_source=ProvenanceSource.RECORDED,
-            rubric_source=ProvenanceSource.RECORDED,
-            knowledge_search_mode=KnowledgeSearchMode.RECORDED,
-            knowledge_search_disabled=False,
-            custom_system_prompt=False,
-            custom_prompt_source=None,
-            include_agent_system_prompt=False,
-            agent_prompt_source=None,
-            fidelity_mode=FidelityMode.FULL,
-        )
 
 
 def _completed_bundle(trial_dir: Path) -> None:
@@ -900,11 +594,7 @@ def test_not_applicable_trial_reported_skipped_even_with_grading_override(tmp_pa
     outcomes = run_replay_batch(
         source,
         replay_id="r1",
-        grading_override=GradingOverride(
-            rubric=Rubric.model_validate(_RUBRIC),
-            custom_system_prompt=None,
-            include_agent_system_prompt=None,
-        ),
+        grading_override=GradingOverride(rubric=Rubric.model_validate(_RUBRIC), customization=None),
         dry_run=True,
     )
 
@@ -943,17 +633,45 @@ def test_batch_records_unreadable_grade_as_named_failure_and_continues(
     assert failed.reason is not None and reason_match in failed.reason
 
 
+def _corrupt_trajectory(trial_dir: Path) -> None:
+    _completed_bundle(trial_dir)
+    (trial_dir / "trajectory.yaml").write_text(yaml.dump({"task_id": "corrupt"}))
+
+
+def _uncompilable_read_rule(trial_dir: Path) -> None:
+    from tolokaforge.runner.models import JudgeCustomization
+
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(
+            read_tools_offered=["get_db_state", "query_db"],
+            customization=JudgeCustomization(evidence={"state_changing_calls": True}),
+        ),
+    )
+    _record_tool_schemas(
+        trial_dir,
+        schema_version=8,
+        get_order={"read_when": {"args": {"id": {"regex": r"(\w)\1"}}}},
+    )
+
+
+@pytest.mark.parametrize(
+    ("corrupt_bundle", "reason"),
+    [
+        (_corrupt_trajectory, "Trajectory"),
+        (_uncompilable_read_rule, "the linear regex engine cannot compile"),
+    ],
+    ids=["corrupt-trajectory", "uncompilable-read-rule"],
+)
 def test_batch_records_invalid_recorded_input_as_named_failure_and_continues(
-    tmp_path: Path,
+    tmp_path: Path, corrupt_bundle: Any, reason: str
 ) -> None:
-    """A recorded input that fails validation (here a corrupt ``trajectory.yaml``)
-    is a named per-trial FAILED — it must never abort the batch after other trials
-    have already spent judge tokens."""
+    """A recorded input that fails validation is a named per-trial FAILED — it must
+    never abort the batch after other trials have already spent judge tokens."""
     source = tmp_path / "run"
     _completed_bundle(source / "trials" / "good" / "0")
-    corrupt = source / "trials" / "corrupt" / "0"
-    _completed_bundle(corrupt)
-    (corrupt / "trajectory.yaml").write_text(yaml.dump({"task_id": "corrupt"}))
+    corrupt_bundle(source / "trials" / "corrupt" / "0")
 
     outcomes = run_replay_batch(source, replay_id="r1", dry_run=True)
 
@@ -961,7 +679,7 @@ def test_batch_records_invalid_recorded_input_as_named_failure_and_continues(
     assert by_name["good"].status is ReplayOutcomeStatus.WOULD_REPLAY
     failed = by_name["corrupt"]
     assert failed.status is ReplayOutcomeStatus.FAILED
-    assert failed.reason is not None and "Trajectory" in failed.reason
+    assert failed.reason is not None and reason in failed.reason
 
 
 def _checksums(root: Path) -> dict[str, str]:
@@ -1005,6 +723,22 @@ def test_rejudge_cli_dry_run_spends_nothing(tmp_path: Path) -> None:
     assert "1 eligible" in result.output
     # Dry-run spends nothing and writes nothing.
     assert not (source / "replays").exists()
+
+
+@pytest.mark.parametrize(
+    "flag", [["--knowledge-search", "off"], ["--evidence", "transcript"]], ids=lambda f: f[0]
+)
+def test_rejudge_takes_customization_only_through_grading(tmp_path: Path, flag: list[str]) -> None:
+    """``--grading`` carries every customization key, so no flag overrides one of them."""
+    from tolokaforge.dx.cli.main import cli
+
+    source = tmp_path / "run"
+    _completed_bundle(source / "trials" / "refund_task" / "0")
+
+    result = CliRunner().invoke(cli, ["rejudge", "--source", str(source), "--dry-run", *flag])
+
+    assert result.exit_code == 2
+    assert f"No such option: {flag[0]}" in result.output
 
 
 _CENSUS_LINE = re.compile(
@@ -1197,119 +931,710 @@ def test_rejudge_cli_exits_nonzero_when_a_trial_fails(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# judge_snippet_chars: one value in the options, its source in the provenance
+# Judge customization: the recorded value with a --grading layer over it
 # ---------------------------------------------------------------------------
 
+_TRANSCRIPT_EVIDENCE: dict[str, Any] = {
+    "evidence": {
+        "state_diff": False,
+        "db": False,
+        "workspace": False,
+        "tool_results": {"max_chars": 500},
+        "state_changing_calls": True,
+    }
+}
 
-@pytest.mark.parametrize("recorded", [None, 40])
-def test_a_recorded_snippet_length_is_reconstructed_and_stamped(
-    tmp_path: Path, recorded: int | None
+
+def _dotted_paths(layer: dict[str, Any], prefix: str = "") -> list[str]:
+    """The dotted key paths a raw customization layer sets, as provenance names them."""
+    paths: list[str] = []
+    for key, value in layer.items():
+        if isinstance(value, dict):
+            paths += _dotted_paths(value, f"{prefix}{key}.")
+        else:
+            paths.append(f"{prefix}{key}")
+    return paths
+
+
+def _override(*, rubric: bool = False, **customization: Any) -> GradingOverride:
+    """A ``--grading`` override carrying *customization* and, with *rubric*, a rubric."""
+    from tolokaforge.runner.models import Rubric
+
+    return GradingOverride(
+        rubric=Rubric.model_validate(_RUBRIC) if rubric else None,
+        customization=customization or None,
+    )
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    [
+        {"system_prompt": "Grade strictly against the refund policy handbook."},
+        {"evidence": {"agent_policy": False}},
+        {"evidence": {"knowledge_search": False}},
+        {"evidence": {"knowledge_search": {"snippet_chars": None}}},
+        {"evidence": {"knowledge_search": {"snippet_chars": 40}}},
+        _TRANSCRIPT_EVIDENCE,
+    ],
+    ids=[
+        "system-prompt",
+        "agent-policy-off",
+        "kb-off",
+        "whole-documents",
+        "snippet-40",
+        "transcript",
+    ],
+)
+@pytest.mark.parametrize("record", list(CustomizationRecord))
+def test_a_recorded_customization_replays_with_every_key_it_sets_stamped_recorded(
+    tmp_path: Path, recorded: dict[str, Any], record: CustomizationRecord
 ) -> None:
+    """``judge_inputs.yaml customization`` is the record a bundle carries; one that
+    predates it is read from ``task.yaml`` instead, and either way every key it sets
+    reaches the judge's options with the same source."""
+    from tolokaforge.runner.models import JudgeCustomization
+
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    in_judge_inputs = record is CustomizationRecord.JUDGE_INPUTS
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(
+            customization=JudgeCustomization.model_validate(recorded) if in_judge_inputs else None
+        ),
+        recorded_customization=None if in_judge_inputs else recorded,
+    )
+    _record_tool_schemas(trial_dir, schema_version=8, get_order=None)
+
+    inputs = read_replay_inputs(trial_dir)
+
+    assert inputs.options.customization == JudgeCustomization.model_validate(recorded)
+    assert inputs.provenance.customization == inputs.options.customization
+    assert inputs.provenance.customization_sources == dict.fromkeys(
+        _dotted_paths(recorded), ProvenanceSource.RECORDED
+    )
+    assert inputs.provenance.customization_record is record
+
+
+def test_a_bundle_recording_no_customization_replays_the_defaults_with_no_source(
+    tmp_path: Path,
+) -> None:
+    from tolokaforge.runner.models import JudgeCustomization
+
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
         trial_dir,
         judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        recorded_judge_snippet_chars=recorded,
+        judge_inputs=JudgeInputs(customization=JudgeCustomization()),
     )
 
     inputs = read_replay_inputs(trial_dir)
 
-    assert inputs.options.judge_snippet_chars == recorded
-    assert inputs.provenance.judge_snippet_chars == recorded
-    assert inputs.provenance.judge_snippet_chars_source is ProvenanceSource.RECORDED
+    assert inputs.options.customization == JudgeCustomization()
+    assert inputs.provenance.customization_sources == {}
 
 
-def test_no_recorded_snippet_length_is_the_default_with_no_source(tmp_path: Path) -> None:
+def test_an_override_wins_on_the_keys_it_sets_and_inherits_the_rest(tmp_path: Path) -> None:
+    from tolokaforge.runner.models import JudgeCustomization
+
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
         trial_dir,
         judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        judge_inputs=JudgeInputs(
+            customization=JudgeCustomization(
+                system_prompt="Recorded judge voice.",
+                evidence={"agent_policy": False, "tool_results": {"max_chars": 40}},
+            )
+        ),
     )
 
-    inputs = read_replay_inputs(trial_dir)
+    inputs = read_replay_inputs(
+        trial_dir,
+        grading_override=_override(
+            system_prompt="Override judge voice.", evidence={"knowledge_search": False}
+        ),
+    )
 
-    assert inputs.options.judge_snippet_chars == 200
-    assert inputs.provenance.judge_snippet_chars_source is None
+    assert inputs.options.customization == JudgeCustomization(
+        system_prompt="Override judge voice.",
+        evidence={
+            "agent_policy": False,
+            "knowledge_search": False,
+            "tool_results": {"max_chars": 40},
+        },
+    )
+    assert inputs.provenance.customization_sources == {
+        "system_prompt": ProvenanceSource.OVERRIDE,
+        "evidence.agent_policy": ProvenanceSource.RECORDED,
+        "evidence.knowledge_search": ProvenanceSource.OVERRIDE,
+        "evidence.tool_results.max_chars": ProvenanceSource.RECORDED,
+    }
 
 
-def test_an_override_carrying_the_snippet_length_wins_and_a_rubric_only_one_keeps_it(
-    tmp_path: Path,
+def test_a_rubric_only_override_keeps_every_customization_key_recorded(tmp_path: Path) -> None:
+    from tolokaforge.runner.models import JudgeCustomization
+
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    recorded = JudgeCustomization(
+        system_prompt="Recorded judge voice.",
+        evidence={"knowledge_search": {"snippet_chars": 40}},
+    )
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(customization=recorded),
+    )
+
+    inputs = read_replay_inputs(trial_dir, grading_override=_override(rubric=True))
+
+    assert inputs.provenance.rubric_source is ProvenanceSource.OVERRIDE
+    assert inputs.options.customization == recorded
+    assert inputs.provenance.customization_sources == {
+        "system_prompt": ProvenanceSource.RECORDED,
+        "evidence.knowledge_search.snippet_chars": ProvenanceSource.RECORDED,
+    }
+
+
+@pytest.mark.parametrize(
+    ("override", "offered", "withheld"),
+    [
+        ({"evidence": {"knowledge_search": False}}, (), ("search_kb",)),
+        ({"evidence": {"knowledge_search": True}}, ("search_kb",), ()),
+        ({}, ("search_kb",), ()),
+    ],
+    ids=["withheld", "offered", "recorded"],
+)
+def test_a_grading_file_decides_whether_the_replayed_judge_gets_the_knowledge_base(
+    tmp_path: Path, override: dict[str, Any], offered: tuple[str, ...], withheld: tuple[str, ...]
 ) -> None:
+    """``evidence.knowledge_search`` in a ``--grading`` file reaches the replayed judge's
+    tool surface: the recorded run offered ``search_kb``, and the override withholds it."""
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
         trial_dir,
         judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        recorded_judge_snippet_chars=40,
+        judge_inputs=JudgeInputs(),
+        kb_gating=JudgeKbGating(offered=["search_kb"], withheld=[]),
+    )
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(
+        yaml.safe_dump({"llm_judge": {"rubric": _RUBRIC, "customization": override or None}})
     )
 
-    overridden = read_replay_inputs(
-        trial_dir, grading_override=_grading_override(judge_snippet_chars=None)
+    inputs = read_replay_inputs(trial_dir, grading_override=load_grading_override(grading))
+    result = replay_trial(inputs, judge_client=_submit_report_client())
+
+    assert (result.kb_tools_offered, result.kb_tools_withheld) == (offered, withheld)
+
+
+def test_a_customization_only_grading_file_keeps_the_recorded_rubric(tmp_path: Path) -> None:
+    """A grading file with no rubric overrides the customization alone: here it makes
+    the replay of a judge over the state one from the transcript alone, with the
+    rubric recorded.
+    The tool declarations are recorded whatever the judge graded from, so it lists the
+    same calls as state-changing as a live judge with the same parts would."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(
+            state_diff_text="orders[O-1]: refunded false -> true",
+            read_tools_offered=["get_db_state", "query_db", "read_file"],
+        ),
     )
-    rubric_only = read_replay_inputs(trial_dir, grading_override=_grading_override())
+    _record_tool_schemas(trial_dir, schema_version=8, get_order=False)
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(yaml.safe_dump({"llm_judge": {"customization": _TRANSCRIPT_EVIDENCE}}))
 
-    assert overridden.options.judge_snippet_chars is None
-    assert overridden.provenance.judge_snippet_chars_source is ProvenanceSource.OVERRIDE
-    assert rubric_only.options.judge_snippet_chars == 40
-    assert rubric_only.provenance.judge_snippet_chars_source is ProvenanceSource.RECORDED
+    override = load_grading_override(grading)
+    inputs = read_replay_inputs(trial_dir, grading_override=override)
+
+    assert override.rubric is None
+    assert inputs.provenance.rubric_source is ProvenanceSource.RECORDED
+    evidence = inputs.options.customization.evidence
+    assert not any(evidence.needs(view) for view in FINAL_STATE_INPUTS)
+    assert inputs.provenance.customization_sources == dict.fromkeys(
+        _dotted_paths(_TRANSCRIPT_EVIDENCE), ProvenanceSource.OVERRIDE
+    )
+    assert inputs.options.tool_effects.can_change_state("get_order", '{"id": "O-1"}') is False
+    assert inputs.db_reader is None and inputs.state_diff is None
+    assert inputs.extra_read_tools == []
 
 
-def test_a_grading_override_file_carries_the_snippet_length_only_when_it_sets_it(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("document", "message"),
+    [
+        ({"llm_judge": {"customization": None}}, "overrides nothing"),
+        (
+            {"llm_judge": {"customization": {"evidence": {"db": False}}, "judge_kind": "x"}},
+            "carries only customization",
+        ),
+        ({"llm_judge": {"customization": {"evidence": {"db": "vibes"}}}}, "evidence.db"),
+        ({"llm_judge": {"customization": ["evidence"]}}, "not a mapping"),
+        ({"judge": {}}, "has no llm_judge.rubric"),
+    ],
+    ids=["null-customization", "stray-key", "invalid-value", "not-a-mapping", "neither"],
+)
+def test_a_grading_file_that_overrides_nothing_or_nonsense_is_refused_at_load(
+    tmp_path: Path, document: dict[str, Any], message: str
 ) -> None:
-    setting = tmp_path / "setting.yaml"
-    setting.write_text(
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(yaml.safe_dump(document))
+
+    with pytest.raises((MissingReplayInputError, ValidationError), match=message):
+        load_grading_override(grading)
+
+
+def test_a_grading_file_carries_only_the_customization_keys_it_sets(tmp_path: Path) -> None:
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(
         yaml.safe_dump(
-            {"llm_judge": {"rubric": _RUBRIC, "customization": {"judge_snippet_chars": None}}}
+            {
+                "llm_judge": {
+                    "rubric": _RUBRIC,
+                    "customization": {"evidence": {"knowledge_search": {"snippet_chars": None}}},
+                }
+            }
         )
     )
-    silent = tmp_path / "silent.yaml"
-    silent.write_text(
-        yaml.safe_dump({"llm_judge": {"rubric": _RUBRIC, "customization": {"system_prompt": "x"}}})
+
+    assert load_grading_override(grading).customization == {
+        "evidence": {"knowledge_search": {"snippet_chars": None}}
+    }
+
+
+def test_a_bundle_predating_the_record_falls_back_to_task_yaml_and_says_so(
+    tmp_path: Path,
+) -> None:
+    """A bundle without ``judge_inputs.yaml customization`` is read from ``task.yaml``,
+    which is taken before the run-level ``grader.judge`` layer: the provenance names
+    the record and ``rejudge`` warns about the layer it can miss."""
+    from tolokaforge.dx.cli.main import cli
+
+    source = tmp_path / "run"
+    trial_dir = source / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(),
+        recorded_customization={"evidence": {"agent_policy": False}},
     )
 
-    assert load_grading_override(setting).carries_judge_snippet_chars is True
-    assert load_grading_override(setting).judge_snippet_chars is None
-    assert load_grading_override(silent).carries_judge_snippet_chars is False
+    inputs = read_replay_inputs(trial_dir)
+    result = CliRunner().invoke(cli, ["rejudge", "--source", str(source), "--dry-run"])
+
+    assert inputs.provenance.customization_record is CustomizationRecord.TASK_YAML
+    assert inputs.options.customization.evidence.agent_policy is False
+    assert result.exit_code == 0, result.output
+    assert "customization=task_yaml: evidence.agent_policy=recorded" in result.output
+    assert "does not carry a run-level grader.judge layer" in result.output
 
 
-def test_a_recorded_snippet_length_that_is_not_a_positive_integer_fails_loud(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("turned_on", "named"),
+    [
+        (
+            {"state_diff": True, "db": True, "workspace": True},
+            "evidence.state_diff, evidence.db, evidence.workspace",
+        ),
+        ({"db": True}, "evidence.db"),
+    ],
+    ids=["every-view", "db-reads"],
+)
+def test_an_override_turning_on_a_view_the_bundle_never_recorded_is_refused(
+    tmp_path: Path, turned_on: dict[str, bool], named: str
+) -> None:
+    """A judge without the final-state parts read no view of the final state, so its
+    bundle records none: an override turning a part back on cannot be rebuilt and is
+    refused naming each part."""
+    from tolokaforge.runner.models import JudgeCustomization
+
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(
+            customization=JudgeCustomization.model_validate(_TRANSCRIPT_EVIDENCE)
+        ),
+    )
+    (trial_dir / "env.yaml").write_text(yaml.safe_dump({"db": {"orders": [{"id": "O-1"}]}}))
+
+    with pytest.raises(
+        MissingReplayInputError, match=rf"with {re.escape(named)} turned on: the bundle's"
+    ):
+        read_replay_inputs(trial_dir, grading_override=_override(evidence=turned_on))
+
+
+def test_an_override_turning_on_a_view_the_bundle_recorded_replays(tmp_path: Path) -> None:
+    """The refusal reads the recorded surface, never the recorded customization: a
+    judge whose ``db`` part was off over a bundle that still recorded DB reads is not
+    refused."""
+    from tolokaforge.runner.models import JudgeCustomization
+
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(
+            customization=JudgeCustomization(evidence={"workspace": False}),
+            read_tools_offered=["get_db_state", "query_db", "read_file"],
+        ),
+    )
+
+    inputs = read_replay_inputs(trial_dir, grading_override=_override(evidence={"workspace": True}))
+
+    assert inputs.db_reader is not None
+    assert [tool.name for tool in inputs.extra_read_tools] == ["read_file"]
+
+
+def test_a_recorded_read_tool_no_part_owns_is_refused(tmp_path: Path) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=["get_db_state", "lookup_ledger"]),
+    )
+
+    with pytest.raises(MissingReplayInputError, match="'lookup_ledger', which no evidence part"):
+        read_replay_inputs(trial_dir)
+
+
+_PRE_EVIDENCE_DUMP: dict[str, Any] = {
+    "disable_knowledge_search": None,
+    "system_prompt": None,
+    "include_agent_system_prompt": None,
+}
+"""``JudgeCustomization().model_dump()`` as the engine recorded it before ``evidence``."""
+
+
+@pytest.mark.parametrize("rubric", [False, True], ids=["recorded-rubric", "override-rubric"])
+@pytest.mark.parametrize(
+    ("recorded", "replayed"),
+    [
+        (_PRE_EVIDENCE_DUMP, {}),
+        (
+            {**_PRE_EVIDENCE_DUMP, "system_prompt": "Grade strictly."},
+            {"system_prompt": "Grade strictly."},
+        ),
+    ],
+    ids=["defaults", "system-prompt"],
+)
+def test_a_bundle_recorded_before_evidence_replays_its_unset_tri_states_as_absent(
+    tmp_path: Path, recorded: dict[str, Any], replayed: dict[str, Any], rubric: bool
+) -> None:
+    from tolokaforge.runner.models import JudgeCustomization
+
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(),
+        recorded_customization=recorded,
+    )
+
+    inputs = read_replay_inputs(trial_dir, grading_override=_override(rubric=rubric))
+
+    assert inputs.options.customization == JudgeCustomization.model_validate(replayed)
+    assert inputs.provenance.customization_sources == dict.fromkeys(
+        replayed, ProvenanceSource.RECORDED
+    )
+
+
+@pytest.mark.parametrize("rubric", [False, True], ids=["recorded-rubric", "override-rubric"])
+@pytest.mark.parametrize(
+    ("renamed", "remedy"),
+    [
+        (
+            {**_PRE_EVIDENCE_DUMP, "disable_knowledge_search": True},
+            "write evidence.knowledge_search: false",
+        ),
+        (
+            {**_PRE_EVIDENCE_DUMP, "include_agent_system_prompt": False},
+            "write evidence.agent_policy: false",
+        ),
+        (
+            {**_PRE_EVIDENCE_DUMP, "judge_snippet_chars": None},
+            "evidence.knowledge_search: {snippet_chars: null}",
+        ),
+    ],
+    ids=["kb", "agent-policy", "snippet"],
+)
+def test_a_bundle_recording_a_renamed_key_is_refused_naming_its_replacement(
+    tmp_path: Path, renamed: dict[str, Any], remedy: str, rubric: bool
+) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(),
+        recorded_customization=renamed,
+    )
+
+    with pytest.raises(MissingReplayInputError, match=re.escape(remedy)):
+        read_replay_inputs(trial_dir, grading_override=_override(rubric=rubric))
+
+
+@pytest.mark.parametrize(
+    ("key", "bad_value"),
+    [
+        ("system_prompt", ""),
+        ("system_prompt", 7),
+        ("evidence", {"agent_policy": "sometimes"}),
+        ("evidence", {"knowledge_search": {"snippet_chars": 0}}),
+        ("evidence", "vibes"),
+    ],
+)
+def test_a_recorded_customization_the_model_refuses_fails_loud(
+    tmp_path: Path, key: str, bad_value: object
 ) -> None:
     """The writer never records one, so the bundle was edited by hand. A rubric-only
-    override keeps the recorded rubric from being parsed, so the snippet reader is what
-    meets the value."""
+    override keeps the recorded rubric block from being parsed, so the customization
+    reader is what meets the value."""
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
         trial_dir,
         judge_status=JudgeStatus.COMPLETED,
-        judge_inputs=JudgeInputs(read_tools_offered=[]),
-        recorded_judge_snippet_chars=40,
-    )
-    task_path = trial_dir / "task.yaml"
-    task_path.write_text(
-        task_path.read_text().replace("judge_snippet_chars: 40", "judge_snippet_chars: 0")
+        judge_inputs=JudgeInputs(),
+        recorded_customization={key: bad_value},
     )
 
-    with pytest.raises(MissingReplayInputError, match="judge_snippet_chars"):
-        read_replay_inputs(trial_dir, grading_override=_grading_override())
+    with pytest.raises(MissingReplayInputError, match=f"(?s)customization in .*task.yaml.*{key}"):
+        read_replay_inputs(trial_dir, grading_override=_override(rubric=True))
 
 
-def test_a_defaulted_snippet_stamp_can_only_be_the_default_length() -> None:
-    with pytest.raises(ValueError, match="judge_snippet_chars must be 200"):
+@pytest.mark.parametrize(
+    ("recorded_prompt", "override", "bundle_wins"),
+    [
+        (None, {}, True),
+        ("Recorded judge voice.", {}, True),
+        (None, {"system_prompt": "Override judge voice."}, False),
+        ("Recorded judge voice.", {"system_prompt": None}, False),
+    ],
+    ids=["default-body", "custom-body", "override-body", "override-reset"],
+)
+def test_the_bundle_prompt_stands_in_for_the_prompt_it_was_composed_from(
+    tmp_path: Path, recorded_prompt: str | None, override: dict[str, Any], bundle_wins: bool
+) -> None:
+    from tolokaforge.runner.models import JudgeCustomization
+
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    task_customization = {"system_prompt": recorded_prompt} if recorded_prompt else None
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(customization=JudgeCustomization(system_prompt=recorded_prompt)),
+        recorded_customization=task_customization,
+        judge_prompt="The composed prompt the run graded under.",
+    )
+
+    inputs = read_replay_inputs(trial_dir, grading_override=_override(**override))
+    client = _submit_report_client()
+    replay_trial(inputs, judge_client=client)
+
+    if bundle_wins:
+        assert inputs.provenance.judge_prompt_source is ProvenanceSource.BUNDLE
+        assert "system_prompt" not in inputs.provenance.customization_sources
+        assert client.seen_system.startswith("The composed prompt the run graded under.")
+    else:
+        assert inputs.provenance.judge_prompt_source is None
+        assert inputs.provenance.customization_sources["system_prompt"] is (
+            ProvenanceSource.OVERRIDE
+        )
+        assert not client.seen_system.startswith("The composed prompt")
+
+
+def test_a_judge_only_bundle_replays_under_its_run_level_system_prompt(tmp_path: Path) -> None:
+    """``grader.judge`` is layered over the task's customization in the ``judge_only``
+    grader, after ``task.yaml`` and ``prompts.yaml`` were written from the task alone:
+    the grade's record carries the run layer, so replay judges under its prompt."""
+    from tolokaforge.core.grading.judge import effective_judge_system_prompt
+    from tolokaforge.core.grading.judge_only_helpers import run_judge_only_for_trajectory
+    from tolokaforge.core.logging import get_logger
+    from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig
+
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    trajectory = _trajectory()
+    task_config = LLMJudgeConfig.model_validate(
+        {"rubric": _RUBRIC, "customization": {"evidence": {"agent_policy": False}}}
+    )
+    _write_recorded_inputs(
+        trial_dir,
+        trajectory,
+        recorded_customization={"evidence": {"agent_policy": False}},
+        judge_prompt=effective_judge_system_prompt(task_config),
+    )
+    grade = run_judge_only_for_trajectory(
+        trial_id="t",
+        llm_judge_config=task_config,
+        judge_model_config=_JUDGE_MODEL,
+        trajectory=trajectory,
+        agent_system_prompt=_AGENT_PROMPT,
+        agent_tools=[],
+        override=JudgeCustomization.model_validate({"system_prompt": "Run-level judge voice."}),
+        llm_client=_submit_report_client(),
+        logger=get_logger("test"),
+    )
+    assert grade is not None
+    FileArtifactWriter().write_grade(trial_dir, grade)
+
+    inputs = read_replay_inputs(trial_dir)
+    client = _submit_report_client()
+    replay_trial(inputs, judge_client=client)
+
+    assert inputs.provenance.customization_record is CustomizationRecord.JUDGE_INPUTS
+    assert inputs.options.customization == JudgeCustomization(
+        system_prompt="Run-level judge voice.", evidence={"agent_policy": False}
+    )
+    assert inputs.provenance.judge_prompt_source is None
+    assert client.seen_system.startswith("Run-level judge voice.")
+
+
+def test_a_customization_source_is_never_the_bundle() -> None:
+    from tolokaforge.runner.models import JudgeCustomization
+
+    with pytest.raises(ValidationError, match="names bundle"):
         ReplayProvenance(
-            judge_model="openai/gpt",
+            judge_model="openrouter/openai/gpt-4.1-mini",
             judge_model_source=ProvenanceSource.RECORDED,
             rubric_source=ProvenanceSource.RECORDED,
-            knowledge_search_mode=KnowledgeSearchMode.RECORDED,
-            knowledge_search_disabled=False,
-            custom_system_prompt=False,
-            custom_prompt_source=None,
-            include_agent_system_prompt=True,
-            agent_prompt_source=None,
-            judge_snippet_chars=None,
-            judge_snippet_chars_source=None,
+            customization=JudgeCustomization(),
+            customization_sources={"evidence": ProvenanceSource.BUNDLE},
+            customization_record=CustomizationRecord.JUDGE_INPUTS,
             fidelity_mode=FidelityMode.FULL,
         )
+
+
+# ---------------------------------------------------------------------------
+# A judge from the transcript alone: no final-state part, the transcript parts on
+# ---------------------------------------------------------------------------
+
+_GET_ORDER_READS = {"read_when": {"args": {"id": {"regex": "^O-"}}}}
+
+
+def _record_tool_schemas(
+    trial_dir: Path, *, schema_version: int, get_order: bool | dict[str, Any] | None
+) -> None:
+    """Stamp the bundle generation and record ``get_order`` (the trajectory's one call)
+    in ``tools_schemas.yaml``, declaring *get_order* as its ``mutates_state``."""
+    (trial_dir / "metrics.yaml").write_text(yaml.safe_dump({"schema_version": schema_version}))
+    entry: dict[str, Any] = {
+        "type": "function",
+        "function": {"name": "get_order", "description": "Read an order.", "parameters": {}},
+    }
+    if get_order is not None:
+        entry["mutates_state"] = get_order
+    FileArtifactWriter().write_tools_schemas(trial_dir, [entry])
+
+
+def _opening_message(inputs: Any) -> str:
+    client = MessageCapturingClient(_SUBMIT_REPORT_SCRIPT)
+    result = replay_trial(inputs, judge_client=client)
+    assert result.status is JudgeRunStatus.COMPLETED
+    assert client.seen_tool_names == ["submit_report", "show_call"]
+    return str(client.snapshots[0][0].content)
+
+
+@pytest.mark.parametrize(
+    ("get_order", "listed"),
+    [(_GET_ORDER_READS, False), (False, False), (True, True), (None, True)],
+    ids=["read-rule-matches", "declared-read", "declared-write", "undeclared"],
+)
+def test_a_recorded_transcript_judge_reads_the_bundles_tool_declarations(
+    tmp_path: Path, get_order: bool | dict[str, Any] | None, listed: bool
+) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(),
+        recorded_customization=_TRANSCRIPT_EVIDENCE,
+    )
+    _record_tool_schemas(trial_dir, schema_version=8, get_order=get_order)
+
+    inputs = read_replay_inputs(trial_dir)
+
+    assert inputs.options.customization.evidence.tool_results_options() == ToolResultsOptions(
+        max_chars=500
+    )
+    assert inputs.db_reader is None and inputs.state_diff is None
+    calls = _opening_message(inputs).split("===== STATE-CHANGING CALLS =====\n")[1]
+    assert calls.startswith('[call 1] get_order({"id": "O-1"})') is listed
+    assert calls.startswith("(none: the agent made no call that can change state)") is not listed
+
+
+@pytest.mark.parametrize("schema_version", [7, None], ids=["generation-7", "unstamped"])
+def test_a_bundle_predating_the_declarations_is_refused_a_transcript_replay(
+    tmp_path: Path, schema_version: int | None
+) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=["get_db_state", "query_db"]),
+    )
+    if schema_version is not None:
+        _record_tool_schemas(trial_dir, schema_version=schema_version, get_order=None)
+
+    with pytest.raises(MissingReplayInputError, match=f"generation-{schema_version} bundle"):
+        read_replay_inputs(trial_dir, grading_override=_override(**_TRANSCRIPT_EVIDENCE))
+
+
+def test_a_generation_7_bundle_replays_as_a_state_judge(tmp_path: Path) -> None:
+    """A judge over the state reads no tool declaration, so a bundle predating them
+    replays as it always did."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=["get_db_state", "query_db"]),
+    )
+    _record_tool_schemas(trial_dir, schema_version=7, get_order=None)
+
+    inputs = read_replay_inputs(trial_dir, grading_override=_override(rubric=True))
+
+    assert inputs.options.customization.evidence == JudgeEvidence()
+    assert inputs.options.tool_effects == ToolEffects.empty()
+    assert inputs.db_reader is not None
+    assert inputs.provenance.customization_sources == {}
+
+
+def test_a_transcript_override_inherits_the_recorded_tool_results_options(
+    tmp_path: Path,
+) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(
+            state_diff_text="orders[O-1]: refunded false -> true",
+            read_tools_offered=["get_db_state", "query_db"],
+        ),
+        recorded_customization={"evidence": {"tool_results": {"max_chars": 500}}},
+    )
+    _record_tool_schemas(trial_dir, schema_version=8, get_order=_GET_ORDER_READS)
+
+    inputs = read_replay_inputs(
+        trial_dir,
+        grading_override=_override(
+            evidence={
+                "state_diff": False,
+                "db": False,
+                "workspace": False,
+                "state_changing_calls": True,
+            }
+        ),
+    )
+
+    assert inputs.options.customization.evidence.tool_results_options() == ToolResultsOptions(
+        max_chars=500
+    )
+    assert inputs.options.tool_effects.can_change_state("get_order", '{"id": "O-1"}') is False
+    assert inputs.db_reader is None and inputs.state_diff is None
+    assert inputs.provenance.customization_sources == {
+        "evidence.state_diff": ProvenanceSource.OVERRIDE,
+        "evidence.db": ProvenanceSource.OVERRIDE,
+        "evidence.workspace": ProvenanceSource.OVERRIDE,
+        "evidence.state_changing_calls": ProvenanceSource.OVERRIDE,
+        "evidence.tool_results.max_chars": ProvenanceSource.RECORDED,
+    }

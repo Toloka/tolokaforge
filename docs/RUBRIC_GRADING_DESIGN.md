@@ -37,6 +37,7 @@ orchestrator ──GradeTrial─────▶ runner._grade_trial_async
                                         ├─ LLMClient(judge_model_config) via build_capabilities  (run-level models.judge)
                                         ├─ ToolCallingLoop (no user sim; stop on submit_report; max_turns + wall-time)
                                         │     read-only tools: get_db_state/query_db, search_kb, read_file, submit_report
+                                        │     (the tools of the evidence parts that are on, e.g. + show_call)
                                         ├─ parse_submit_report  → list[CriterionResult]   (fail loud)
                                         └─ aggregate_rubric      → score + gate
                                   └─ Grade{ binary_pass, score, components, criterion_results,
@@ -50,7 +51,9 @@ grade_llm_judge`) and reads through the `GradingSubstrate` seam: DB tools
 bridge through `substrate.db_reader()`, the `initial → final` state-diff is
 built from `substrate.initial_state()` + `substrate.final_state()`, KB tools
 come from `substrate.knowledge_search()`, and `read_file` is offered only
-when `substrate.filesystem_root()` returns a path. The `InProcessGradingSubstrate`
+when `substrate.filesystem_root()` returns a path. Each read is made only while
+the [evidence part](GRADING.md#judge-evidence) that shows it is on
+(`JudgeEvidence.needs`). The `InProcessGradingSubstrate`
 the runner constructs is the aggregate-image / in-runner shape — the judge
 runs in the runner process without a network hop.
 
@@ -73,6 +76,7 @@ InProcess substrate's DB-read seam bridges back to the runner event loop with
 | `aggregate_rubric` | `core/grading/rubric.py` | Weighted score + required-gate |
 | `Judge` / `LLMJudge` | `core/grading/judge.py` | `Judge` Protocol (grading-plane seam); `LLMJudge` builds the client + read-only tools and runs the loop |
 | read-only judge tools | `core/grading/judge_tools.py` | `get_db_state`/`query_db`/`search_kb`/`read_file` |
+| judge evidence parts | `core/grading/judge_evidence.py` | the `EvidencePart`s and their one composition into the opening message and tool surface; `[call N]` numbering, state-changing calls, `show_call` ([GRADING.md](GRADING.md#judge-evidence)) |
 | `JudgeStatus` / `JudgeReport` | proto + `core/models.py` | Errored status + judge usage/transcript |
 | agreement maths | `core/grading/agreement.py` | Accuracy + Cohen's κ over paired labels, disagreements, threshold gate (pure) |
 | calibrator | `tools/rubric-calibrator` | Runs the real judge over golden fixtures and applies the trust gate |
@@ -104,7 +108,8 @@ verdict, and ends the justification with a `VERDICT: MET` / `VERDICT: NOT MET`
 Each criterion is graded as written and self-contained — the judge checks only
 what the criterion's text names, importing no outside expectations — with the
 agent's transcript and, when present, the database state diff as the primary
-evidence and the read-only tools reserved for what those do not settle; a
+evidence (a transcript-only judge: the transcript and the agent's state-changing calls)
+and the read-only tools reserved for what those do not settle; a
 criterion passes only on positive evidence that the described behaviour occurred,
 and behaviour that never occurred FAILS unless the criterion's own text says it
 passes when the situation never arises.

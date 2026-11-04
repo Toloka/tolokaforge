@@ -16,6 +16,7 @@ from tolokaforge.core.grading.composite_fold import (
     build_grade_reasons,
     combine_grade_components,
 )
+from tolokaforge.runner.models import Criterion, LLMJudgeConfig, Rubric
 
 pytestmark = pytest.mark.unit
 
@@ -184,6 +185,12 @@ def test_judge_model_rides_on_trial_spec():
 # ---------------------------------------------------------------------------
 
 
+#: A judge over the final state, the only one ``build_judge_state_diff`` builds a diff for.
+_STATE_JUDGE = LLMJudgeConfig(
+    rubric=Rubric(criteria=[Criterion(id="ok", description="ok", kind="binary")])
+)
+
+
 def _substrate_for_diff(initial_tables, final_tables):
     """An :class:`InProcessGradingSubstrate` carrying only the reads the
     state-diff helper touches: ``initial_state`` (the pre-run tables) and
@@ -215,6 +222,7 @@ def test_build_judge_state_diff_none_when_no_initial_tables():
 
     out = build_judge_state_diff(
         trial_id="trial",
+        config=_STATE_JUDGE,
         substrate=_substrate_for_diff({}, {"orders": []}),
         initial_state_schemas=[],
         id_fields={},
@@ -230,6 +238,7 @@ def test_build_judge_state_diff_renders_modified_row():
 
     out = build_judge_state_diff(
         trial_id="trial",
+        config=_STATE_JUDGE,
         substrate=_substrate_for_diff(
             {"orders": [{"id": 1, "status": "open"}]},
             {"orders": [{"id": 1, "status": "shipped"}]},
@@ -274,6 +283,7 @@ def test_build_judge_state_diff_layers_declared_id_fields_over_schema_pk():
     }
     out = build_judge_state_diff(
         trial_id="trial",
+        config=_STATE_JUDGE,
         substrate=_substrate_for_diff(initial, final),
         initial_state_schemas=[
             TableSchema(
@@ -319,6 +329,7 @@ def test_build_judge_state_diff_substrate_unreachable_propagates():
     with pytest.raises(SubstrateUnreachableError):
         build_judge_state_diff(
             trial_id="trial",
+            config=_STATE_JUDGE,
             substrate=substrate,
             initial_state_schemas=[],
             id_fields={},
@@ -349,6 +360,7 @@ def test_build_judge_state_diff_generic_final_state_failure_degrades_to_none():
     )
     out = build_judge_state_diff(
         trial_id="trial",
+        config=_STATE_JUDGE,
         substrate=substrate,
         initial_state_schemas=[],
         id_fields={},

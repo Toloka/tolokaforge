@@ -3,6 +3,7 @@
 import base64
 import glob as glob_module
 import json
+from collections.abc import Mapping
 from datetime import UTC
 from functools import partial
 from pathlib import Path
@@ -16,7 +17,10 @@ from tolokaforge.adapters._task_loader import (
     ToolActor,
     _detect_task_root,
     actor_tool_block,
+    author_mutates_state,
     build_tool_inventory,
+    check_mutates_state_rule_paths,
+    compose_mutates_state,
     declared_search_backend,
     declared_tool_names,
     effective_mcp_server,
@@ -28,6 +32,7 @@ from tolokaforge.adapters._task_loader import (
     seeded_table_shapes,
     seeded_tables_from_task,
     tool_configs,
+    tool_mutates_state_declarations,
     tool_output_max_chars_overrides,
     warn_tool_cache_predating_mutates_state,
 )
@@ -66,9 +71,9 @@ from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
     construct_config,
+    layer_judge_customization,
     project_grading_combine,
     resolve_effective_grading_combine,
-    resolve_effective_judge_customization,
 )
 from tolokaforge.core.project_loader import resolve as resolve_environment
 from tolokaforge.runner.id_resolution import check_id_fields_against_seeded_tables
@@ -84,7 +89,12 @@ from tolokaforge_coding_harnesses import (
 )
 
 if TYPE_CHECKING:
-    from tolokaforge.runner.models import SearchConfig, TaskDescription, ToolSchema
+    from tolokaforge.runner.models import (
+        MutatesStateRule,
+        SearchConfig,
+        TaskDescription,
+        ToolSchema,
+    )
 
 logger = get_logger(__name__)
 
@@ -185,12 +195,19 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
     an ``mcp_server`` carries the script relative to the task dir, which the
     runner resolves against its extracted artifacts dir.
 
+    ``mutates_state`` is the tool author's declaration (the ``tools.json`` cache,
+    the builtin's policy, the search tool's ``false``) with the task's
+    ``tools.<actor>.<name>.mutates_state`` laid over it (:func:`compose_mutates_state`).
+
     Raises:
         NativeAdapterMisconfigurationError: An enabled tool is not a builtin and
             the block declares no ``mcp_server``, so the emitted schema would
             carry ``source=None`` and reach the runner as an unresolvable name.
         RuntimeError: If the block names an ``mcp_server`` script that is absent.
-        ValueError: If a ``tools.<actor>.<name>`` block is not a mapping.
+        ValueError: If a ``tools.<actor>.<name>`` block is not a mapping, or its
+            ``mutates_state`` is malformed, overrides the author's declaration, or
+            names an argument path the tool's schema rules out; or if the author's
+            own read rule is malformed or names such a path.
     """
     from tolokaforge.runner.models import InvocationStyle, ToolSchema, ToolSource
     from tolokaforge.tools.builtin import registry as builtin_registry
@@ -202,6 +219,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
 
     configs = tool_configs(task, actor)
     overrides = tool_output_max_chars_overrides(task, actor)
+    task_declared = tool_mutates_state_declarations(task, actor)
     rich_schemas = resolve_tool_schemas(task, task_dir, actor, allow_subprocess=True)
     search = search_declaration(task)
 
@@ -219,7 +237,14 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
                 c for c in (base.output_max_chars, overrides.get(tool_name)) if c is not None
             ]
             emitted_cap = min(cap_candidates) if cap_candidates else None
-            schemas.append(base.model_copy(update={"output_max_chars": emitted_cap}))
+            mutates_state = _emitted_mutates_state(
+                task, actor, tool_name, base.mutates_state, task_declared, base.parameters
+            )
+            schemas.append(
+                base.model_copy(
+                    update={"output_max_chars": emitted_cap, "mutates_state": mutates_state}
+                )
+            )
             continue
         if mcp_server_ref is None and not builtin_registry.is_builtin(tool_name):
             raise NativeAdapterMisconfigurationError(
@@ -241,6 +266,15 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
             c for c in (rich.get("output_max_chars"), overrides.get(tool_name)) if c is not None
         ]
         emitted_cap = min(cap_candidates) if cap_candidates else None
+        author = (
+            author_mutates_state(
+                rich.get("mutates_state"),
+                tool_name=tool_name,
+                source=f"task {task.task_id!r}'s {task_dir / 'fixtures' / 'tools.json'}",
+            )
+            if mcp_server_ref
+            else rich.get("mutates_state")
+        )
         schemas.append(
             ToolSchema(
                 name=tool_name,
@@ -253,10 +287,34 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
                 source=source,
                 tool_config=configs.get(tool_name, {}),
                 output_max_chars=emitted_cap,
-                mutates_state=rich.get("mutates_state"),
+                mutates_state=_emitted_mutates_state(
+                    task, actor, tool_name, author, task_declared, rich.get("parameters")
+                ),
             )
         )
     return schemas
+
+
+def _emitted_mutates_state(
+    task: TaskConfig,
+    actor: ToolActor,
+    tool_name: str,
+    author: "bool | MutatesStateRule | None",
+    task_declared: "Mapping[str, bool | MutatesStateRule]",
+    parameters: Mapping[str, Any] | None,
+) -> "bool | MutatesStateRule | None":
+    where = f"tools.{actor.value}.{tool_name}.mutates_state"
+    declared = compose_mutates_state(
+        author, task_declared.get(tool_name), where=where, task_id=task.task_id
+    )
+    check_mutates_state_rule_paths(
+        declared,
+        parameters,
+        where=where if tool_name in task_declared else f"the {tool_name} tool's own mutates_state",
+        tool_name=tool_name,
+        task_id=task.task_id,
+    )
+    return declared
 
 
 def _declared_unstable_paths(task_dir: Path) -> tuple[str, ...]:
@@ -1027,7 +1085,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         project_customization = self._project_judge_customization_defaults()
         effective_customization = None
         if task_customization is not None or project_customization is not None:
-            effective_customization = resolve_effective_judge_customization(
+            effective_customization = layer_judge_customization(
                 project_customization, task_customization
             )
         if llm_judge_data and llm_judge_data.get("rubric"):

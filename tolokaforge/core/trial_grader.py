@@ -88,7 +88,11 @@ from tolokaforge.core.plugin_registry import load_grading_method
 from tolokaforge.core.trial import TrialSpec
 from tolokaforge.grader.wire_snapshot import build_grade_request_fields
 from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
-from tolokaforge.runner.models import ComparisonViewGradeRecord, RunnerGradingConfig
+from tolokaforge.runner.models import (
+    ComparisonViewGradeRecord,
+    JudgeCustomization,
+    RunnerGradingConfig,
+)
 from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S, StateReadDeadlines
 
 if TYPE_CHECKING:
@@ -535,14 +539,8 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     judge_transcript: list[dict[str, Any]] | None = None
     judge_kb_gating: JudgeKbGating | None = None
     judge_inputs: JudgeInputs | None = None
-    judge_custom_prompt: bool | None = None
-    judge_agent_prompt_included: bool | None = None
     raw_report = raw_grade.get("judge_report")
     if raw_report:
-        judge_custom_prompt = raw_report.get("custom_system_prompt", False)
-        # Default include: a legacy/skewed runner that never carried field 15
-        # graded with the agent policy present, so its faithful value is True.
-        judge_agent_prompt_included = raw_report.get("include_agent_system_prompt", True)
         judge_usage = JudgeUsage(
             calls=raw_report.get("calls", 0),
             prompt_tokens=raw_report.get("prompt_tokens", 0),
@@ -554,15 +552,18 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
             consistency_rejections=raw_report.get("consistency_rejections", 0),
         )
         judge_kb_gating = JudgeKbGating(
-            knowledge_search_disabled=raw_report.get("knowledge_search_disabled", False),
             offered=list(raw_report.get("kb_tools_offered", [])),
             withheld=list(raw_report.get("kb_tools_withheld", [])),
         )
         # The judge's non-derivable run() inputs. An empty state_diff_text is the
-        # wire encoding of "no diff was built" — map it back to None.
+        # wire encoding of "no diff was built", and an empty customization_json
+        # that of a runner predating the record — both map back to None.
         judge_inputs = JudgeInputs(
             state_diff_text=raw_report.get("state_diff_text") or None,
             read_tools_offered=list(raw_report.get("read_tools_offered", [])),
+            customization=_parse_judge_customization(
+                raw_report.get("customization_json"), judge_usage
+            ),
         )
         raw_transcript = raw_report.get("transcript_json")
         if raw_transcript:
@@ -611,11 +612,24 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_transcript=judge_transcript,
         judge_kb_gating=judge_kb_gating,
         judge_inputs=judge_inputs,
-        judge_custom_prompt=judge_custom_prompt,
-        judge_agent_prompt_included=judge_agent_prompt_included,
         trace_check_results=trace_check_results,
         trace_checks_summary=trace_checks_summary,
     )
+
+
+def _parse_judge_customization(
+    raw: str | None, judge_usage: JudgeUsage
+) -> JudgeCustomization | None:
+    """The judge customization a runner recorded, ``None`` from one predating the record."""
+    if not raw:
+        return None
+    try:
+        return JudgeCustomization.model_validate_json(raw)
+    except ValidationError as exc:
+        raise GradingFailedError(
+            f"the runner's JudgeReport.customization_json payload is not readable: {exc}",
+            judge_usage=judge_usage,
+        ) from exc
 
 
 def runner_rpc_trial_grader_factory(ctx: TrialGraderContext) -> RunnerRPCTrialGrader:
@@ -1470,6 +1484,7 @@ def judge_backed_trial_grader_factory(
             judge_model_config=spec.judge_model_config,
             trajectory=trajectory,
             agent_system_prompt=agent_system_prompt,
+            agent_tools=spec.task.agent_tools,
             override=override,
             llm_client=llm_client,
             logger=logger,

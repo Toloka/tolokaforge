@@ -30,7 +30,7 @@ from tolokaforge.core.grading.predicates import (
     json_type_of,
 )
 from tolokaforge.core.plugin_registry import load_trace_check_operator
-from tolokaforge.runner.models import TRACE_PREDICATE_BINDING_OPERATORS
+from tolokaforge.core.value_predicate_operators import TRACE_PREDICATE_BINDING_OPERATORS
 
 
 def _binding_op(name: str) -> Callable[[Any, Any], bool]:

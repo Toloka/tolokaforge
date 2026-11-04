@@ -58,6 +58,9 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
   every world host. The token is in no schema, argument,
   output or trajectory; a response quoting it back reads `***REDACTED***`. See
   [MULTI_CONTAINER_GUIDE.md § App worlds served over HTTP](MULTI_CONTAINER_GUIDE.md#app-worlds-served-over-http).
+  Its `mutates_state` declares a `GET`, `HEAD` or `OPTIONS` call a read and every other
+  call one that can change state; a task overrides it with `mutates_state: true`
+  ([TASKS.md § Declaring which calls change state](TASKS.md#declaring-which-calls-change-state)).
 - `build_check`: Zero-argument peer-service HTTP probe (compile / interface
   check). See [`build_check`](#build_check) below.
 - `calculator`: Safe arithmetic calculator.

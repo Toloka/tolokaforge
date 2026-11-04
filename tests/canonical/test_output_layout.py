@@ -45,12 +45,21 @@ Spot-checks (content — not full snapshot; that lives in
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
 
+from tests.canonical._factories import make_task_config, make_trial_spec
+from tests.utils.conductor_phases import (
+    make_conductor,
+    make_run_config,
+    make_setup,
+    runner_stub,
+)
 from tolokaforge.core.conductor import _build_resolved_block
 from tolokaforge.core.llm import build_capabilities
 from tolokaforge.core.logging import StructuredLogger
@@ -69,6 +78,7 @@ from tolokaforge.core.models import (
     UserSimulatorConfig,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
+from tolokaforge.runner.models import ToolSchema
 
 pytestmark = pytest.mark.canonical
 
@@ -452,3 +462,34 @@ def test_tools_schemas_yaml_per_trial_no_dedup(tmp_path: Path) -> None:
         # All three carry the same payload (same task, same model) but as
         # independent files — no symlinks, no dedup.
         assert not path.is_symlink()
+
+
+def _wire_entry(name: str) -> dict:
+    return {"type": "function", "function": {"name": name, "description": name, "parameters": {}}}
+
+
+def test_tools_schemas_yaml_records_each_slices_own_mutates_state(tmp_path: Path) -> None:
+    """The conductor joins each entry to its actor's ``ToolSchema`` by name, so a tool
+    both actors serve carries each one's declaration, and an undeclared tool no key."""
+    rule = {"read_when": {"args": {"method": {"in_": ["GET"]}}}}
+
+    def schema(name: str, mutates_state: object) -> ToolSchema:
+        return ToolSchema(name=name, description=name, parameters={}, mutates_state=mutates_state)
+
+    conductor = make_conductor(make_run_config(tmp_path / "results"), tmp_path, MagicMock())
+    conductor.agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda tools: tools
+    setup = replace(
+        make_setup(tmp_path, "task_A", 0),
+        tool_schemas=[_wire_entry("rest_call"), _wire_entry("search")],
+        user_tool_schemas=[_wire_entry("rest_call")],
+    )
+    spec = make_trial_spec(trial_id="task_A:0", task_id="task_A")
+    spec.task.agent_tools = [schema("rest_call", rule), schema("search", None)]
+    spec.task.user_tools = [schema("rest_call", True)]
+
+    conductor._write_artifacts(
+        spec, make_task_config(task_id="task_A"), setup, _trajectory("task_A", 0), runner_stub()
+    )
+
+    recorded = yaml.safe_load((setup.trial_dir / "tools_schemas.yaml").read_text())
+    assert [entry.get("mutates_state", "absent") for entry in recorded] == [rule, "absent", True]

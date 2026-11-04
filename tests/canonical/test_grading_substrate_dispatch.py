@@ -413,7 +413,7 @@ def _reassemble_grade_from_composite(
                 primary_keys=primary_keys,
                 unstable_fields=set(),
             )
-        judge_result = composite.grade_llm_judge(
+        judge_grading = composite.grade_llm_judge(
             trial_id=_TRIAL_ID,
             config=grading_config.llm_judge,
             substrate=substrate,
@@ -424,8 +424,10 @@ def _reassemble_grade_from_composite(
             judge_model_config=_JUDGE_MODEL,
             extra_read_tools=[],
             state_diff=state_diff_text,
+            agent_tools=[],
             logger=logger,  # type: ignore[arg-type]
         )
+        judge_result = judge_grading.result
         accounted_keys[LLM_JUDGE_KEY] = EVALUATED
         judge_reasons = judge_result.reasons
         criterion_results = list(judge_result.criterion_results)
@@ -439,13 +441,11 @@ def _reassemble_grade_from_composite(
             tool_calls=judge_result.usage.tool_calls,
             consistency_rejections=judge_result.usage.consistency_rejections,
             transcript_json=json.dumps(list(judge_result.transcript)),
-            knowledge_search_disabled=judge_result.knowledge_search_disabled,
             kb_tools_offered=list(judge_result.kb_tools_offered),
             kb_tools_withheld=list(judge_result.kb_tools_withheld),
             state_diff_text=judge_result.state_diff or "",
             read_tools_offered=list(judge_result.read_tools_offered),
-            custom_system_prompt=judge_result.custom_system_prompt,
-            include_agent_system_prompt=judge_result.include_agent_system_prompt,
+            customization_json=judge_grading.customization.model_dump_json(),
         )
         if judge_result.status is JudgeStatus.ERRORED:
             judge_status = pb2.JUDGE_STATUS_ERRORED

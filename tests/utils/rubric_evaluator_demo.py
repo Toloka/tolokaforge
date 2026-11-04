@@ -29,10 +29,10 @@ from tolokaforge.core.grading.rubric_evaluator import (
 from tolokaforge.runner.models import CriterionResult
 
 if TYPE_CHECKING:
+    from tolokaforge.core.grading.judge_tools import EvidenceOwnedTool
     from tolokaforge.core.grading.substrate import GradingSubstrate
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner.models import Rubric
-    from tolokaforge.tools.registry import Tool
 
 __all__ = [
     "DeterministicRubricEvaluator",
@@ -74,7 +74,7 @@ class DeterministicRubricEvaluator:
         transcript: list[dict[str, Any]],
         substrate: GradingSubstrate,
         judge_model_config: ModelConfig,
-        extra_read_tools: list[Tool],
+        extra_read_tools: list[EvidenceOwnedTool],
         state_diff: str | None,
     ) -> JudgeResult:
         score = _hash_to_score(_rubric_signature(rubric))

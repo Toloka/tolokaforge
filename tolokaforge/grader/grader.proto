@@ -194,16 +194,15 @@ message JudgeReport {
   int32 tool_calls = 6;
   string transcript_json = 7;
   int32 consistency_rejections = 8;
-  bool knowledge_search_disabled = 9;
   repeated string kb_tools_offered = 10;
   repeated string kb_tools_withheld = 11;
   string state_diff_text = 12;
   repeated string read_tools_offered = 13;
-  bool custom_system_prompt = 14;
-  optional bool include_agent_system_prompt = 15;
-  reserved 16;
-  reserved "chunk_boundaries_json";
+  reserved 9, 14, 15, 16;
+  reserved "knowledge_search_disabled", "custom_system_prompt", "include_agent_system_prompt",
+      "chunk_boundaries_json";
   optional double billed_cost_usd = 17;
+  string customization_json = 18;
 }
 
 // TraceConstraintResult — mirrors runner.TraceConstraintResult including

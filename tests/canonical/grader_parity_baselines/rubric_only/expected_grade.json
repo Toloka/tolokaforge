@@ -21,11 +21,9 @@
     "completion_tokens": 5,
     "consistency_rejections": 0,
     "cost_usd": 0.001,
-    "custom_system_prompt": false,
-    "include_agent_system_prompt": true,
+    "customization_json": "{\"system_prompt\":null}",
     "kb_tools_offered": [],
     "kb_tools_withheld": [],
-    "knowledge_search_disabled": false,
     "prompt_tokens": 10,
     "read_tools_offered": [
       "get_db_state",

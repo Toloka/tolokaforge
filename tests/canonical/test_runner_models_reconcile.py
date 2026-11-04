@@ -148,7 +148,7 @@ def _sample_task_description() -> TaskDescription:
             llm_judge=LLMJudgeConfig(
                 rubric=rubric,
                 customization=JudgeCustomization(
-                    disable_knowledge_search=False,
+                    evidence={"knowledge_search": True},
                 ),
             ),
         ),
@@ -266,9 +266,8 @@ def test_grading_config_with_judge_round_trips_for_the_rpc_grader():
         llm_judge=LLMJudgeConfig(
             rubric=rubric,
             customization=JudgeCustomization(
-                disable_knowledge_search=True,
                 system_prompt="You are a strict rubric judge.",
-                include_agent_system_prompt=False,
+                evidence={"knowledge_search": False, "agent_policy": False},
             ),
         ),
     )
@@ -279,8 +278,8 @@ def test_grading_config_with_judge_round_trips_for_the_rpc_grader():
     assert reconstructed.llm_judge is not None
     assert reconstructed.llm_judge.rubric.reference == "Correct refund is $42.00."
     assert reconstructed.llm_judge.customization is not None
-    assert reconstructed.llm_judge.customization.disable_knowledge_search is True
-    assert reconstructed.llm_judge.customization.include_agent_system_prompt is False
+    assert reconstructed.llm_judge.customization.evidence.knowledge_search is False
+    assert reconstructed.llm_judge.customization.evidence.agent_policy is False
 
 
 def test_recorded_tool_call_is_the_shared_wire_type():

@@ -93,12 +93,12 @@ from tolokaforge.core.models import (
     TranscriptRulesConfig,
     ValuePredicate,
 )
-from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_fields_findings
-from tolokaforge.runner.models import (
+from tolokaforge.core.value_predicate_operators import (
     TRACE_PREDICATE_BINDING_OPERATORS,
     TRACE_PREDICATE_REGEX_OPERATORS,
-    capture_group_count_refusal,
 )
+from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_fields_findings
+from tolokaforge.runner.models import capture_group_count_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -288,9 +288,7 @@ class ToolInventory:
         schema = self.parameters.get(tool)
         if schema is None:
             return ArgumentSchema.UNKNOWN
-        if schema.get("additionalProperties") is False:
-            return ArgumentSchema.CLOSED
-        return ArgumentSchema.OPEN
+        return _schema_strictness(schema)
 
     def properties(self, tool: str) -> frozenset[str]:
         """The argument names *tool*'s schema declares; empty when unresolved."""
@@ -2790,6 +2788,35 @@ def _one_matchers_argument_paths(site: _MatcherSite, inventory: ToolInventory) -
         _one_argument_path(f"{where}.{path}", path, resolved, _UNMATCHABLE_PREDICATE_HAZARD)
         for path in site.matcher.args or ()
     )
+
+
+_READ_RULE_UNMATCHABLE_HAZARD = (
+    "the rule reads no call, and every call of the tool counts as one that can change state"
+)
+
+
+def check_read_rule_paths(
+    where: str, tool: str, paths: Iterable[str], parameters: Mapping[str, Any]
+) -> AuthoringReport:
+    """A ``mutates_state`` read rule's ``read_when.args`` paths, against *tool*'s parameters.
+
+    The rule a matcher's ``args`` paths are held to (:func:`_check_argument_paths`):
+    the first segment must be a property the schema declares — an error where the
+    schema admits no other argument, an advisory where it permits extras.
+    """
+    resolved = _ResolvedTool(
+        tool, _schema_strictness(parameters), frozenset(parameters.get("properties", {}))
+    )
+    return _merged(
+        _one_argument_path(f"{where}.{path}", path, resolved, _READ_RULE_UNMATCHABLE_HAZARD)
+        for path in paths
+    )
+
+
+def _schema_strictness(schema: Mapping[str, Any]) -> ArgumentSchema:
+    if schema.get("additionalProperties") is False:
+        return ArgumentSchema.CLOSED
+    return ArgumentSchema.OPEN
 
 
 def _one_argument_path(

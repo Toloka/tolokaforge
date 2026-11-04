@@ -26,7 +26,7 @@ from tolokaforge.core.plugin_registry import (
     available_trace_check_operators,
     load_trace_check_operator,
 )
-from tolokaforge.runner.models import TRACE_PREDICATE_OPERATORS
+from tolokaforge.core.value_predicate_operators import TRACE_PREDICATE_OPERATORS
 
 pytestmark = pytest.mark.unit
 

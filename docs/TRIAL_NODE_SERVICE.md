@@ -67,7 +67,7 @@ the gRPC envelope: the node carries them inside `RunTrialRequest` /
 `RunTrialResponse`, and the same `TrialNodeInputs` drives one trial on a single
 box through [`tolokaforge run-trial --inputs`](API.md#one-shot-mode) with no gRPC
 at all. Their committed JSON schemas under [`schemas/`](schemas/) —
-`trial_node_inputs.v1.json` and `trial_result.v1.json` — are the contract an
+`trial_node_inputs.v2.json` and `trial_result.v2.json` — are the contract an
 out-of-process caller pins to. `TRIAL_CONTRACT_VERSION`
 (`tolokaforge.core.trial_contract`) versions those two shapes, independent of
 `NODE_PROTOCOL_VERSION` (which versions the gRPC `RunTrial` envelope) and of the

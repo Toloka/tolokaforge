@@ -167,7 +167,7 @@ def test_the_declared_backend_serves_the_agent_and_the_judge_from_one_index(
         judge_search = trial.resolve_kb_search()
         assert isinstance(judge_search, InMemoryKnowledgeSearch)
         assert judge_search.index is index, "the judge must read the index the agent read"
-        judged = SearchKbTool(judge_search).execute(query="refund window")
+        judged = SearchKbTool(judge_search, snippet_chars=200).execute(query="refund window")
         assert judged.success is True
         assert "returns" in judged.output
         assert runner_backend.call_log.knowledge_searches == [("refund window", 5)]
@@ -215,7 +215,7 @@ def test_the_default_backend_serves_the_shipped_rag_pack_through_the_runners_cli
 
         judge_search = service.trials[trial_id].resolve_kb_search()
         assert isinstance(judge_search, RagServiceKnowledgeSearch)
-        judged = SearchKbTool(judge_search).execute(query=query)
+        judged = SearchKbTool(judge_search, snippet_chars=200).execute(query=query)
         assert judged.success is True
         assert rendered["results"][0]["doc_id"] in judged.output
     finally:

@@ -415,10 +415,10 @@ def test_composite_pack_judge_does_not_enable_kb_passthrough(pack_dir: Path) -> 
     divergence (the grader image cannot reconstruct the runner's KB
     corpus). A composite pack that enabled it would drift the two legs
     on a component that isn't the seam under test, so the isolation
-    invariant only holds while every ``LLMJudgeConfig.customization``
-    declares :attr:`disable_knowledge_search` either as ``None`` (unset)
-    or ``True`` (explicitly disabled). ``False`` — the one setting that
-    keeps KB tools on the judge's surface — is refused here.
+    invariant only holds while no ``LLMJudgeConfig.customization`` declares
+    ``evidence.knowledge_search`` explicitly on: unset keeps the parity packs' KB-less
+    surface, and ``false`` disables it. An explicit ``true`` or options mapping — the
+    settings that ask for KB tools on the judge's surface — is refused here.
     """
     pack = load_parity_pack(pack_dir)
     llm_judge = pack.grading_config.llm_judge
@@ -427,9 +427,10 @@ def test_composite_pack_judge_does_not_enable_kb_passthrough(pack_dir: Path) -> 
     customization = llm_judge.customization
     if customization is None:
         return
-    assert customization.disable_knowledge_search is not False, (
+    declared = "knowledge_search" in customization.evidence.model_fields_set
+    assert not declared or customization.evidence.knowledge_search is False, (
         f"pack {pack_dir.name!r} enables KB passthrough on its judge "
-        f"(disable_knowledge_search=False) — composite parity packs must not "
+        "(evidence.knowledge_search on) — composite parity packs must not "
         "exercise the ADR-0040 KB-passthrough divergence."
     )
 

@@ -90,6 +90,9 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/logging.py",
     "tolokaforge/core/loop.py",
     "tolokaforge/core/model_data.py",
+    # How an MCP tool's author carries a ``mutates_state`` read rule on the wire;
+    # ``tools_interface`` imports it inside the task's server process.
+    "tolokaforge/core/mutates_state_meta.py",
     "tolokaforge/core/netpolicy_constants.py",
     "tolokaforge/core/plugin_registry.py",
     "tolokaforge/core/pricing.py",
@@ -99,6 +102,8 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/simulation_budget.py",
     "tolokaforge/core/summarize_policy.py",
     "tolokaforge/core/tool_call_ids.py",
+    # The judge's options carry the agent tools' ``mutates_state`` declarations.
+    "tolokaforge/core/tool_effects.py",
     "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
     # The task-side MCP server registry (``create_server`` /
@@ -109,6 +114,9 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/tools_interface.py",
     "tolokaforge/core/trial.py",
     "tolokaforge/core/unknown_keys.py",
+    # The ``ValuePredicate`` operator names, read by ``runner.models`` and by
+    # ``mutates_state_meta``.
+    "tolokaforge/core/value_predicate_operators.py",
 )
 """Individual files shipped in the subset that live outside a whole-package
 entry — the top-level ``tolokaforge/__init__.py`` and the shared-spine

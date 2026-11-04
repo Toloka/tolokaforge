@@ -22,16 +22,20 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
+    from tolokaforge.runner.models import EvidencePartName
 
 __all__ = [
+    "GET_DB_STATE_TOOL_NAME",
+    "QUERY_DB_TOOL_NAME",
+    "READ_FILE_TOOL_NAME",
     "SEARCH_KB_TOOL_NAME",
     "DelegatingReadTool",
+    "EvidenceOwnedTool",
     "GetDbStateTool",
     "QueryDbTool",
     "ReadFileTool",
@@ -45,6 +49,10 @@ __all__ = [
 #: episode evidence, so the two modules share one constant instead of two
 #: independently-typed magic strings.
 SEARCH_KB_TOOL_NAME = "search_kb"
+
+GET_DB_STATE_TOOL_NAME = "get_db_state"
+QUERY_DB_TOOL_NAME = "query_db"
+READ_FILE_TOOL_NAME = "read_file"
 
 #: Cap on file/db output returned to the judge so a huge state can't blow the
 #: context window. Truncation is flagged in the output, never silent.
@@ -66,7 +74,7 @@ class GetDbStateTool(Tool):
 
     def __init__(self, db_reader: DBReader):
         super().__init__(
-            name="get_db_state",
+            name=GET_DB_STATE_TOOL_NAME,
             description=(
                 "LAST RESORT — returns the ENTIRE final database state as raw JSON, "
                 "which can be very large and is truncated at a fixed size. Prefer the "
@@ -111,7 +119,7 @@ class QueryDbTool(Tool):
 
     def __init__(self, db_reader: DBReader):
         super().__init__(
-            name="query_db",
+            name=QUERY_DB_TOOL_NAME,
             description=(
                 "Query the final database state with a JSONPath expression, "
                 "including filter expressions to look up a specific row — e.g. "
@@ -157,7 +165,7 @@ class ReadFileTool(Tool):
 
     def __init__(self, workspace_dir: Path):
         super().__init__(
-            name="read_file",
+            name=READ_FILE_TOOL_NAME,
             description=(
                 "Read a text file the agent produced, relative to its workspace. "
                 "Read-only; paths are sandboxed to the workspace."
@@ -211,16 +219,9 @@ class SearchKbTool(Tool):
     the backend surfaces as a tool error (never silently empty results).
     """
 
-    #: Intrinsic knowledge-search tag: this tool always reads a knowledge base, so
-    #: the judge registry gates it under ``disable_knowledge_search``. Classification
-    #: is by this declared tag, never by tool name.
-    is_knowledge_search = True
-
-    def __init__(
-        self, kb_search: KnowledgeSearch, *, snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
-    ):
+    def __init__(self, kb_search: KnowledgeSearch, *, snippet_chars: int | None):
         """``snippet_chars`` is how much of each hit's text the judge reads
-        (``grading.llm_judge.customization.judge_snippet_chars``): the first that
+        (``customization.evidence.knowledge_search.snippet_chars``): the first that
         many characters with an ellipsis when cut, or the whole document for ``None``."""
         super().__init__(
             name=SEARCH_KB_TOOL_NAME,
@@ -301,7 +302,27 @@ class SearchKbTool(Tool):
         return text[: self._snippet_chars] + "..."
 
 
-class DelegatingReadTool(Tool):
+class EvidenceOwnedTool(Tool):
+    """A read tool a caller hands the judge beside its own, owned by an evidence part.
+
+    ``evidence_part`` names the part of the judge's evidence that owns the tool: it
+    is offered only while that part is on, and classified by this tag, never by its
+    name.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        policy: ToolPolicy | None = None,
+        *,
+        evidence_part: EvidencePartName,
+    ) -> None:
+        super().__init__(name=name, description=description, policy=policy)
+        self.evidence_part = evidence_part
+
+
+class DelegatingReadTool(EvidenceOwnedTool):
     """Read-only judge tool that passes a call THROUGH to a foreign tool verbatim.
 
     Generic by construction — it owns no backend, no I/O format, and no
@@ -335,16 +356,17 @@ class DelegatingReadTool(Tool):
         parameters: dict[str, Any],
         invoke: Callable[[dict[str, Any]], str],
         *,
-        knowledge_search: bool = False,
+        evidence_part: EvidencePartName,
     ):
-        super().__init__(name=name, description=description, policy=read_only_policy())
+        """``evidence_part`` is ``knowledge_search`` for a ``search_policy`` passthrough."""
+        super().__init__(
+            name=name,
+            description=description,
+            policy=read_only_policy(),
+            evidence_part=evidence_part,
+        )
         self._parameters = parameters
         self._invoke = invoke
-        # Declared knowledge-search tag: the runner sets this True for the
-        # ``search_policy`` passthrough so the judge registry gates it under
-        # ``disable_knowledge_search``. A passthrough over a non-KB read tool leaves
-        # it False and is never gated. Classification is by this tag, never by name.
-        self.is_knowledge_search = knowledge_search
 
     def get_schema(self) -> dict[str, Any]:
         return {

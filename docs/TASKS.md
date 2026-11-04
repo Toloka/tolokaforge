@@ -134,6 +134,58 @@ dropped and asking for a narrower request; the trial's tool-call record and the 
 read the full result. The native adapter applies these keys; see
 [LLM_LAYER.md § Tool-output truncation](LLM_LAYER.md#tool-output-truncation).
 
+### Tool blocks
+
+Every key of a `tools.<actor>` block other than `enabled`, `mcp_server` and
+`output_max_chars` is the block of the tool it names. Two of a tool block's keys are the
+harness's own and never reach the tool: `output_max_chars` (above) and `mutates_state`
+(below). Every other key is an init kwarg of a builtin tool (`allowed_hosts` on
+`http_request`, `apps` on `mobile`).
+
+A task file's block for a tool its `tools.<actor>.enabled` does not list is refused when
+the task loads, whatever the block carries: nothing reads a non-enabled tool's block, so
+a misspelled tool name would otherwise load as a silent no-op. The refusal names the
+block, the actor and the enabled list. A `task_defaults.tools.<actor>.<name>` block in
+`project.yaml` is exempt: it reaches the tasks that enable the tool and is inert for the
+rest.
+
+### Declaring which calls change state
+
+`mutates_state` on a tool block says whether the tool's calls can change the graded state
+([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)), where the tool's author has not
+said. The judge's [`state_changing_calls` evidence part](GRADING.md#judge-evidence) reads
+it to list the agent's state-changing calls; an undeclared tool's every call counts as one.
+
+```yaml
+tools:
+  agent:
+    enabled: ["http_request", "rest_call"]
+    mcp_server: "mcp_server.py"
+    http_request:
+      mutates_state: true                       # every call, GET included, can change state
+    rest_call:                                  # a call reads when every predicate holds
+      mutates_state: {read_when: {args: {request.method: {in_: [GET, HEAD, OPTIONS]}}}}
+```
+
+It takes three forms: `false` (every call reads), `true`, or a `read_when` rule whose
+`args` map dotted argument paths to [trace-matcher predicates](GRADING.md#operators)
+(`equals`, `in_`, `regex`, …; the binding operators are refused, since a rule binds
+nothing). A pattern runs on the `linear` engine unless its predicate names another
+`regex_engine`, and one its engine cannot compile is refused where the rule is declared.
+A call the rule does not foresee — a path it does not carry, a value outside the
+predicate — can change state. The task load refuses:
+
+- a declaration over the tool author's own (an MCP server's `readOnlyHint` or read rule, a builtin's
+  `ToolPolicy`, the search tool's `false`), unless it is `true` — tightening is always safe,
+  and is how a pack whose service changes state on a call the author calls a read says so;
+- a `read_when` path whose first segment the tool's schema does not declare, where the
+  schema admits no other argument; where it permits extras, the path is logged instead.
+
+The builtin `http_request` declares its own rule: a call whose `method` is `GET`, `HEAD`
+or `OPTIONS` (RFC 9110's safe methods, spelled as the schema's upper-case enum) reads,
+and every other call can change state. A pack whose service changes state on a safe
+method declares `http_request: {mutates_state: true}`, as above.
+
 ## Initial State
 
 - `json_db`: the trial's JSON DB seed, either a JSON file path relative to the task

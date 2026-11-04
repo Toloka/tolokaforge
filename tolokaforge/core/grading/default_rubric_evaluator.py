@@ -22,15 +22,17 @@ from tolokaforge.core.grading.rubric_evaluator import (
     RubricEvaluator,
     RubricEvaluatorContext,
 )
+from tolokaforge.runner.models import EvidenceInput
 
 if TYPE_CHECKING:
+    from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
     from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
     from tolokaforge.core.grading.judge_result import JudgeResult
+    from tolokaforge.core.grading.judge_tools import EvidenceOwnedTool
     from tolokaforge.core.grading.substrate import GradingSubstrate
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner.models import Rubric
-    from tolokaforge.tools.registry import Tool
 
 __all__ = [
     "LLMJudgeRubricEvaluator",
@@ -52,15 +54,11 @@ class LLMJudgeRubricEvaluator:
         self,
         judge_model_provider: JudgeModelProvider,
         *,
-        disable_knowledge_search: bool = False,
-        custom_system_prompt: str | None = None,
-        include_agent_system_prompt: bool = True,
+        options: JudgeTrialOptions,
         logger: StructuredLogger | None = None,
     ) -> None:
         self._judge_model_provider = judge_model_provider
-        self._disable_knowledge_search = disable_knowledge_search
-        self._custom_system_prompt = custom_system_prompt
-        self._include_agent_system_prompt = include_agent_system_prompt
+        self._options = options
         self._logger = logger
 
     def evaluate(
@@ -71,25 +69,27 @@ class LLMJudgeRubricEvaluator:
         transcript: list[dict[str, Any]],
         substrate: GradingSubstrate,
         judge_model_config: ModelConfig,
-        extra_read_tools: list[Tool],
+        extra_read_tools: list[EvidenceOwnedTool],
         state_diff: str | None,
     ) -> JudgeResult:
         judge_model = self._judge_model_provider.build(judge_model_config)
+        evidence = self._options.customization.evidence
         return LLMJudge(
             judge_model_config,
-            disable_knowledge_search=self._disable_knowledge_search,
-            custom_system_prompt=self._custom_system_prompt,
-            include_agent_system_prompt=self._include_agent_system_prompt,
+            customization=self._options.customization,
+            tool_effects=self._options.tool_effects,
             llm_client=judge_model,
             logger=self._logger,
         ).run(
             rubric=rubric,
             agent_system_prompt=agent_system_prompt,
             transcript=transcript,
-            db_reader=substrate.db_reader(),
+            db_reader=substrate.db_reader() if evidence.needs(EvidenceInput.DB) else None,
             kb_search=substrate.knowledge_search(),
             extra_read_tools=list(extra_read_tools),
-            workspace_dir=substrate.filesystem_root(),
+            workspace_dir=(
+                substrate.filesystem_root() if evidence.needs(EvidenceInput.WORKSPACE) else None
+            ),
             state_diff=state_diff,
         )
 
@@ -99,10 +99,4 @@ def _llm_judge_rubric_evaluator_factory(
 ) -> RubricEvaluator:
     """Entry-point factory. Adapts :class:`RubricEvaluatorContext` to the
     :class:`LLMJudgeRubricEvaluator` constructor."""
-    return LLMJudgeRubricEvaluator(
-        ctx.judge_model_provider,
-        disable_knowledge_search=ctx.disable_knowledge_search,
-        custom_system_prompt=ctx.custom_system_prompt,
-        include_agent_system_prompt=ctx.include_agent_system_prompt,
-        logger=ctx.logger,
-    )
+    return LLMJudgeRubricEvaluator(ctx.judge_model_provider, options=ctx.options, logger=ctx.logger)

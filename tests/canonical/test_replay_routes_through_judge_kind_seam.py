@@ -138,7 +138,7 @@ class TestLegacyArtifactDefaultsToSingleShot:
         result = replay_trial(inputs, judge_client=client)
 
         assert result.status is JudgeRunStatus.COMPLETED
-        grade = build_replay_grade(result)
+        grade = build_replay_grade(result, inputs.options.customization)
         assert grade.judge_status is JudgeStatus.COMPLETED
         assert grade.criterion_results is not None
         assert [c.id for c in grade.criterion_results] == ["refund"]

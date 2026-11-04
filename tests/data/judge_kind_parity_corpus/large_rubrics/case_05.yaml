@@ -60,9 +60,8 @@ transcript:
 - role: assistant
   content: Confirmed — the refund of $19.99 is processed. Anything else?
 state_diff: null
-disable_knowledge_search: false
-custom_system_prompt: null
-include_agent_system_prompt: true
+customization:
+  system_prompt: null
 judge_scripts:
   single_shot_rubric:
   - - name: submit_report

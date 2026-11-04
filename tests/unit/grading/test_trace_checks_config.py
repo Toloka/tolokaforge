@@ -41,10 +41,10 @@ from tests.utils.trace_checks_configs import (
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import TraceEventKind
 from tolokaforge.core.models import OnMissing, TraceChecksConfig
+from tolokaforge.core.value_predicate_operators import TRACE_PREDICATE_OPERATORS
 from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
     TRACE_MATCHABLE_FIELDS_BY_KIND,
-    TRACE_PREDICATE_OPERATORS,
     TraceConstraint,
     TraceConstraintExpr,
     TraceConstraintKind,

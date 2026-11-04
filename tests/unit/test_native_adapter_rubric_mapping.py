@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
-from tolokaforge.runner.models import JudgeCustomization, TaskDescription
+from tolokaforge.runner.models import (
+    FINAL_STATE_INPUTS,
+    JudgeCustomization,
+    JudgeEvidence,
+    TaskDescription,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -200,39 +206,67 @@ def test_explicit_null_llm_judge_key_loads_as_no_judge(tmp_path: Path):
     assert task_desc.grading.llm_judge is None
 
 
-def test_task_customization_attached_when_set(tmp_path: Path):
-    adapter = _build_task(tmp_path, _rubric_grading({"disable_knowledge_search": True}))
-    judge = adapter.to_task_description("rubric_task").grading.llm_judge
-
-    assert judge.customization is not None
-    assert judge.customization.disable_knowledge_search is True
-
-
-def test_project_default_inherited_when_task_unset(tmp_path: Path):
-    """A project default disables KB search; a rubric task with no customization
-    block inherits it (task-unset never clears a set project default)."""
+def _evidence(
+    tmp_path: Path, task: dict[str, Any] | None, project: dict[str, Any] | None
+) -> JudgeEvidence:
     adapter = _build_task(
         tmp_path,
-        _rubric_grading(),
-        project_task_defaults=_judge_defaults({"disable_knowledge_search": True}),
+        _rubric_grading(None if task is None else {"evidence": task}),
+        project_task_defaults=None if project is None else _judge_defaults({"evidence": project}),
     )
     judge = adapter.to_task_description("rubric_task").grading.llm_judge
-
     assert judge.customization is not None
-    assert judge.customization.disable_knowledge_search is True
+    return judge.customization.evidence
 
 
-def test_task_false_overrides_project_true(tmp_path: Path):
-    """Tri-state: an explicit task ``false`` overrides a project ``true``."""
-    adapter = _build_task(
-        tmp_path,
-        _rubric_grading({"disable_knowledge_search": False}),
-        project_task_defaults=_judge_defaults({"disable_knowledge_search": True}),
-    )
-    judge = adapter.to_task_description("rubric_task").grading.llm_judge
-
-    assert judge.customization is not None
-    assert judge.customization.disable_knowledge_search is False
+@pytest.mark.parametrize(
+    ("project", "task", "expected"),
+    [
+        (None, {"knowledge_search": False}, JudgeEvidence(knowledge_search=False)),
+        ({"knowledge_search": False}, None, JudgeEvidence(knowledge_search=False)),
+        ({"knowledge_search": False}, {"knowledge_search": True}, JudgeEvidence()),
+        ({"agent_policy": True}, {"agent_policy": False}, JudgeEvidence(agent_policy=False)),
+        (
+            {"agent_policy": False, "db": False},
+            {"db": True},
+            JudgeEvidence(agent_policy=False),
+        ),
+        (
+            {"tool_results": {"max_chars": 500}},
+            {"state_changing_calls": True},
+            JudgeEvidence(tool_results={"max_chars": 500}, state_changing_calls=True),
+        ),
+        ({"knowledge_search": {"snippet_chars": 50}}, {"knowledge_search": True}, JudgeEvidence()),
+        (
+            {"knowledge_search": {"snippet_chars": 50}},
+            {"knowledge_search": {"snippet_chars": None}},
+            JudgeEvidence(knowledge_search={"snippet_chars": None}),
+        ),
+        (
+            {"knowledge_search": {"snippet_chars": 50}},
+            None,
+            JudgeEvidence(knowledge_search={"snippet_chars": 50}),
+        ),
+    ],
+    ids=[
+        "task-part",
+        "project-part-inherited",
+        "task-true-over-project-false",
+        "task-false-over-project-true",
+        "one-part-at-a-time",
+        "parts-from-both-layers",
+        "true-resets-a-project-snippet",
+        "task-null-snippet-over-a-project-figure",
+        "project-snippet-inherited",
+    ],
+)
+def test_evidence_parts_layer_project_then_task_one_at_a_time(
+    tmp_path: Path,
+    project: dict[str, Any] | None,
+    task: dict[str, Any] | None,
+    expected: JudgeEvidence,
+):
+    assert _evidence(tmp_path, task, project) == expected
 
 
 def test_system_prompt_task_string_overrides_project_string(tmp_path: Path):
@@ -279,124 +313,68 @@ def test_system_prompt_task_null_resets_project_string_to_default(tmp_path: Path
 
 def test_system_prompt_none_when_no_layer_sets_it(tmp_path: Path):
     """Both layers unset ⇒ ``system_prompt is None`` (the default judge prompt)."""
-    adapter = _build_task(tmp_path, _rubric_grading({"disable_knowledge_search": True}))
+    adapter = _build_task(tmp_path, _rubric_grading({"evidence": {"knowledge_search": False}}))
     judge = adapter.to_task_description("rubric_task").grading.llm_judge
 
     assert judge.customization is not None
     assert judge.customization.system_prompt is None
 
 
-def test_include_agent_system_prompt_task_true_overrides_project_false(tmp_path: Path):
-    """A task ``true`` re-includes the agent policy over a project ``false``."""
+def test_a_null_snippet_rides_the_wire_as_a_value(tmp_path: Path):
+    """``snippet_chars: null`` is whole documents, not the default, so it crosses the
+    wire rather than being dropped."""
     adapter = _build_task(
         tmp_path,
-        _rubric_grading({"include_agent_system_prompt": True}),
-        project_task_defaults=_judge_defaults({"include_agent_system_prompt": False}),
+        _rubric_grading({"evidence": {"knowledge_search": {"snippet_chars": None}}}),
+        project_task_defaults=_judge_defaults(
+            {"evidence": {"knowledge_search": {"snippet_chars": 50}}}
+        ),
     )
-    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+    description = adapter.to_task_description("rubric_task")
 
-    assert judge.customization is not None
-    assert judge.customization.include_agent_system_prompt is True
+    wire = json.loads(description.model_dump_json())["grading"]["llm_judge"]["customization"]
+    assert wire["evidence"] == {"knowledge_search": {"snippet_chars": None}}
 
 
-def test_include_agent_system_prompt_task_false_overrides_project_true(tmp_path: Path):
-    """A task ``false`` gates the agent policy out over a project ``true``."""
+def test_evidence_is_off_the_wire_when_every_part_holds_its_default(tmp_path: Path):
+    """A customization whose parts are all at their default dumps without
+    ``evidence``, so an older image, which forbids a key it does not declare, accepts
+    the task."""
     adapter = _build_task(
         tmp_path,
-        _rubric_grading({"include_agent_system_prompt": False}),
-        project_task_defaults=_judge_defaults({"include_agent_system_prompt": True}),
+        _rubric_grading({"system_prompt": "Grade it.", "evidence": {"db": True}}),
     )
-    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+    description = adapter.to_task_description("rubric_task")
 
-    assert judge.customization is not None
-    assert judge.customization.include_agent_system_prompt is False
+    wire = json.loads(description.model_dump_json())["grading"]["llm_judge"]["customization"]
+    assert wire == {"system_prompt": "Grade it."}
 
 
-def test_include_agent_system_prompt_inherited_when_task_key_absent(tmp_path: Path):
-    """A task with no ``include_agent_system_prompt`` key inherits the project
-    value (absent never clears a set project default)."""
+def test_a_project_transcript_judge_reaches_the_task_and_the_wire(tmp_path: Path):
+    """A project's parts layer under a task that sets nothing, and cross the wire
+    for the runner's judge, each part it sets and no other."""
+    transcript_only = {
+        "state_diff": False,
+        "db": False,
+        "workspace": False,
+        "tool_results": True,
+        "state_changing_calls": True,
+    }
     adapter = _build_task(
         tmp_path,
         _rubric_grading(),
-        project_task_defaults=_judge_defaults({"include_agent_system_prompt": False}),
-    )
-    judge = adapter.to_task_description("rubric_task").grading.llm_judge
-
-    assert judge.customization is not None
-    assert judge.customization.include_agent_system_prompt is False
-
-
-def test_include_agent_system_prompt_task_null_resets_project_value_to_default(tmp_path: Path):
-    """A task ``include_agent_system_prompt: null`` (key present, value null)
-    resets a project ``false`` back to the include default — distinct from
-    omitting the key, which inherits. ``deep_merge`` treats a present null as an
-    override; the resolved ``None`` means the default (include)."""
-    adapter = _build_task(
-        tmp_path,
-        _rubric_grading({"include_agent_system_prompt": None}),
-        project_task_defaults=_judge_defaults({"include_agent_system_prompt": False}),
-    )
-    judge = adapter.to_task_description("rubric_task").grading.llm_judge
-
-    assert judge.customization is not None
-    assert judge.customization.include_agent_system_prompt is None
-
-
-def test_include_agent_system_prompt_none_when_no_layer_sets_it(tmp_path: Path):
-    """Both layers unset ⇒ ``include_agent_system_prompt is None`` (the include
-    default)."""
-    adapter = _build_task(tmp_path, _rubric_grading({"disable_knowledge_search": True}))
-    judge = adapter.to_task_description("rubric_task").grading.llm_judge
-
-    assert judge.customization is not None
-    assert judge.customization.include_agent_system_prompt is None
-
-
-# judge_snippet_chars (ADR-0054): not tri-state — ``null`` means whole documents.
-
-
-def test_judge_snippet_chars_project_figure_inherited_when_task_unset(tmp_path: Path):
-    """A project figure reaches a task that leaves the key out, and crosses the wire."""
-    adapter = _build_task(
-        tmp_path,
-        _rubric_grading(),
-        project_task_defaults=_judge_defaults({"judge_snippet_chars": 50}),
+        project_task_defaults=_judge_defaults({"evidence": transcript_only}),
     )
     description = adapter.to_task_description("rubric_task")
 
-    assert description.grading.llm_judge.customization.judge_snippet_chars == 50
-    wire = json.loads(description.model_dump_json())
-    assert wire["grading"]["llm_judge"]["customization"]["judge_snippet_chars"] == 50
+    evidence = description.grading.llm_judge.customization.evidence
+    assert not any(evidence.needs(view) for view in FINAL_STATE_INPUTS)
+    wire = json.loads(description.model_dump_json())["grading"]["llm_judge"]["customization"]
+    assert wire["evidence"] == transcript_only
 
 
-def test_judge_snippet_chars_task_null_overrides_a_project_figure(tmp_path: Path):
-    """A task ``null`` is a value, whole documents, and wins over a project figure;
-    it rides the wire as ``null`` rather than being dropped as the default."""
-    adapter = _build_task(
-        tmp_path,
-        _rubric_grading({"judge_snippet_chars": None}),
-        project_task_defaults=_judge_defaults({"judge_snippet_chars": 50}),
-    )
-    description = adapter.to_task_description("rubric_task")
-
-    assert description.grading.llm_judge.customization.judge_snippet_chars is None
-    wire = json.loads(description.model_dump_json())
-    assert wire["grading"]["llm_judge"]["customization"]["judge_snippet_chars"] is None
-
-
-def test_judge_snippet_chars_is_off_the_wire_when_no_layer_sets_it(tmp_path: Path):
-    """A customization block without the key dumps without it, so an older image,
-    which forbids a key it does not declare, accepts the task."""
-    adapter = _build_task(tmp_path, _rubric_grading({"disable_knowledge_search": True}))
-    description = adapter.to_task_description("rubric_task")
-
-    assert description.grading.llm_judge.customization.judge_snippet_chars == 200
-    wire = json.loads(description.model_dump_json())
-    assert "judge_snippet_chars" not in wire["grading"]["llm_judge"]["customization"]
-
-
-def test_leaving_judge_snippet_chars_off_keeps_the_serialization_schema():
-    """The customization dump that drops the key at its default still describes
+def test_leaving_evidence_off_keeps_the_serialization_schema():
+    """The customization dump that drops ``evidence`` at its default still describes
     every field it can carry, and so does the task description holding it."""
     serialization = JudgeCustomization.model_json_schema(mode="serialization")
     assert set(serialization["properties"]) == set(JudgeCustomization.model_fields)

@@ -98,8 +98,8 @@ class ToolSchema(BaseModel):
     # Per-tool cap on the role=tool message content the engine loop appends.
     output_max_chars: Optional[int] = None        # see below
 
-    # Whether a call can change the graded state, as the tool's author declares it.
-    mutates_state: Optional[bool] = None          # see below; left out of the dump while None
+    # Whether a call can change the graded state: a bool, or a read rule.
+    mutates_state: Union[bool, MutatesStateRule, None] = None  # see below; left out of the dump while None
 ```
 
 `ToolSchema.timeout_s` is the backstop the runner bands a call with **only for a
@@ -139,9 +139,32 @@ flag from its own sources sets it directly. The proto `ToolSchema` that
 mutates_state = 7`, set only when declared. The engine declares it for the tools
 it authors: a builtin's `ToolPolicy.category` is read as its declaration (`read`
 → `False`, `write` → `True`; `compute` — a shell, a browser, an HTTP client —
-says nothing and stays undeclared), and the task's search tool, which the engine
-builds over the trial's index, is `False`. `ToolSchema.category` is not read for
+says nothing and stays undeclared), unless the policy's own `mutates_state` says
+more, and the task's search tool, which the engine builds over the trial's index, is
+`False`. A policy's `mutates_state` must agree with its category — `read` admits only
+`False`, `write` only `True` — and a contradiction fails the schema naming the tool, so
+only a `compute` builtin declares a rule: `http_request`'s reads a call whose `method`
+is in `[GET, HEAD, OPTIONS]`. `ToolSchema.category` is not read for
 it and is retired in a later release.
+
+A tool that both reads and changes state declares a `MutatesStateRule` instead of a
+bool: `{read_when: {args: {<dotted path>: <ValuePredicate>}}}`, the trace matcher's own
+`args` vocabulary. A call reads when every predicate holds over its arguments and can
+change state otherwise. The proto field carries a rule as `true`, since some calls do
+change state. An MCP tool's author declares a rule through
+`DomainToolRegistry.tool(..., mutates_state={"read_when": ...})`, which carries it in the
+tool's `_meta` under `tolokaforge/mutates_state` beside `readOnlyHint: false`
+([MCP_INTEGRATION.md § A read rule](MCP_INTEGRATION.md#a-read-rule)); the native
+adapter reads it back from `tools/list` and caches it in `fixtures/tools.json`. The
+native adapter takes a declaration from the tool's author first; a
+task's `tools.<actor>.<name>.mutates_state` fills an undeclared tool or tightens any to
+`true` ([TASKS.md § Declaring which calls change state](TASKS.md#declaring-which-calls-change-state)).
+An image predating the rule form declares the field as a bool, so it refuses at
+`RegisterTrial` every trial of a pack whose task description carries a rule (new engine
+→ old image) — every pack enabling `http_request`, as well as every pack declaring a rule
+on a tool block or through its MCP server; a pack that declares only bools is
+unaffected. `tolokaforge run` builds the runner image from the engine's own source, by
+content hash, so only a pinned older image meets this.
 
 ```python
 # =============================================================================
