@@ -33,12 +33,49 @@ annotation back into `ToolSchema.mutates_state` and writes it into the
 `fixtures/tools.json` cache; the runner returns it to the engine in
 `RegisterTrialResponse.tool_schemas`. A tool that declares nothing gets no
 annotation, its schema carries no `mutates_state`, and the engine treats it as
-possibly mutating — today's behaviour. Nothing consumes the flag yet;
-`category` is unrelated and stays as it is.
+possibly mutating. `category` is unrelated and stays as it is.
+
+### A read rule
+
+A tool that changes state on some calls and only reads on others declares which
+calls read, by their arguments, in the `trace_checks` predicate vocabulary
+([TASK_DESCRIPTION_SCHEMA.md](TASK_DESCRIPTION_SCHEMA.md)):
+
+```python
+@registry.tool(
+    "Send one request to the orders API.",
+    mutates_state={"read_when": {"args": {"request.method": {"in_": ["GET", "HEAD"]}}}},
+)
+def rest_call(data: dict, request: Request) -> dict: ...
+```
+
+A call reads when every `read_when.args` predicate holds over its arguments, and
+can change state otherwise. The tool's annotation stays a bool and says
+`readOnlyHint: false`, since some calls do change state; the rule itself rides in
+the tool's `_meta` under the engine-owned key `tolokaforge/mutates_state`. A server
+written without `DomainToolRegistry` declares a rule the same way.
+
+The decorator checks the rule's shape when it runs and raises `ValueError` naming
+the tool: exactly `read_when.args`, each path a dotted string with no empty
+segment, each predicate a mapping of one or more predicate operators, the binding
+operators (`equals_binding`, `contains_binding`) excluded since a rule binds
+nothing. The native adapter validates the rule in full when it reads the listing,
+and refuses the task at load, naming the tool and the server, when the rule is
+malformed (a pattern the `linear` engine cannot compile included, unless its
+predicate names another `regex_engine`), sits beside `readOnlyHint: true`, or names an argument its tool's closed
+schema rules out. A wrong rule hides writes, so it is refused where a malformed
+`readOnlyHint` only leaves the tool undeclared with a warning. `_meta` without the
+key declares nothing.
+
+The rule is the author's declaration: a task can lay only `mutates_state: true`
+over it ([TASKS.md § Declaring which calls change state](TASKS.md#declaring-which-calls-change-state)).
+
+### In process
 
 The same declaration is readable in-process: `registry.TOOLS[name].mutates_state`
-carries the decorator's value (`None` when undeclared), so golden replay and any
-other consumer that imports `TOOLS` reads the one declaration the wire carries.
+carries the decorator's value (`None` when undeclared, the rule as a plain mapping
+for a rule), so golden replay and any other consumer that imports `TOOLS` reads the
+one declaration the wire carries.
 
 ### A committed cache wins
 

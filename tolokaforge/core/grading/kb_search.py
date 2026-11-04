@@ -68,14 +68,6 @@ class SearchHit:
     title: str | None = None
 
 
-DEFAULT_JUDGE_SNIPPET_CHARS = 200
-"""How many characters of a hit's ``text`` the judge's ``search_kb`` shows by default.
-
-``grading.llm_judge.customization.judge_snippet_chars`` overrides it per task;
-``null`` there shows whole documents.
-"""
-
-
 @runtime_checkable
 class KnowledgeSearch(Protocol):
     """Read-only KB search the judge is given iff the agent had one this trial.
@@ -146,7 +138,6 @@ class RagServiceKnowledgeSearch:
 
 
 __all__ = [
-    "DEFAULT_JUDGE_SNIPPET_CHARS",
     "KnowledgeSearch",
     "RagServiceKnowledgeSearch",
     "SearchHit",

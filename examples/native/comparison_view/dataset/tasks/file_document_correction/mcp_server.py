@@ -37,7 +37,9 @@ def _log_lookup(data: dict, subject: str) -> None:
     )
 
 
-@registry.tool("Look a client up by id.")
+# A lookup writes a lookup_log row, so it declares that it changes state; the
+# comparison view drops that table from grading, which is a grading choice.
+@registry.tool("Look a client up by id.", mutates_state=True)
 def find_client(
     data: dict,
     client_id: Annotated[str, Field(description="Client identifier, e.g. 'C-1'")],
@@ -47,7 +49,7 @@ def find_client(
     return dict(client)
 
 
-@registry.tool("Look a filed document up by id.")
+@registry.tool("Look a filed document up by id.", mutates_state=True)
 def lookup_document(
     data: dict,
     document_id: Annotated[str, Field(description="Document identifier, e.g. 'DOC-001'")],
@@ -59,7 +61,8 @@ def lookup_document(
 
 @registry.tool(
     "File a client's source document (an invoice, a receipt) as a final document. "
-    "Returns the filed document with its generated id."
+    "Returns the filed document with its generated id.",
+    mutates_state=True,
 )
 def file_document(
     data: dict,
@@ -80,7 +83,9 @@ def file_document(
     return dict(document)
 
 
-@registry.tool("Supersede a document filed in error. It stays on file as superseded.")
+@registry.tool(
+    "Supersede a document filed in error. It stays on file as superseded.", mutates_state=True
+)
 def supersede_document(
     data: dict,
     document_id: Annotated[str, Field(description="Document to supersede")],
@@ -90,7 +95,7 @@ def supersede_document(
     return dict(document)
 
 
-@registry.tool("Place a payment hold for a client.")
+@registry.tool("Place a payment hold for a client.", mutates_state=True)
 def place_hold(
     data: dict,
     client_id: Annotated[str, Field(description="Client the hold is for")],
@@ -108,7 +113,7 @@ def place_hold(
     return dict(hold)
 
 
-@registry.tool("Release a payment hold. It stays on file as released.")
+@registry.tool("Release a payment hold. It stays on file as released.", mutates_state=True)
 def release_hold(
     data: dict,
     hold_id: Annotated[str, Field(description="Hold to release")],
@@ -120,7 +125,8 @@ def release_hold(
 
 @registry.tool(
     "File a correction against a document, optionally citing the hold it concerns. "
-    "Returns the filed correction with its generated id."
+    "Returns the filed correction with its generated id.",
+    mutates_state=True,
 )
 def file_correction(
     data: dict,

@@ -497,9 +497,10 @@ message JudgeReport {
   double cost_usd = 5;         // the judge's own spend, as the eval prices it
   int32 tool_calls = 6;        // read-only tool calls the judge made
   string transcript_json = 7;  // judge message transcript (audit channel), JSON
-  // fields 8-15: verdict-consistency rejections, the knowledge-search gating, the
-  // replay inputs and the prompt customisation (see runner.proto); 16 is reserved
+  // fields 8, 10-13: verdict-consistency rejections, the KB tools offered / withheld
+  // and the replay inputs (see runner.proto); 9, 14, 15 and 16 are reserved
   optional double billed_cost_usd = 17;  // what the providers stated they charged; absent unless every call stated one
+  string customization_json = 18;  // the effective JudgeCustomization, as JSON; "" from a runner predating it
 }
 
 message GradeComponents {
@@ -771,15 +772,21 @@ carry an optional `mutates_state: bool` — whether a call can change the graded
 state, as the tool's author declares it
 ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)). The field is
 tri-state. The runner sets it only when the task description declares it: an
-MCP tool's `readOnlyHint` annotation read back by the native adapter, a
-builtin's `ToolPolicy.category` (`read` → `false`, `write` → `true`), the search
-tool's `false`, or an adapter's own sources. A tool that declares nothing leaves
-the field unset. The harness reads it back via `HasField("mutates_state")` and
+MCP tool's `readOnlyHint` annotation, or the read rule its `_meta` carries, read
+back by the native adapter, a
+builtin's `ToolPolicy` (its category, `read` → `false`, `write` → `true`, or
+`http_request`'s safe-method rule), the search
+tool's `false`, a task's `tools.<actor>.<name>.mutates_state`, or an adapter's own
+sources. A task-description declaration that is a `read_when` rule (some calls
+read, others change state) is sent as `true`; the rule itself crosses only in
+`trial_spec_json`, where an image predating it refuses the trial at registration.
+A tool that declares nothing leaves the field unset. The harness reads it back via `HasField("mutates_state")` and
 hands `None` on when it is unset; `None` is unknown and reads as mutating
 wherever the engine needs an answer, the conservative default every undeclared
 tool gets. The field is proto3-`optional`, so an older runner
 sends nothing and a newer harness reads every tool as undeclared, without a
-protocol version bump; nothing consumes the flag yet.
+protocol version bump. The engine reads its declarations from the task description,
+not from this field.
 
 ### ExecuteToolRequest/Response
 
@@ -972,13 +979,16 @@ the sentinel **`-1.0`**. `trace_checks` uses **explicit presence** (proto3
 it omits the field, and proto3 would decode that omission as `0.0` — recording a
 scored zero for a runner that cannot evaluate trace checks at all. The
 `RegisterTrial` version lock does not cover this direction, because a newer
-engine registers happily against an older runner. `include_agent_system_prompt`
-and `billed_cost_usd` on `JudgeReport` and `Grade.trace_checks_summary` carry the
-same reasoning (an absent `billed_cost_usd` reads back as "no complete charge
+engine registers happily against an older runner. `billed_cost_usd` on
+`JudgeReport` and `Grade.trace_checks_summary` carry the same reasoning (an absent `billed_cost_usd` reads back as "no complete charge
 stated", never as a bill of `0.0`): the
 summary is a *message* so that an absent one is distinguishable from one
 reporting that no gate failed, which is the difference between "this runner
 cannot evaluate a gate" and "the gate held".
+
+`JudgeReport.customization_json` reaches the same answer without presence: an
+older runner sends the empty string, which the host reads as no record, never as
+a default customization, so replay falls back to `task.yaml` and says so.
 
 The host reads presence, not just the value, so three things all reach `None`:
 the `-1.0` sentinel, an absent `components` submessage, and a presence-carrying

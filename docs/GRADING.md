@@ -1606,7 +1606,16 @@ reject it.
 | `grading.llm_judge.judge_kind` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading.llm_judge.kind_config` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading_method_config` | every pack | `unreleased` | new engine → old image |
-| `grading.llm_judge.customization.judge_snippet_chars` | a pack setting `customization.judge_snippet_chars` other than 200 | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.evidence` | a pack setting a part of `customization.evidence` away from its default | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.evidence.agent_policy` | a pack setting `customization.evidence.agent_policy: false` | `unreleased` | both directions |
+| `grading.llm_judge.customization.evidence.knowledge_search` | a pack setting `customization.evidence.knowledge_search` other than `true` | `unreleased` | both directions |
+| `grading.llm_judge.customization.evidence.knowledge_search.snippet_chars` | a pack setting `customization.evidence.knowledge_search.snippet_chars` | `unreleased` | both directions |
+| `grading.llm_judge.customization.evidence.state_diff` | a pack setting `customization.evidence.state_diff: false` | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.evidence.db` | a pack setting `customization.evidence.db: false` | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.evidence.workspace` | a pack setting `customization.evidence.workspace: false` | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.evidence.tool_results` | a pack turning `customization.evidence.tool_results` on | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.evidence.tool_results.max_chars` | a pack setting `customization.evidence.tool_results.max_chars` | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.evidence.state_changing_calls` | a pack setting `customization.evidence.state_changing_calls: true` | `unreleased` | new engine → old image |
 
 `emitted for` is what the adapter puts on the wire, not what the pack asks for: a key
 whose cell reads **every pack** is emitted as `null` when the pack declares nothing
@@ -1616,7 +1625,7 @@ with no knowledge base. `search.backend_config` and `search.tool_name` are the
 opposite case: `SearchConfig` leaves them off the wire while they hold their default
 (an empty mapping, `search_kb`), so they bite only a pack that declares a value.
 
-Three rows need more than a cell:
+Four rows need more than a cell:
 
 - **`state_checks.expect_initial_state` bites in both directions because two spellings
   cross.** A current engine emits `expect_initial_state`; an engine predating it emits
@@ -1631,6 +1640,13 @@ Three rows need more than a cell:
   `id_fields` — the correct fail-loud outcome, since that image cannot resolve a
   composite key. A single-field declaration crosses as the same plain string it always
   did.
+- **The renamed judge-evidence parts bite in both directions because two spellings
+  cross.** A current engine emits `customization.evidence.agent_policy`,
+  `evidence.knowledge_search` and its `snippet_chars` only for a pack setting them; an
+  engine predating them emits `disable_knowledge_search` and
+  `include_agent_system_prompt` — as `null` — for every pack declaring a
+  `customization` block, and `judge_snippet_chars` for a pack setting it. A current
+  image refuses those keys, naming the `evidence.*` key that replaces each.
 - **`state_checks.env_assertions` is on this table because a current image does *not*
   declare it.** An engine predating its removal translates the authored key onto that
   field, so the rejection is an old engine against a new image — the one row here whose
@@ -2269,7 +2285,7 @@ either is [undecided](#when-a-constraint-cannot-be-decided) rather than unmatche
 — a named failing sub-check, never a pass in the agent's favour.
 
 **Every operator name resolves through the `tolokaforge.trace_check_operators`
-entry-point group.** `_operator_holds` looks up the registered callable per
+entry-point group.** `argument_predicates.operator_holds` looks up the registered callable per
 mention (cached in the entry-point discovery table); binding operators are
 identified by the `_binding` suffix on the registered name, no marker
 attribute. Registering `equals_semver` in a downstream package's
@@ -2350,6 +2366,9 @@ position to ordering, so `before` means "requested before".
 
 `args` addresses nested argument paths by dotted segments, so
 `args: { body.resolution_path: { exists: true } }` reaches inside a request body.
+A tool's `mutates_state: {read_when: {args: …}}` rule is read through the same path
+resolver and [operators](#operators), binding operators excepted
+([§ Judge evidence](#judge-evidence)).
 
 **`latency_seconds` is not matchable.** Wall time is not compared across
 substrates — it is excluded from the timeline parity suite's compared fields — so
@@ -4235,7 +4254,10 @@ generation with K-sample geometric-median aggregation.
   (`search_kb` over the task's search backend, or the reused `search_policy` for
   TypeSense — see *Judge KB faithfulness* below), `read_file` (only when the agent produced a
   workspace), and the rubric-derived `submit_report`. No `write`, no `compute`.
-* **Single call, per-criterion output.** The judge inspects the final state, then
+  Each of these belongs to a part of the [judge's evidence](#judge-evidence), and a
+  part turned off takes its tools with it; the `tool_results` part adds `show_call`.
+* **Single call, per-criterion output.** The judge inspects the evidence its parts
+  show it — by default the final state — then
   calls `submit_report` once with `{justification, met|score}` for every criterion
   (its arg schema is generated from the rubric). For each criterion the schema
   places the justification **before** the verdict field, so the verdict is written
@@ -4273,14 +4295,13 @@ capability is therefore resolved **per-trial to mirror the agent's** (issue #95)
 **Disabling knowledge search per task or project.** For a task whose rubric is
 fully self-contained, letting the judge pull policy context the author
 deliberately superseded is a correctness risk. Set
-`grading.llm_judge.customization.disable_knowledge_search: true` (a sibling of
-`rubric`) and the judge's tool surface carries **no** knowledge-search tool — the
-rag `search_kb`, the `search_policy` passthrough, and any future KB backend are
-**removed from the judge's schema, not stubbed**. This is **judge-side only**: the
-*agent's* KB tools for the same task are untouched; the runner still resolves the
-agent's KB faithfully and the judge withholds it by construction. Every non-KB
-read tool (DB reads, `read_file`) is unaffected. The setting is tri-state and
-layers project→task — see
+`grading.llm_judge.customization.evidence.knowledge_search: false` and the judge's
+tool surface carries **no** knowledge-search tool — the rag `search_kb`, the
+`search_policy` passthrough, and any future KB backend are **removed from the
+judge's schema, not stubbed**. This is **judge-side only**: the *agent's* KB tools
+for the same task are untouched; the runner still resolves the agent's KB
+faithfully and the judge withholds it by construction. Every other read tool (DB
+reads, `read_file`) is unaffected. The part layers project→task — see
 [PROJECTS.md](PROJECTS.md#task-override-semantics) and
 [CONFIG.md](CONFIG.md#grading-specification-gradingyaml). When absent, behaviour
 is exactly as above.
@@ -4289,18 +4310,19 @@ is exactly as above.
 document id, its title when the backend has one (`bm25`'s JSON documents do;
 rag-service hits do not), source, score and content. The content is cut to its
 first 200 characters with an ellipsis by default. Set
-`grading.llm_judge.customization.judge_snippet_chars` to another positive integer
-to cut there, or to `null` to show whole documents — what a rubric that checks an
-agent's answer against a document's exact wording needs. It is not tri-state:
-`null` is a value, so a task undoes a project figure by writing `200`. It layers
-project→task like the other customization keys and is left off the wire at its
-default, so a task that does not set it crosses to an older image unchanged. The
-agent's search output is the backend's own rendering and is not affected.
+`grading.llm_judge.customization.evidence.knowledge_search: {snippet_chars: N}` to
+cut at another positive integer, or `{snippet_chars: null}` to show whole documents —
+what a rubric that checks an agent's answer against a document's exact wording needs.
+`null` is a value, so a task undoes a project figure by writing
+`knowledge_search: true`. It layers project→task like every part and is left off the
+wire at its default, so a task that does not set it crosses to an older image
+unchanged. The agent's search output is the backend's own rendering and is not
+affected.
 
 **Seeing which backend was used.** The judge's `reasons` (surfaced into the grade
 output's `reasons`) always ends with a `Judge KB: …` note — `Judge KB: search_kb`,
-`Judge KB: search_policy`, or `Judge KB: none offered`. When knowledge search was
-disabled by config and the agent actually had a KB tool to withhold, the note
+`Judge KB: search_policy`, or `Judge KB: none offered`. When the `knowledge_search`
+part is off and the agent actually had a KB tool to withhold, the note
 reads `Judge KB: none offered (disabled by config)`, distinguishing a deliberate
 gate from a rubric that simply needed no KB. The `JudgeResult` also carries the
 structured `kb_tools_offered` tuple. This is the visible "graded with / without
@@ -4320,7 +4342,7 @@ deregister API in mcp_core's registry); see the runner's `cleanup_trial`.
 
 When a pack's grading philosophy needs a different judge voice than the default,
 set `grading.llm_judge.customization.system_prompt` (a sibling of `rubric`,
-alongside `disable_knowledge_search`) to a full replacement of the judge's
+beside `evidence`) to a full replacement of the judge's
 **grading-stance body**. The harness **always appends the enforced marker
 contract** — the sentence instructing the judge to end each justification with a
 `VERDICT:` / `SCORE:` marker and call `submit_report` exactly once — so a custom
@@ -4345,49 +4367,125 @@ The setting layers project→task: a task-level `system_prompt` overrides a proj
 default, omitting the key inherits the project value, and a task sets
 `system_prompt: null` to reset a project-level custom prompt back to the default.
 An empty or whitespace-only string is rejected loudly at load. When absent, the
-judge runs with the byte-for-byte default prompt. The full custom text is recorded
-in the bundle's `task.yaml.grading_config`, and the composed prompt the judge
-would have graded under is persisted verbatim in the bundle's
-[`prompts.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indexpromptsyaml) `judge_prompt`
-key — so `tolokaforge rejudge` prefers the recorded composed prompt over the
-current engine's default, falling back to the task.yaml body fragment only for
-pre-`judge_prompt` bundles. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
+judge runs with the byte-for-byte default prompt. The effective customization —
+custom text included — is recorded in the bundle's `judge_inputs.yaml`, and the
+composed prompt the task's customization yields is persisted verbatim in the
+bundle's [`prompts.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indexpromptsyaml)
+`judge_prompt` key — so `tolokaforge rejudge` prefers the recorded composed prompt
+over the current engine's default while the prompt in effect is the one it was
+composed from. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#judge-system-prompt).
 
-### Gating the agent's policy out of the judge's evidence
+### Judge evidence
 
-By default the judge's opening-message evidence includes the agent's own policy /
-system prompt, so the judge can see the framing the agent operated under. For a
-pack whose rubric is fully self-contained, embedding the agent policy can bias the
-judge toward the agent's framing or leak instructions that supersede the rubric.
-Set `grading.llm_judge.customization.include_agent_system_prompt: false` (a sibling
-of `rubric`, alongside `disable_knowledge_search` / `system_prompt`) and the
-agent-policy section is **removed from the judge's opening message, not stubbed** —
-the judge grades against the transcript, the state diff, and the rubric alone.
+What the judge is shown is `grading.llm_judge.customization.evidence`: seven named
+parts, each `false` (off), `true` (on with its default options) or a mapping (on with
+those options). Each part contributes its section of the judge's opening message, its
+closing instruction and its tools; a part turned off takes all three with it — a tool
+is **removed from the judge's schema, not stubbed** — and the *agent's* own system
+prompt and tools are untouched. With every part at its default the judge is the one
+described above, byte for byte.
 
-This is **evidence gating**, distinct from `system_prompt` (which changes the
-judge's own *wording*): it controls what evidence the harness assembles, not how
-the judge is instructed to grade. It is **judge-side only** — the agent's own
-system prompt and tool surface are untouched.
+| part | default | section of the opening message | tools offered |
+|---|---|---|---|
+| `agent_policy` | `true` | the agent's policy / system prompt, when it is not blank | — |
+| `knowledge_search` | `true` | — | the agent's KB tools ([§ Judge KB faithfulness](#judge-kb-faithfulness)); `{snippet_chars: N}`, default `200`, `null` for whole documents |
+| `state_diff` | `true` | the `initial → final` diff of the database state, when the agent changed it | — |
+| `db` | `true` | — | `get_db_state`, `query_db` |
+| `workspace` | `true` | — | `read_file`, when the agent produced a workspace |
+| `tool_results` | `false` | every tool result numbered `[call N]`, cut at `{max_chars: N}` (default `2000`) | `show_call` |
+| `state_changing_calls` | `false` | the agent's calls that can change state | — |
+
+The opening message names only tools the judge is offered, and a judge with no
+final-state part (`state_diff`, `db`, `workspace`) is told it cannot inspect the
+final state. The caller builds a view of the trial only for the part that reads it:
+no state diff is rendered without `state_diff`, and no DB reader or workspace is
+handed over without `db` / `workspace`. One mapping in
+[`JudgeEvidence.needs`](../tolokaforge/runner/models.py) decides this for the runner,
+the grader service, the `judge_only` grader and replay alike.
+
+**The agent's policy.** For a pack whose rubric is fully self-contained, embedding the
+agent policy can bias the judge toward the agent's framing or leak instructions that
+supersede the rubric. `agent_policy: false` grades against the transcript, the other
+parts and the rubric alone. This is evidence gating, distinct from `system_prompt`
+(which changes the judge's own *wording*).
+
+**Grading from the transcript.** A pack whose final state is already checked
+deterministically (`custom_checks`, `state_checks`) may want the judge to grade only
+what the agent said and did:
 
 ```yaml
 llm_judge:
   customization:
-    include_agent_system_prompt: false
-  rubric:
-    criteria:
-      - id: cites_policy
-        description: "Reply cites the applicable refund clause"
-        kind: binary
-        weight: 1.0
+    evidence:
+      state_diff: false
+      db: false
+      workspace: false
+      tool_results: true            # == {max_chars: 2000}
+      state_changing_calls: true
 ```
 
-The setting is tri-state and layers project→task: unset and `true` both include the
-agent policy (today's behaviour); `false` omits it; a task sets `true` or `null` to
-re-include over a project `false`. When absent, the opening message is byte-for-byte
-the default. The effective decision is recorded in `grade.yaml` as
-`judge_agent_prompt_included`. See
-[PROJECTS.md](PROJECTS.md#task-override-semantics) and
-[CONFIG.md](CONFIG.md#grading-specification-gradingyaml).
+Its knowledge-search tools stay, governed by `knowledge_search`. It reads:
+
+* **the transcript, numbered** (`tool_results`) — every tool result opens with
+  `[call N]` (numbered in the order results arrive) and is cut at `max_chars`
+  characters, saying how much it left out;
+* **the state-changing calls** (`state_changing_calls`) — the agent's calls that can
+  change state, in order, each as `[call N] name(arguments) -> <its result>`: the
+  result the agent received on one line, every run of whitespace (newlines included)
+  one space, cut at 120 characters; `(empty result)` when it has no text, and
+  `[no result] name(arguments) -> no result` when nothing answered the call. The
+  result's body is how a call says it ended: a call the harness saw fail carries the
+  `Error: ` prefix the agent saw, so a refused `http_request` reads
+  `-> Error: Status: 403` and an accepted one `-> Status: 201`. The block is the same
+  on every grading path, the standalone grader service included, because it reads the
+  transcript alone. Arguments are cut at 300 characters here; the transcript shows each
+  call, and so every text the agent wrote, in full. On without `tool_results` the
+  results are numbered and not cut, and no `show_call` is offered;
+* **`show_call(calls, offset)`** (`tool_results`) — the full results of the calls it
+  names, as the agent received them, at most 12,000 characters per answer, shared by
+  all the calls one answer names; `offset` reads further into a long one. It reads the
+  transcript itself, never a live backend.
+
+The parts are independent, so a judge over the final state may also read the numbered
+transcript (`tool_results: true`), and one may keep the diff while dropping the DB
+tools.
+
+A call can change state unless its tool's `mutates_state` declaration
+([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)) says it reads: `false` (every
+call reads), or a `read_when` rule whose every `args` predicate holds over the call's
+arguments, in the [trace matcher's `args` vocabulary](#matchers), read through the
+matcher's own resolver. A tool that declares nothing, or `true`, can change state on
+every call.
+
+The tool's author declares it: an MCP server through `readOnlyHint` or, for a read
+rule, the `_meta` key `tolokaforge/mutates_state`
+([MCP_INTEGRATION.md § A read rule](MCP_INTEGRATION.md#a-read-rule)), and a builtin
+through its `ToolPolicy` — `http_request` declares its safe methods (`GET`, `HEAD`,
+`OPTIONS`) as reads, so its other calls are the ones listed. A task declares it on
+`tools.<actor>.<name>.mutates_state` only where the author is silent, or tightens the
+author's declaration to `true`
+([TASKS.md § Declaring which calls change state](TASKS.md#declaring-which-calls-change-state)):
+
+```yaml
+# task.yaml
+tools:
+  agent:
+    enabled: [rest_call]
+    rest_call:
+      mutates_state: {read_when: {args: {request.method: {in_: [GET, HEAD, OPTIONS]}}}}
+```
+
+Every part layers project→task part by part and is left off the wire at its default.
+The effective parts a trial was graded under are recorded in its bundle's
+`judge_inputs.yaml customization`, and each tool's declaration on its
+[`tools_schemas.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indextools_schemasyaml)
+entry, so [`tolokaforge rejudge`](JUDGE_REPLAY.md#read-tools-the-customization-turns-on)
+rebuilds the same view from it, and a `--grading` document carrying
+`llm_judge: {customization: {evidence: {...}}}` replays a whole run under other parts
+for an A/B. A key `evidence` replaced (`disable_knowledge_search`,
+`include_agent_system_prompt`, `judge_snippet_chars`) is refused naming its
+replacement ([CONFIG.md](CONFIG.md#grading-specification-gradingyaml)). The design
+record is [ADR-0066](adr/0066-judge-evidence-parts.md).
 
 ### Fail-loud: the ERRORED status
 

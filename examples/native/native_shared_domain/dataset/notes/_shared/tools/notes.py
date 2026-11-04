@@ -6,11 +6,13 @@ from tolokaforge.core.tools_interface import DomainToolRegistry
 
 
 def register(registry: DomainToolRegistry) -> None:
-    @registry.tool("List every stored note, newest first.")
+    @registry.tool("List every stored note, newest first.", mutates_state=False)
     def list_notes(data: dict) -> list[dict]:
         return [n.model_dump() for n in reversed(get_notes(data))]
 
-    @registry.tool("Save a new note. Returns the created note including its ID.")
+    @registry.tool(
+        "Save a new note. Returns the created note including its ID.", mutates_state=True
+    )
     def add_note(data: dict, title: str, body: str) -> dict:
         notes = data.setdefault("notes", [])
         new_id = f"N-{len(notes) + 1:03d}"

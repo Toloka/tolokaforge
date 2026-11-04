@@ -6,7 +6,8 @@
       "properties": {},
       "title": "_tolokaforge_get_state_Arguments",
       "type": "object"
-    }
+    },
+    "mutates_state": false
   },
   {
     "name": "_tolokaforge_set_state_",
@@ -23,7 +24,8 @@
       ],
       "title": "_tolokaforge_set_state_Arguments",
       "type": "object"
-    }
+    },
+    "mutates_state": true
   },
   {
     "name": "list_notes",
@@ -32,7 +34,8 @@
       "properties": {},
       "title": "list_notesArguments",
       "type": "object"
-    }
+    },
+    "mutates_state": false
   },
   {
     "name": "add_note",
@@ -54,6 +57,7 @@
       ],
       "title": "add_noteArguments",
       "type": "object"
-    }
+    },
+    "mutates_state": true
   }
 ]

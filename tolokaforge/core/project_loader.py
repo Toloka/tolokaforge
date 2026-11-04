@@ -16,6 +16,8 @@ Public helpers:
 - :func:`deep_merge` — recursive dict merge; delta wins on conflict.
 - :func:`resolve_effective_run_config_data` — apply ``project.run_defaults``
   under a run-config dict.
+- :func:`layer_judge_customization` / :func:`customization_sources` — the one
+  layering of judge customization (project → task → run → replay override).
 - :func:`detect_project_layout` — resolve the enclosing project root and
   flag whether the run config sits under the legacy ``run_config/``
   (singular) directory.
@@ -32,7 +34,7 @@ from __future__ import annotations
 import os
 import re
 import warnings
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -477,22 +479,63 @@ def resolve_effective_grading_combine(
     return GradingCombineConfig(**merged)
 
 
-def resolve_effective_judge_customization(
-    project_customization: dict[str, Any] | None,
-    task_customization: dict[str, Any] | None,
-) -> JudgeCustomization:
-    """Resolve a task's effective judge ``customization`` from the project
-    default layered under the task's own ``llm_judge.customization``.
+def layer_judge_customization(*layers: Mapping[str, Any] | None) -> JudgeCustomization:
+    """The judge customization that results from *layers*, lowest first.
 
-    ``task_customization`` wins field-by-field; a field neither layer sets falls
-    through to :class:`JudgeCustomization`'s tri-state default (``None`` =
-    faithful). Both inputs are raw parsed dicts, so an unset task key is simply
-    absent and never overrides a set project key — the tri-state is preserved
-    (mirrors :func:`resolve_effective_grading_combine`; do not merge
-    ``model_dump`` views, which would materialise ``None`` and clobber it).
+    The one layering of judge customization: project → task (the adapter), → the
+    run-level ``grader.judge`` (``judge_only``), and the recorded customization →
+    a ``--grading`` override (replay). Each layer is the raw mapping of the keys it
+    sets, merged by :func:`deep_merge`, so a key a layer leaves out inherits the one
+    below it and a key it sets — ``null`` included — replaces it. A key no layer
+    sets takes :class:`JudgeCustomization`'s default. ``None`` is a layer that sets
+    nothing.
     """
-    merged = deep_merge(project_customization or {}, task_customization or {})
-    return JudgeCustomization(**merged)
+    merged: dict[str, Any] = {}
+    for layer in layers:
+        merged = deep_merge(merged, dict(layer or {}))
+    return JudgeCustomization.model_validate(merged)
+
+
+def customization_sources[S](
+    layers: Sequence[tuple[S, Mapping[str, Any] | None]],
+) -> dict[str, S]:
+    """Which layer set each dotted key path of :func:`layer_judge_customization`'s result.
+
+    *layers* pairs each raw layer with the source it is named by, lowest first. A
+    path is attributed to the last layer that sets it, merged exactly as the values
+    are; a path no layer sets is absent, so it holds the default.
+    """
+    tree: dict[str, Any] = {}
+    for source, layer in layers:
+        tree = deep_merge(tree, _label_leaves(layer or {}, source))
+    return dict(_dotted_leaves(tree))
+
+
+def set_customization_keys(customization: BaseModel) -> dict[str, Any]:
+    """The raw layer of the keys *customization* was given explicitly, defaults included."""
+    return {
+        name: (
+            set_customization_keys(value)
+            if isinstance(value := getattr(customization, name), BaseModel)
+            else value
+        )
+        for name in customization.model_fields_set
+    }
+
+
+def _label_leaves(layer: Mapping[str, Any], source: object) -> dict[str, Any]:
+    return {
+        key: _label_leaves(value, source) if isinstance(value, dict) else source
+        for key, value in layer.items()
+    }
+
+
+def _dotted_leaves(tree: Mapping[str, Any], prefix: str = "") -> Iterator[tuple[str, Any]]:
+    for key, value in tree.items():
+        if isinstance(value, dict):
+            yield from _dotted_leaves(value, f"{prefix}{key}.")
+        else:
+            yield f"{prefix}{key}", value
 
 
 # ── High-level loader entry point ──────────────────────────────────────

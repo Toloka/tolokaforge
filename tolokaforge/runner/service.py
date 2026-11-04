@@ -47,6 +47,7 @@ from tolokaforge.core.grading.check_runner import (
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import CustomChecksConfig
 from tolokaforge.core.grading.comparison_view_checks import check_wire_comparison_view
+from tolokaforge.core.grading.composite import JudgeGrading
 from tolokaforge.core.grading.composite_fold import CompositeFold
 from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
 from tolokaforge.core.grading.golden_replay import (
@@ -64,7 +65,7 @@ from tolokaforge.core.grading.jsonpath_addressing import (
     unreachable_target,
 )
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
-from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
+from tolokaforge.core.grading.judge_result import JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch
 from tolokaforge.core.grading.kinds import GraderKindRefusedError
@@ -170,6 +171,7 @@ from tolokaforge.runner.id_resolution import (
     compute_diff_ops,
 )
 from tolokaforge.runner.models import (
+    EvidencePartName,
     KeyAccountingRecord,
     RecordedToolCall,
     RunnerInitialStateConfig,
@@ -588,6 +590,7 @@ def _wire_tool_schema(tool: ToolSchema) -> pb2.ToolSchema:
 
     The proto3-optional fields are set only when the description declares them,
     so the engine reads an unset one as "not declared" (``HasField`` is false).
+    A ``mutates_state`` read rule goes out as ``true``: some calls do change state.
     """
     schema = pb2.ToolSchema(
         name=tool.name,
@@ -599,7 +602,7 @@ def _wire_tool_schema(tool: ToolSchema) -> pb2.ToolSchema:
     if tool.output_max_chars is not None:
         schema.output_max_chars = tool.output_max_chars
     if tool.mutates_state is not None:
-        schema.mutates_state = tool.mutates_state
+        schema.mutates_state = tool.mutates_state is not False
     return schema
 
 
@@ -2809,9 +2812,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if llm_judge_config:
             if llm_messages:
                 logger.info(f"GradeTrial: {trial_id} - Evaluating LLM judge")
-                judge_result = await self._grade_llm_judge(
+                judge_grading = await self._grade_llm_judge(
                     trial_id, llm_judge_config, llm_messages, trial_context, substrate=substrate
                 )
+                judge_result = judge_grading.result
                 judge_spend = judge_result.usage
                 accounted_keys[LLM_JUDGE_KEY] = EVALUATED
                 judge_reasons = judge_result.reasons
@@ -2831,13 +2835,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     tool_calls=judge_result.usage.tool_calls,
                     consistency_rejections=judge_result.usage.consistency_rejections,
                     transcript_json=json.dumps(list(judge_result.transcript)),
-                    knowledge_search_disabled=judge_result.knowledge_search_disabled,
                     kb_tools_offered=list(judge_result.kb_tools_offered),
                     kb_tools_withheld=list(judge_result.kb_tools_withheld),
                     state_diff_text=judge_result.state_diff or "",
                     read_tools_offered=list(judge_result.read_tools_offered),
-                    custom_system_prompt=judge_result.custom_system_prompt,
-                    include_agent_system_prompt=judge_result.include_agent_system_prompt,
+                    customization_json=judge_grading.customization.model_dump_json(),
                 )
                 if judge_result.status is JudgeStatus.ERRORED:
                     # Fail loud: the judge component is incomplete, NOT zero. Leave
@@ -3082,7 +3084,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_context: TrialContextRuntime,
         *,
         substrate: GradingSubstrate,
-    ) -> "JudgeResult":
+    ) -> "JudgeGrading":
         """Delegate to :func:`composite.grade_llm_judge` over the runner's substrate.
 
         Resolves ``load_judge_kind(llm_judge_config.judge_kind)()`` and hands
@@ -3134,9 +3136,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         judge_logger = _tolokaforge_logging.get_logger("rubric_judge")
 
-        def _run() -> "JudgeResult":
+        def _run() -> "JudgeGrading":
             state_diff_text = composite.build_judge_state_diff(
                 trial_id=trial_id,
+                config=llm_judge_config,
                 substrate=substrate,
                 initial_state_schemas=list(initial_state.schemas),
                 id_fields=id_fields,
@@ -3154,6 +3157,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 judge_model_config=judge_model_config,
                 extra_read_tools=extra_read_tools,
                 state_diff=state_diff_text,
+                agent_tools=trial_context.task_description.agent_tools,
                 logger=judge_logger,
             )
 
@@ -3308,7 +3312,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     description=schema.description,
                     parameters=schema.parameters,
                     invoke=_make_invoke(agent_tool),
-                    knowledge_search=True,
+                    evidence_part=EvidencePartName.KNOWLEDGE_SEARCH,
                 )
             )
 

@@ -274,7 +274,7 @@ The full traceback for a failure is written to stderr.
 **Versioned JSON contract.** `TrialNodeInputs` and `TrialResult` are the JSON
 shapes an out-of-process caller serializes. Their committed JSON schemas under
 [`docs/schemas/`](schemas/) are the versioned contract to pin to —
-`trial_node_inputs.v1.json` and `trial_result.v1.json`. `TRIAL_CONTRACT_VERSION`
+`trial_node_inputs.v2.json` and `trial_result.v2.json`. `TRIAL_CONTRACT_VERSION`
 (`tolokaforge.core.trial_contract`) versions those two shapes, independent of the
 gRPC `NODE_PROTOCOL_VERSION` and of the package version. Both models forbid
 unknown fields. Regenerate the schemas after a deliberate model change and bump

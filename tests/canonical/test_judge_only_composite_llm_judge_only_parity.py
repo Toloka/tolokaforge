@@ -68,19 +68,27 @@ _TRIAL_ID = "judge_parity_task:0"
 _JUDGE_MODEL = ModelConfig(provider="openai", name="gpt-4", temperature=0.0)
 
 
-def _fixed_judge_result() -> JudgeResult:
-    """A deterministic verdict both legs return byte-identical, given the same
-    inputs. ``binary_pass`` matches ``score >= pass_threshold`` (default 0.8),
-    so composite's fold-derived ``binary_pass`` and :func:`build_replay_grade`'s
-    passthrough of ``result.binary_pass`` agree.
-    """
-    return JudgeResult(
-        status=JudgeStatus.COMPLETED,
-        usage=JudgeUsage(),
-        reasons="rubric fully satisfied",
-        score=0.87,
-        binary_pass=True,
-    )
+_PASSING_VERDICT = JudgeResult(
+    status=JudgeStatus.COMPLETED,
+    usage=JudgeUsage(),
+    reasons="rubric fully satisfied",
+    score=0.87,
+    binary_pass=True,
+)
+"""``binary_pass`` matches ``score >= pass_threshold`` (default 0.8), so composite's
+fold-derived ``binary_pass`` and :func:`build_replay_grade`'s passthrough agree."""
+
+_GATE_FAILED_VERDICT = JudgeResult(
+    status=JudgeStatus.COMPLETED,
+    usage=JudgeUsage(),
+    reasons="a required criterion is not met",
+    score=1.0,
+    binary_pass=False,
+    gate_failed=True,
+    failed_required_ids=("answer_correct",),
+)
+"""Every graded criterion met and a required one failed: the judge's raw aggregate is
+1.0, and the component both legs record is the gated 0.0."""
 
 
 def _task_description() -> TaskDescription:
@@ -186,8 +194,11 @@ def _grade_path_b_composite(fixed: JudgeResult, monkeypatch: pytest.MonkeyPatch)
         service.shutdown()
 
 
+@pytest.mark.parametrize(
+    "fixed", [_PASSING_VERDICT, _GATE_FAILED_VERDICT], ids=["passing", "gate_failed"]
+)
 def test_judge_only_and_composite_llm_judge_only_agree_on_grade_shape(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, fixed: JudgeResult
 ) -> None:
     """Both paths produce the same ``binary_pass`` / ``score`` /
     ``components.llm_judge`` under a fixed :class:`JudgeResult`.
@@ -199,8 +210,6 @@ def test_judge_only_and_composite_llm_judge_only_agree_on_grade_shape(
     Two names of the same dispatch must not silently produce different
     verdicts on the constrained shape they collapse to.
     """
-    fixed = _fixed_judge_result()
-
     grade_a = _grade_path_a_judge_only(fixed, monkeypatch)
     grade_b = _grade_path_b_composite(fixed, monkeypatch)
 

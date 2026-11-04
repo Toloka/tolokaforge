@@ -16,7 +16,12 @@ from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_seri
 from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
 from tolokaforge.core.models.grade_components import GradeComponents
 from tolokaforge.core.models.trial_status import TerminationReason
-from tolokaforge.runner.models import CriterionResult, TraceChecksSummary, TraceConstraintResult
+from tolokaforge.runner.models import (
+    CriterionResult,
+    JudgeCustomization,
+    TraceChecksSummary,
+    TraceConstraintResult,
+)
 
 __all__ = [
     "CustomCheckDetail",
@@ -83,19 +88,15 @@ class JudgeUsage(BaseModel):
 
 
 class JudgeKbGating(BaseModel):
-    """The rubric judge's knowledge-search gating for this trial (host-side model).
+    """The rubric judge's knowledge-search surface for this trial (host-side model).
 
     Kept distinct from :class:`JudgeUsage` (which stays strictly token/cost
     accounting): this is the audit + replay record of *which* KB tools the judge
-    was offered and which config withheld. ``knowledge_search_disabled`` is the
-    authoritative replay signal — ``True`` means
-    ``grading.llm_judge.customization.disable_knowledge_search`` withheld KB,
-    regardless of whether the agent had a KB tool this trial. ``offered`` /
-    ``withheld`` are supporting audit detail; an empty ``withheld`` on a disabled
-    judge means the agent had no KB tool to gate.
+    was offered and which the customization withheld. An empty ``withheld`` on a
+    judge whose customization disabled knowledge search means the agent had no KB
+    tool to gate; the setting itself is ``judge_inputs.customization``.
     """
 
-    knowledge_search_disabled: bool
     offered: list[str]
     withheld: list[str]
 
@@ -108,15 +109,18 @@ class JudgeInputs(BaseModel):
     The transcript, agent policy, rubric, and judge model are already structured in
     sibling artifacts (``trajectory.yaml``, ``prompts.yaml``, ``task.yaml``); this
     records only what a replay cannot otherwise reconstruct: the exact
-    ``state_diff`` string the judge saw (``None`` when no diff was built) and its
+    ``state_diff`` string the judge saw (``None`` when no diff was built), its
     non-KB read-tool surface (``get_db_state`` / ``query_db`` / ``read_file`` — the
-    KB surface lives in :class:`JudgeKbGating`). Written to a sidecar
-    ``judge_inputs.yaml``, never inlined in ``grade.yaml`` (the diff can be large).
-    See docs/OUTPUT_FORMAT.md.
+    KB surface lives in :class:`JudgeKbGating`), and the effective
+    ``customization`` the judge graded under, after the project, task and run
+    layers (``None`` only from a sender that predates the record). Written to a
+    sidecar ``judge_inputs.yaml``, never inlined in ``grade.yaml`` (the diff can be
+    large). See docs/OUTPUT_FORMAT.md.
     """
 
     state_diff_text: str | None = None
     read_tools_offered: list[str] = Field(default_factory=list)
+    customization: JudgeCustomization | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -186,31 +190,17 @@ class Grade(BaseModel):
     # so the grade stays scannable (mirrors the trajectory/prompts split). See
     # docs/OUTPUT_FORMAT.md. ``None`` when no judge ran or none was captured.
     judge_transcript: list[dict[str, Any]] | None = None
-    # The judge's knowledge-search gating for this trial (offered / withheld / whether
-    # config disabled KB). ``None`` when no judge ran. Serialized inline in
-    # ``grade.yaml`` (a scalar/lists block, unlike the transcript sidecar). Separate
-    # from ``judge_usage``, which stays token/cost only. See docs/OUTPUT_FORMAT.md.
+    # The judge's knowledge-search surface for this trial (offered / withheld).
+    # ``None`` when no judge ran. Serialized inline in ``grade.yaml`` (a lists block,
+    # unlike the transcript sidecar). Separate from ``judge_usage``, which stays
+    # token/cost only. See docs/OUTPUT_FORMAT.md.
     judge_kb_gating: JudgeKbGating | None = None
-    # The judge's non-derivable ``run()`` inputs (state-diff string + non-KB
-    # read-tool surface). ``None`` when no judge ran. Excluded from the
-    # ``grade.yaml`` payload and written to a sidecar ``judge_inputs.yaml`` (the
-    # state-diff can be large), mirroring the ``judge_transcript`` split. See
-    # docs/OUTPUT_FORMAT.md.
+    # The judge's non-derivable ``run()`` inputs (state-diff string, non-KB
+    # read-tool surface, effective customization). ``None`` when no judge ran.
+    # Excluded from the ``grade.yaml`` payload and written to a sidecar
+    # ``judge_inputs.yaml`` (the state-diff can be large), mirroring the
+    # ``judge_transcript`` split. See docs/OUTPUT_FORMAT.md.
     judge_inputs: JudgeInputs | None = None
-    # Whether the judge ran with a custom system-prompt body
-    # (grading.llm_judge.customization.system_prompt). Tri-state: ``None`` when no
-    # judge ran, ``False``/``True`` when a judge ran with the default / a custom
-    # prompt. Serialized inline in ``grade.yaml``. The full custom text is recorded
-    # in ``task.yaml.grading_config.llm_judge.customization``, not here. See
-    # docs/OUTPUT_FORMAT.md.
-    judge_custom_prompt: bool | None = None
-    # Whether the harness embedded the agent's policy / system prompt in the judge's
-    # opening-message evidence
-    # (grading.llm_judge.customization.include_agent_system_prompt). Tri-state:
-    # ``None`` when no judge ran, ``True``/``False`` when a judge ran with the agent
-    # policy included / gated out. Serialized inline in ``grade.yaml``. See
-    # docs/OUTPUT_FORMAT.md.
-    judge_agent_prompt_included: bool | None = None
     # Which trajectory ``TerminationReason`` a ``TrialGrader`` synthesised this
     # grade from — populated only on the harness auto-fail branches
     # (``ERROR``/``TIMEOUT``/``STUCK_DETECTED``/``EMPTY_COMPLETION``), where no

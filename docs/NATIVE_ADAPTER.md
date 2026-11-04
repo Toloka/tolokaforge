@@ -253,10 +253,24 @@ what the agent is handed. The same declaration sets the task's `search` block:
 (see [TASK_DESCRIPTION_SCHEMA.md](TASK_DESCRIPTION_SCHEMA.md)).
 
 `ToolSchema.mutates_state` ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md))
-is declared by whoever authored the tool. A builtin's schema derives it from the
-tool's `ToolPolicy.category` (`read` → `False`, `write` → `True`, `compute` →
-undeclared); the search tool is `False`; an MCP tool carries whatever its server's
-`readOnlyHint` annotation says, and nothing when the server declares nothing.
+is declared by whoever authored the tool. A builtin's schema takes it from the
+tool's `ToolPolicy`: its own `mutates_state` where set (`http_request`'s safe-method
+read rule), else its category (`read` → `False`, `write` → `True`, `compute` →
+undeclared), and a policy value its category contradicts fails the schema; the search
+tool is `False`; an MCP tool carries whatever its server's
+`readOnlyHint` annotation says, or the read rule its `_meta` carries under
+`tolokaforge/mutates_state` beside `readOnlyHint: false`, and nothing when the server
+declares nothing. A rule beside `readOnlyHint: true`, or one the rule model refuses,
+fails the load naming the tool and the server; a malformed `readOnlyHint` alone is
+logged and leaves the tool undeclared
+([MCP_INTEGRATION.md § A read rule](MCP_INTEGRATION.md#a-read-rule)). The
+task's own `tools.<actor>.<name>.mutates_state` (`false`, `true`, or a `read_when`
+rule) is laid over that declaration: it fills an undeclared tool, a `true` replaces any
+author value, and anything else over an author declaration is refused, as is a
+`read_when` path the tool's closed schema does not declare
+([TASKS.md § Declaring which calls change state](TASKS.md#declaring-which-calls-change-state)).
+A task file's block for a tool it does not enable is refused when the task loads
+([TASKS.md § Tool blocks](TASKS.md#tool-blocks)).
 
 `fixtures/tools.json` format (list of tool descriptors):
 
@@ -289,8 +303,11 @@ undeclared); the search tool is `False`; an MCP tool carries whatever its server
 ]
 ```
 
-`mutates_state` is `true`, `false`, or `null` for a tool that declares nothing
-([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)).
+`mutates_state` is `true`, `false`, a read rule
+(`{"read_when": {"args": {"request.method": {"in_": ["GET"]}}}}`), or `null` for a
+tool that declares nothing ([ADR-0061](adr/0061-mutates-state-on-the-tool-wire.md)).
+The rule is validated again when the cache is read, so a hand-edited rule the model
+refuses fails the description naming the tool and the file.
 
 > **Note:** If `fixtures/tools.json` is absent and the live MCP query fails or
 > reports no tools, the run fails with a `RuntimeError` naming the server.  An

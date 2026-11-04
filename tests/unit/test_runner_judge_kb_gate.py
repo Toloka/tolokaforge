@@ -23,7 +23,7 @@ from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import RagServiceKnowledgeSearch
 from tolokaforge.core.search.backend import SearchBackendContext
 from tolokaforge.core.search.stack_services import StackServices
-from tolokaforge.runner.models import ToolSchema
+from tolokaforge.runner.models import EvidencePartName, ToolSchema
 from tolokaforge.runner.rag_client import RAGServiceClient
 from tolokaforge.runner.rag_service_backend import RagServiceSearchIndex
 from tolokaforge.runner.service import RunnerServiceImpl
@@ -220,16 +220,16 @@ def test_search_policy_passthrough_offered_only_when_agent_had_it():
 
 
 def test_search_policy_passthrough_is_tagged_knowledge_search():
-    """The service tags each ``search_policy`` passthrough as knowledge-search so the
-    judge registry can gate it under ``disable_knowledge_search`` — classification is
-    by this declared tag, never by tool name."""
+    """The service tags each ``search_policy`` passthrough as owned by the
+    ``knowledge_search`` evidence part, so the judge offers it only while that part
+    is on — classification is by this declared tag, never by tool name."""
     service = _service(None)
     try:
         tools = service._build_judge_search_policy_tools(
             _trial_context_with({"search_policy": _FakeReconstructedSearchPolicy()})
         )
         assert len(tools) == 1
-        assert tools[0].is_knowledge_search is True
+        assert tools[0].evidence_part is EvidencePartName.KNOWLEDGE_SEARCH
     finally:
         service.shutdown()
 
@@ -411,9 +411,8 @@ def test_search_policy_passthrough_skips_namespaced_non_tool_wrapper(caplog):
 
 
 # ---------------------------------------------------------------------------
-# _grade_llm_judge wires the effective disable_knowledge_search flag from the
-# merged llm_judge config into LLMJudge construction. The agent's tool surface
-# is untouched; only the judge's construction flag changes.
+# _grade_llm_judge constructs LLMJudge from the merged llm_judge config's effective
+# customization. The agent's tool surface is untouched.
 # ---------------------------------------------------------------------------
 
 
@@ -426,6 +425,7 @@ class _FakeTaskDesc:
 
         self.initial_state = RunnerInitialStateConfig()
         self.grading = None
+        self.agent_tools: list = []
 
 
 class _JudgeCtx:
@@ -455,35 +455,47 @@ def _empty_substrate():
     )
 
 
+def _spy_judge(captured: dict, result: Any) -> type:
+    """An ``LLMJudge`` that records the keyword arguments it is constructed with."""
+    from tolokaforge.core.grading.judge import LLMJudge
+
+    class _SpyJudge(LLMJudge):
+        def __init__(self, model_config, **kwargs):
+            captured.update(kwargs)
+
+        def run(self, **_kwargs):
+            return result
+
+    return _SpyJudge
+
+
 @pytest.mark.parametrize(
-    "customization, expected",
+    "customization",
     [
-        (None, False),
-        ({"disable_knowledge_search": None}, False),
-        ({"disable_knowledge_search": False}, False),
-        ({"disable_knowledge_search": True}, True),
+        None,
+        {"system_prompt": None},
+        {"evidence": {"knowledge_search": True, "agent_policy": True}},
+        {
+            "system_prompt": "Grade against the refund policy.",
+            "evidence": {"knowledge_search": False, "agent_policy": False},
+        },
     ],
-    ids=["absent", "unset", "explicit_false", "explicit_true"],
+    ids=["absent", "unset", "explicit_defaults", "every_key_set"],
 )
-def test_grade_llm_judge_constructs_with_effective_disable_flag(
-    monkeypatch, customization, expected
+def test_grade_llm_judge_constructs_the_judge_from_the_effective_customization(
+    monkeypatch, customization
 ):
+    """``_grade_llm_judge`` constructs the judge from the task's effective customization,
+    the defaults for a task that sets none."""
     from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
 
     captured: dict = {}
-
-    class _SpyJudge:
-        def __init__(self, model_config, *, disable_knowledge_search=False, **_kw):
-            captured["disable"] = disable_knowledge_search
-
-        def run(self, **_kwargs):
-            return JudgeResult(
-                status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
-            )
-
-    monkeypatch.setattr("tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _SpyJudge)
+    result = JudgeResult(status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0)
+    monkeypatch.setattr(
+        "tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _spy_judge(captured, result)
+    )
 
     service = _service(None)
     try:
@@ -491,7 +503,9 @@ def test_grade_llm_judge_constructs_with_effective_disable_flag(
         cfg = LLMJudgeConfig(
             rubric=rubric,
             customization=(
-                JudgeCustomization(**customization) if customization is not None else None
+                JudgeCustomization.model_validate(customization)
+                if customization is not None
+                else None
             ),
         )
         ctx = _JudgeCtx(ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0))
@@ -500,129 +514,24 @@ def test_grade_llm_judge_constructs_with_effective_disable_flag(
             service._grade_llm_judge("t:0", cfg, [], ctx, substrate=_empty_substrate()),
             service._loop,
         )
-        fut.result(timeout=5.0)
-        assert captured["disable"] is expected
-    finally:
-        service.shutdown()
-
-
-@pytest.mark.parametrize(
-    "customization, expected",
-    [
-        (None, None),
-        ({"disable_knowledge_search": True}, None),
-        ({"system_prompt": "Grade against the refund policy."}, "Grade against the refund policy."),
-    ],
-    ids=["absent", "customization_without_prompt", "explicit_prompt"],
-)
-def test_grade_llm_judge_constructs_with_effective_custom_prompt(
-    monkeypatch, customization, expected
-):
-    """``_grade_llm_judge`` computes the effective ``system_prompt`` from the merged
-    customization and constructs the judge with it — ``None`` when no layer set it."""
-    from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
-    from tolokaforge.core.models import ModelConfig
-    from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
-
-    captured: dict = {}
-
-    class _SpyJudge:
-        def __init__(self, model_config, *, custom_system_prompt=None, **_kw):
-            captured["prompt"] = custom_system_prompt
-
-        def run(self, **_kwargs):
-            return JudgeResult(
-                status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
-            )
-
-    monkeypatch.setattr("tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _SpyJudge)
-
-    service = _service(None)
-    try:
-        rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
-        cfg = LLMJudgeConfig(
-            rubric=rubric,
-            customization=(
-                JudgeCustomization(**customization) if customization is not None else None
-            ),
-        )
-        ctx = _JudgeCtx(ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0))
-        service.trials["t:0"] = ctx
-        fut = asyncio.run_coroutine_threadsafe(
-            service._grade_llm_judge("t:0", cfg, [], ctx, substrate=_empty_substrate()),
-            service._loop,
-        )
-        fut.result(timeout=5.0)
-        assert captured["prompt"] == expected
-    finally:
-        service.shutdown()
-
-
-@pytest.mark.parametrize(
-    "customization, expected",
-    [
-        (None, True),
-        ({"disable_knowledge_search": True}, True),
-        ({"include_agent_system_prompt": False}, False),
-        ({"include_agent_system_prompt": True}, True),
-    ],
-    ids=["absent", "customization_without_key", "explicit_false", "explicit_true"],
-)
-def test_grade_llm_judge_constructs_with_effective_include_agent_system_prompt(
-    monkeypatch, customization, expected
-):
-    """``_grade_llm_judge`` computes the effective ``include_agent_system_prompt``
-    from the merged customization and constructs the judge with it — defaulting to
-    ``True`` (include) when no layer sets it, not collapsing an unset flag to
-    ``False``."""
-    from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
-    from tolokaforge.core.models import ModelConfig
-    from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
-
-    captured: dict = {}
-
-    class _SpyJudge:
-        def __init__(self, model_config, *, include_agent_system_prompt=True, **_kw):
-            captured["include"] = include_agent_system_prompt
-
-        def run(self, **_kwargs):
-            return JudgeResult(
-                status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
-            )
-
-    monkeypatch.setattr("tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _SpyJudge)
-
-    service = _service(None)
-    try:
-        rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
-        cfg = LLMJudgeConfig(
-            rubric=rubric,
-            customization=(
-                JudgeCustomization(**customization) if customization is not None else None
-            ),
-        )
-        ctx = _JudgeCtx(ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0))
-        service.trials["t:0"] = ctx
-        fut = asyncio.run_coroutine_threadsafe(
-            service._grade_llm_judge("t:0", cfg, [], ctx, substrate=_empty_substrate()),
-            service._loop,
-        )
-        fut.result(timeout=5.0)
-        assert captured["include"] is expected
+        grading = fut.result(timeout=5.0)
+        assert captured["customization"] == (cfg.customization or JudgeCustomization())
+        assert grading.customization == captured["customization"]
     finally:
         service.shutdown()
 
 
 def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
     """The ``JudgeResult`` audit fields cross into ``pb2.JudgeReport`` unswapped:
-    ``knowledge_search_disabled`` / ``kb_tools_offered`` / ``kb_tools_withheld`` /
-    ``custom_system_prompt`` / ``include_agent_system_prompt`` plus the replay inputs
+    ``kb_tools_offered`` / ``kb_tools_withheld`` plus the replay inputs
     ``state_diff_text`` / ``read_tools_offered`` land on ``response.grade.judge_report``
-    exactly as the judge reported them."""
+    exactly as the judge reported them, beside the customization the judge was
+    constructed from as ``customization_json``."""
     from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner import runner_pb2 as pb2
     from tolokaforge.runner.models import (
+        JudgeCustomization,
         LLMJudgeConfig,
         Rubric,
         RunnerGradingConfig,
@@ -630,28 +539,24 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
     )
     from tolokaforge.runner.service import TrialContextRuntime
 
-    class _SpyJudge:
-        def __init__(self, model_config, *, disable_knowledge_search=False, **_kw):
-            pass
-
-        def run(self, **_kwargs):
-            return JudgeResult(
-                status=JudgeStatus.COMPLETED,
-                usage=JudgeUsage(),
-                reasons="ok",
-                score=1.0,
-                knowledge_search_disabled=True,
-                kb_tools_offered=(),
-                kb_tools_withheld=("search_kb",),
-                state_diff="orders[1]: open -> shipped",
-                read_tools_offered=("get_db_state", "query_db"),
-                custom_system_prompt=True,
-                include_agent_system_prompt=False,
-            )
-
-    monkeypatch.setattr("tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _SpyJudge)
+    result = JudgeResult(
+        status=JudgeStatus.COMPLETED,
+        usage=JudgeUsage(),
+        reasons="ok",
+        score=1.0,
+        kb_tools_offered=(),
+        kb_tools_withheld=("search_kb",),
+        state_diff="orders[1]: open -> shipped",
+        read_tools_offered=("get_db_state", "query_db"),
+    )
+    monkeypatch.setattr(
+        "tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _spy_judge({}, result)
+    )
 
     rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
+    customization = JudgeCustomization(
+        system_prompt="Strict.", evidence={"knowledge_search": False, "agent_policy": False}
+    )
     task_desc = TaskDescription(
         task_id="rubric_task",
         name="rubric task",
@@ -660,7 +565,8 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
         adapter_type="native",
         system_prompt="system",
         grading=RunnerGradingConfig(
-            weights={"llm_judge": 1.0}, llm_judge=LLMJudgeConfig(rubric=rubric)
+            weights={"llm_judge": 1.0},
+            llm_judge=LLMJudgeConfig(rubric=rubric, customization=customization),
         ),
     )
 
@@ -681,17 +587,12 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
 
         assert response.success is True
         report = response.grade.judge_report
-        assert report.knowledge_search_disabled is True
         assert list(report.kb_tools_offered) == []
         assert list(report.kb_tools_withheld) == ["search_kb"]
         assert report.state_diff_text == "orders[1]: open -> shipped"
         assert list(report.read_tools_offered) == ["get_db_state", "query_db"]
-        assert report.custom_system_prompt is True
-        # Field 15 is proto3 `optional`: an unset field also reads False through
-        # the accessor, so presence is what proves the servicer populated it.
-        assert report.HasField("include_agent_system_prompt")
-        assert report.include_agent_system_prompt is False
-        # Field 17 is `optional` too: a judge whose calls stated no charge leaves it unset.
+        assert JudgeCustomization.model_validate_json(report.customization_json) == customization
+        # Field 17 is `optional`: a judge whose calls stated no charge leaves it unset.
         assert not report.HasField("billed_cost_usd")
     finally:
         service.shutdown()
@@ -712,19 +613,15 @@ def test_grade_trial_carries_the_judges_billed_cost(monkeypatch, billed):
     )
     from tolokaforge.runner.service import TrialContextRuntime
 
-    class _BilledJudge:
-        def __init__(self, model_config, **_kw):
-            pass
-
-        def run(self, **_kwargs):
-            return JudgeResult(
-                status=JudgeStatus.COMPLETED,
-                usage=JudgeUsage(calls=2, cost_usd=0.004, billed_cost_usd=billed),
-                reasons="ok",
-                score=1.0,
-            )
-
-    monkeypatch.setattr("tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _BilledJudge)
+    result = JudgeResult(
+        status=JudgeStatus.COMPLETED,
+        usage=JudgeUsage(calls=2, cost_usd=0.004, billed_cost_usd=billed),
+        reasons="ok",
+        score=1.0,
+    )
+    monkeypatch.setattr(
+        "tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _spy_judge({}, result)
+    )
 
     rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
     task_desc = TaskDescription(

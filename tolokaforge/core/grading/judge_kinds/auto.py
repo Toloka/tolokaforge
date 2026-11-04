@@ -34,11 +34,11 @@ if TYPE_CHECKING:
     from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
     from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
     from tolokaforge.core.grading.judge_result import JudgeResult
+    from tolokaforge.core.grading.judge_tools import EvidenceOwnedTool
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner.models import Rubric
-    from tolokaforge.tools.registry import Tool
 
 __all__ = [
     "AutoRubricJudgeKind",
@@ -59,7 +59,7 @@ class AutoRubricJudgeKind:
         db_reader: DBReader | None,
         kb_search: KnowledgeSearch | None,
         workspace_dir: Path | None,
-        extra_read_tools: list[Tool],
+        extra_read_tools: list[EvidenceOwnedTool],
         state_diff: str | None,
         judge_model_config: ModelConfig,
         judge_model_provider: JudgeModelProvider,

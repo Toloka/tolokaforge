@@ -17,7 +17,10 @@ migration:
   declare is rejected naming the closest declared field and the accepted set.
 * The ``llm_judge.customization`` block (and its project-defaults twin
   ``grading_defaults.llm_judge.customization``) rejects malformed values and
-  unknown keys, the message naming the offending field.
+  unknown keys, the message naming the offending field. A key ``evidence`` replaced
+  is refused naming its ``evidence.*`` replacement on every surface that takes a
+  customization: the task's grading, the project defaults, the run-level
+  ``grader.judge`` and a ``rejudge --grading`` file.
 * ``combine``: the aggregation ``method`` is a closed set, and the two retired
   names that were declared but never dispatched are rejected naming the rule each
   one meant; a key the block does not declare is rejected naming the closest
@@ -61,6 +64,7 @@ the declaration against them. What a *resolvable* inventory rejects is locked in
 from __future__ import annotations
 
 import json
+import re
 import textwrap
 import types
 from pathlib import Path
@@ -83,8 +87,10 @@ from tolokaforge.core.grading.combine_method import (
     RETIRED_COMBINE_METHOD_ALIASES,
 )
 from tolokaforge.core.grading.config_validation import HashSourceLayer, ToolInventory
+from tolokaforge.core.grading.replay import load_grading_override
 from tolokaforge.core.models import (
     CommunicateInfo,
+    GraderConfig,
     GradingCombineConfig,
     GradingConfig,
     GradingDefaults,
@@ -309,8 +315,10 @@ def test_validate_accepts_customization_block(tmp_path: Path):
             llm_judge: 1.0
         llm_judge:
           customization:
-            disable_knowledge_search: true
             system_prompt: "Grade strictly against the policy handbook."
+            evidence:
+              knowledge_search: false
+              tool_results: {max_chars: 500}
           rubric:
             criteria:
               - id: refund_amount
@@ -367,18 +375,20 @@ def _grading_with_customization(customization_block: str) -> str:
 @pytest.mark.parametrize(
     "customization_block, match",
     [
-        ("disable_knowledge_search: sometimes", "disable_knowledge_search"),
+        ("evidence: {knowledge_search: sometimes}", "evidence.knowledge_search"),
         ("typo_key: true", "typo_key"),
         ("system_prompt: 123", "system_prompt"),
         ('system_prompt: ""', "empty"),
-        ("include_agent_system_prompt: sometimes", "include_agent_system_prompt"),
+        ("evidence: {agent_policy: sometimes}", "evidence.agent_policy"),
+        ("evidence: {db: true, typo_part: true}", "typo_part"),
     ],
     ids=[
         "malformed_value",
         "unknown_key",
         "malformed_system_prompt_type",
         "empty_system_prompt",
-        "malformed_include_agent_system_prompt_type",
+        "malformed_agent_policy_type",
+        "unknown_part",
     ],
 )
 def test_validate_grading_yaml_rejects_malformed_customization(
@@ -399,7 +409,7 @@ def test_validate_grading_yaml_skips_customization_without_rubric(tmp_path: Path
     grading.write_text(textwrap.dedent("""
             llm_judge:
               customization:
-                disable_knowledge_search: sometimes
+                evidence: {knowledge_search: sometimes}
             """).strip())
 
     # No rubric and no model_ref, so LLMJudgeConfig is never constructed and the
@@ -410,18 +420,18 @@ def test_validate_grading_yaml_skips_customization_without_rubric(tmp_path: Path
 @pytest.mark.parametrize(
     "customization, match",
     [
-        ({"disable_knowledge_search": "sometimes"}, "disable_knowledge_search"),
+        ({"evidence": {"knowledge_search": "sometimes"}}, "evidence.knowledge_search"),
         ({"typo_key": True}, "typo_key"),
         ({"system_prompt": 123}, "system_prompt"),
         ({"system_prompt": ""}, "empty"),
-        ({"include_agent_system_prompt": "sometimes"}, "include_agent_system_prompt"),
+        ({"evidence": {"agent_policy": "sometimes"}}, "evidence.agent_policy"),
     ],
     ids=[
         "malformed_value",
         "unknown_key",
         "malformed_system_prompt_type",
         "empty_system_prompt",
-        "malformed_include_agent_system_prompt_type",
+        "malformed_agent_policy_type",
     ],
 )
 def test_project_grading_defaults_reject_malformed_customization(customization: dict, match: str):
@@ -431,6 +441,74 @@ def test_project_grading_defaults_reject_malformed_customization(customization: 
     each carrying it."""
     with pytest.raises(Exception, match=match):
         GradingDefaults(llm_judge={"customization": customization})
+
+
+_REMOVED_CUSTOMIZATION_KEYS = [
+    ({"disable_knowledge_search": True}, "write evidence.knowledge_search: false"),
+    ({"disable_knowledge_search": False}, "or evidence.knowledge_search: true to keep"),
+    ({"include_agent_system_prompt": False}, "write evidence.agent_policy: false"),
+    ({"judge_snippet_chars": None}, "evidence.knowledge_search: {snippet_chars: null}"),
+    ({"judge_snippet_chars": 50}, "write evidence.knowledge_search: {snippet_chars: N}"),
+]
+
+
+def _read_on_the_task(tmp_path: Path, customization: dict[str, Any]) -> None:
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(
+        yaml.safe_dump(
+            {
+                "llm_judge": {
+                    "rubric": {"criteria": [{"id": "a", "description": "d", "kind": "binary"}]},
+                    "customization": customization,
+                }
+            }
+        )
+    )
+    validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+
+def _read_on_the_project(tmp_path: Path, customization: dict[str, Any]) -> None:
+    GradingDefaults(llm_judge={"customization": customization})
+
+
+def _read_on_the_run(tmp_path: Path, customization: dict[str, Any]) -> None:
+    GraderConfig.model_validate({"judge": customization})
+
+
+def _read_on_a_grading_override(tmp_path: Path, customization: dict[str, Any]) -> None:
+    grading = tmp_path / "override.yaml"
+    grading.write_text(yaml.safe_dump({"llm_judge": {"customization": customization}}))
+    load_grading_override(grading)
+
+
+_CUSTOMIZATION_SURFACES = [
+    _read_on_the_task,
+    _read_on_the_project,
+    _read_on_the_run,
+    _read_on_a_grading_override,
+]
+_CUSTOMIZATION_SURFACE_IDS = ["task-grading", "project-defaults", "grader-judge", "rejudge-grading"]
+
+
+@pytest.mark.parametrize("surface", _CUSTOMIZATION_SURFACES, ids=_CUSTOMIZATION_SURFACE_IDS)
+@pytest.mark.parametrize(("customization", "remedy"), _REMOVED_CUSTOMIZATION_KEYS)
+def test_a_key_evidence_replaced_is_refused_naming_its_replacement_on_every_surface(
+    tmp_path: Path, surface: Any, customization: dict[str, Any], remedy: str
+):
+    """The removal's message is the migration: it names the ``evidence.*`` key that
+    replaces the one written, on each surface a customization is read from."""
+    with pytest.raises(Exception, match=re.escape(remedy)):
+        surface(tmp_path, customization)
+
+
+@pytest.mark.parametrize("surface", _CUSTOMIZATION_SURFACES, ids=_CUSTOMIZATION_SURFACE_IDS)
+@pytest.mark.parametrize("key", ["disable_knowledge_search", "include_agent_system_prompt"])
+def test_a_removed_tri_state_key_holding_null_reads_as_unset_on_every_surface(
+    tmp_path: Path, surface: Any, key: str
+):
+    """``null`` meant unset, and every customization recorded before ``evidence``
+    carries both keys as ``null``; it reads as the key's absence."""
+    surface(tmp_path, {key: None, "system_prompt": None})
 
 
 # ---------------------------------------------------------------------------

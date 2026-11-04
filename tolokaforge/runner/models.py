@@ -55,6 +55,8 @@ from pydantic import (
     Field,
     PrivateAttr,
     SerializerFunctionWrapHandler,
+    StrictBool,
+    ValidationError,
     ValidationInfo,
     field_validator,
     model_serializer,
@@ -71,9 +73,12 @@ from tolokaforge.core.grading.combine_method import CombineMethod, validate_comb
 from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, ComparisonViewRecord
 from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
-from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
-from tolokaforge.core.grading.regex_engine import RegexEngineKind
+from tolokaforge.core.grading.regex_engine import (
+    CompiledPatterns,
+    RegexEngineKind,
+    UncompilablePattern,
+)
 from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     refuse_probes_beside_another_state_source,
@@ -83,7 +88,17 @@ from tolokaforge.core.grading.state_composition import (
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind
 from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.hash import ColumnCompareRule
+from tolokaforge.core.mutates_state_meta import (
+    check_read_rule_binds_nothing,
+    check_read_rule_path,
+)
 from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
+from tolokaforge.core.value_predicate_operators import (
+    TRACE_PREDICATE_BINDING_OPERATORS,
+    TRACE_PREDICATE_DATE_OPERATORS,
+    TRACE_PREDICATE_OPERATORS,
+    TRACE_PREDICATE_REGEX_OPERATORS,
+)
 
 # ``ToolExecutionStatus`` is declared beside ``ToolResult`` in the true leaf
 # ``tolokaforge.tools.registry`` (zero first-party imports), because a
@@ -192,17 +207,22 @@ class ToolSchema(BaseModel):
     the per-model cap passes the tool message through verbatim.
     """
 
-    mutates_state: bool | None = None
+    mutates_state: bool | MutatesStateRule | None = None
     """Whether a call can change the graded state, as the tool's author declares it
     (ADR-0061).
 
     ``None`` is unknown and reads as ``True`` wherever the engine needs an answer.
-    An MCP server declares it through the ``readOnlyHint`` tool annotation
+    A :class:`MutatesStateRule` declares which calls only read, by their arguments;
+    the gRPC ``ToolSchema.mutates_state`` bool carries it as ``true``, since some
+    calls do change state.
+    An MCP server declares it through the ``readOnlyHint`` tool annotation, and a rule
+    through the tool's ``_meta`` beside ``readOnlyHint: false``
     (``DomainToolRegistry.tool(..., mutates_state=...)``), which the native adapter
     reads back; an adapter that knows it from its own sources sets it directly.
     Left out of the dump while ``None``, so an image predating the field accepts
     every pack that does not declare it. The engine declares it for the tools it
-    authors — a builtin's from its ``ToolPolicy.category`` (``read`` → ``False``,
+    authors — a builtin's from its ``ToolPolicy`` (its own ``mutates_state``, such as
+    ``http_request``'s safe-method rule, else its category: ``read`` → ``False``,
     ``write`` → ``True``, ``compute`` undeclared), the search tool's as ``False``.
     This schema's own ``category`` is not read for it.
     """
@@ -981,60 +1001,6 @@ class TranscriptRulesConfig(BaseModel):
         return self
 
 
-TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
-    {
-        "equals",
-        "equals_ci",
-        "contains",
-        "contains_ci",
-        "not_contains",
-        "not_equals",
-        "regex",
-        "not_regex",
-        "is_null",
-        "omitted",
-        "gt",
-        "gte",
-        "lt",
-        "lte",
-        "date_gt",
-        "date_gte",
-        "date_lt",
-        "date_lte",
-        "in_",
-        "not_in",
-        "len_gt",
-        "len_gte",
-        "exists",
-        "equals_binding",
-        "contains_binding",
-    }
-)
-"""Every operator a :class:`ValuePredicate` may carry, written out rather than
-comprehended from the model, so the per-operator answer table has a second source
-to be checked against."""
-
-TRACE_PREDICATE_MODIFIERS: frozenset[str] = frozenset({"regex_engine"})
-"""The :class:`ValuePredicate` fields that change how its operators read and assert
-nothing on their own — so a predicate declaring only a modifier declares no operator."""
-
-TRACE_PREDICATE_REGEX_OPERATORS: frozenset[str] = frozenset({"regex", "not_regex"})
-"""The operators whose operand is a pattern, compiled under the predicate's engine."""
-
-TRACE_PREDICATE_BINDING_OPERATORS: frozenset[str] = frozenset(
-    {"equals_binding", "contains_binding"}
-)
-"""The operators whose value is a name in the constraint's binding environment
-rather than a value to compare against."""
-
-TRACE_PREDICATE_DATE_OPERATORS: frozenset[str] = frozenset(
-    {"date_gt", "date_gte", "date_lt", "date_lte"}
-)
-"""The operators whose literal is an ISO-8601 date or datetime. Read by the
-load-tier validator that refuses a bound value no calendar reading holds — the
-same second-source symmetry ``TRACE_PREDICATE_BINDING_OPERATORS`` carries."""
-
-
 class ValuePredicate(BaseModel):
     """A conjunction of operators over one field of one event.
 
@@ -1095,6 +1061,9 @@ class ValuePredicate(BaseModel):
 
     omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"regex_engine"})
 
+    PATTERN_OPERATORS: ClassVar[frozenset[str]] = TRACE_PREDICATE_REGEX_OPERATORS
+    """The operators whose operand is a compiled pattern rather than the authored value."""
+
     @model_serializer(mode="wrap")
     @schema_from_the_fields
     def _leave_out_absent_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -1108,6 +1077,18 @@ class ValuePredicate(BaseModel):
         """The patterns a declared ``regex`` / ``not_regex`` names, in authored order."""
         authored = getattr(self, operator)
         return (authored,) if isinstance(authored, str) else tuple(authored)
+
+    def compiled_patterns(self, section: RegexEngineKind) -> dict[str, CompiledPatterns]:
+        """Each pattern operator it declares, compiled under :meth:`regex_engine_under`.
+
+        Raises:
+            UncompilablePattern: a pattern its engine refuses.
+        """
+        engine = self.regex_engine_under(section)
+        return {
+            name: CompiledPatterns.compile(self.patterns_of(name), engine)
+            for name in sorted(self.declared_operators() & self.PATTERN_OPERATORS)
+        }
 
     def declared_operators(self) -> frozenset[str]:
         """The operators this predicate asserts, which it is the conjunction of."""
@@ -1176,6 +1157,77 @@ class ValuePredicate(BaseModel):
                     "would hold for no trial. Fix the bound"
                 )
         return self
+
+
+class MutatesStateReadWhen(BaseModel):
+    """The arguments under which a call reads: every ``args`` predicate holds.
+
+    ``args`` maps a dotted argument path (``request.method``) to a
+    :class:`ValuePredicate`, the trace matcher's own vocabulary, read through the
+    same resolver (:mod:`tolokaforge.core.grading.argument_predicates`): a path the
+    call does not carry fails every operator but ``omitted`` / ``exists``. A
+    pattern runs on :attr:`REGEX_ENGINE` unless its predicate names another, and one
+    its engine cannot compile is refused here. A rule has no ``bind``, so the binding
+    operators are refused.
+    """
+
+    REGEX_ENGINE: ClassVar[RegexEngineKind] = RegexEngineKind.LINEAR
+
+    args: dict[str, ValuePredicate] = Field(min_length=1)
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+    @model_validator(mode="after")
+    def _patterns_compile(self) -> MutatesStateReadWhen:
+        try:
+            for predicate in self.args.values():
+                predicate.compiled_patterns(self.REGEX_ENGINE)
+        except UncompilablePattern as exc:
+            raise ValueError(f"read_when.args: {exc}") from exc
+        return self
+
+    @field_validator("args")
+    @classmethod
+    def _paths_present_and_binding_free(
+        cls, args: dict[str, ValuePredicate]
+    ) -> dict[str, ValuePredicate]:
+        for path, predicate in args.items():
+            check_read_rule_path(path)
+            check_read_rule_binds_nothing(f"read_when.args.{path}", predicate.declared_operators())
+        return args
+
+
+class MutatesStateRule(BaseModel):
+    """A tool that changes state on some calls and only reads on others (ADR-0061).
+
+    A call reads when :attr:`read_when` holds over its arguments and can change
+    state otherwise — so an argument shape the rule does not foresee reads as a
+    possible change, the conservative direction.
+    """
+
+    read_when: MutatesStateReadWhen
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+
+def parse_mutates_state(raw: object, *, where: str) -> bool | MutatesStateRule | None:
+    """A ``mutates_state`` value: ``None`` (undeclared), a bool, or a read-rule mapping.
+
+    Raises:
+        ValueError: *raw* is none of these, or a mapping the rule model refuses, naming
+            *where*.
+    """
+    if raw is None or isinstance(raw, bool):
+        return raw
+    if not isinstance(raw, Mapping):
+        raise ValueError(
+            f"{where} is {raw!r}; declare true, false or "
+            "{read_when: {args: {<argument path>: <predicate>}}}"
+        )
+    try:
+        return MutatesStateRule.model_validate(raw)
+    except ValidationError as exc:
+        raise ValueError(f"{where} is not a read rule: {exc}") from exc
 
 
 # Which fields a matcher may read, per event kind. A ``tool_call`` matcher reads
@@ -2393,14 +2445,203 @@ class CriterionResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class JudgeCustomization(BaseModel):
-    """Judge tool-surface customization, sibling of ``rubric`` under ``llm_judge``.
+class EvidenceInput(str, Enum):
+    """A view of the trial a caller builds for the judge only when a part needs it."""
 
-    Tri-state ``disable_knowledge_search``: ``None`` (unset) means the faithful
-    default (the judge is offered whatever knowledge-search tools the agent had);
-    ``True`` withholds every knowledge-search tool from the judge's surface;
-    ``False`` explicitly keeps them (so a task can override a project default that
-    disabled them). Layered project→task by :func:`resolve_effective_judge_customization`.
+    STATE_DIFF = "state_diff"
+    DB = "db"
+    WORKSPACE = "workspace"
+    TOOL_EFFECTS = "tool_effects"
+
+
+#: The views of the trial's final state, in :class:`EvidenceInput` order.
+FINAL_STATE_INPUTS: tuple[EvidenceInput, ...] = (
+    EvidenceInput.STATE_DIFF,
+    EvidenceInput.DB,
+    EvidenceInput.WORKSPACE,
+)
+
+
+class EvidencePartName(str, Enum):
+    """The parts of the judge's evidence, named as :class:`JudgeEvidence` fields."""
+
+    AGENT_POLICY = "agent_policy"
+    KNOWLEDGE_SEARCH = "knowledge_search"
+    STATE_DIFF = "state_diff"
+    DB = "db"
+    WORKSPACE = "workspace"
+    TOOL_RESULTS = "tool_results"
+    STATE_CHANGING_CALLS = "state_changing_calls"
+
+
+class KnowledgeSearchOptions(BaseModel):
+    """``evidence.knowledge_search`` options.
+
+    ``snippet_chars`` is how much of each hit the judge's ``search_kb`` shows: the
+    first that many characters, or ``null`` for whole documents.
+    """
+
+    snippet_chars: int | None = Field(default=200, ge=1, strict=True)
+
+    model_config = {"extra": "forbid"}
+
+
+class ToolResultsOptions(BaseModel):
+    """``evidence.tool_results`` options.
+
+    ``max_chars`` is how much of each tool result the transcript shows; ``show_call``
+    returns the rest.
+    """
+
+    max_chars: int = Field(default=2000, ge=1, strict=True)
+
+    model_config = {"extra": "forbid"}
+
+
+class JudgeEvidence(BaseModel):
+    """What the rubric judge is shown, as named parts (``customization.evidence``).
+
+    Every part reads ``false`` (off), ``true`` (on, default options) or a mapping (on,
+    with those options). The defaults are the judge over the final state:
+
+    * ``agent_policy`` — the agent's policy / system prompt in the opening message.
+    * ``knowledge_search`` — the knowledge-search tools the agent had (``search_kb``,
+      a ``search_policy`` passthrough); options :class:`KnowledgeSearchOptions`.
+    * ``state_diff`` — the ``initial → final`` diff of the database state.
+    * ``db`` — ``get_db_state`` / ``query_db`` over the final database state.
+    * ``workspace`` — ``read_file`` over the agent's workspace.
+    * ``tool_results`` — every tool result numbered ``[call N]`` and cut, with
+      ``show_call`` returning it in full; options :class:`ToolResultsOptions`. Off by
+      default.
+    * ``state_changing_calls`` — a block listing the agent's calls that can change
+      state, by the tools' ``mutates_state`` declarations
+      (:attr:`ToolSchema.mutates_state`, ADR-0061). Off by default; on without
+      ``tool_results``, the results are numbered and not cut.
+
+    Parts at their default are left off the dump, so a customization that sets none
+    serialises without ``evidence``. :meth:`needs` is the one mapping from parts to
+    the trial views a caller builds for them.
+    """
+
+    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]]
+    """Fields the dump leaves out while they hold their default value: every part."""
+
+    agent_policy: StrictBool = True
+    knowledge_search: StrictBool | KnowledgeSearchOptions = True
+    state_diff: StrictBool = True
+    db: StrictBool = True
+    workspace: StrictBool = True
+    tool_results: StrictBool | ToolResultsOptions = False
+    state_changing_calls: StrictBool = False
+
+    model_config = {"extra": "forbid"}
+
+    _PART_NEEDING: ClassVar[dict[EvidenceInput, EvidencePartName]] = {
+        EvidenceInput.STATE_DIFF: EvidencePartName.STATE_DIFF,
+        EvidenceInput.DB: EvidencePartName.DB,
+        EvidenceInput.WORKSPACE: EvidencePartName.WORKSPACE,
+        EvidenceInput.TOOL_EFFECTS: EvidencePartName.STATE_CHANGING_CALLS,
+    }
+
+    @classmethod
+    def part_needing(cls, evidence_input: EvidenceInput) -> EvidencePartName:
+        """The part a caller builds ``evidence_input`` for."""
+        return cls._PART_NEEDING[evidence_input]
+
+    def needs(self, evidence_input: EvidenceInput) -> bool:
+        """Whether the judge is to be handed ``evidence_input``."""
+        return self.enabled(self.part_needing(evidence_input))
+
+    def enabled(self, part: EvidencePartName) -> bool:
+        """Whether ``part`` is on."""
+        return getattr(self, part.value) is not False
+
+    def knowledge_search_options(self) -> KnowledgeSearchOptions | None:
+        """The ``knowledge_search`` options, ``None`` while the part is off."""
+        return _part_options(self.knowledge_search, KnowledgeSearchOptions)
+
+    def tool_results_options(self) -> ToolResultsOptions | None:
+        """The ``tool_results`` options, ``None`` while the part is off."""
+        return _part_options(self.tool_results, ToolResultsOptions)
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_parts_at_their_default(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        if not isinstance(self, JudgeEvidence):
+            return handler(self)
+        data = handler(self)
+        for name in self.OMITTED_AT_DEFAULT:
+            if getattr(self, name) == type(self).model_fields[name].get_default():
+                data.pop(name, None)
+        return data
+
+
+JudgeEvidence.OMITTED_AT_DEFAULT = frozenset(JudgeEvidence.model_fields)
+
+if set(JudgeEvidence.model_fields) != {part.value for part in EvidencePartName}:
+    raise TypeError(
+        f"JudgeEvidence fields {sorted(JudgeEvidence.model_fields)} are not the "
+        f"EvidencePartName values {sorted(part.value for part in EvidencePartName)}"
+    )
+
+
+def _part_options[Options: BaseModel](
+    value: bool | Options, options_type: type[Options]
+) -> Options | None:
+    if value is False:
+        return None
+    return options_type() if value is True else value
+
+
+_REMOVED_CUSTOMIZATION_KEYS: dict[str, str] = {
+    "disable_knowledge_search": (
+        "write evidence.knowledge_search: false to withhold the knowledge-search tools "
+        "(disable_knowledge_search: true), or evidence.knowledge_search: true to keep "
+        "them (disable_knowledge_search: false)"
+    ),
+    "include_agent_system_prompt": (
+        "write evidence.agent_policy: false to leave the agent's policy out of the "
+        "judge's evidence, or evidence.agent_policy: true to keep it"
+    ),
+    "judge_snippet_chars": (
+        "write evidence.knowledge_search: {snippet_chars: N}, or "
+        "evidence.knowledge_search: {snippet_chars: null} for whole documents"
+    ),
+}
+
+_REMOVED_TRI_STATE_KEYS: frozenset[str] = frozenset(
+    {"disable_knowledge_search", "include_agent_system_prompt"}
+)
+"""Removed keys whose ``null`` reads as the key's absence.
+
+A customization recorded by an engine without ``evidence`` carries both as ``null``.
+"""
+
+
+def without_unset_removed_keys(data: Mapping[str, Any]) -> dict[str, Any]:
+    """*data* without a removed tri-state key that holds ``null``."""
+    return {
+        key: value
+        for key, value in data.items()
+        if not (key in _REMOVED_TRI_STATE_KEYS and value is None)
+    }
+
+
+def _refuse_removed_customization_keys(data: Any) -> Any:
+    """Refuse a customization key that ``evidence`` replaced, naming its replacement."""
+    if not isinstance(data, Mapping):
+        return data
+    data = without_unset_removed_keys(data)
+    for key, remedy in _REMOVED_CUSTOMIZATION_KEYS.items():
+        if key in data:
+            raise ValueError(f"customization.{key} is removed; {remedy}")
+    return data
+
+
+class JudgeCustomization(BaseModel):
+    """Judge customization, sibling of ``rubric`` under ``llm_judge``.
 
     ``system_prompt`` replaces the default judge system-prompt body; the harness
     always appends the marker contract, so a custom prompt can never break
@@ -2409,21 +2650,13 @@ class JudgeCustomization(BaseModel):
     empty or whitespace-only string is rejected at load — a marker-only prompt is
     almost certainly a mistake.
 
-    Tri-state ``include_agent_system_prompt``: ``None`` (unset) and ``True`` both
-    embed the agent's policy / system prompt in the judge's opening-message
-    evidence (today's behaviour); ``False`` omits that section so a self-contained
-    rubric grades without the agent's framing. Evidence gating, distinct from
-    ``system_prompt`` (which is the judge's own wording). A task sets ``true`` or
-    ``null`` to re-include over a project ``false``.
-
-    ``judge_snippet_chars`` is how much of each hit the judge's ``search_kb`` shows:
-    the first that many characters (``200`` by default), or ``null`` for whole
-    documents — what a ``bm25`` task whose rubric reads a document's exact wording
-    needs. Not tri-state: ``null`` is a value, so a task resets a project's figure
-    by writing ``200``. Left off the dump at its default
-    (:attr:`OMITTED_AT_DEFAULT`), so a task that declares nothing serialises
-    without it and an older image, which forbids a key it does not declare,
-    accepts it.
+    ``evidence`` is what the judge is shown (:class:`JudgeEvidence`), left off the
+    dump while every part holds its default. Layered project → task → run
+    (``grader.judge``) → replay (``--grading``) by
+    :func:`~tolokaforge.core.project_loader.layer_judge_customization`, part by part.
+    A key ``evidence`` replaced is refused naming its replacement, except a
+    ``disable_knowledge_search`` or ``include_agent_system_prompt`` that holds
+    ``null``, which reads as absent.
 
     :func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns
     a customization into the
@@ -2431,15 +2664,18 @@ class JudgeCustomization(BaseModel):
     receives.
     """
 
-    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset({"judge_snippet_chars"})
+    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset({"evidence"})
     """Fields the dump leaves out while they hold their default value."""
 
-    disable_knowledge_search: bool | None = None
     system_prompt: str | None = None
-    include_agent_system_prompt: bool | None = None
-    judge_snippet_chars: int | None = Field(default=DEFAULT_JUDGE_SNIPPET_CHARS, ge=1, strict=True)
+    evidence: JudgeEvidence = Field(default_factory=JudgeEvidence)
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_keys(cls, data: Any) -> Any:
+        return _refuse_removed_customization_keys(data)
 
     @model_serializer(mode="wrap")
     @schema_from_the_fields

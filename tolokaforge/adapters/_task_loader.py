@@ -78,6 +78,7 @@ from tolokaforge.core.grading.config_validation import (
     SkipKind,
     ToolInventory,
     authored_hash_block,
+    check_read_rule_paths,
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.state_composition import (
@@ -102,14 +103,15 @@ from tolokaforge.core.models import (
     TraceChecksConfig,
     TranscriptRulesConfig,
 )
+from tolokaforge.core.mutates_state_meta import MUTATES_STATE_META_KEY
 from tolokaforge.core.project_loader import (
     construct_config,
     deep_merge,
     resolve_effective_grading_combine,
 )
 from tolokaforge.core.tool_output_truncation import validated_output_max_chars
-from tolokaforge.runner.models import ToolSchema
-from tolokaforge.tools.registry import ToolCategory
+from tolokaforge.runner.models import MutatesStateRule, ToolSchema, parse_mutates_state
+from tolokaforge.tools.registry import ToolCategory, ToolPolicy
 
 if TYPE_CHECKING:
     from tolokaforge.core.search.backend import SearchBackend
@@ -561,6 +563,9 @@ def load_task_yaml(
             the YAML at either path is not a top-level mapping.
         pydantic.ValidationError: If the merged dict fails :class:`TaskConfig`
             validation (re-raised by Pydantic).
+        ValueError: If the task file configures a ``tools.<actor>.<name>`` block
+            for a tool ``tools.<actor>.enabled`` does not list
+            (:func:`refuse_blocks_of_tools_not_enabled`).
     """
     task_path = Path(task_path)
     task_root = _detect_task_root(task_path)
@@ -586,6 +591,7 @@ def load_task_yaml(
     # which sits below `task.yaml`. Later layers win on conflict.
     domain_data = _load_domain_dict(task_path, task_data, task_root)
     task_data.pop("domain", None)
+    own_tools = task_data.get("tools")
 
     # Lift each layer's legacy ``user_simulator`` into ``actors.user`` before
     # the merge, so a legacy layer and a canonical layer both speak
@@ -635,6 +641,7 @@ def load_task_yaml(
 
     task = construct_config(TaskConfig, task_data, source=task_path)
     task._source_dir = task_root
+    refuse_blocks_of_tools_not_enabled(own_tools, task, task_path)
 
     # A contract that names nothing is refused here rather than at the first
     # trial's prompt build: by then the run has provisioned images, and the
@@ -845,7 +852,7 @@ def search_tool_schema(declaration: SearchDeclaration, backend: SearchBackend) -
     )
 
 
-TOOL_BLOCK_RESERVED_KEYS: frozenset[str] = frozenset({"output_max_chars"})
+TOOL_BLOCK_RESERVED_KEYS: frozenset[str] = frozenset({"output_max_chars", "mutates_state"})
 """Keys the harness reads from a ``tools.<actor>.<tool_name>`` block for its own
 composition, not as tool ``__init__`` kwargs.
 
@@ -853,8 +860,13 @@ The runner's builtin factory splats ``ToolSchema.tool_config`` into the tool
 class and refuses unknown keys, so a reserved key that reached the runner would
 raise ``ToolConfigurationError`` at trial registration. Stripping in
 :func:`tool_configs` keeps that seam clean; each key has its own lifter
-(:func:`tool_output_max_chars_overrides` for ``output_max_chars``) that returns
-the harness-side value."""
+(:func:`tool_output_max_chars_overrides` for ``output_max_chars``,
+:func:`tool_mutates_state_declarations` for ``mutates_state``) that returns the
+harness-side value."""
+
+ACTOR_BLOCK_KEYS: frozenset[str] = frozenset({"enabled", "mcp_server", "output_max_chars"})
+"""The keys of a ``tools.<actor>`` block that configure the block itself; every other
+key is the block of the tool it names."""
 
 
 def tool_configs(task: TaskConfig, actor: ToolActor) -> dict[str, dict]:
@@ -938,6 +950,151 @@ def tool_output_max_chars_overrides(task: TaskConfig, actor: ToolActor) -> dict[
         if cap is not None:
             overrides[tool_name] = cap
     return overrides
+
+
+def tool_mutates_state_declarations(
+    task: TaskConfig, actor: ToolActor
+) -> dict[str, bool | MutatesStateRule]:
+    """Per-tool ``mutates_state`` declared on ``tools.<actor>.<name>`` blocks.
+
+    One of three forms: ``false`` (every call reads), ``true`` (every call can
+    change state), or ``{read_when: {args: {<path>: <ValuePredicate>}}}``
+    (:class:`~tolokaforge.runner.models.MutatesStateRule`). Only enabled tools are
+    read. :func:`compose_mutates_state` lays the value over the tool author's own.
+
+    Raises:
+        ValueError: A declaration is none of the three forms, naming the key and
+            the task.
+    """
+    block = actor_tool_block(task, actor)
+    declarations: dict[str, bool | MutatesStateRule] = {}
+    for tool_name in block.get("enabled", []):
+        raw = block.get(tool_name)
+        if not isinstance(raw, dict) or "mutates_state" not in raw:
+            continue
+        where = f"tools.{actor.value}.{tool_name}.mutates_state in task {task.task_id!r}"
+        declared = parse_mutates_state(raw["mutates_state"], where=where)
+        if declared is None:
+            raise ValueError(
+                f"{where} is null; declare false, true or a read rule, or drop the key"
+            )
+        declarations[tool_name] = declared
+    return declarations
+
+
+def compose_mutates_state(
+    author: bool | MutatesStateRule | None,
+    task_declared: bool | MutatesStateRule | None,
+    *,
+    where: str,
+    task_id: str,
+) -> bool | MutatesStateRule | None:
+    """The ``mutates_state`` a tool is emitted with, from its author's and its task's.
+
+    The author is the source of truth (ADR-0061), so a task declares only where the
+    author is silent — except ``true``, which only ever tightens, and is how a task
+    whose service changes state on a call the author reads as a read says so.
+
+    Raises:
+        ValueError: The task declares anything but ``true`` over an author
+            declaration, naming the key, the task and the author's value.
+    """
+    if task_declared is None:
+        return author
+    if author is None or task_declared is True:
+        return task_declared
+    raise ValueError(
+        f"{where} in task {task_id!r} overrides the tool author's own declaration "
+        f"({_declaration_text(author)}); a task declares mutates_state only where the "
+        "author is silent, or declares true to treat every call as one that can change "
+        "state. Drop the key"
+    )
+
+
+def author_mutates_state(
+    declared: Any, *, tool_name: str, source: str
+) -> bool | MutatesStateRule | None:
+    """The author's ``mutates_state`` as a tool listing records it.
+
+    ``None`` (undeclared), a bool, or a read-rule mapping, which becomes a
+    :class:`~tolokaforge.runner.models.MutatesStateRule`. A wrong rule hides writes
+    from a reader that trusts it, so a malformed one is refused, not dropped.
+
+    Raises:
+        ValueError: Any other value, or a mapping the rule model refuses, naming the
+            tool and *source*.
+    """
+    return parse_mutates_state(declared, where=f"tool {tool_name!r} in {source}: mutates_state")
+
+
+def _declaration_text(value: bool | MutatesStateRule) -> str:
+    return str(value).lower() if isinstance(value, bool) else "a read_when rule"
+
+
+def check_mutates_state_rule_paths(
+    declared: bool | MutatesStateRule | None,
+    parameters: Mapping[str, Any] | None,
+    *,
+    where: str,
+    tool_name: str,
+    task_id: str,
+) -> None:
+    """Refuse a read rule whose ``read_when.args`` path the tool's schema rules out.
+
+    A path whose first segment the tool's schema does not declare, where the schema
+    admits no other argument, would hold on no call; one the schema merely does not
+    declare while it permits extras is logged. Nothing is checked where *parameters*
+    is ``None`` — the schema did not resolve.
+
+    Raises:
+        ValueError: A path the schema rules out, naming the key and the task.
+    """
+    if not isinstance(declared, MutatesStateRule) or parameters is None:
+        return
+    report = check_read_rule_paths(
+        f"{where}.read_when.args", tool_name, declared.read_when.args, parameters
+    )
+    for advisory in report.advisories:
+        logger.warning(
+            f"{advisory.where} in task {task_id!r}: {advisory.message}",
+            task_id=task_id,
+            tool_name=tool_name,
+        )
+    if report.errors:
+        raise ValueError(
+            f"task {task_id!r}: "
+            + "; ".join(f"{finding.where}: {finding.message}" for finding in report.errors)
+        )
+
+
+def refuse_blocks_of_tools_not_enabled(own_tools: Any, task: TaskConfig, task_path: Path) -> None:
+    """Refuse a ``tools.<actor>.<name>`` block the task file writes for a tool it does not enable.
+
+    Every reader of a tool block reads the enabled tools' alone, so such a block —
+    whatever it carries — configures nothing, and a misspelled name would load as a
+    silent no-op. *own_tools* is the file's own ``tools`` mapping, before any project
+    ``task_defaults`` layer: a project block for a tool some of its tasks do not
+    enable is inert by design. The enabled set is the task's effective one.
+
+    Raises:
+        ValueError: Naming the block, the actor and the enabled set.
+    """
+    if not isinstance(own_tools, Mapping):
+        return
+    for actor in ToolActor:
+        own_block = own_tools.get(actor.value)
+        if not isinstance(own_block, Mapping):
+            continue
+        enabled = enabled_tool_names(task, actor)
+        stray = sorted(
+            name for name in own_block if name not in ACTOR_BLOCK_KEYS and name not in enabled
+        )
+        if stray:
+            raise ValueError(
+                f"{task_path}: tools.{actor.value} configures {stray}, which "
+                f"tools.{actor.value}.enabled does not list (it lists {sorted(enabled)}), so "
+                "nothing reads those blocks. Add each tool to enabled, or delete its block"
+            )
 
 
 def resolve_tool_schemas(
@@ -1369,22 +1526,40 @@ BUILTIN_MUTATES_STATE_BY_CATEGORY: dict[ToolCategory, bool | None] = {
 """What a builtin tool's :attr:`~tolokaforge.tools.registry.ToolPolicy.category`
 declares about ``mutates_state`` (ADR-0061).
 
-The engine authors its builtin tools, so their policy category is the author's
-declaration: a ``read`` tool never changes the graded state and a ``write`` tool
-does. ``compute`` says nothing about state — a shell, a browser or an HTTP client
-can do either — so it stays undeclared. Every member of
-:class:`~tolokaforge.tools.registry.ToolCategory` has a row here, and a member
-added without one fails :func:`builtin_mutates_state` loudly rather than
-slipping onto the wire as a guess."""
+The engine authors its builtin tools, so their policy is the author's declaration:
+a ``read`` tool never changes the graded state and a ``write`` tool does.
+``compute`` says nothing about state — a shell, a browser or an HTTP client can do
+either — so it is undeclared unless the policy's own ``mutates_state`` says more.
+Every member of :class:`~tolokaforge.tools.registry.ToolCategory` has a row here,
+and a member added without one fails :func:`builtin_mutates_state` loudly rather
+than slipping onto the wire as a guess."""
 
 
-def builtin_mutates_state(category: ToolCategory) -> bool | None:
-    """The ``mutates_state`` a builtin tool of *category* declares; ``None`` is undeclared.
+def builtin_mutates_state(policy: ToolPolicy, *, tool_name: str) -> bool | MutatesStateRule | None:
+    """The ``mutates_state`` the builtin *tool_name* declares; ``None`` is undeclared.
+
+    The policy's own ``mutates_state`` where it sets one, else what its category
+    declares (:data:`BUILTIN_MUTATES_STATE_BY_CATEGORY`). A category that declares
+    a value admits only that value from the policy.
 
     Raises:
-        KeyError: *category* has no row in :data:`BUILTIN_MUTATES_STATE_BY_CATEGORY`.
+        KeyError: The category has no row in :data:`BUILTIN_MUTATES_STATE_BY_CATEGORY`.
+        ValueError: The policy's value contradicts its category, or is not a read
+            rule :class:`~tolokaforge.runner.models.MutatesStateRule` accepts,
+            naming the tool.
     """
-    return BUILTIN_MUTATES_STATE_BY_CATEGORY[category]
+    by_category = BUILTIN_MUTATES_STATE_BY_CATEGORY[policy.category]
+    if policy.mutates_state is None:
+        return by_category
+    if by_category is not None and policy.mutates_state is not by_category:
+        raise ValueError(
+            f"builtin tool {tool_name!r} is a {policy.category.value!r} tool, which declares "
+            f"mutates_state {str(by_category).lower()}, but its policy declares "
+            f"{policy.mutates_state!r}; a read rule belongs on a 'compute' tool"
+        )
+    return author_mutates_state(
+        policy.mutates_state, tool_name=tool_name, source="the builtin's ToolPolicy"
+    )
 
 
 def _builtin_tool_schemas(
@@ -1395,11 +1570,15 @@ def _builtin_tool_schemas(
     Each known name is instantiated with kwargs from ``tool_configs[name]`` and
     its ``get_schema()`` output reduced to ``{"description", "parameters"}`` so
     the LLM receives real parameter descriptions, plus the policy-declared
-    ``output_max_chars`` and ``timeout_s``. ``mutates_state`` is derived from the
-    policy's category through :func:`builtin_mutates_state` and carried only when
-    declared (builtins are never cached, so an absent key here says nothing about
-    the cache's age). A name the registry does not know, or one whose
-    construction raises, is absent from the result.
+    ``output_max_chars`` and ``timeout_s``. ``mutates_state`` comes from the policy
+    through :func:`builtin_mutates_state` and is carried only when declared
+    (builtins are never cached, so an absent key here says nothing about the
+    cache's age). A name the registry does not know, or one whose construction
+    raises, is absent from the result.
+
+    Raises:
+        ValueError: A builtin's policy declares a ``mutates_state`` that
+            :func:`builtin_mutates_state` refuses.
     """
     from tolokaforge.tools.builtin import registry
 
@@ -1409,22 +1588,22 @@ def _builtin_tool_schemas(
         if not registry.is_builtin(name):
             continue
         try:
-            cls = registry.get_class(name)
-            tool = cls(**configs.get(name, {}))
+            tool = registry.get_class(name)(**configs.get(name, {}))
             raw = tool.get_schema()
-            # get_schema() returns {"type": "function", "function": {…}}
-            func_def = raw.get("function", raw)
-            schemas[name] = {
-                "description": func_def.get("description", f"Builtin tool: {name}"),
-                "parameters": func_def.get("parameters", {"type": "object", "properties": {}}),
-                "output_max_chars": tool.policy.output_max_chars,
-                "timeout_s": tool.policy.timeout_s,
-            }
-            mutates_state = builtin_mutates_state(tool.policy.category)
-            if mutates_state is not None:
-                schemas[name]["mutates_state"] = mutates_state
         except Exception as exc:
             logger.debug("Could not load builtin schema", tool_name=name, error=str(exc))
+            continue
+        # get_schema() returns {"type": "function", "function": {…}}
+        func_def = raw.get("function", raw)
+        schemas[name] = {
+            "description": func_def.get("description", f"Builtin tool: {name}"),
+            "parameters": func_def.get("parameters", {"type": "object", "properties": {}}),
+            "output_max_chars": tool.policy.output_max_chars,
+            "timeout_s": tool.policy.timeout_s,
+        }
+        mutates_state = builtin_mutates_state(tool.policy, tool_name=name)
+        if mutates_state is not None:
+            schemas[name]["mutates_state"] = mutates_state
     return schemas
 
 
@@ -1547,6 +1726,8 @@ def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:
             ``tools/list`` errors, or the server returns no tools. A silent
             ``{}`` here reaches the LLM as parameter-less tool stubs and reads
             as an agent-reasoning bug.
+        ValueError: If a tool declares a ``mutates_state`` read rule that
+            :func:`_listed_mutates_state` refuses.
     """
     from tolokaforge.runner.tool_factory import MCPServerProcess
 
@@ -1586,28 +1767,9 @@ def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:
             "description": tool.get("description", f"Tool: {name}"),
             "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
         }
-        # ADR-0061: the server's ``readOnlyHint`` is the author's declaration; a tool
-        # carrying no hint stays undeclared (``None``) rather than defaulting either
-        # way. The key is always written, so a cache entry without it is one
-        # written before the field existed (``warn_tool_cache_predating_mutates_state``).
-        # Only a bool under an ``annotations`` mapping is a declaration: any other
-        # shape is reported and left undeclared, never read as one (a string
-        # "false" would otherwise record the tool as read-only).
-        schemas[name]["mutates_state"] = None
-        annotations = tool.get("annotations")
-        if annotations is None:
-            continue
-        read_only = annotations.get("readOnlyHint") if isinstance(annotations, Mapping) else None
-        if isinstance(read_only, bool):
-            schemas[name]["mutates_state"] = not read_only
-        elif not isinstance(annotations, Mapping) or read_only is not None:
-            logger.warning(
-                f"tools/list entry {name!r} from {mcp_server_path} carries annotations "
-                f"{annotations!r}, not a mapping with a bool readOnlyHint; "
-                "mutates_state stays undeclared for it",
-                tool_name=name,
-                server=str(mcp_server_path),
-            )
+        # The key is always written, so a cache entry without it is one written
+        # before the field existed (``warn_tool_cache_predating_mutates_state``).
+        schemas[name]["mutates_state"] = _listed_mutates_state(tool, mcp_server_path)
     if not schemas:
         raise RuntimeError(
             f"MCP server {mcp_server_path} returned no tools from tools/list "
@@ -1619,6 +1781,59 @@ def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:
         server=str(mcp_server_path),
     )
     return schemas
+
+
+def _listed_mutates_state(
+    tool: Mapping[str, Any], mcp_server_path: Path
+) -> bool | Mapping[str, Any] | None:
+    """The author's ``mutates_state`` (ADR-0061) as one ``tools/list`` entry declares it.
+
+    A bool ``readOnlyHint`` annotation declares a bool; a read rule rides in the
+    entry's ``_meta`` under :data:`~tolokaforge.core.mutates_state_meta.MUTATES_STATE_META_KEY`
+    beside a ``readOnlyHint`` of ``false`` or none, and is returned as the mapping the
+    server sent. A tool carrying neither is undeclared (``None``). Annotations of any
+    other shape beside no rule are reported and left undeclared, never read as a
+    declaration (a string ``"false"`` would otherwise record the tool as read-only).
+
+    Raises:
+        ValueError: A rule beside a ``readOnlyHint`` that is not ``false``, or a
+            rule the rule model refuses, naming the tool and the server.
+    """
+    name = tool["name"]
+    annotations = tool.get("annotations")
+    read_only = annotations.get("readOnlyHint") if isinstance(annotations, Mapping) else None
+    hint_malformed = annotations is not None and (
+        not isinstance(annotations, Mapping)
+        or not (read_only is None or isinstance(read_only, bool))
+    )
+    meta = tool.get("_meta")
+    if isinstance(meta, Mapping) and MUTATES_STATE_META_KEY in meta:
+        rule = meta[MUTATES_STATE_META_KEY]
+        if read_only is True or hint_malformed:
+            raise ValueError(
+                f"tools/list entry {name!r} from {mcp_server_path} declares a "
+                f"{MUTATES_STATE_META_KEY} read rule beside annotations {annotations!r}; a "
+                "rule says some calls change state, so its readOnlyHint is false"
+            )
+        if not isinstance(rule, Mapping):
+            raise ValueError(
+                f"tools/list entry {name!r} from {mcp_server_path} carries "
+                f"{MUTATES_STATE_META_KEY}={rule!r}; that key carries only a read rule, "
+                "and a bool is declared through readOnlyHint"
+            )
+        author_mutates_state(rule, tool_name=name, source=f"MCP server {mcp_server_path}")
+        return rule
+    if isinstance(read_only, bool):
+        return not read_only
+    if hint_malformed:
+        logger.warning(
+            f"tools/list entry {name!r} from {mcp_server_path} carries annotations "
+            f"{annotations!r}, not a mapping with a bool readOnlyHint; "
+            "mutates_state stays undeclared for it",
+            tool_name=name,
+            server=str(mcp_server_path),
+        )
+    return None
 
 
 def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_path: Path) -> None:

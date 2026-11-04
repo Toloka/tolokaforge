@@ -71,13 +71,15 @@ from __future__ import annotations
 import inspect
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+
+from .mutates_state_meta import MUTATES_STATE_META_KEY, check_read_rule_shape
 
 # ---------------------------------------------------------------------------
 # ToolError — typed business-logic error
@@ -138,11 +140,44 @@ def _tool_error_to_dict(exc: ToolError) -> dict[str, Any]:
     return result
 
 
-def _annotations(mutates_state: bool | None) -> ToolAnnotations | None:
-    """The MCP annotation declaring ``mutates_state``; none for a tool that declares nothing."""
+MutatesStateDeclaration = bool | Mapping[str, Any] | None
+"""What ``DomainToolRegistry.tool(mutates_state=...)`` takes: a bool, a read rule, or nothing."""
+
+
+def _annotations(mutates_state: MutatesStateDeclaration) -> ToolAnnotations | None:
+    """The MCP annotation declaring ``mutates_state``; none for a tool that declares nothing.
+
+    A read rule declares ``readOnlyHint=False``: some of the tool's calls change state.
+    """
     if mutates_state is None:
         return None
-    return ToolAnnotations(readOnlyHint=not mutates_state)
+    return ToolAnnotations(readOnlyHint=mutates_state is False)
+
+
+def _meta(mutates_state: MutatesStateDeclaration) -> dict[str, Any] | None:
+    """The MCP ``_meta`` carrying a read rule; none for a bool or no declaration."""
+    if not isinstance(mutates_state, Mapping):
+        return None
+    return {MUTATES_STATE_META_KEY: mutates_state}
+
+
+def _checked_mutates_state(tool_name: str, mutates_state: Any) -> MutatesStateDeclaration:
+    """*mutates_state* as the tool declares it, a read rule copied as plain JSON.
+
+    Raises:
+        ValueError: It is neither ``None``, a bool nor a well-shaped read rule,
+            naming the tool.
+    """
+    if mutates_state is None or isinstance(mutates_state, bool):
+        return mutates_state
+    try:
+        check_read_rule_shape(mutates_state)
+        return json.loads(json.dumps(mutates_state))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"tool {tool_name!r} declares mutates_state={mutates_state!r}; declare True, "
+            f"False or a read rule: {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +240,7 @@ class DomainToolRegistry:
             _tolokaforge_set_state_
         )
 
-    def tool(self, description: str, *, mutates_state: bool | None = None) -> Callable:
+    def tool(self, description: str, *, mutates_state: MutatesStateDeclaration = None) -> Callable:
         """Decorator factory — registers ``func`` in both TOOLS and FastMCP.
 
         The decorated function **must** have ``data: dict`` as its first
@@ -219,14 +254,25 @@ class DomainToolRegistry:
             Human-readable description forwarded to FastMCP and shown to the
             LLM agent as the tool description.
         mutates_state:
-            Whether a call can change the state (ADR-0061). Declared on the MCP
-            tool as the ``readOnlyHint`` annotation (``readOnlyHint = not
-            mutates_state``), which the native adapter reads back into
-            ``ToolSchema.mutates_state``, and carried as ``mutates_state`` on
-            the ``TOOLS`` entry, so an in-process consumer (golden replay
-            imports ``TOOLS``) reads the same declaration the wire carries.
-            Left ``None``, the tool carries no annotation, the entry says
-            ``None``, and the engine treats it as possibly mutating.
+            Whether a call can change the state (ADR-0061). A bool is declared on
+            the MCP tool as the ``readOnlyHint`` annotation (``readOnlyHint = not
+            mutates_state``). A read rule, ``{"read_when": {"args": {<dotted
+            argument path>: <predicate>}}}`` in the ``trace_checks`` predicate
+            vocabulary, declares which calls only read: it rides in the tool's
+            ``_meta`` under ``tolokaforge/mutates_state`` beside
+            ``readOnlyHint=False``, and its shape is checked here. The native
+            adapter reads either back into ``ToolSchema.mutates_state``. The
+            ``TOOLS`` entry carries the same value as ``mutates_state``, so an
+            in-process consumer (golden replay imports ``TOOLS``) reads the
+            declaration the wire carries. Left ``None``, the tool carries no
+            annotation, the entry says ``None``, and the engine treats it as
+            possibly mutating.
+
+        Raises
+        ------
+        ValueError
+            When decorating, if ``mutates_state`` is neither ``None``, a bool nor
+            a well-shaped read rule; the message names the tool.
 
         Example
         -------
@@ -251,6 +297,7 @@ class DomainToolRegistry:
         def decorator(func: Callable) -> Callable:
             tool_name = func.__name__
             state_getter = self._state
+            declared = _checked_mutates_state(tool_name, mutates_state)
 
             # ------------------------------------------------------------------
             # 1. Grading class
@@ -264,7 +311,7 @@ class DomainToolRegistry:
             _hints = get_type_hints(func, include_extras=True)
 
             class _ToolClass:
-                mutates_state: bool | None = None
+                mutates_state: MutatesStateDeclaration = None
 
                 @staticmethod
                 def invoke(data: dict, **kwargs: Any) -> Any:
@@ -297,7 +344,7 @@ class DomainToolRegistry:
 
             _ToolClass.__name__ = tool_name
             _ToolClass.__qualname__ = tool_name
-            _ToolClass.mutates_state = mutates_state
+            _ToolClass.mutates_state = declared
             self.TOOLS[tool_name] = _ToolClass
             sig = inspect.signature(func)
             new_params = [p for name, p in sig.parameters.items() if name != "data"]
@@ -316,9 +363,9 @@ class DomainToolRegistry:
             _mcp_fn.__signature__ = new_sig
             _mcp_fn.__annotations__ = new_annotations
 
-            self._mcp.tool(description=description, annotations=_annotations(mutates_state))(
-                _mcp_fn
-            )
+            self._mcp.tool(
+                description=description, annotations=_annotations(declared), meta=_meta(declared)
+            )(_mcp_fn)
 
             return func
 

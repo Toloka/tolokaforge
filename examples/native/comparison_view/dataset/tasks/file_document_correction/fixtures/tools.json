@@ -1,5 +1,33 @@
 [
   {
+    "name": "_tolokaforge_get_state_",
+    "description": "Internal: get state snapshot",
+    "parameters": {
+      "properties": {},
+      "title": "_tolokaforge_get_state_Arguments",
+      "type": "object"
+    },
+    "mutates_state": false
+  },
+  {
+    "name": "_tolokaforge_set_state_",
+    "description": "Internal: replace state",
+    "parameters": {
+      "properties": {
+        "state_json": {
+          "title": "State Json",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state_json"
+      ],
+      "title": "_tolokaforge_set_state_Arguments",
+      "type": "object"
+    },
+    "mutates_state": true
+  },
+  {
     "name": "find_client",
     "description": "Look a client up by id.",
     "parameters": {
@@ -15,7 +43,8 @@
       ],
       "title": "find_clientArguments",
       "type": "object"
-    }
+    },
+    "mutates_state": true
   },
   {
     "name": "lookup_document",
@@ -33,7 +62,8 @@
       ],
       "title": "lookup_documentArguments",
       "type": "object"
-    }
+    },
+    "mutates_state": true
   },
   {
     "name": "file_document",
@@ -63,7 +93,8 @@
       ],
       "title": "file_documentArguments",
       "type": "object"
-    }
+    },
+    "mutates_state": true
   },
   {
     "name": "supersede_document",
@@ -81,7 +112,8 @@
       ],
       "title": "supersede_documentArguments",
       "type": "object"
-    }
+    },
+    "mutates_state": true
   },
   {
     "name": "place_hold",
@@ -106,7 +138,8 @@
       ],
       "title": "place_holdArguments",
       "type": "object"
-    }
+    },
+    "mutates_state": true
   },
   {
     "name": "release_hold",
@@ -124,7 +157,8 @@
       ],
       "title": "release_holdArguments",
       "type": "object"
-    }
+    },
+    "mutates_state": true
   },
   {
     "name": "file_correction",
@@ -161,6 +195,7 @@
       ],
       "title": "file_correctionArguments",
       "type": "object"
-    }
+    },
+    "mutates_state": true
   }
 ]

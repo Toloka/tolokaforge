@@ -2,14 +2,14 @@
 
 Every operator a ``ValuePredicate`` may declare is one entry-point in the
 ``tolokaforge.trace_check_operators`` group. The registry is the dispatch
-table :func:`~tolokaforge.core.grading.trace_checks._operator_holds` reads
+table :func:`~tolokaforge.core.grading.argument_predicates.operator_holds` reads
 for every operator but the nullness pair: a downstream package registering
 ``equals_semver`` under that name starts scoring every trace-check config
 in the wild that writes ``equals_semver`` in a
 :class:`~tolokaforge.core.models.ValuePredicate`, with no framework PR.
 
 ``is_null`` and ``omitted`` are the exceptions. Both are special-cased in
-``_operator_holds`` ahead of dispatch because their reading turns on a
+``operator_holds`` ahead of dispatch because their reading turns on a
 module-private sentinel that separates JSON ``null`` from key-absence, so
 the seam cannot answer for them; the registered callables are stubs kept
 only to keep the frozenset and the entry-point registry in lockstep, and a
@@ -169,7 +169,7 @@ def exists(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
 
 
 def is_null_stub(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
-    """Never invoked; ``_operator_holds`` special-cases ``is_null`` ahead of dispatch.
+    """Never invoked; ``operator_holds`` special-cases ``is_null`` ahead of dispatch.
 
     The registry inventory reads its second source from the entry-point group, so
     every declared operator must resolve to a callable. Reading whether a field
@@ -177,10 +177,10 @@ def is_null_stub(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool
     an argument the trial never sent, and the sentinel that carries the
     difference is private to :mod:`tolokaforge.core.grading.trace_checks`, so the
     seam cannot answer for it — reaching this callable means the special-case
-    gate at the top of ``_operator_holds`` was bypassed.
+    gate at the top of ``operator_holds`` was bypassed.
     """
     raise NotImplementedError(
-        "is_null is short-circuited at trace_checks._operator_holds before the "
+        "is_null is short-circuited at argument_predicates.operator_holds before the "
         "entry-point dispatch. This stub keeps the registered vocabulary in "
         "lockstep with TRACE_PREDICATE_OPERATORS; if execution reached it, the "
         "gate was bypassed"
@@ -188,14 +188,14 @@ def is_null_stub(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool
 
 
 def omitted_stub(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
-    """Never invoked; ``_operator_holds`` special-cases ``omitted`` ahead of dispatch.
+    """Never invoked; ``operator_holds`` special-cases ``omitted`` ahead of dispatch.
 
     Reading whether the key was never sent turns on the same private sentinel
     ``is_null`` reads; the same registry-inventory rule applies. See
     :func:`is_null_stub`.
     """
     raise NotImplementedError(
-        "omitted is short-circuited at trace_checks._operator_holds before the "
+        "omitted is short-circuited at argument_predicates.operator_holds before the "
         "entry-point dispatch. This stub keeps the registered vocabulary in "
         "lockstep with TRACE_PREDICATE_OPERATORS; if execution reached it, the "
         "gate was bypassed"
@@ -226,7 +226,7 @@ def _date_compare(value: Any, expected: Any, compare: Callable[[datetime, dateti
 
     The bound key check is defensive: :class:`~tolokaforge.runner.models.ValuePredicate`
     already refuses an unparseable bound at load, so a value that reads as
-    ``None`` here is what the ``_operator_holds`` gate has already covered for
+    ``None`` here is what the ``operator_holds`` gate has already covered for
     every other operator. The check keeps this operator answerable in isolation
     when its bound is called from outside that gate.
     """

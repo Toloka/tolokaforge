@@ -40,7 +40,7 @@ def test_not_contains_fails_when_the_needle_is_present() -> None:
 
 
 def test_not_contains_on_none_reads_false() -> None:
-    """The gate at ``_operator_holds`` short-circuits, so the operator never sees ``None``.
+    """The gate at ``operator_holds`` short-circuits, so the operator never sees ``None``.
 
     Called directly the operator answers True (the needle really is absent from
     ``None``), which is why the gate is a dispatch invariant rather than a
@@ -49,9 +49,9 @@ def test_not_contains_on_none_reads_false() -> None:
     ``test_trace_checks_matchers.py``, which the ``_OPERATOR_ANSWERS`` row for
     ``not_contains`` widens automatically.
     """
-    from tolokaforge.core.grading.trace_checks import _operator_holds
+    from tolokaforge.core.grading.argument_predicates import operator_holds
 
-    assert _operator_holds("not_contains", None, "anything", {}) is False
+    assert operator_holds("not_contains", None, "anything", {}) is False
 
 
 def test_not_contains_is_case_sensitive() -> None:
@@ -74,9 +74,9 @@ def test_a_regex_operator_refuses_an_uncompiled_pattern(operator) -> None:
 
 
 def test_not_regex_on_none_reads_false() -> None:
-    from tolokaforge.core.grading.trace_checks import _operator_holds
+    from tolokaforge.core.grading.argument_predicates import operator_holds
 
-    assert _operator_holds("not_regex", None, "any", {}) is False
+    assert operator_holds("not_regex", None, "any", {}) is False
 
 
 def test_not_regex_on_a_non_string_value_reads_false() -> None:

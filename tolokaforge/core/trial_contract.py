@@ -33,7 +33,7 @@ __all__ = [
     "schema_filename",
 ]
 
-TRIAL_CONTRACT_VERSION = 1
+TRIAL_CONTRACT_VERSION = 2
 
 CONTRACT_MODELS: dict[str, type[BaseModel]] = {
     "trial_node_inputs": TrialNodeInputs,

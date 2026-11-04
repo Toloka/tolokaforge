@@ -196,6 +196,21 @@ class ToolPolicy(BaseModel):
     cost_weight: float = 1.0
     category: ToolCategory = ToolCategory.COMPUTE
 
+    mutates_state: bool | dict[str, Any] | None = None
+    """The builtin's own ``mutates_state`` declaration (ADR-0061), where its category is silent.
+
+    ``None`` leaves the declaration to :attr:`category` (``read`` is ``false``,
+    ``write`` is ``true``, ``compute`` says nothing). A value must agree with the
+    category — a ``read`` tool declares only ``false``, a ``write`` tool only
+    ``true`` — so it says something only for a ``compute`` tool, where a read rule
+    ``{"read_when": {"args": {<dotted path>: <predicate>}}}`` names the calls that
+    only read. Checked when the native adapter assembles the tool's schema.
+
+    A rule is the raw mapping, not a
+    :class:`~tolokaforge.runner.models.MutatesStateRule`: this module imports nothing
+    first-party, so the model that validates the rule cannot be named here.
+    """
+
     output_max_chars: int | None = None
     """Per-tool cap on the ``role=tool`` message content the loop appends.
 

@@ -36,6 +36,8 @@ from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.plugin_registry import load_judge_kind
 from tolokaforge.runner.models import (
     Criterion,
+    EvidenceInput,
+    JudgeCustomization,
     LLMJudgeConfig,
     Rubric,
 )
@@ -112,16 +114,14 @@ def _script() -> list[Any]:
     return [[("submit_report", _submit_args(refund_done=True, tone=1.0))]]
 
 
-def _run_pre_seam(config: LLMJudgeConfig) -> JudgeResult:
+def _run_pre_seam(config: LLMJudgeConfig, options: JudgeTrialOptions) -> JudgeResult:
     """Pre-seam path: :class:`LLMJudgeRubricEvaluator` (still registered
     under ``tolokaforge.rubric_evaluators`` — the group is intentionally
     kept live so this parity check can drive both paths side by side)."""
     client = ScriptedLLMClient(_script())
     evaluator = LLMJudgeRubricEvaluator(
         _ScriptedJudgeModelProvider(client),
-        disable_knowledge_search=False,
-        custom_system_prompt=None,
-        include_agent_system_prompt=True,
+        options=options,
         logger=_logger(),
     )
     return evaluator.evaluate(
@@ -138,7 +138,7 @@ def _run_pre_seam(config: LLMJudgeConfig) -> JudgeResult:
     )
 
 
-def _run_new_seam(config: LLMJudgeConfig) -> JudgeResult:
+def _run_new_seam(config: LLMJudgeConfig, options: JudgeTrialOptions) -> JudgeResult:
     """New seam: ``load_judge_kind("single_shot_rubric")()`` — the
     :class:`SingleShotRubricJudgeKind` wraps the same
     :class:`LLMJudge` construction the pre-seam path uses. A fresh
@@ -154,26 +154,46 @@ def _run_new_seam(config: LLMJudgeConfig) -> JudgeResult:
             {"role": "user", "content": "please refund me"},
             {"role": "assistant", "content": "refund processed"},
         ],
-        db_reader=substrate.db_reader(),
+        db_reader=(
+            substrate.db_reader()
+            if options.customization.evidence.needs(EvidenceInput.DB)
+            else None
+        ),
         kb_search=substrate.knowledge_search(),
         workspace_dir=substrate.filesystem_root(),
         extra_read_tools=[],
         state_diff=None,
         judge_model_config=_JUDGE_MODEL,
         judge_model_provider=_ScriptedJudgeModelProvider(client),
-        options=JudgeTrialOptions(),
+        options=options,
         kind_config=None,
         logger=_logger(),
     )
 
 
-def test_single_shot_kind_matches_rubric_evaluator_field_by_field() -> None:
+@pytest.mark.parametrize(
+    "options",
+    [
+        JudgeTrialOptions(),
+        JudgeTrialOptions(
+            customization=JudgeCustomization(
+                system_prompt="Grade the refund only.",
+                evidence={"db": False, "agent_policy": False, "tool_results": True},
+            )
+        ),
+    ],
+    ids=["default", "customized"],
+)
+def test_single_shot_kind_matches_rubric_evaluator_field_by_field(
+    options: JudgeTrialOptions,
+) -> None:
     """The two legs produce field-identical :class:`JudgeResult` values
-    on the same rubric + scripted judge, proving the seam rewire changes
-    zero observable behaviour."""
+    on the same rubric + scripted judge and options, proving the seam rewire changes
+    zero observable behaviour: the rubric evaluator reads the trial's evidence parts
+    from its context's options as the kind does."""
     config = LLMJudgeConfig(rubric=_rubric())
-    pre = _run_pre_seam(config)
-    new = _run_new_seam(config)
+    pre = _run_pre_seam(config, options)
+    new = _run_new_seam(config, options)
 
     assert pre.status is JudgeStatus.COMPLETED
     assert new.status is JudgeStatus.COMPLETED
@@ -186,10 +206,9 @@ def test_single_shot_kind_matches_rubric_evaluator_field_by_field() -> None:
     assert pre.criterion_results == new.criterion_results
     assert pre.kb_tools_offered == new.kb_tools_offered
     assert pre.kb_tools_withheld == new.kb_tools_withheld
-    assert pre.knowledge_search_disabled == new.knowledge_search_disabled
-    assert pre.custom_system_prompt == new.custom_system_prompt
-    assert pre.include_agent_system_prompt == new.include_agent_system_prompt
     assert pre.read_tools_offered == new.read_tools_offered
     assert pre.state_diff == new.state_diff
     assert pre.transcript == new.transcript
     assert pre.usage == new.usage
+    reads_db = options.customization.evidence.db
+    assert pre.read_tools_offered == (("get_db_state", "query_db") if reads_db else ())

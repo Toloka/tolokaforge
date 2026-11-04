@@ -17,6 +17,7 @@ from tests.canonical._factories import make_trajectory, make_trial_spec
 from tolokaforge.core.models import Grade, TrialStatus
 from tolokaforge.core.trial import TrialSpec
 from tolokaforge.core.trial_grader import RunnerRPCTrialGrader, TrialGrader
+from tolokaforge.runner.models import JudgeCustomization
 
 pytestmark = pytest.mark.canonical
 
@@ -115,45 +116,26 @@ def _grade_dict_from_proto(grade) -> dict:
 
 
 class TestJudgeKbGatingRoundTrip:
-    """The judge's KB gating survives proto → dict → ``Grade`` intact. This is the
-    record offline re-judging reads: ``knowledge_search_disabled`` is authoritative,
-    offered/withheld are audit detail."""
+    """The judge's KB surface survives proto → dict → ``Grade`` intact: which KB tools
+    it was offered and which its customization withheld."""
 
-    def test_disabled_gating_round_trips(self) -> None:
+    @pytest.mark.parametrize(
+        ("offered", "withheld"),
+        [([], ["search_kb", "search_policy"]), (["search_kb", "search_policy"], [])],
+        ids=["withheld", "offered"],
+    )
+    def test_gating_round_trips(self, offered: list[str], withheld: list[str]) -> None:
         from tolokaforge.core.trial_grader import _parse_grade_result
         from tolokaforge.runner import runner_pb2
 
-        report = runner_pb2.JudgeReport(
-            knowledge_search_disabled=True,
-            kb_tools_offered=[],
-            kb_tools_withheld=["search_kb", "search_policy"],
-        )
+        report = runner_pb2.JudgeReport(kb_tools_offered=offered, kb_tools_withheld=withheld)
         grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
 
         parsed = _parse_grade_result(_grade_dict_from_proto(grade))
 
         assert parsed.judge_kb_gating is not None
-        assert parsed.judge_kb_gating.knowledge_search_disabled is True
-        assert parsed.judge_kb_gating.offered == []
-        assert parsed.judge_kb_gating.withheld == ["search_kb", "search_policy"]
-
-    def test_offered_gating_round_trips_when_not_disabled(self) -> None:
-        from tolokaforge.core.trial_grader import _parse_grade_result
-        from tolokaforge.runner import runner_pb2
-
-        report = runner_pb2.JudgeReport(
-            knowledge_search_disabled=False,
-            kb_tools_offered=["search_kb", "search_policy"],
-            kb_tools_withheld=[],
-        )
-        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
-
-        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
-
-        assert parsed.judge_kb_gating is not None
-        assert parsed.judge_kb_gating.knowledge_search_disabled is False
-        assert parsed.judge_kb_gating.offered == ["search_kb", "search_policy"]
-        assert parsed.judge_kb_gating.withheld == []
+        assert parsed.judge_kb_gating.offered == offered
+        assert parsed.judge_kb_gating.withheld == withheld
 
     def test_absent_judge_report_yields_no_kb_gating(self) -> None:
         from tolokaforge.core.trial_grader import _parse_grade_result
@@ -164,120 +146,6 @@ class TestJudgeKbGatingRoundTrip:
         parsed = _parse_grade_result(_grade_dict_from_proto(grade))
 
         assert parsed.judge_kb_gating is None
-
-
-class TestJudgeCustomPromptRoundTrip:
-    """Whether the judge ran with a custom system prompt survives proto → dict →
-    ``Grade`` as a tri-state scalar: ``True``/``False`` when a judge ran, ``None``
-    when none did. The full custom text lives in ``task.yaml.grading_config``."""
-
-    def test_custom_prompt_true_round_trips(self) -> None:
-        from tolokaforge.core.trial_grader import _parse_grade_result
-        from tolokaforge.runner import runner_pb2
-
-        report = runner_pb2.JudgeReport(custom_system_prompt=True)
-        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
-
-        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
-
-        assert parsed.judge_custom_prompt is True
-
-    def test_default_prompt_round_trips_as_false(self) -> None:
-        from tolokaforge.core.trial_grader import _parse_grade_result
-        from tolokaforge.runner import runner_pb2
-
-        # A judge that ran with the default prompt: the wire carries False (proto3
-        # bool default), which must reconstruct as False, not None.
-        report = runner_pb2.JudgeReport(custom_system_prompt=False)
-        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
-
-        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
-
-        assert parsed.judge_custom_prompt is False
-
-    def test_absent_judge_report_yields_none(self) -> None:
-        from tolokaforge.core.trial_grader import _parse_grade_result
-        from tolokaforge.runner import runner_pb2
-
-        grade = runner_pb2.Grade(binary_pass=True, score=1.0)  # no judge_report
-
-        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
-
-        assert parsed.judge_custom_prompt is None
-
-
-class TestJudgeAgentPromptInclusionRoundTrip:
-    """Whether the harness embedded the agent policy in the judge's evidence
-    survives proto → dict → ``Grade`` as a tri-state scalar. Two defaults are held
-    apart deliberately: a same-version report that never set field 15 (version
-    skew) yields ``True`` on the live path, while a persisted grade mapping missing
-    the key round-trips to ``None`` through pydantic."""
-
-    def test_included_true_round_trips(self) -> None:
-        from tolokaforge.core.trial_grader import _parse_grade_result
-        from tolokaforge.runner import runner_pb2
-
-        report = runner_pb2.JudgeReport(include_agent_system_prompt=True)
-        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
-
-        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
-
-        assert parsed.judge_agent_prompt_included is True
-
-    def test_gated_false_round_trips(self) -> None:
-        from tolokaforge.core.trial_grader import _parse_grade_result
-        from tolokaforge.runner import runner_pb2
-
-        report = runner_pb2.JudgeReport(include_agent_system_prompt=False)
-        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
-
-        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
-
-        assert parsed.judge_agent_prompt_included is False
-
-    def test_absent_judge_report_yields_none(self) -> None:
-        from tolokaforge.core.trial_grader import _parse_grade_result
-        from tolokaforge.runner import runner_pb2
-
-        grade = runner_pb2.Grade(binary_pass=True, score=1.0)  # no judge_report
-
-        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
-
-        assert parsed.judge_agent_prompt_included is None
-
-    def test_field_unset_omits_dict_key_and_defaults_to_included(self) -> None:
-        """A same-version report with field 15 unset (a legacy/skewed sender): the
-        ``HasField``-gated dict write omits the key, so the parse-side default fires
-        and reconstructs ``True`` — the run graded with the policy present."""
-        from tolokaforge.core.trial_grader import _parse_grade_result
-        from tolokaforge.runner import runner_pb2
-
-        report = runner_pb2.JudgeReport(custom_system_prompt=True)  # field 15 left unset
-        assert report.HasField("include_agent_system_prompt") is False
-        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
-
-        grade_dict = _grade_dict_from_proto(grade)
-        assert "include_agent_system_prompt" not in grade_dict["judge_report"]
-
-        parsed = _parse_grade_result(grade_dict)
-
-        assert parsed.judge_agent_prompt_included is True
-
-    def test_ondisk_grade_missing_key_loads_as_none(self) -> None:
-        """A persisted ``grade.yaml`` from before this field: loaded via ``Grade``
-        pydantic validation (not the live proto path), a missing
-        ``judge_agent_prompt_included`` key defaults to ``None`` — no
-        judge-inclusion fact recorded — distinct from the live-path ``True``."""
-        grade = Grade.model_validate(
-            {
-                "binary_pass": True,
-                "score": 1.0,
-                "judge_status": "completed",
-                "judge_custom_prompt": False,
-            }
-        )
-
-        assert grade.judge_agent_prompt_included is None
 
 
 class TestJudgeInputsRoundTrip:
@@ -316,6 +184,63 @@ class TestJudgeInputsRoundTrip:
         assert parsed.judge_inputs is not None
         assert parsed.judge_inputs.state_diff_text is None
         assert parsed.judge_inputs.read_tools_offered == ["read_file"]
+
+    @pytest.mark.parametrize(
+        ("sent", "received"),
+        [
+            (
+                JudgeCustomization(
+                    evidence={"db": False, "tool_results": True}, system_prompt="Strict."
+                ).model_dump_json(),
+                JudgeCustomization(
+                    evidence={"db": False, "tool_results": True}, system_prompt="Strict."
+                ),
+            ),
+            ("", None),
+        ],
+        ids=["recorded", "runner-predating-the-record"],
+    )
+    def test_the_customization_record_round_trips(
+        self, sent: str, received: JudgeCustomization | None
+    ) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        report = runner_pb2.JudgeReport(customization_json=sent)
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_inputs is not None
+        assert parsed.judge_inputs.customization == received
+
+    def test_the_customization_record_round_trips_over_the_grader_wire(self) -> None:
+        from tolokaforge.core.models import JudgeInputs
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.grader.client import _grade_from_wire
+        from tolokaforge.grader.service import _grade_to_wire
+
+        source = Grade(
+            binary_pass=True,
+            score=1.0,
+            judge_inputs=JudgeInputs(
+                customization=JudgeCustomization(evidence={"knowledge_search": False})
+            ),
+        )
+
+        parsed = _parse_grade_result(_grade_from_wire(_grade_to_wire(source)))
+
+        assert parsed.judge_inputs == source.judge_inputs
+
+    def test_an_unreadable_customization_record_is_a_grading_failure(self) -> None:
+        from tolokaforge.core.trial_grader import GradingFailedError, _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        report = runner_pb2.JudgeReport(calls=1, customization_json='{"evidence": {"db": "vibes"}}')
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        with pytest.raises(GradingFailedError, match="customization_json payload is not readable"):
+            _parse_grade_result(_grade_dict_from_proto(grade))
 
     def test_absent_judge_report_yields_no_judge_inputs(self) -> None:
         from tolokaforge.core.trial_grader import _parse_grade_result
@@ -397,6 +322,7 @@ class TestJudgeBilledCostRoundTrip:
     ) -> None:
         """The standalone grader's own assembly (``composite_dispatch._build_grade``) keeps
         the judge's charge, so the grader wire above has something to carry."""
+        from tolokaforge.core.grading.composite import JudgeGrading
         from tolokaforge.core.grading.composite_fold import CompositeFoldResult
         from tolokaforge.core.grading.grade_components import CompositeGradeComponents
         from tolokaforge.core.grading.judge_result import JudgeResult
@@ -419,11 +345,14 @@ class TestJudgeBilledCostRoundTrip:
             components=CompositeGradeComponents(),
             custom_check_results=[],
             trace_result=TraceChecksResult(),
-            judge_result=JudgeResult(
-                status=JudgeRunStatus.COMPLETED,
-                usage=JudgeRunUsage(calls=2, cost_usd=0.004, billed_cost_usd=billed),
-                reasons="ok",
-                score=1.0,
+            judge_grading=JudgeGrading(
+                result=JudgeResult(
+                    status=JudgeRunStatus.COMPLETED,
+                    usage=JudgeRunUsage(calls=2, cost_usd=0.004, billed_cost_usd=billed),
+                    reasons="ok",
+                    score=1.0,
+                ),
+                customization=JudgeCustomization(),
             ),
             judge_status=JudgeStatus.COMPLETED,
         )

@@ -37,11 +37,11 @@ if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
     from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
     from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
+    from tolokaforge.core.grading.judge_tools import EvidenceOwnedTool
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner.models import Rubric
-    from tolokaforge.tools.registry import Tool
 
 __all__ = [
     "DEFAULT_AGGREGATOR",
@@ -79,7 +79,7 @@ class VotedRubricJudgeKind:
         db_reader: DBReader | None,
         kb_search: KnowledgeSearch | None,
         workspace_dir: Path | None,
-        extra_read_tools: list[Tool],
+        extra_read_tools: list[EvidenceOwnedTool],
         state_diff: str | None,
         judge_model_config: ModelConfig,
         judge_model_provider: JudgeModelProvider,
@@ -289,9 +289,6 @@ def _merge_sample_results(
         failed_required_ids=aggregate.failed_required_ids,
         kb_tools_offered=head.kb_tools_offered,
         kb_tools_withheld=head.kb_tools_withheld,
-        knowledge_search_disabled=head.knowledge_search_disabled,
-        custom_system_prompt=head.custom_system_prompt,
-        include_agent_system_prompt=head.include_agent_system_prompt,
         read_tools_offered=head.read_tools_offered,
         state_diff=head.state_diff,
         transcript=tuple(turn for cr in sample_results for turn in cr.transcript),

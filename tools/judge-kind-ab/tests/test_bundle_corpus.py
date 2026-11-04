@@ -125,7 +125,7 @@ def test_corpus_entry_from_bundle_state_diff_matches_live_grading_path(
     from tolokaforge.core.grading.composite import build_judge_state_diff
     from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
     from tolokaforge.core.logging import StructuredLogger
-    from tolokaforge.runner.models import TableSchema
+    from tolokaforge.runner.models import LLMJudgeConfig, TableSchema
 
     initial_state = {
         "positions": [
@@ -178,6 +178,7 @@ def test_corpus_entry_from_bundle_state_diff_matches_live_grading_path(
 
     expected = build_judge_state_diff(
         trial_id="trial-99",
+        config=LLMJudgeConfig.model_validate(grading_config["llm_judge"]),
         substrate=InProcessGradingSubstrate(
             db_reader=MagicMock(),
             knowledge_search=None,
@@ -201,6 +202,51 @@ def test_corpus_entry_from_bundle_state_diff_matches_live_grading_path(
     assert entry.state_diff is not None
     assert "last_synced_at" not in entry.state_diff
     assert "positions: 1 modified" in entry.state_diff
+
+
+def test_a_bundle_whose_judge_leaves_out_the_diff_builds_none_and_reads_the_agent_tools(
+    tmp_path: Path,
+) -> None:
+    """With ``evidence.state_diff`` off the entry carries no diff however much the
+    state changed, and with ``state_changing_calls`` on its options read the bundle's
+    agent tools' ``mutates_state`` declarations."""
+    out_dir = tmp_path / "bundle"
+    serialize_grade_bundle(
+        out_dir,
+        trial_id="trial-7",
+        initial_state={"reservations": [{"id": 1, "seat": "12A"}]},
+        final_state={"reservations": [{"id": 1, "seat": "14C"}]},
+        final_state_stable={"reservations": [{"id": 1, "seat": "14C"}]},
+        filesystem_root=tmp_path / "workspace",
+        checks=None,
+        kb=None,
+        trajectory=_TRAJECTORY,
+        grading_config={
+            "llm_judge": {
+                "rubric": _RUBRIC,
+                "customization": {"evidence": {"state_diff": False, "state_changing_calls": True}},
+            }
+        },
+        task_description={
+            **_TASK_DESCRIPTION,
+            "agent_tools": [
+                {
+                    "name": "get_seat",
+                    "description": "Read a seat.",
+                    "parameters": {"type": "object"},
+                    "mutates_state": False,
+                },
+                {"name": "move_seat", "description": "Move.", "parameters": {"type": "object"}},
+            ],
+        },
+    )
+
+    entry = corpus_entry_from_bundle(out_dir)
+
+    assert entry.state_diff is None
+    assert entry.options.customization.evidence.state_changing_calls is True
+    assert entry.options.tool_effects.can_change_state("get_seat", "{}") is False
+    assert entry.options.tool_effects.can_change_state("move_seat", "{}") is True
 
 
 def test_corpus_entry_from_bundle_reports_no_state_diff_with_empty_initial_state(

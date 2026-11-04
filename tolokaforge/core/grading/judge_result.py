@@ -89,22 +89,9 @@ class JudgeResult:
     # statically know a rubric needs KB — just an observability fact.
     kb_tools_offered: tuple[str, ...] = ()
     # KB-tagged tools the agent had this trial that the judge was constructed to
-    # withhold (``disable_knowledge_search``). Empty when nothing was gated — either
-    # the flag was off or the agent had no KB. ``knowledge_search_disabled`` records
-    # the construction flag itself, so a disabled judge over a KB-less trial reads
-    # ``knowledge_search_disabled=True`` with an empty ``kb_tools_withheld``.
+    # withhold (``customization.evidence.knowledge_search: false``). Empty when
+    # nothing was gated — either the part was on or the agent had no KB.
     kb_tools_withheld: tuple[str, ...] = ()
-    knowledge_search_disabled: bool = False
-    # Whether the judge ran with a custom system-prompt body (the default marker
-    # contract is always appended regardless). The full custom text is recorded in
-    # the bundle's ``task.yaml`` grading config, not here — this is the honest bool.
-    custom_system_prompt: bool = False
-    # Whether the harness was configured to embed the agent's policy / system
-    # prompt in the judge's opening-message evidence. Records the construction
-    # setting, not whether a block physically appeared — a trial with an empty
-    # agent prompt still reads ``True`` when the setting is default/on. Default
-    # ``True``: the harness includes the agent policy unless gated off.
-    include_agent_system_prompt: bool = True
     # Non-KB read-only tools the judge was offered this trial: ``get_db_state`` /
     # ``query_db`` (a DB reader was supplied), ``read_file`` (a workspace existed).
     # The KB surface is ``kb_tools_offered`` / ``kb_tools_withheld``. Recorded so an

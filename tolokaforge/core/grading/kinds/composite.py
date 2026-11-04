@@ -451,6 +451,7 @@ class CompositeGraderKind:
             judge_kind = load_judge_kind(task_config.llm_judge.judge_kind)()
             state_diff_text = composite_mod.build_judge_state_diff(
                 trial_id=trial_id,
+                config=task_config.llm_judge,
                 substrate=substrate,
                 initial_state_schemas=initial_state_schemas,
                 id_fields=id_fields,
@@ -468,8 +469,9 @@ class CompositeGraderKind:
                 judge_model_config=judge_model_config,
                 extra_read_tools=[],
                 state_diff=state_diff_text,
+                agent_tools=task_description.agent_tools,
                 logger=logger,
-            )
+            ).result
             if judge_result.status is JudgeRunStatus.ERRORED:
                 judge_status = judge_status_cls.ERRORED
             else:

@@ -3,12 +3,15 @@
 Every deployment shape's LLM-judge scoring goes through
 :func:`grade_llm_judge`. :func:`build_judge_state_diff` sits alongside as
 the runner-resolved passthrough helper the runner + grader wrappers call
-BEFORE :func:`grade_llm_judge` to prepare the ``state_diff`` kwarg.
+BEFORE :func:`grade_llm_judge` to prepare the ``state_diff`` kwarg; it builds none
+unless the trial's judge evidence needs one
+(:meth:`~tolokaforge.runner.models.JudgeEvidence.needs`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge.core.grading.judge_kinds.options import resolve_judge_trial_options
@@ -16,6 +19,7 @@ from tolokaforge.core.grading.judge_result import JudgeResult
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.transcript_wire import split_leading_system_message
+from tolokaforge.runner.models import EvidenceInput, JudgeCustomization
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge_kinds import JudgeKind
@@ -24,7 +28,19 @@ if TYPE_CHECKING:
     from tolokaforge.core.grading.substrate import GradingSubstrate
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import ModelConfig
-    from tolokaforge.runner.models import LLMJudgeConfig
+    from tolokaforge.runner.models import LLMJudgeConfig, ToolSchema
+
+
+@dataclass(frozen=True)
+class JudgeGrading:
+    """A judge kind's verdict on one trial, with the customization it graded under.
+
+    ``customization`` is the effective value the options were resolved from, which a
+    caller records as ``judge_inputs.customization`` so a replay layers over it.
+    """
+
+    result: JudgeResult
+    customization: JudgeCustomization
 
 
 def grade_llm_judge(
@@ -39,8 +55,9 @@ def grade_llm_judge(
     judge_model_config: ModelConfig,
     extra_read_tools: list[DelegatingReadTool],
     state_diff: str | None,
+    agent_tools: Sequence[ToolSchema],
     logger: StructuredLogger,
-) -> JudgeResult:
+) -> JudgeGrading:
     """Run the read-only rubric judge against ``substrate`` and return its verdict.
 
     Deconstructs the substrate reads into the per-trial evidence kwargs
@@ -64,6 +81,13 @@ def grade_llm_judge(
     reaches the kind as one :class:`JudgeTrialOptions`, resolved here from
     ``config.customization`` (:func:`resolve_judge_trial_options`), so every
     caller of this function grades a task under the same options.
+    ``agent_tools`` are the trial's agent tool schemas, whose ``mutates_state``
+    declarations the ``state_changing_calls`` part reads.
+
+    The judge is handed the substrate's DB reader only while its evidence
+    ``needs(DB)`` and the workspace only while it ``needs(WORKSPACE)``;
+    :func:`build_judge_state_diff` builds the ``state_diff`` only while it
+    ``needs(STATE_DIFF)``.
 
     Fail-loud contract: any judge malfunction — malformed
     ``submit_report`` past retries, budget/turn exhaustion, or a
@@ -82,26 +106,32 @@ def grade_llm_judge(
     the loop thread.
     """
     agent_system_prompt, transcript = split_leading_system_message(list(llm_messages))
-    return judge_kind.evaluate(
+    options = resolve_judge_trial_options(config.customization, agent_tools=agent_tools)
+    evidence = options.customization.evidence
+    result = judge_kind.evaluate(
         rubric=config.rubric,
         agent_system_prompt=agent_system_prompt,
         transcript=transcript,
-        db_reader=substrate.db_reader(),
+        db_reader=substrate.db_reader() if evidence.needs(EvidenceInput.DB) else None,
         kb_search=substrate.knowledge_search(),
-        workspace_dir=substrate.filesystem_root(),
+        workspace_dir=(
+            substrate.filesystem_root() if evidence.needs(EvidenceInput.WORKSPACE) else None
+        ),
         extra_read_tools=list(extra_read_tools),
         state_diff=state_diff,
         judge_model_config=judge_model_config,
         judge_model_provider=judge_model_provider,
-        options=resolve_judge_trial_options(config.customization),
+        options=options,
         kind_config=kind_config,
         logger=logger,
     )
+    return JudgeGrading(result=result, customization=options.customization)
 
 
 def build_judge_state_diff(
     *,
     trial_id: str,
+    config: LLMJudgeConfig,
     substrate: GradingSubstrate,
     initial_state_schemas: list[Any],
     id_fields: dict[str, str | list[str]],
@@ -109,6 +139,9 @@ def build_judge_state_diff(
     logger: StructuredLogger,
 ) -> str | None:
     """Render the ``initial → final`` DB state diff for the judge, or ``None``.
+
+    ``None`` without reading the state while the judge's evidence does not
+    ``needs(STATE_DIFF)``.
 
     ``None`` is the diff-first default declining itself when there is nothing to
     diff against: an empty ``initial_state`` — the shape non-DB tasks carry, and
@@ -129,6 +162,9 @@ def build_judge_state_diff(
     by this call site are preserved. The judge's own fail-loud contract still
     governs grading.
     """
+    customization = config.customization or JudgeCustomization()
+    if not customization.evidence.needs(EvidenceInput.STATE_DIFF):
+        return None
     initial_tables = substrate.initial_state()
     if not initial_tables:
         return None

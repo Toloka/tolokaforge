@@ -3,9 +3,9 @@
 Locks the two invariants of the entry-point rewrite in
 ``tolokaforge/core/grading/trace_checks/``:
 
-* **Site A — ``_operator_holds`` reads the loader.** Swapping the ``equals``
+* **Site A — ``operator_holds`` reads the loader.** Swapping the ``equals``
   entry-point for a callable that returns the opposite boolean flips
-  ``_operator_holds("equals", ...)``. Any hard-coded fallback path — a
+  ``operator_holds("equals", ...)``. Any hard-coded fallback path — a
   module-level ``_OPERATORS`` dict, an ``if name == "equals"`` shortcut —
   would let the shipped boolean survive the swap; this test would fail.
 
@@ -24,7 +24,8 @@ from typing import Any
 
 import pytest
 
-from tolokaforge.core.grading.trace_checks import _binding_operator_names, _operator_holds
+from tolokaforge.core.grading.argument_predicates import operator_holds
+from tolokaforge.core.grading.trace_checks import _binding_operator_names
 from tolokaforge.core.plugin_registry import (
     TRACE_CHECK_OPERATORS_GROUP,
     _clear_discovery_cache,
@@ -88,7 +89,7 @@ def _always_true(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool
     return True
 
 
-def test_operator_holds_reads_the_registered_equals_entry(
+def testoperator_holds_reads_the_registered_equals_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Site A — the loader path IS the dispatch path.
@@ -98,16 +99,16 @@ def test_operator_holds_reads_the_registered_equals_entry(
     the shipped answer survive the swap.
     """
     try:
-        assert _operator_holds("equals", "PAY-1", "PAY-1", {}) is True
+        assert operator_holds("equals", "PAY-1", "PAY-1", {}) is True
 
         _inject(monkeypatch, replace={"equals": _always_false})
         assert load_trace_check_operator("equals") is _always_false
-        assert _operator_holds("equals", "PAY-1", "PAY-1", {}) is False
+        assert operator_holds("equals", "PAY-1", "PAY-1", {}) is False
     finally:
         _clear_discovery_cache()
 
 
-def test_operator_holds_reads_the_registered_equals_binding_entry(
+def testoperator_holds_reads_the_registered_equals_binding_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Site A — the binding branch dispatches through the same loader path.
@@ -116,10 +117,10 @@ def test_operator_holds_reads_the_registered_equals_binding_entry(
     binding environment that would otherwise fail equality.
     """
     try:
-        assert _operator_holds("equals_binding", "PAY-2", "case", {"case": "PAY-1"}) is False
+        assert operator_holds("equals_binding", "PAY-2", "case", {"case": "PAY-1"}) is False
 
         _inject(monkeypatch, replace={"equals_binding": _always_true})
-        assert _operator_holds("equals_binding", "PAY-2", "case", {"case": "PAY-1"}) is True
+        assert operator_holds("equals_binding", "PAY-2", "case", {"case": "PAY-1"}) is True
     finally:
         _clear_discovery_cache()
 

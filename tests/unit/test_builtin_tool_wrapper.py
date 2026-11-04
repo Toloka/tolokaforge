@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -13,11 +14,32 @@ from tolokaforge.adapters._task_loader import (
     _builtin_tool_schemas,
     builtin_mutates_state,
 )
-from tolokaforge.tools.registry import ToolCategory
+from tolokaforge.core.tool_effects import ToolEffects
+from tolokaforge.runner.models import MutatesStateRule, ToolSchema
+from tolokaforge.tools.builtin import registry as builtin_registry
+from tolokaforge.tools.builtin.http_request import safe_methods_read
+from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
 # ---------------------------------------------------------------------------
 # _builtin_tool_schemas helper
 # ---------------------------------------------------------------------------
+
+
+_READ_RULE = {"read_when": {"args": {"command": {"regex": "^ls"}}}}
+
+
+def _stub_tool_class(policy: ToolPolicy) -> type[Tool]:
+    class _Stub(Tool):
+        def __init__(self) -> None:
+            super().__init__(name="stub", description="stub", policy=policy)
+
+        def get_schema(self) -> dict:
+            return {"type": "function", "function": {"name": "stub", "parameters": {}}}
+
+        def execute(self, **kwargs: object) -> ToolResult:
+            raise NotImplementedError
+
+    return _Stub
 
 
 class TestBuiltinToolSchemas:
@@ -93,9 +115,86 @@ class TestBuiltinToolSchemas:
     def test_every_category_has_a_deliberate_mutates_state_row(self):
         """A category added to the enum must be mapped on purpose, not guessed."""
         assert set(BUILTIN_MUTATES_STATE_BY_CATEGORY) == set(ToolCategory)
-        assert builtin_mutates_state(ToolCategory.READ) is False
-        assert builtin_mutates_state(ToolCategory.WRITE) is True
-        assert builtin_mutates_state(ToolCategory.COMPUTE) is None
+        assert builtin_mutates_state(ToolPolicy(category=ToolCategory.READ), tool_name="t") is False
+        assert builtin_mutates_state(ToolPolicy(category=ToolCategory.WRITE), tool_name="t") is True
+        assert (
+            builtin_mutates_state(ToolPolicy(category=ToolCategory.COMPUTE), tool_name="t") is None
+        )
+
+    @pytest.mark.unit
+    def test_http_request_declares_its_safe_methods_as_reads(self):
+        """RFC 9110's safe methods read; every other method, and a method spelled in
+        another case, can change state."""
+        declared = _builtin_tool_schemas(["http_request"])["http_request"]["mutates_state"]
+
+        assert declared == MutatesStateRule.model_validate(safe_methods_read())
+        effects = ToolEffects.from_schemas(
+            [ToolSchema(name="http_request", description="", parameters={}, mutates_state=declared)]
+        )
+        reads = {
+            method: not effects.can_change_state("http_request", json.dumps({"method": method}))
+            for method in ("GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE", "get")
+        }
+        assert reads == {
+            "GET": True,
+            "HEAD": True,
+            "OPTIONS": True,
+            "POST": False,
+            "PUT": False,
+            "PATCH": False,
+            "DELETE": False,
+            "get": False,
+        }
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("category", "declared", "emitted"),
+        [
+            (ToolCategory.READ, False, False),
+            (ToolCategory.WRITE, True, True),
+            (ToolCategory.COMPUTE, False, False),
+            (ToolCategory.COMPUTE, True, True),
+            (ToolCategory.COMPUTE, _READ_RULE, MutatesStateRule.model_validate(_READ_RULE)),
+        ],
+        ids=["read-false", "write-true", "compute-false", "compute-true", "compute-rule"],
+    )
+    def test_a_policy_declaration_the_category_admits_is_the_declaration(
+        self, category: ToolCategory, declared: bool | dict, emitted: object
+    ):
+        policy = ToolPolicy(category=category, mutates_state=declared)
+
+        assert builtin_mutates_state(policy, tool_name="t") == emitted
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("category", "declared"),
+        [
+            (ToolCategory.READ, True),
+            (ToolCategory.READ, _READ_RULE),
+            (ToolCategory.WRITE, False),
+            (ToolCategory.WRITE, _READ_RULE),
+        ],
+        ids=["read-true", "read-rule", "write-false", "write-rule"],
+    )
+    def test_a_policy_declaration_contradicting_its_category_fails_the_schema(
+        self, monkeypatch: pytest.MonkeyPatch, category: ToolCategory, declared: bool | dict
+    ):
+        """Raised out of schema assembly, not swallowed as an unloadable builtin."""
+        policy = ToolPolicy(category=category, mutates_state=declared)
+        monkeypatch.setattr(builtin_registry, "is_builtin", lambda name: name == "stub")
+        monkeypatch.setattr(builtin_registry, "get_class", lambda name: _stub_tool_class(policy))
+
+        with pytest.raises(ValueError, match=r"builtin tool 'stub' is a '\w+' tool, which"):
+            _builtin_tool_schemas(["stub"])
+
+    @pytest.mark.unit
+    def test_a_policy_rule_the_rule_model_refuses_fails_the_schema(self):
+        policy = ToolPolicy(
+            mutates_state={"read_when": {"args": {"method": {"equals_binding": "m"}}}}
+        )
+
+        with pytest.raises(ValueError, match="tool 'stub' in the builtin's ToolPolicy"):
+            builtin_mutates_state(policy, tool_name="stub")
 
 
 # ---------------------------------------------------------------------------

@@ -246,30 +246,6 @@
           "default": null,
           "title": "Custom Checks Details"
         },
-        "judge_agent_prompt_included": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Judge Agent Prompt Included"
-        },
-        "judge_custom_prompt": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Judge Custom Prompt"
-        },
         "judge_inputs": {
           "anyOf": [
             {
@@ -514,10 +490,101 @@
       "title": "GradingStateSnapshots",
       "type": "object"
     },
+    "JudgeCustomization": {
+      "additionalProperties": false,
+      "description": "Judge customization, sibling of ``rubric`` under ``llm_judge``.\n\n``system_prompt`` replaces the default judge system-prompt body; the harness\nalways appends the marker contract, so a custom prompt can never break\n``submit_report`` validation. ``None`` (unset) keeps the default prompt; a task\nsets ``null`` to reset a project-level custom prompt back to the default. An\nempty or whitespace-only string is rejected at load \u2014 a marker-only prompt is\nalmost certainly a mistake.\n\n``evidence`` is what the judge is shown (:class:`JudgeEvidence`), left off the\ndump while every part holds its default. Layered project \u2192 task \u2192 run\n(``grader.judge``) \u2192 replay (``--grading``) by\n:func:`~tolokaforge.core.project_loader.layer_judge_customization`, part by part.\nA key ``evidence`` replaced is refused naming its replacement, except a\n``disable_knowledge_search`` or ``include_agent_system_prompt`` that holds\n``null``, which reads as absent.\n\n:func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns\na customization into the\n:class:`~tolokaforge.core.grading.judge_kinds.JudgeTrialOptions` a judge kind\nreceives.",
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/JudgeEvidence"
+        },
+        "system_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System Prompt"
+        }
+      },
+      "title": "JudgeCustomization",
+      "type": "object"
+    },
+    "JudgeEvidence": {
+      "additionalProperties": false,
+      "description": "What the rubric judge is shown, as named parts (``customization.evidence``).\n\nEvery part reads ``false`` (off), ``true`` (on, default options) or a mapping (on,\nwith those options). The defaults are the judge over the final state:\n\n* ``agent_policy`` \u2014 the agent's policy / system prompt in the opening message.\n* ``knowledge_search`` \u2014 the knowledge-search tools the agent had (``search_kb``,\n  a ``search_policy`` passthrough); options :class:`KnowledgeSearchOptions`.\n* ``state_diff`` \u2014 the ``initial \u2192 final`` diff of the database state.\n* ``db`` \u2014 ``get_db_state`` / ``query_db`` over the final database state.\n* ``workspace`` \u2014 ``read_file`` over the agent's workspace.\n* ``tool_results`` \u2014 every tool result numbered ``[call N]`` and cut, with\n  ``show_call`` returning it in full; options :class:`ToolResultsOptions`. Off by\n  default.\n* ``state_changing_calls`` \u2014 a block listing the agent's calls that can change\n  state, by the tools' ``mutates_state`` declarations\n  (:attr:`ToolSchema.mutates_state`, ADR-0061). Off by default; on without\n  ``tool_results``, the results are numbered and not cut.\n\nParts at their default are left off the dump, so a customization that sets none\nserialises without ``evidence``. :meth:`needs` is the one mapping from parts to\nthe trial views a caller builds for them.",
+      "properties": {
+        "agent_policy": {
+          "default": true,
+          "title": "Agent Policy",
+          "type": "boolean"
+        },
+        "db": {
+          "default": true,
+          "title": "Db",
+          "type": "boolean"
+        },
+        "knowledge_search": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/KnowledgeSearchOptions"
+            }
+          ],
+          "default": true,
+          "title": "Knowledge Search"
+        },
+        "state_changing_calls": {
+          "default": false,
+          "title": "State Changing Calls",
+          "type": "boolean"
+        },
+        "state_diff": {
+          "default": true,
+          "title": "State Diff",
+          "type": "boolean"
+        },
+        "tool_results": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/ToolResultsOptions"
+            }
+          ],
+          "default": false,
+          "title": "Tool Results"
+        },
+        "workspace": {
+          "default": true,
+          "title": "Workspace",
+          "type": "boolean"
+        }
+      },
+      "title": "JudgeEvidence",
+      "type": "object"
+    },
     "JudgeInputs": {
       "additionalProperties": false,
-      "description": "The judge's non-derivable ``LLMJudge.run()`` inputs, recorded for offline replay.\n\nThe transcript, agent policy, rubric, and judge model are already structured in\nsibling artifacts (``trajectory.yaml``, ``prompts.yaml``, ``task.yaml``); this\nrecords only what a replay cannot otherwise reconstruct: the exact\n``state_diff`` string the judge saw (``None`` when no diff was built) and its\nnon-KB read-tool surface (``get_db_state`` / ``query_db`` / ``read_file`` \u2014 the\nKB surface lives in :class:`JudgeKbGating`). Written to a sidecar\n``judge_inputs.yaml``, never inlined in ``grade.yaml`` (the diff can be large).\nSee docs/OUTPUT_FORMAT.md.",
+      "description": "The judge's non-derivable ``LLMJudge.run()`` inputs, recorded for offline replay.\n\nThe transcript, agent policy, rubric, and judge model are already structured in\nsibling artifacts (``trajectory.yaml``, ``prompts.yaml``, ``task.yaml``); this\nrecords only what a replay cannot otherwise reconstruct: the exact\n``state_diff`` string the judge saw (``None`` when no diff was built), its\nnon-KB read-tool surface (``get_db_state`` / ``query_db`` / ``read_file`` \u2014 the\nKB surface lives in :class:`JudgeKbGating`), and the effective\n``customization`` the judge graded under, after the project, task and run\nlayers (``None`` only from a sender that predates the record). Written to a\nsidecar ``judge_inputs.yaml``, never inlined in ``grade.yaml`` (the diff can be\nlarge). See docs/OUTPUT_FORMAT.md.",
       "properties": {
+        "customization": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JudgeCustomization"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "read_tools_offered": {
           "items": {
             "type": "string"
@@ -543,12 +610,8 @@
     },
     "JudgeKbGating": {
       "additionalProperties": false,
-      "description": "The rubric judge's knowledge-search gating for this trial (host-side model).\n\nKept distinct from :class:`JudgeUsage` (which stays strictly token/cost\naccounting): this is the audit + replay record of *which* KB tools the judge\nwas offered and which config withheld. ``knowledge_search_disabled`` is the\nauthoritative replay signal \u2014 ``True`` means\n``grading.llm_judge.customization.disable_knowledge_search`` withheld KB,\nregardless of whether the agent had a KB tool this trial. ``offered`` /\n``withheld`` are supporting audit detail; an empty ``withheld`` on a disabled\njudge means the agent had no KB tool to gate.",
+      "description": "The rubric judge's knowledge-search surface for this trial (host-side model).\n\nKept distinct from :class:`JudgeUsage` (which stays strictly token/cost\naccounting): this is the audit + replay record of *which* KB tools the judge\nwas offered and which the customization withheld. An empty ``withheld`` on a\njudge whose customization disabled knowledge search means the agent had no KB\ntool to gate; the setting itself is ``judge_inputs.customization``.",
       "properties": {
-        "knowledge_search_disabled": {
-          "title": "Knowledge Search Disabled",
-          "type": "boolean"
-        },
         "offered": {
           "items": {
             "type": "string"
@@ -565,7 +628,6 @@
         }
       },
       "required": [
-        "knowledge_search_disabled",
         "offered",
         "withheld"
       ],
@@ -635,6 +697,27 @@
         }
       },
       "title": "JudgeUsage",
+      "type": "object"
+    },
+    "KnowledgeSearchOptions": {
+      "additionalProperties": false,
+      "description": "``evidence.knowledge_search`` options.\n\n``snippet_chars`` is how much of each hit the judge's ``search_kb`` shows: the\nfirst that many characters, or ``null`` for whole documents.",
+      "properties": {
+        "snippet_chars": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 200,
+          "title": "Snippet Chars"
+        }
+      },
+      "title": "KnowledgeSearchOptions",
       "type": "object"
     },
     "Message": {
@@ -1672,6 +1755,20 @@
       ],
       "title": "ToolExecutorIdentity",
       "type": "string"
+    },
+    "ToolResultsOptions": {
+      "additionalProperties": false,
+      "description": "``evidence.tool_results`` options.\n\n``max_chars`` is how much of each tool result the transcript shows; ``show_call``\nreturns the rest.",
+      "properties": {
+        "max_chars": {
+          "default": 2000,
+          "minimum": 1,
+          "title": "Max Chars",
+          "type": "integer"
+        }
+      },
+      "title": "ToolResultsOptions",
+      "type": "object"
     },
     "ToolUsage": {
       "description": "Tool usage statistics",

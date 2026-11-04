@@ -30,9 +30,6 @@ __all__ = [
 CONSTRUCTION_FIELDS: tuple[str, ...] = (
     "kb_tools_offered",
     "kb_tools_withheld",
-    "knowledge_search_disabled",
-    "custom_system_prompt",
-    "include_agent_system_prompt",
     "read_tools_offered",
     "state_diff",
 )

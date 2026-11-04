@@ -25,7 +25,9 @@ examples/native/native_shared_domain/
         system_prompt.md          # agent instructions (shared across cases)
         tools/
           __init__.py
-          notes.py                # add_note, list_notes
+          notes.py                # add_note, list_notes, each declaring mutates_state
+      fixtures/
+        tools.json                # tool schemas cached from mcp_server.py's tools/list
       testcases/
         add_first_note/
           task.yaml               # domain: ../../_shared/domain.yaml
