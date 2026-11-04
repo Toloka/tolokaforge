@@ -99,11 +99,17 @@ GRADED_REASONS = frozenset(
 )
 
 # The reasons that answer a trial with no grade at all. Each one means no verdict
-# can be computed: the agent never got its turn — the provider refused, the call
-# never came back, the environment never came up — or the runner that would
-# compute the verdict is the one that lost the trial. All but ``trial_lost``
-# excuse the trial from the denominator as well, which is why "no grade" and
-# "excluded" are two questions here rather than one.
+# can be computed: the agent never got its turn — the call never came back, the
+# environment never came up, every request was refused before the model saw it —
+# or the runner that would compute the verdict is the one that lost the trial.
+# All but ``trial_lost`` excuse the trial from the denominator as well, which is
+# why "no grade" and "excluded" are two questions here rather than one.
+#
+# ``provider_content_filter`` is deliberately in neither set. It reaches neither
+# ``GradeTrial`` (there is no action in the transcript to score) nor the no-grade
+# answer (the provider *did* answer — it declined — so the agent had its turn),
+# so it is answered the way ``stuck_detected`` and ``context_window_exceeded``
+# are: a synthesised failing grade, which keeps the trial in the denominator.
 UNGRADED_REASONS = frozenset(
     {
         TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS,
@@ -407,6 +413,14 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
         _run_trial(RuntimeError("OpenAI returned 500")),
         _run_trial(RuntimeError("something the classifier cannot name")),
         _run_trial(GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1))),
+        _run_trial(
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1),
+                finish_reason="content_filter",
+            )
+        ),
         _run_trial(
             GenerationResult(
                 text="",

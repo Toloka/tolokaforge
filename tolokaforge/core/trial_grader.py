@@ -25,7 +25,10 @@ The conductor's job (per ``docs/CLOUD_RUNTIME_ARCHITECTURE.md`` §6.3) is to
      recovery was possible; the transcript is truncated by definition, so
      dispatching to the runner would score a mid-trial cutoff against the
      golden.
-  5. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
+  5. ``TerminationReason.PROVIDER_CONTENT_FILTER`` — auto-fail. The provider's
+     safety classifier declined the request, so there is no action in the
+     transcript to grade.
+  6. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
      judge components against the golden state and returns a raw dict that
      is parsed into :class:`Grade`. A grading run that could not produce a
      verdict raises :class:`GradingFailedError`; the verdict is the runner's
@@ -36,6 +39,14 @@ The conductor's job (per ``docs/CLOUD_RUNTIME_ARCHITECTURE.md`` §6.3) is to
   tool calls after retries is a transport-side failure the agent never got
   to act on, so the trial leaves no grade and drops out of the measured
   denominator alongside ``API_TIMEOUT`` / ``PROVISION_ERROR`` / ``RATE_LIMIT``.
+
+  ``TerminationReason.PROVIDER_CONTENT_FILTER`` deliberately does *not* reach
+  case 1. The two shapes are identical on the wire — no text, no tool calls —
+  but their meanings are opposites: an empty completion is the provider failing
+  to answer, while a refusal *is* the answer. The agent was given its turn and
+  what came back was unusable, which is a measured non-pass. Routing it to
+  case 1 instead would drop the trial out of every denominator, which flatters
+  exactly the models whose provider refuses most often.
 
 The Protocol is deliberately narrow. A future :class:`TrialGrader`
 implementation may live inside the runner sandbox (per §6.4), speak to a
@@ -305,6 +316,21 @@ class RunnerRPCTrialGrader:
                 components=GradeComponents(),
                 reasons="Wire history exceeded the provider's max input tokens and no summarize recovery was possible",
                 synthesized_by_termination_reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+            )
+
+        if trajectory.termination_reason == TerminationReason.PROVIDER_CONTENT_FILTER:
+            self.logger.info(
+                "Provider declined the request - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Provider's safety classifier declined the request; the agent produced no usable action",
+                synthesized_by_termination_reason=TerminationReason.PROVIDER_CONTENT_FILTER,
             )
 
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
@@ -751,6 +777,21 @@ class JudgeBackedTrialGrader:
                 synthesized_by_termination_reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
             )
 
+        if trajectory.termination_reason == TerminationReason.PROVIDER_CONTENT_FILTER:
+            self.logger.info(
+                "Provider declined the request - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Provider's safety classifier declined the request; the agent produced no usable action",
+                synthesized_by_termination_reason=TerminationReason.PROVIDER_CONTENT_FILTER,
+            )
+
         grade = self.judge_fn(spec, trajectory, agent_system_prompt)
         if grade is None:
             self.logger.info(
@@ -887,6 +928,21 @@ class GraderRPCTrialGrader:
                 components=GradeComponents(),
                 reasons="Wire history exceeded the provider's max input tokens and no summarize recovery was possible",
                 synthesized_by_termination_reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+            )
+
+        if trajectory.termination_reason == TerminationReason.PROVIDER_CONTENT_FILTER:
+            self.logger.info(
+                "Provider declined the request - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Provider's safety classifier declined the request; the agent produced no usable action",
+                synthesized_by_termination_reason=TerminationReason.PROVIDER_CONTENT_FILTER,
             )
 
         _refuse_hash_grading_on_grader_rpc(spec)
@@ -1105,6 +1161,21 @@ class QueueTrialGrader:
                 components=GradeComponents(),
                 reasons="Wire history exceeded the provider's max input tokens and no summarize recovery was possible",
                 synthesized_by_termination_reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+            )
+
+        if trajectory.termination_reason == TerminationReason.PROVIDER_CONTENT_FILTER:
+            self.logger.info(
+                "Provider declined the request - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Provider's safety classifier declined the request; the agent produced no usable action",
+                synthesized_by_termination_reason=TerminationReason.PROVIDER_CONTENT_FILTER,
             )
 
         _refuse_hash_grading_on_grader_rpc(spec)

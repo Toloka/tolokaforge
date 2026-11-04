@@ -69,6 +69,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.COMPLETED, TerminationReason.EMPTY_COMPLETION, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.PROVIDER_CONTENT_FILTER, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.COMPLETED, None, _MEASURED, False),
@@ -90,6 +91,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.PROVIDER_CONTENT_FILTER, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.FAILED, None, _HARNESS, False),
@@ -111,6 +113,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.TIMEOUT, TerminationReason.EMPTY_COMPLETION, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.PROVIDER_CONTENT_FILTER, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.TIMEOUT, TerminationReason.TRIAL_LOST, _HARNESS, True),
     (TrialStatus.TIMEOUT, None, _HARNESS, True),
@@ -132,6 +135,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.ERROR, TerminationReason.EMPTY_COMPLETION, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.PROVIDER_CONTENT_FILTER, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.ERROR, TerminationReason.TRIAL_LOST, _HARNESS, True),
     (TrialStatus.ERROR, None, _HARNESS, True),
@@ -218,7 +222,7 @@ class TestOutcomeClassificationCrossProduct:
             for ungradeable in (False, True)
         }
         assert cells == expected
-        assert len(_OUTCOME_CELLS) == len(expected) == 168
+        assert len(_OUTCOME_CELLS) == len(expected) == 176
 
     def test_the_class_column_exhausts_the_declared_vocabulary(self) -> None:
         """The table is hand-maintained and the enum is declared in production,
@@ -268,6 +272,24 @@ class TestOutcomeClassificationCrossProduct:
         drop it from ``measured_trials`` without failing
         ``test_an_unrecognised_reason_would_be_counted``."""
         assert TerminationReason.CONTEXT_WINDOW_EXCEEDED not in EXCLUDED_TYPED_REASONS
+
+    def test_a_provider_content_filter_stays_in_the_measured_denominator(self) -> None:
+        """A refused trial is a measured non-pass, not an absent measurement.
+
+        The wire shape is identical to ``EMPTY_COMPLETION`` — no text, no tool
+        calls — and the meanings are opposites. An empty completion is the
+        provider failing to answer; a refusal *is* the answer. The agent was
+        given its turn and what came back was unusable, so the trial belongs in
+        the denominator. Excluding it would shrink every rate by exactly the
+        trials one provider's safety classifier declined, which flatters
+        whichever model it declines for most."""
+        assert TerminationReason.PROVIDER_CONTENT_FILTER not in EXCLUDED_TYPED_REASONS
+        assert (
+            classify_trial_outcome(
+                _cell_trajectory(TrialStatus.FAILED, TerminationReason.PROVIDER_CONTENT_FILTER)
+            )
+            is _MEASURED
+        )
 
 
 class TestRetryabilityIsIndependentOfCountability:

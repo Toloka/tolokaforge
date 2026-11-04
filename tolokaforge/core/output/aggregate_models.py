@@ -569,7 +569,8 @@ class FailureRecord(BaseModel):
     harness auto-fail branches of :class:`~tolokaforge.core.trial_grader.TrialGrader`:
     a trial whose grade was fabricated by the harness (no evaluator ran
     on it — ``ERROR`` / ``TIMEOUT`` / ``STUCK_DETECTED`` /
-    ``EMPTY_COMPLETION``) carries ``synthesized: true`` and the reason
+    ``CONTEXT_WINDOW_EXCEEDED`` / ``PROVIDER_CONTENT_FILTER``) carries
+    ``synthesized: true`` and the reason
     name, and the record's ``failure_class`` is ``harness_autofail``
     when the synth reason is not otherwise enumerated in
     :func:`~tolokaforge.core.failure_attribution.attribute_failure`.

@@ -203,7 +203,8 @@ class Grade(BaseModel):
     judge_inputs: JudgeInputs | None = None
     # Which trajectory ``TerminationReason`` a ``TrialGrader`` synthesised this
     # grade from — populated only on the harness auto-fail branches
-    # (``ERROR``/``TIMEOUT``/``STUCK_DETECTED``/``EMPTY_COMPLETION``), where no
+    # (``ERROR``/``TIMEOUT``/``STUCK_DETECTED``/``CONTEXT_WINDOW_EXCEEDED``/
+    # ``PROVIDER_CONTENT_FILTER``), where no
     # evaluator ran and the grade is fabricated by the harness rather than
     # composed from measured components. ``None`` on every grade produced by a
     # real evaluator (the runner ``GradeTrial`` path, the grader-service ``Grade``

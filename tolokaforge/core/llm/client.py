@@ -608,6 +608,24 @@ def _detect_synthetic_envelope(response: Any) -> str | None:
     inspection errors so a malformed mock object surfaces as ``None``
     rather than masking a real test failure.
     """
+    native = _read_native_finish_reason(response)
+    if native is not None and native in _SYNTHETIC_ENVELOPE_NATIVE_REASONS:
+        return native
+    return None
+
+
+def _read_native_finish_reason(response: Any) -> str | None:
+    """The provider's own, un-post-mapped finish reason, or ``None``.
+
+    litellm preserves the original value in
+    ``choice.provider_specific_fields["native_finish_reason"]`` whenever it
+    differs from the OpenAI-compatible value it maps onto ``finish_reason``.
+    That makes it the only field that can tell a provider's refusal from a
+    model that merely stopped, on the routes where both post-map to ``"stop"``.
+
+    Defensively swallows inspection errors so a malformed mock object surfaces
+    as ``None`` rather than masking a real test failure.
+    """
     try:
         choice = response.choices[0]
     except (AttributeError, IndexError, TypeError):
@@ -616,9 +634,7 @@ def _detect_synthetic_envelope(response: Any) -> str | None:
     if not isinstance(psf, dict):
         return None
     native = psf.get("native_finish_reason")
-    if isinstance(native, str) and native in _SYNTHETIC_ENVELOPE_NATIVE_REASONS:
-        return native
-    return None
+    return native if isinstance(native, str) else None
 
 
 def _litellm_response_cost(response: Any) -> float | None:
@@ -688,6 +704,7 @@ class GenerationResult:
         effective_system_prompt: str | None = None,
         openrouter_generation_id: str | None = None,
         finish_reason: str | None = None,
+        native_finish_reason: str | None = None,
         reasoning_recovered_by_fallback: bool = False,
         reasoning_channel_unknown: bool = False,
         reasoning_replay_dropped: bool = False,
@@ -727,6 +744,14 @@ class GenerationResult:
         # :attr:`ModelCapabilities.output_length_retry_count`). ``None`` when
         # the response carries no finish_reason at all.
         self.finish_reason = finish_reason
+        # The provider's own finish reason before litellm's post-map, when the
+        # two differ; ``None`` otherwise and on every producer that does not
+        # read a wire response. Carried because the post-mapped field alone
+        # cannot name why an actionless turn was actionless on the routes that
+        # map a refusal onto ``"stop"`` — the engine loop reads it to tell a
+        # safety refusal from a model that simply said nothing, and logs it on
+        # every actionless turn so the cause survives into the run's artifacts.
+        self.native_finish_reason = native_finish_reason
         # The sampling subset actually handed to the transport. None means the
         # producer did not observe a request (e.g. a scripted client); an empty
         # mapping means model policy omitted all sampling parameters.
@@ -2773,6 +2798,9 @@ class LLMClient:
             # to the OpenAI-compatible ``"length"`` on this field; a response
             # that carries no finish_reason at all lands as ``None``.
             finish_reason=getattr(choice, "finish_reason", None),
+            # Present only when the provider's own value differed from the one
+            # litellm mapped onto ``finish_reason`` above.
+            native_finish_reason=_read_native_finish_reason(response),
         )
         # Attribute-post-init idiom matches ``guard_rejections`` and
         # ``filler_substituted``. Any other producer of a ``GenerationResult``
