@@ -2040,7 +2040,9 @@ means. The flag is read before the returned-payload predicate, so a flagged call
 once whatever its text also looks like. A `ToolError` reaches the flag too —
 `DomainToolRegistry` answers it with `isError: true` and the `tool_error` category — and the
 replay reads that category as the action running and reporting failure, from the same
-`{"error": …}` payload core reads off `invoke`, so the two substrates classify it alike; only
+`{"error": …}` payload core reads off `invoke`, so the two substrates classify it alike. A
+refusal whose text carries no `"error"` key — prose, or a third-party server's
+`{"message": …}` — is reported with that text as its message, never read as a success; only
 an undeclared exception is recorded as raised. What differs across substrates is the message, deliberately:
 each quotes the layer that actually failed, so core's reads `TypeError: …` on one line while
 the runner's carries the MCP server's multi-line validation prose, `Error executing tool …`

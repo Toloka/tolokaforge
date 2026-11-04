@@ -887,6 +887,17 @@ async def test_the_runner_records_the_failure_its_tool_reported_in_what_it_retur
             ),
             id="refused-prose",
         ),
+        pytest.param(
+            _refusing_tool,
+            '{"message": "Order \'O-999\' not found"}',
+            FailedGoldenAction(
+                index=0,
+                name="confirm_payment",
+                kind=GoldenActionFailure.REPORTED,
+                error='{"message": "Order \'O-999\' not found"}',
+            ),
+            id="refused-object-without-error",
+        ),
     ],
 )
 async def test_the_runner_records_one_failure_under_the_verb_of_whoever_declared_it(
@@ -911,8 +922,9 @@ async def test_the_runner_records_one_failure_under_the_verb_of_whoever_declared
 
     The refused rows are a ``ToolError`` over MCP — flagged with the ``tool_error`` category.
     The tool ran and reported the failure, so they record as reported, the same as core reads
-    the ``{"error": ...}`` payload off ``invoke``; refused text that is no such payload is its
-    own message rather than a silent success.
+    the ``{"error": ...}`` payload off ``invoke``; refused text that is no such payload — prose,
+    or a third-party server's object naming no ``"error"`` — is its own message rather than a
+    silent success.
     """
     result = await _replay_as_the_runner_does(answer, build_tool)
 

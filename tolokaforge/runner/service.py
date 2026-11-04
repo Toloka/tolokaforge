@@ -331,11 +331,13 @@ async def _invoke_golden_tool(tool: Any, arguments: dict[str, Any]) -> ToolCallO
     return _readable_outcome(await loop.run_in_executor(None, lambda: tool(arguments)))
 
 
-def _is_json_object(text: str) -> bool:
+def _carries_error_key(text: str) -> bool:
+    """Whether ``text`` is a JSON object naming an ``"error"``, whatever its value."""
     try:
-        return isinstance(json.loads(text), dict)
+        decoded = json.loads(text)
     except json.JSONDecodeError:
         return False
+    return isinstance(decoded, dict) and "error" in decoded
 
 
 def _readable_outcome(answer: object) -> ToolCallOutcome:
@@ -3537,9 +3539,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 # A tool's declared refusal (a ``ToolError``) is the action running and
                 # reporting failure, read off the same ``{"error": ...}`` payload core
                 # reads off ``invoke`` — an empty one included, which both read as no
-                # failure; refused text that is no JSON object is its own message.
+                # failure. Any other refused text — prose, or an object naming no
+                # ``"error"`` (a third-party server's ``{"message": ...}``) — is its own
+                # message: the flag said the call failed, so it never reads as a success.
                 reported = declared_failure(outcome.output)
-                if refused and reported is None and not _is_json_object(outcome.output):
+                if refused and reported is None and not _carries_error_key(outcome.output):
                     reported = outcome.output
                 if reported is None:
                     logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")
