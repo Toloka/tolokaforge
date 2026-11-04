@@ -23,7 +23,7 @@ the runner already depends on.
 from __future__ import annotations
 
 import base64
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -188,7 +188,9 @@ def merge_tool_libraries(
     server): a pack that still carries a copy of a library drops it when it
     pins the library. Provenance (name, version, applications, file count per
     library) is recorded under ``metadata["tool_libraries"]``. Without pins
-    the description is returned as is.
+    the description is returned as is. The bundle always travels inline; an
+    artefact the adapter delivers by reference (ADR-0068) collides like an
+    inline one.
 
     Raises:
         ToolLibraryError: Any refusal of :func:`resolve_tool_libraries`, an
@@ -205,10 +207,15 @@ def merge_tool_libraries(
             "libraries itself (see describe_task)"
         )
     artifacts: dict[str, str] = dict(description.tool_artifacts)
+    referenced = (
+        tuple(description.tool_artifact_refs.files)
+        if description.tool_artifact_refs is not None
+        else ()
+    )
     import_roots = _import_roots(description)
     provenance: list[dict[str, Any]] = []
     for resolved, encoded in checked_bundles(pins):
-        _refuse_collisions(resolved.pin.name, encoded, artifacts, import_roots)
+        _refuse_collisions(resolved.pin.name, encoded, (*artifacts, *referenced), import_roots)
         artifacts.update(encoded)
         provenance.append(
             {
@@ -339,7 +346,7 @@ def _import_name(entry: str) -> str:
 def _refuse_collisions(
     name: str,
     files: Mapping[str, str],
-    artifacts: Mapping[str, str],
+    artifacts: Iterable[str],
     import_roots: frozenset[str],
 ) -> None:
     """Refuse an artefact that holds a bundle path or shadows a bundled top-level module.

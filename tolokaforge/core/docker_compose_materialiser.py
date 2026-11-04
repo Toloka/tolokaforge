@@ -17,7 +17,10 @@ structurally. Each :meth:`materialise` call:
    the run exposes the grading substrate, and sets
    ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` and ``TOLOKAFORGE_STATE_READ_TIMEOUT_S``
    on the runner from the run's ``compute.grpc_max_message_mb`` and
-   ``compute.state_read_timeout_s`` unless the compose file declares them.
+   ``compute.state_read_timeout_s`` unless the compose file declares them,
+   and bind-mounts the trial's tool-artefact reference root read-only into
+   the runner when its description delivers artefacts by reference
+   (ADR-0068).
 3. Constructs a ``testcontainers.compose.DockerCompose`` via the
    injectable :attr:`DockerComposeMaterialiser.docker_compose_factory`
    seam (defaults to the real class; tests substitute a stub) and
@@ -56,6 +59,7 @@ from tolokaforge.core.compose_materialisation import (
     inject_substrate_env_into_runner,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
+    mount_tool_artifact_refs_into_runner,
     resolve_host_port,
     shutdown_compose,
     write_capture_manifest,
@@ -163,6 +167,10 @@ class DockerComposeMaterialiser:
                     grpc_max_message_mb=ctx.grpc_max_message_mb,
                     state_read_timeout_s=ctx.state_read_timeout_s,
                 )
+                if ctx.tool_artifact_refs_root is not None:
+                    mount_tool_artifact_refs_into_runner(
+                        compose_file, decl.runner_service, ctx.tool_artifact_refs_root
+                    )
             compose = self.docker_compose_factory(
                 context=str(temp_dir),
                 compose_file_name=decl.compose_file.name,

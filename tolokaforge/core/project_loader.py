@@ -795,6 +795,7 @@ _POLICY_REQUEST_FIELDS = (
     "network_policy",
     "limited_internet_allowlist",
     "security_context_defaults",
+    "tool_artifacts_delivery",
 )
 """Fields that survive atomic ``stack`` replacement — policy requests
 that are substrate-neutral (they describe the trial regardless of
@@ -909,7 +910,35 @@ def resolve(
     manifest = EnvironmentManifest(**manifest_kwargs)
     _fill_missing_service_defaults(manifest)
     _synthesise_composition_plan(manifest, merged)
+    _refuse_a_mount_no_trial_runner_can_take(manifest)
     return manifest
+
+
+def _refuse_a_mount_no_trial_runner_can_take(manifest: EnvironmentManifest) -> None:
+    """Refuse ``tool_artifacts_delivery: mount`` unless a ``trial``-scope stack owns the runner.
+
+    The engine mounts the task's directory into the runner it materialises for
+    the trial (ADR-0068). A ``run``-scope runner serves every task of the run
+    and was started before any of them was described, so it cannot be given
+    one task's directory; a plan with no runner-owning stack has no service to
+    give it to.
+    """
+    if manifest.tool_artifacts_delivery != "mount":
+        return
+    owners = [decl for decl in manifest.stacks if decl.runner_service is not None]
+    if owners and all(decl.stack_scope == "trial" for decl in owners):
+        return
+    found = (
+        ", ".join(f"{decl.stack_id!r} (stack_scope={decl.stack_scope})" for decl in owners)
+        or "no stack sets runner_service"
+    )
+    raise ValueError(
+        "tool_artifacts_delivery: mount needs the runner to be owned by a trial-scope "
+        f"stack, which the engine materialises for each trial; the runner here: {found}. "
+        "Make the runner's stack trial-scope (stack_scope: trial in a stacks: block; a scalar "
+        "stack is trial-scope unless every service is isolation: shared), or deliver the "
+        "artefacts inline."
+    )
 
 
 def _fill_missing_service_defaults(manifest: EnvironmentManifest) -> None:

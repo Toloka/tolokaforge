@@ -232,6 +232,14 @@ The pieces that matter:
   [reset recipes](#reset-recipes) below.
 - **`network_policy`** — the egress posture for task services. See
   [network policy](#network-policy) below.
+- **`tool_artifacts_delivery`** — `inline` (default) or `mount`. Under
+  `mount` the task's files reach the runner by reference instead of inside
+  the registration message: the engine bind-mounts the task directory
+  read-only into the runner service at `/tolokaforge/tool-artifact-refs`
+  and the runner copies and verifies each file by SHA-256 (ADR-0068). It
+  needs a `trial`-scope stack to own the runner and the `runner_rpc`
+  grader without snapshot bundles; the run refuses anything else up front.
+  Use it for a task whose world is too large to travel inline.
 
 A task can declare its own `environment_manifest` with the same shape; it
 deep-merges on top of `default_environment` per service. A task that

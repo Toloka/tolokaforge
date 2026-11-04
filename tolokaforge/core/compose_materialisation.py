@@ -38,6 +38,10 @@ from testcontainers.compose import DockerCompose
 from testcontainers.compose.compose import ComposeContainer
 
 from tolokaforge.adapters._task_loader import ToolActor, actor_tool_block, enabled_tool_names
+from tolokaforge.core.grading.tool_artifacts import (
+    TOOL_ARTIFACT_REFS_DIR_ENV_VAR,
+    TOOL_ARTIFACT_REFS_MOUNT_PATH,
+)
 from tolokaforge.core.netpolicy_constants import (
     NETPOLICY_EDGE_NETWORK,
     NETPOLICY_INTERNAL_NETWORK,
@@ -490,6 +494,80 @@ def mount_docker_socket_into_runner(compose_file: Path, runner_service: str) -> 
     service["volumes"] = [*volumes, f"{DOCKER_SOCKET_PATH}:{DOCKER_SOCKET_PATH}"]
     with compose_file.open("w") as f:
         yaml.safe_dump(doc, f, sort_keys=False)
+
+
+def mount_tool_artifact_refs_into_runner(
+    compose_file: Path, runner_service: str, refs_root: Path
+) -> None:
+    """Bind-mount a task's tool-artefact reference root read-only into ``runner_service``.
+
+    A description that delivers its artefacts by reference (ADR-0068) carries
+    only paths and hashes; the runner reads the bytes from ``refs_root``, which
+    is mounted at :data:`TOOL_ARTIFACT_REFS_MOUNT_PATH` and named to the runner
+    by :data:`TOOL_ARTIFACT_REFS_DIR_ENV_VAR`. The mount is read-only, so no
+    trial can change the task's files for the trials after it.
+
+    Raises ``ValueError`` when ``refs_root`` is not an absolute directory, when
+    ``runner_service`` is not declared, or when the service already declares
+    the variable or a volume at the mount path: the engine owns both, and a
+    declaration of its own would point the runner at other bytes.
+
+    The extended list is assigned, never appended to in place, for the YAML
+    alias reason :func:`mount_docker_socket_into_runner` gives.
+    """
+    if not refs_root.is_absolute() or not refs_root.is_dir():
+        raise ValueError(
+            f"the tool-artefact reference root {refs_root} is not an absolute directory on "
+            "this machine, so it cannot be mounted into the runner"
+        )
+    with compose_file.open() as f:
+        doc = yaml.safe_load(f)
+    services: dict[str, Any] = doc["services"]
+    if runner_service not in services:
+        raise ValueError(
+            f"runner_service {runner_service!r} is not declared in the compose file "
+            f"{compose_file.name!r}; declared services are {sorted(services)!r}."
+        )
+    service = services[runner_service]
+    if _service_declares_env_var(service.get("environment"), TOOL_ARTIFACT_REFS_DIR_ENV_VAR):
+        raise ValueError(
+            f"runner_service {runner_service!r} declares {TOOL_ARTIFACT_REFS_DIR_ENV_VAR}, "
+            "which the engine sets when it mounts the task's tool-artefact reference root; "
+            "remove it from the compose file"
+        )
+    volumes = service.get("volumes") or []
+    if any(_volume_target(entry) == TOOL_ARTIFACT_REFS_MOUNT_PATH for entry in volumes):
+        raise ValueError(
+            f"runner_service {runner_service!r} already mounts a volume at "
+            f"{TOOL_ARTIFACT_REFS_MOUNT_PATH}, where the engine mounts the task's "
+            "tool-artefact reference root; mount it elsewhere"
+        )
+    service["volumes"] = [
+        *volumes,
+        {
+            "type": "bind",
+            "source": str(refs_root),
+            "target": TOOL_ARTIFACT_REFS_MOUNT_PATH,
+            "read_only": True,
+        },
+    ]
+    service["environment"] = _merge_service_env(
+        service.get("environment"),
+        {TOOL_ARTIFACT_REFS_DIR_ENV_VAR: TOOL_ARTIFACT_REFS_MOUNT_PATH},
+    )
+    with compose_file.open("w") as f:
+        yaml.safe_dump(doc, f, sort_keys=False)
+
+
+def _volume_target(entry: Any) -> str | None:
+    """The container path a compose ``volumes:`` entry mounts at, short or long form."""
+    if isinstance(entry, str):
+        parts = entry.split(":")
+        return parts[1] if len(parts) >= 2 else parts[0]
+    if isinstance(entry, Mapping):
+        target = entry.get("target")
+        return target if isinstance(target, str) else None
+    return None
 
 
 RUNNER_EXPOSE_SUBSTRATE_ENV_VAR = "RUNNER_EXPOSE_SUBSTRATE"
