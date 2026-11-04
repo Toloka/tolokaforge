@@ -2,6 +2,110 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.5 (2026-11-04)
+
+### BREAKING CHANGE
+
+- a ToolError raised by a DomainToolRegistry tool is recorded as
+tool_error instead of success, so everything counting successes changes for such
+a call: status matchers expecting success, required_tools / required_actions
+whose only call was refused, tool_success_rate, the tool_usage counts and corpus
+curation; a task with max_environment_errors spends its budget on refusals. On a
+tool with a non-mapping return annotation, a ToolError reaches the agent as its
+payload instead of FastMCP's output-validation error. Registry tools publish no
+output schema. Engine and runner images below protocol 7
+refuse to pair.
+- judge_inputs.yaml records agent_read_only_tools for every
+judge; a transcript replay of a bundle without it is refused. The v1
+trial-contract schemas are replaced by v2.
+- a task file's `tools.<actor>.<name>` block for a tool that
+`tools.<actor>.enabled` does not list is refused when the task loads, whatever
+the block carries (`output_max_chars`, init kwargs, `mutates_state`). Migration:
+delete the block, or add the tool to `enabled`. A project
+`task_defaults.tools.<actor>.<name>` block stays inert for tasks that do not
+enable the tool. A task's `mutates_state` other than `true` over a tool
+author's own declaration (MCP `readOnlyHint`, a builtin's category, the search
+tool) is refused. A runner image predating this release refuses a pack whose
+task description carries a `read_when` rule (new engine -> old image).
+`customization.read_only_calls` (unreleased) is gone: declare the rule on the
+tool block instead.
+- every pack enabling `http_request` now carries a read rule
+on its ToolSchema, so a runner image predating the rule form refuses it at
+RegisterTrial (images `tolokaforge run` builds from source are current). A
+task's `tools.<actor>.http_request.mutates_state` other than `true` is now an
+override of the tool author's declaration and is refused; declare `true` for
+a service that changes state on a safe method.
+- `tolokaforge rejudge --knowledge-search` and `--evidence`
+are removed. Migration: pass `--grading` with
+`llm_judge: {customization: {disable_knowledge_search: true|false}}` or
+`{evidence: state|transcript}`; a customization-only document keeps the
+recorded rubric.
+BREAKING CHANGE: run config `grader.judge` takes the judge customization
+keys; `grader.judge.custom_system_prompt` is renamed `system_prompt`, and
+`system_prompt: null` now resets a task's custom prompt instead of
+inheriting it.
+BREAKING CHANGE: Python API: `tolokaforge.core.models.JudgeGraderConfig`
+and `tolokaforge.core.models.run_config.JudgeGraderConfig` are removed
+(use `tolokaforge.runner.models.JudgeCustomization`);
+`resolve_effective_judge_customization` is replaced by
+`tolokaforge.core.project_loader.layer_judge_customization`;
+`JudgeTrialOptions` is `{customization, tool_effects}` and
+`resolve_judge_trial_options` takes no `override`; `grade_llm_judge`
+returns `JudgeGrading`; `build_replay_grade` takes the customization;
+`JudgeResult` loses `knowledge_search_disabled`, `custom_system_prompt`,
+`include_agent_system_prompt`; replay loses `KnowledgeSearchMode`,
+`EvidenceMode` and the per-field `ReplayProvenance` pairs, which become
+`customization`, `customization_sources` and `customization_record`;
+`GradingOverride` is `{rubric | None, customization | None}`.
+BREAKING CHANGE: Output: grade.yaml no longer carries judge_custom_prompt,
+judge_agent_prompt_included or judge_kb_gating.knowledge_search_disabled;
+read judge_inputs.yaml customization instead. JudgeReport fields 9, 14
+and 15 are reserved on runner.proto and grader.proto; field 18 is
+customization_json. replay_provenance.yaml changes shape as above.
+- task-pack and project grading — three shipped
+customization keys are renamed into `evidence` and refused at load with a
+message naming the replacement, in grading.yaml, project
+grading_defaults.llm_judge.customization, run-config grader.judge and
+`rejudge --grading` files:
+  disable_knowledge_search: true|false -> evidence.knowledge_search: false|true
+  include_agent_system_prompt: false|true -> evidence.agent_policy: false|true
+  judge_snippet_chars: N|null -> evidence.knowledge_search: {snippet_chars: N|null}
+The unreleased `evidence: state|transcript` and `transcript_tool_chars`
+are removed the same way (transcript_tool_chars: N -> evidence.tool_results:
+{max_chars: N}; evidence: transcript -> evidence: {state_diff: false,
+db: false, workspace: false, tool_results: true, state_changing_calls: true}).
+BREAKING CHANGE: replay — a bundle whose recorded customization carries a
+renamed key is refused naming its replacement; there is no reader for the
+old spelling.
+BREAKING CHANGE: wire — the renamed parts bite both directions: an older
+engine emits disable_knowledge_search / include_agent_system_prompt (as
+null for every pack declaring a customization block) and
+judge_snippet_chars, which a new image refuses; a new engine emits
+evidence.* for a pack setting a part, which an older image refuses.
+TRIAL_CONTRACT_VERSION stays 2; trial_node_inputs.v2.json and
+trial_result.v2.json are regenerated.
+BREAKING CHANGE: Python API — LLMJudge(model_config, *, customization,
+tool_effects, explicit_system_prompt, max_turns, episode_timeout_s,
+submit_report_retries, llm_client, logger) replaces the six knob kwargs and
+LLMJudge.from_options; RubricEvaluatorContext carries options:
+JudgeTrialOptions in place of disable_knowledge_search /
+custom_system_prompt / include_agent_system_prompt, and
+LLMJudgeRubricEvaluator takes options=; DelegatingReadTool(knowledge_search=)
+becomes the required evidence_part=; SearchKbTool's snippet_chars is
+required; DEFAULT_JUDGE_SNIPPET_CHARS, DEFAULT_TRANSCRIPT_TOOL_CHARS,
+judge_reads_final_state and core.grading.judge_transcript are removed.
+
+### Feat
+
+- **runner**: a ToolError is a call the tool refused, recorded as tool_error (ADR-0067) (#1962)
+- **grading**: judge evidence made of named parts (ADR-0066) (#1959)
+- **docker**: start only the engine services a run needs (#1938)
+
+### Fix
+
+- **grading**: a provider refusal is a failed trial, not a missing one (#1967)
+- **runner**: grading reads get the configured deadline, and a judge refusal keeps its spend (#1961)
+
 ## v0.34.4 (2026-10-30)
 
 ### Fix
