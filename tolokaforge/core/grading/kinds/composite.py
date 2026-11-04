@@ -270,6 +270,13 @@ class CompositeGraderKind:
             )
 
         task_description = TaskDescription.model_validate(task_description_dict)
+        if task_description.tool_artifact_refs is not None:
+            raise GraderKindRefusedError(
+                "CompositeGraderKind offline recompute mode cannot read tool artefacts "
+                "delivered by reference: a grade bundle carries inline artefacts only, and "
+                "only the trial's runner has the task directory mounted (ADR-0068). Grade "
+                "this task with the runner_rpc grader, or deliver its artefacts inline."
+            )
         judge_model_config: ModelConfig | None = (
             ModelConfig.model_validate(judge_model_config_dict)
             if judge_model_config_dict is not None

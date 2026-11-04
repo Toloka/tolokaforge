@@ -2844,6 +2844,39 @@ class Orchestrator:
             )
         return None
 
+    def _refuse_tool_artifact_refs_the_grader_cannot_read(self) -> None:
+        """Refuse, before any trial, tasks whose referenced artefacts the grader cannot read.
+
+        Artefacts delivered by reference (ADR-0068) resolve only on the trial's
+        runner, where the engine mounted the task's directory. The ``grader_rpc``
+        and ``queue`` graders run elsewhere, and a snapshot grade bundle carries
+        inline artefacts only, so each would refuse the trial at grade time,
+        after its tokens were spent. Every offending task is named in one error.
+        Descriptions are resolved only when the run grades one of those ways.
+        """
+        grader = self.config.grader
+        grader_name = grader.name if grader else None
+        if not grader_name and self.adapter is not None:
+            grader_name = self.adapter.trial_grader_name
+        remote_grader = grader_name in ("grader_rpc", "queue")
+        snapshot = grader is not None and grader.snapshot is not None and grader.snapshot.enabled
+        if not (remote_grader or snapshot) or self.adapter is None:
+            return
+        offending = sorted(
+            task.task_id
+            for task in self.tasks
+            if self._task_description(task.task_id).tool_artifact_refs is not None
+        )
+        if not offending:
+            return
+        how = f"grader {grader_name!r}" if remote_grader else "grader.snapshot.enabled=true"
+        raise ValueError(
+            f"{how} cannot read tool artefacts delivered by reference (tool_artifacts_delivery: "
+            f"mount, ADR-0068), which tasks {offending} declare: only the trial's runner has "
+            "the task directory mounted. Grade with the runner_rpc grader without snapshot "
+            "mode, or deliver these tasks' artefacts inline."
+        )
+
     def _reject_ungradeable_packs(self) -> None:
         """Refuse a run whose selected packs cannot be graded as written.
 
@@ -3107,6 +3140,7 @@ class Orchestrator:
         # selected task needs a judge but none is configured (fail loud).
         judge_config = self._resolve_judge_config()
         self._reject_ungradeable_packs()
+        self._refuse_tool_artifact_refs_the_grader_cannot_read()
 
         # Log model configuration for all roles
         self.logger.info(

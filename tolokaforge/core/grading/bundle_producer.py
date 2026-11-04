@@ -75,7 +75,8 @@ def serialize_bundle_from_substrate(
     which :class:`~tolokaforge.core.grading.substrate.SnapshotGradingSubstrate`
     does not consume.
 
-    Raises :class:`ValueError` when ``substrate.filesystem_root()`` returns
+    Raises :class:`ValueError` when the task delivers artefacts by reference
+    (ADR-0068) — the bundle would lack them — and when ``substrate.filesystem_root()`` returns
     ``None`` — bundle format v1.0 requires ``filesystem.tar``, and every
     live trial has a workspace root, so a ``None`` here indicates a caller
     bug rather than an empty workspace.
@@ -85,6 +86,13 @@ def serialize_bundle_from_substrate(
         raise ValueError(
             f"Cannot build grade bundle for {trial_id}: substrate has no "
             "filesystem root; snapshot mode requires an agent-visible workspace."
+        )
+    if getattr(task_description, "tool_artifact_refs", None) is not None:
+        raise ValueError(
+            f"Cannot build grade bundle for {trial_id}: the task delivers its tool "
+            "artefacts by reference (ADR-0068), and bundle format v1.0 carries inline "
+            "artefacts only. Grade this task without snapshot mode, or deliver its "
+            "artefacts inline."
         )
     tool_artifacts_b64 = task_description.tool_artifacts or {}
     tool_artifacts: dict[str, bytes] = {

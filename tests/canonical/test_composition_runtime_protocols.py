@@ -194,6 +194,7 @@ class TestCompanionDataclassFields:
             "stripped_container_secrets",
             "grpc_max_message_mb",
             "state_read_timeout_s",
+            "tool_artifact_refs_root",
         ]
 
     def test_run_ctx_fields(self) -> None:
