@@ -64,6 +64,7 @@ from tolokaforge.core.grading.golden_replay import (
 )
 from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis, HashGradingResult
 from tolokaforge.core.grading.state_checks import StateChecker
+from tolokaforge.core.mcp_error_categories import TOOL_ERROR_CATEGORY
 from tolokaforge.runner.models import (
     GoldenAction,
     RunnerStateChecksConfig,
@@ -76,7 +77,7 @@ from tolokaforge.runner.service import (
     _tool_registered_for_trial,
 )
 from tolokaforge.runner.state_read_limits import StateReadDeadlines
-from tolokaforge.runner.tool_factory import TOOL_ERROR_CATEGORY, ToolCallOutcome
+from tolokaforge.runner.tool_factory import ToolCallOutcome
 
 pytestmark = [pytest.mark.unit, pytest.mark.grading]
 
@@ -897,6 +898,17 @@ async def test_the_runner_records_the_failure_its_tool_reported_in_what_it_retur
                 error='{"message": "Order \'O-999\' not found"}',
             ),
             id="refused-object-without-error",
+        ),
+        pytest.param(
+            _refusing_tool,
+            '{"error": null, "message": "order closed"}',
+            FailedGoldenAction(
+                index=0,
+                name="confirm_payment",
+                kind=GoldenActionFailure.REPORTED,
+                error='{"error": null, "message": "order closed"}',
+            ),
+            id="refused-object-with-null-error",
         ),
     ],
 )

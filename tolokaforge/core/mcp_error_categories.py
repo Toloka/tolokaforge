@@ -7,8 +7,6 @@ repository's ``DomainToolRegistry`` or a third-party one — and the runner that
 reads the categories share them without pulling in either side.
 """
 
-from __future__ import annotations
-
 __all__ = [
     "INVALID_ARGUMENTS_CATEGORY",
     "MCP_ERROR_CATEGORY_META",

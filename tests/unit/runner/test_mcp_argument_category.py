@@ -30,6 +30,7 @@ from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.loop import LoopConfig, MetricsSink, ToolCallingLoop, classify_loop_error
+from tolokaforge.core.mcp_error_categories import INVALID_ARGUMENTS_CATEGORY, TOOL_ERROR_CATEGORY
 from tolokaforge.core.models import ToolCall, ToolExecutionStatus
 from tolokaforge.core.models.trajectory import MessageRole
 from tolokaforge.core.runner import TrialToolCallRecorder
@@ -39,8 +40,6 @@ from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import ToolSchema
 from tolokaforge.runner.runner_pb2_grpc import add_RunnerServiceServicer_to_server
 from tolokaforge.runner.tool_factory import (
-    INVALID_ARGUMENTS_CATEGORY,
-    TOOL_ERROR_CATEGORY,
     MCPProtocolError,
     MCPServerPool,
     MCPServerToolWrapper,

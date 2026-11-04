@@ -54,6 +54,7 @@ from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenReplayRecord,
     declared_failure,
+    is_empty_tool_error,
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, CompositeGradeComponents
@@ -96,6 +97,7 @@ from tolokaforge.core.hash import (
     compute_stable_hash,
     filter_unstable_fields,
 )
+from tolokaforge.core.mcp_error_categories import INVALID_ARGUMENTS_CATEGORY, TOOL_ERROR_CATEGORY
 from tolokaforge.core.models import (
     CriterionResult,
     LLMJudgeConfig,
@@ -207,8 +209,6 @@ from tolokaforge.runner.state_read_limits import (
     StateReadDeadlines,
 )
 from tolokaforge.runner.tool_factory import (
-    INVALID_ARGUMENTS_CATEGORY,
-    TOOL_ERROR_CATEGORY,
     MCPServerToolWrapper,
     SearchToolWrapper,
     ToolCallOutcome,
@@ -329,15 +329,6 @@ async def _invoke_golden_tool(tool: Any, arguments: dict[str, Any]) -> ToolCallO
         return _readable_outcome(await tool(arguments))
     loop = asyncio.get_event_loop()
     return _readable_outcome(await loop.run_in_executor(None, lambda: tool(arguments)))
-
-
-def _carries_error_key(text: str) -> bool:
-    """Whether ``text`` is a JSON object naming an ``"error"``, whatever its value."""
-    try:
-        decoded = json.loads(text)
-    except json.JSONDecodeError:
-        return False
-    return isinstance(decoded, dict) and "error" in decoded
 
 
 def _readable_outcome(answer: object) -> ToolCallOutcome:
@@ -1815,8 +1806,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 # MCP completed the call and reported its own error flag beside
                 # the response text. This is an environment outcome, not a
                 # transport failure or a string-prefix heuristic — unless the
-                # substrate declared, in a typed way, that the arguments were
-                # refused (``ToolCallOutcome.category``).
+                # substrate declared a category (``ToolCallOutcome.category``).
                 if isinstance(result, ToolCallOutcome):
                     output = result.output
                     if not result.declared_failure:
@@ -3538,12 +3528,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
                 # A tool's declared refusal (a ``ToolError``) is the action running and
                 # reporting failure, read off the same ``{"error": ...}`` payload core
-                # reads off ``invoke`` — an empty one included, which both read as no
-                # failure. Any other refused text — prose, or an object naming no
-                # ``"error"`` (a third-party server's ``{"message": ...}``) — is its own
-                # message: the flag said the call failed, so it never reads as a success.
+                # reads off ``invoke`` — ``ToolError("")``'s ``{"error": ""}`` included,
+                # which both read as no failure. Any other refused text — prose, or an
+                # object with no truthy ``"error"`` (a third-party server's
+                # ``{"message": ...}``) — is its own message: the flag said the call
+                # failed, so it never reads as a success.
                 reported = declared_failure(outcome.output)
-                if refused and reported is None and not _carries_error_key(outcome.output):
+                if refused and reported is None and not is_empty_tool_error(outcome.output):
                     reported = outcome.output
                 if reported is None:
                     logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")

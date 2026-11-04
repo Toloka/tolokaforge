@@ -130,10 +130,9 @@ answers an untyped `isError`, recorded as `environment_error`.
 Registry tools register without structured output: FastMCP validates a `CallToolResult`
 a tool returns against the output schema it derives from the return annotation, which a
 refusal cannot satisfy. `tools/list` carries no `outputSchema` for them and answers carry
-no `structuredContent`; the engine reads only the text content, which is unchanged — except
-for an answer FastMCP renders as no content at all (`None`, an empty list), which reaches
-the agent as `{"content": [], "isError": false}` instead of also carrying
-`structuredContent`. The registry needs `mcp>=1.19`, the first whose FastMCP passes a
+no `structuredContent`; the engine reads only the text content. An answer FastMCP renders
+as no content at all (`None`, an empty list) reaches the agent as
+`{"content": [], "isError": false}`. The registry needs `mcp>=1.19`, the first whose FastMCP passes a
 returned `CallToolResult` through as it is.
 
 ## Notes

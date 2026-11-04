@@ -2750,9 +2750,13 @@ asserting *why* a call failed is as portable as asserting that it did:
     present:
       match:
         kind: tool_result
-        status: { equals: error }
+        status: { equals: tool_error }
         result: { contains: already refunded }
 ```
+
+A tool built with `DomainToolRegistry` refuses by raising `ToolError`, recorded as
+`tool_error` ([ADR-0067](adr/0067-tool-error-is-its-own-status.md)); a tool failing with an
+exception it did not declare is recorded as `error` instead.
 
 The same holds for a binder extracting `field: result`. What a `result` read still
 depends on is the tool-call **record**: on a bundle re-graded without one, the text

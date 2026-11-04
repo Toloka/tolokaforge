@@ -34,6 +34,7 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
+from tolokaforge.core.mcp_error_categories import TOOL_ERROR_CATEGORY
 from tolokaforge.core.models import (
     GradingConfig,
     InitialStateConfig,
@@ -46,11 +47,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output_writer import OutputWriter
 from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.models import ToolSchema as RunnerToolSchema
-from tolokaforge.runner.tool_factory import (
-    TOOL_ERROR_CATEGORY,
-    MCPServerPool,
-    MCPServerToolWrapper,
-)
+from tolokaforge.runner.tool_factory import MCPServerPool, MCPServerToolWrapper
 
 pytestmark = pytest.mark.canonical
 
