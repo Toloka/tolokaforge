@@ -52,6 +52,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds, episode_unique_call_ids
 from tolokaforge.core.tool_message_format import TOOL_ERROR_MESSAGE_PREFIX
+from tolokaforge.tools.registry import ENVIRONMENT_ERROR_STATUSES
 
 __all__ = [
     "AttemptedCall",
@@ -498,7 +499,7 @@ class _TimelineBuilder:
             raw[len(TOOL_ERROR_MESSAGE_PREFIX) :]
             if raw.startswith(TOOL_ERROR_MESSAGE_PREFIX)
             and message.tool_status
-            not in (ToolExecutionStatus.SUCCESS, ToolExecutionStatus.ENVIRONMENT_ERROR)
+            not in (ToolExecutionStatus.SUCCESS, *ENVIRONMENT_ERROR_STATUSES)
             else raw
         )
         self._append(

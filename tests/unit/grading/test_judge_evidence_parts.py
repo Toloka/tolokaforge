@@ -26,6 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import yaml
+from mcp.types import TextContent
 
 from tests.unit.grading.test_judge import MessageCapturingClient, ScriptedClient
 from tolokaforge.adapters.native import NativeAdapter
@@ -56,6 +57,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.output_writer import TOOLS_SCHEMAS_FILENAME, TRIAL_BUNDLE_SCHEMA_VERSION
 from tolokaforge.core.tool_effects import ToolEffects
+from tolokaforge.core.tools_interface import ToolError, _tool_error_result
 from tolokaforge.runner.models import (
     EvidenceInput,
     JudgeCustomization,
@@ -224,6 +226,26 @@ def test_a_call_no_result_answers_has_no_number() -> None:
     )
 
     assert [(c.number, call_result_brief(c)) for c in calls] == [(None, "no result")]
+
+
+def test_a_tool_error_reads_as_the_refusal_the_agent_received() -> None:
+    """A ``ToolError`` reaches the agent as its indented payload with no ``Error: ``
+    prefix (ADR-0067); the block shows that payload on one line, so the judge reads why
+    the call was refused."""
+    refusal = _tool_error_result(ToolError("HTTP 404", ["not found"])).content[0]
+    assert isinstance(refusal, TextContent)
+    transcript = [
+        {"role": "assistant", "content": "", "tool_calls": [_call("c1", "send", {})]},
+        {"role": "tool", "content": refusal.text, "tool_call_id": "c1"},
+    ]
+
+    calls = state_changing_calls(
+        number_tool_results(transcript, tool_result_chars=2000), _TOOL_EFFECTS
+    )
+
+    assert [call_result_brief(c) for c in calls] == [
+        '{ "error": "HTTP 404", "details": [ "not found" ] }'
+    ]
 
 
 def test_the_users_own_tool_steps_are_not_the_agents_calls() -> None:

@@ -624,13 +624,17 @@ Two properties are worth reading carefully:
 - **`output` on a failed call is the tool's own failure text**, worded
   identically by both grading substrates — see G5 for the four forms it takes.
   The `role: tool` message carries the same text behind an `Error: ` prefix, so
-  the two views still differ by that prefix and the record is the one to read.
+  the two views still differ by that prefix and the record is the one to read. A
+  completed call that answered an error — `environment_error` or `tool_error` — is
+  the exception: its record and its message carry the tool's response verbatim.
 - **`arguments` are never rewritten.** They are the grader's input; see
   [`docs/SECURITY.md`](SECURITY.md#tool-call-arguments).
 
-**One status value is not producible on every path.** `SUCCESS`, `ERROR`,
+**Three status values are not producible on every path.** `SUCCESS`, `ERROR`,
 `TOOL_NOT_FOUND` and `INVALID_ARGUMENTS` come from four distinct branches of the
-in-process executor and are recorded on both substrates. `TIMEOUT` is produced
+in-process executor and are recorded on both substrates. `ENVIRONMENT_ERROR` and
+`TOOL_ERROR` are an MCP server's `isError` replies, untyped and declared a refusal,
+which only the runner substrate talks to. `TIMEOUT` is produced
 only on the runner substrate, which is the only one that bands a tool call from
 outside: the in-process executor runs a tool to completion, so a tool exceeding
 its own `ToolPolicy.timeout_s` reports that as its own failure (`ERROR`) rather
@@ -1999,7 +2003,8 @@ state setter is broken therefore sees an ungradeable trial, not a grade.
 stands, and the grade names it.** Two shapes reach that state. The action *raised*, or it
 ran and *reported* failure in what it returned — which is how every tool built through
 `create_server` signals its own declared failures, since `DomainToolRegistry` converts a
-`ToolError` raise into a returned `{"error": …}` payload. Either way the replay continues
+`ToolError` raise into an `{"error": …}` payload (returned in-process, and the text of an
+`isError` reply carrying the `tool_error` category over MCP). Either way the replay continues
 past it — tau-bench continues past a precondition failure and golden-action hash grading
 is the tau-style path — so the partial world it left is hashed against and yields a binary
 verdict as usual. `grade.reasons` then carries one sentence, built once for whichever
@@ -2032,9 +2037,13 @@ prose FastMCP flattened that exception into, `MCPServerToolWrapper.execute_call`
 flag beside the text, and the loop records the action as raised — the flag is the substrate's
 own statement, so the tool's body never decided anything, which is what the raised kind
 means. The flag is read before the returned-payload predicate, so a flagged call is recorded
-once whatever its text also looks like; the two populations are disjoint on that substrate
-anyway, `DomainToolRegistry` catching a `ToolError` and returning it, so only an undeclared
-exception ever reaches the flag. What differs across substrates is the message, deliberately:
+once whatever its text also looks like. A `ToolError` reaches the flag too —
+`DomainToolRegistry` answers it with `isError: true` and the `tool_error` category — and the
+replay reads that category as the action running and reporting failure, from the same
+`{"error": …}` payload core reads off `invoke`, so the two substrates classify it alike. A
+refusal whose text carries no `"error"` key — prose, or a third-party server's
+`{"message": …}` — is reported with that text as its message, never read as a success; only
+an undeclared exception is recorded as raised. What differs across substrates is the message, deliberately:
 each quotes the layer that actually failed, so core's reads `TypeError: …` on one line while
 the runner's carries the MCP server's multi-line validation prose, `Error executing tool …`
 prefix and newlines included — `grade.reasons` carries those newlines rather than a tidied
@@ -2208,7 +2217,8 @@ sub-checks.
 
 **The two lists treat call status differently, deliberately.** A `required_tools`
 entry is satisfied only by a call with `status == "success"` — an errored call did
-not do the work the author required, the same rule `required_actions` applies. A
+not do the work the author required, the same rule `required_actions` applies. A call
+the tool refused (`tool_error`, a `ToolError`) is not a success either. A
 `disallowed_tools` entry fails on a call at **any** status, errors included:
 attempting a forbidden action is itself the violation, so a `delete_customer` call
 that happened to blow up still fails the check.
@@ -2740,9 +2750,13 @@ asserting *why* a call failed is as portable as asserting that it did:
     present:
       match:
         kind: tool_result
-        status: { equals: error }
+        status: { equals: tool_error }
         result: { contains: already refunded }
 ```
+
+A tool built with `DomainToolRegistry` refuses by raising `ToolError`, recorded as
+`tool_error` ([ADR-0067](adr/0067-tool-error-is-its-own-status.md)); a tool failing with an
+exception it did not declare is recorded as `error` instead.
 
 The same holds for a binder extracting `field: result`. What a `result` read still
 depends on is the tool-call **record**: on a bundle re-graded without one, the text
@@ -4438,10 +4452,12 @@ Its knowledge-search tools stay, governed by `knowledge_search`. It reads:
   `[no result] name(arguments) -> no result` when nothing answered the call. The
   result's body is how a call says it ended: a call the harness saw fail carries the
   `Error: ` prefix the agent saw, so a refused `http_request` reads
-  `-> Error: Status: 403` and an accepted one `-> Status: 201`. The block is the same
-  on every grading path, the standalone grader service included, because it reads the
-  transcript alone. Arguments are cut at 300 characters here; the transcript shows each
-  call, and so every text the agent wrote, in full. On without `tool_results` the
+  `-> Error: Status: 403` and an accepted one `-> Status: 201`. A call its tool refused
+  (`tool_error`, [ADR-0067](adr/0067-tool-error-is-its-own-status.md)) reads as the
+  refusal the agent received, with no prefix: `-> { "error": "HTTP 404", ... }`. The
+  block is the same on every grading path, the standalone grader service included,
+  because it reads the transcript alone. Arguments are cut at 300 characters here; the
+  transcript shows each call, and so every text the agent wrote, in full. On without `tool_results` the
   results are numbered and not cut, and no `show_call` is offered;
 * **`show_call(calls, offset)`** (`tool_results`) — the full results of the calls it
   names, as the agent received them, at most 12,000 characters per answer, shared by

@@ -28,9 +28,9 @@ engine terminates on instead of a result the agent would read as a tool failure.
 
 from tolokaforge.core.models import TerminationReason
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.tools.registry import ToolExecutionStatus
+from tolokaforge.tools.registry import ENVIRONMENT_ERROR_STATUSES, ToolExecutionStatus
 
-ENGINE_PROTOCOL_VERSION = 6
+ENGINE_PROTOCOL_VERSION = 7
 
 # EXECUTION_STATUS_TRIAL_NOT_FOUND is absent because the client raises
 # TrialNotRegisteredError on it, and EXECUTION_STATUS_UNSPECIFIED because it names
@@ -38,11 +38,23 @@ ENGINE_PROTOCOL_VERSION = 6
 RECORDED_STATUS_BY_PROTO: dict[int, ToolExecutionStatus] = {
     pb2.EXECUTION_STATUS_SUCCESS: ToolExecutionStatus.SUCCESS,
     pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR: ToolExecutionStatus.ENVIRONMENT_ERROR,
+    pb2.EXECUTION_STATUS_TOOL_ERROR: ToolExecutionStatus.TOOL_ERROR,
     pb2.EXECUTION_STATUS_ERROR: ToolExecutionStatus.ERROR,
     pb2.EXECUTION_STATUS_TIMEOUT: ToolExecutionStatus.TIMEOUT,
     pb2.EXECUTION_STATUS_TOOL_NOT_FOUND: ToolExecutionStatus.TOOL_NOT_FOUND,
     pb2.EXECUTION_STATUS_INVALID_ARGUMENTS: ToolExecutionStatus.INVALID_ARGUMENTS,
 }
+
+
+#: Statuses of a call the tool completed — a success, or an ``isError`` reply,
+#: untyped or the tool's declared refusal (:data:`ENVIRONMENT_ERROR_STATUSES`). The
+#: agent reads such a call's output verbatim, and its record keeps that output
+#: rather than an error message.
+COMPLETED_EXECUTION_STATUSES: frozenset[int] = frozenset(
+    proto
+    for proto, status in RECORDED_STATUS_BY_PROTO.items()
+    if status is ToolExecutionStatus.SUCCESS or status in ENVIRONMENT_ERROR_STATUSES
+)
 
 
 def recorded_status(status: int) -> ToolExecutionStatus:

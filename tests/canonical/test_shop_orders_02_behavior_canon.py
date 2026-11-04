@@ -34,6 +34,7 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
+from tolokaforge.core.mcp_error_categories import TOOL_ERROR_CATEGORY
 from tolokaforge.core.models import (
     GradingConfig,
     InitialStateConfig,
@@ -1083,18 +1084,22 @@ class TestShopOrders02McpWrapperContract:
         assert outcome.output.startswith("Error executing tool confirm_payment:")
         assert "order_id" in outcome.output
 
-    async def test_a_failure_the_tool_declared_is_not_a_substrate_failure(self, wrapper_for):
-        """A ``ToolError`` comes back as a payload with the flag unset.
+    async def test_a_failure_the_tool_declared_is_a_tool_error_not_a_substrate_failure(
+        self, wrapper_for
+    ):
+        """A ``ToolError`` comes back flagged, with the ``tool_error`` category.
 
         The tool ran and declined the request, which is a different defect from
-        the call never happening — the flag must not claim otherwise, or the two
-        populations collapse into one.
+        the call never happening (the argument typo above: flagged, no category).
+        The category keeps the two populations apart, and the response is the
+        tool's own payload, unchanged.
         """
         wrapper = wrapper_for("confirm_payment")
 
         outcome = await wrapper.execute_call({"order_id": "O-999"})
 
-        assert outcome.declared_failure is False
+        assert outcome.declared_failure is True
+        assert outcome.category == TOOL_ERROR_CATEGORY
         assert json.loads(outcome.output) == {"error": "Order 'O-999' not found"}
 
     async def test_a_read_that_succeeds_is_not_a_declared_failure(self, wrapper_for):

@@ -54,6 +54,7 @@ from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenReplayRecord,
     declared_failure,
+    is_empty_tool_error,
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, CompositeGradeComponents
@@ -96,6 +97,7 @@ from tolokaforge.core.hash import (
     compute_stable_hash,
     filter_unstable_fields,
 )
+from tolokaforge.core.mcp_error_categories import INVALID_ARGUMENTS_CATEGORY, TOOL_ERROR_CATEGORY
 from tolokaforge.core.models import (
     CriterionResult,
     LLMJudgeConfig,
@@ -189,6 +191,7 @@ from tolokaforge.runner.models import (
     provisions_database,
 )
 from tolokaforge.runner.protocol import (
+    COMPLETED_EXECUTION_STATUSES,
     ENGINE_PROTOCOL_VERSION,
     parse_termination_reason,
     recorded_status,
@@ -206,7 +209,6 @@ from tolokaforge.runner.state_read_limits import (
     StateReadDeadlines,
 )
 from tolokaforge.runner.tool_factory import (
-    INVALID_ARGUMENTS_CATEGORY,
     MCPServerToolWrapper,
     SearchToolWrapper,
     ToolCallOutcome,
@@ -1804,8 +1806,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 # MCP completed the call and reported its own error flag beside
                 # the response text. This is an environment outcome, not a
                 # transport failure or a string-prefix heuristic — unless the
-                # substrate declared, in a typed way, that the arguments were
-                # refused (``ToolCallOutcome.category``).
+                # substrate declared a category (``ToolCallOutcome.category``).
                 if isinstance(result, ToolCallOutcome):
                     output = result.output
                     if not result.declared_failure:
@@ -1816,6 +1817,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                         # call, so the server's feedback travels there too.
                         status = pb2.EXECUTION_STATUS_INVALID_ARGUMENTS
                         error_message = result.output
+                    elif result.category == TOOL_ERROR_CATEGORY:
+                        # The tool ran and refused the request (a ToolError):
+                        # completed like an environment error, so the agent reads
+                        # the response verbatim, but recorded apart from an
+                        # untyped isError (FastMCP refusing the arguments, or an
+                        # exception escaping the tool).
+                        status = pb2.EXECUTION_STATUS_TOOL_ERROR
                     else:
                         status = pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR
                 elif isinstance(result, str):
@@ -1855,15 +1863,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 call_id=call_id,
                 tool_name=tool_name,
                 arguments=arguments,
-                output=(
-                    output
-                    if status
-                    in (
-                        pb2.EXECUTION_STATUS_SUCCESS,
-                        pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR,
-                    )
-                    else error_message
-                ),
+                output=output if status in COMPLETED_EXECUTION_STATUSES else error_message,
                 status=recorded_status(status),
                 executor=executor,
                 latency_seconds=latency_seconds,
@@ -1876,15 +1876,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             error_message=error_message,
             metrics=pb2.ToolMetrics(
                 latency_seconds=latency_seconds,
-                exit_code=(
-                    0
-                    if status
-                    in (
-                        pb2.EXECUTION_STATUS_SUCCESS,
-                        pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR,
-                    )
-                    else 1
-                ),
+                exit_code=0 if status in COMPLETED_EXECUTION_STATUSES else 1,
                 state_mutations=0,  # TODO: Track state mutations if needed
             ),
         )
@@ -3523,7 +3515,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     replay_failures.append(FailedGoldenAction.from_exception(i, tool_name, e))
                     continue
 
-                if outcome.declared_failure:
+                refused = outcome.category == TOOL_ERROR_CATEGORY
+                if outcome.declared_failure and not refused:
                     logger.error(
                         f"GradeTrial: Golden action {i} ({tool_name}) was declared a failure by its "
                         f"substrate: {outcome.output}"
@@ -3533,7 +3526,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     )
                     continue
 
+                # A tool's declared refusal (a ``ToolError``) is the action running and
+                # reporting failure, read off the same ``{"error": ...}`` payload core
+                # reads off ``invoke`` — ``ToolError("")``'s ``{"error": ""}`` included,
+                # which both read as no failure. Any other refused text — prose, or an
+                # object with no truthy ``"error"`` (a third-party server's
+                # ``{"message": ...}``) — is its own message: the flag said the call
+                # failed, so it never reads as a success.
                 reported = declared_failure(outcome.output)
+                if refused and reported is None and not is_empty_tool_error(outcome.output):
+                    reported = outcome.output
                 if reported is None:
                     logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")
                     continue

@@ -95,6 +95,46 @@ is silent. An entry *without* the key was written before the field existed; a
 description of such a task logs one warning naming the file, the tools and the
 regeneration path. Regenerating the cache silences it.
 
+## Declaring a failure
+
+A tool built with `DomainToolRegistry` refuses a request by raising
+`tolokaforge.core.tools_interface.ToolError`
+([ADR-0067](adr/0067-tool-error-is-its-own-status.md)):
+
+```python
+@registry.tool("Look up one order.", mutates_state=False)
+def get_order(data: dict, order_id: str) -> dict:
+    order = data["orders"].get(order_id)
+    if order is None:
+        raise ToolError(f"Order '{order_id}' not found")
+    return order
+```
+
+The registry answers it with `isError: true`, the payload `{"error": ..., "details":
+[...]}` as text, and `_meta: {"tolokaforge/error_category": "tool_error"}`. The runner
+records the call as `tool_error`: a completed call whose response the agent reads
+verbatim and the environment-error budget counts, kept apart from the other failures a
+server can answer with.
+
+| The server answers | Recorded as |
+|---|---|
+| `isError: true`, `_meta` `tolokaforge/error_category: tool_error` | `tool_error` — the tool ran and refused the request |
+| `isError: true`, `_meta` `tolokaforge/error_category: invalid_arguments`, or JSON-RPC `-32602` | `invalid_arguments` — the caller's input was refused; the budget does not count it |
+| `isError: true` with no category | `environment_error` — FastMCP refusing the arguments against the signature, or an exception escaping the tool |
+
+A server written without `DomainToolRegistry` declares the same categories the same way;
+the names are in `tolokaforge.core.mcp_error_categories`, a module with no imports.
+FastMCP's own `mcp.server.fastmcp.exceptions.ToolError` is a different class: raising it
+answers an untyped `isError`, recorded as `environment_error`.
+
+Registry tools register without structured output: FastMCP validates a `CallToolResult`
+a tool returns against the output schema it derives from the return annotation, which a
+refusal cannot satisfy. `tools/list` carries no `outputSchema` for them and answers carry
+no `structuredContent`; the engine reads only the text content. An answer FastMCP renders
+as no content at all (`None`, an empty list) reaches the agent as
+`{"content": [], "isError": false}`. The registry needs `mcp>=1.19`, the first whose FastMCP passes a
+returned `CallToolResult` through as it is.
+
 ## Notes
 
 - MCP tools are loaded in addition to built-in tools.

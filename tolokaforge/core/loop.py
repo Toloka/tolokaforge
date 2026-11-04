@@ -115,8 +115,8 @@ from tolokaforge.core.tool_message_format import TOOL_ERROR_MESSAGE_PREFIX
 from tolokaforge.core.tool_output_truncation import keep_head_and_tail
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import (
+    ENVIRONMENT_ERROR_STATUSES,
     ToolExecuting,
-    ToolExecutionStatus,
     ToolResult,
     resolve_tool_output,
     resolve_tool_status,
@@ -1621,14 +1621,14 @@ class ToolCallingLoop:
                     # at the budget's next check rather than over the raised error.
                     self.simulation_budget.environment(
                         errors=sum(
-                            message.tool_status is ToolExecutionStatus.ENVIRONMENT_ERROR
+                            message.tool_status in ENVIRONMENT_ERROR_STATUSES
                             for message in messages[batch_start:]
                         )
                     )
                 raise
             if self.simulation_budget is not None:
                 errors = sum(
-                    resolve_tool_status(tool_result) is ToolExecutionStatus.ENVIRONMENT_ERROR
+                    resolve_tool_status(tool_result) in ENVIRONMENT_ERROR_STATUSES
                     for tool_result in results
                 )
                 reason = self.simulation_budget.environment(errors=errors)

@@ -1740,6 +1740,7 @@
       "enum": [
         "success",
         "environment_error",
+        "tool_error",
         "error",
         "timeout",
         "tool_not_found",

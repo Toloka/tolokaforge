@@ -445,7 +445,12 @@ class TestIsolatedTurns:
         assert tools.calls == ["check_balance", "list_cards"]
         assert len(user.contexts) == 1
 
-    def test_environment_errors_count_each_failed_result_in_a_single_batch(self) -> None:
+    @pytest.mark.parametrize(
+        "status", [ToolExecutionStatus.ENVIRONMENT_ERROR, ToolExecutionStatus.TOOL_ERROR]
+    )
+    def test_environment_errors_count_each_failed_result_in_a_single_batch(
+        self, status: ToolExecutionStatus
+    ) -> None:
         class ErrorTools(_UserTools):
             def execute(
                 self,
@@ -459,7 +464,7 @@ class TestIsolatedTurns:
                 return ToolResult(
                     success=True,
                     output="Error: declared by the environment",
-                    status=ToolExecutionStatus.ENVIRONMENT_ERROR,
+                    status=status,
                 )
 
         tools = ErrorTools()
@@ -477,11 +482,37 @@ class TestIsolatedTurns:
             message.tool_status
             for message in trajectory.messages
             if message.role is MessageRole.TOOL
-        ] == [
-            ToolExecutionStatus.ENVIRONMENT_ERROR,
-            ToolExecutionStatus.ENVIRONMENT_ERROR,
-        ]
+        ] == [status, status]
         assert user.contexts == []
+
+    def test_a_tool_refusal_in_a_user_tool_step_counts_as_an_environment_error(self) -> None:
+        """The user-step path counts a ``tool_error`` like the agent batch does."""
+
+        class RefusingTools(_UserTools):
+            def execute(
+                self,
+                tool_name: str,
+                arguments: dict | None = None,
+                *,
+                call_id: str,
+                validation_schema: dict | None = None,
+            ) -> ToolResult:
+                self.calls.append(tool_name)
+                return ToolResult(
+                    success=True,
+                    output='{"error": "card is frozen"}',
+                    status=ToolExecutionStatus.TOOL_ERROR,
+                )
+
+        agent = _RecordingAgent("How can I help?", "unreached")
+        user = _QueuedUser(_tool_step(_call("u1")), _say("unreached"))
+
+        trajectory = _isolated_trial(
+            agent, user, tools=RefusingTools(), simulation_max_errors=1
+        ).run("System", "Hi")
+
+        assert trajectory.termination_reason is TerminationReason.TOO_MANY_ERRORS
+        assert trajectory.environment_errors == 1
 
     def test_the_agent_never_reads_a_user_tool_step(self) -> None:
         agent = _RecordingAgent("How can I help?", "Thanks, one moment.")

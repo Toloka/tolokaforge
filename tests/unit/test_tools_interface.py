@@ -5,6 +5,7 @@ Covers:
 - _ToolClass.invoke: plain pass-through, Pydantic model coercion, list coercion,
   mixed list (model + already-coerced), ToolError serialisation.
 - _mcp_fn: delegates to original function with state_getter(); serialises ToolError.
+- Over a real FastMCP server: a ToolError under a non-mapping annotation, no output schema.
 - Decorator side-effects: TOOLS entry, class naming, MCP registration (exact count),
   signature stripping of 'data', annotation forwarding, docstring propagation.
 - setup_task_server: sys.path ordering, pkg_root insertion, sys.modules alias.
@@ -21,9 +22,12 @@ from typing import Annotated, Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-from mcp.types import ToolAnnotations
+from mcp.server.fastmcp import FastMCP
+from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.types import CallToolResult, ToolAnnotations
 from pydantic import BaseModel, Field
 
+from tolokaforge.core.mcp_error_categories import MCP_ERROR_CATEGORY_META, TOOL_ERROR_CATEGORY
 from tolokaforge.core.tools_interface import (
     DomainToolRegistry,
     ToolError,
@@ -209,7 +213,7 @@ class TestMcpFn:
         self.mock_mcp = MagicMock()
         self.captured_fn: Any = None
 
-        def capture_decorator(description, annotations=None, meta=None):
+        def capture_decorator(description, annotations=None, meta=None, structured_output=None):
             def inner(fn):
                 self.captured_fn = fn
                 return fn
@@ -242,14 +246,22 @@ class TestMcpFn:
         self.state["key"] = "updated"
         assert mcp_fn() == "updated"
 
-    def test_mcp_fn_tool_error_serialised(self):
+    def test_mcp_fn_answers_a_tool_error_as_a_refused_call(self):
+        """``isError`` with the ``tool_error`` category, beside the text FastMCP renders
+        for the same mapping returned as a value — the response the agent reads."""
+
         @self.registry.tool("Fail via MCP path.")
         def mcp_fail(data: dict) -> dict:
             raise ToolError("MCP error", details=["detail"])
 
-        mcp_fn = self.captured_fn
-        result = mcp_fn()
-        assert result == {"error": "MCP error", "details": ["detail"]}
+        result = self.captured_fn()
+
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        assert result.meta == {MCP_ERROR_CATEGORY_META: TOOL_ERROR_CATEGORY}
+        assert [c.text for c in result.content] == [
+            '{\n  "error": "MCP error",\n  "details": [\n    "detail"\n  ]\n}'
+        ]
 
     def test_mcp_fn_passes_kwargs(self):
         @self.registry.tool("Pass kwargs.")
@@ -258,6 +270,65 @@ class TestMcpFn:
 
         mcp_fn = self.captured_fn
         assert mcp_fn(x=3, y=4) == 7
+
+
+# ---------------------------------------------------------------------------
+# Over a real FastMCP server
+# ---------------------------------------------------------------------------
+
+
+class _Receipt(BaseModel):
+    total: int
+
+
+def _real_registry() -> FastMCP:
+    mcp = FastMCP("tools-interface-probe")
+    registry = DomainToolRegistry(mcp, lambda: {})
+
+    @registry.tool("Refuse with a list annotation.")
+    def refuse_list(data: dict) -> list[str]:
+        raise ToolError("order is closed")
+
+    @registry.tool("Refuse with a model annotation.")
+    def refuse_model(data: dict) -> _Receipt:
+        raise ToolError("order is closed")
+
+    @registry.tool("Answer nothing.")
+    def answer_none(data: dict) -> None:
+        return None
+
+    return mcp
+
+
+@pytest.mark.parametrize("tool_name", ["refuse_list", "refuse_model"])
+async def test_a_tool_error_under_a_non_mapping_annotation_reaches_the_client_as_a_refusal(
+    tool_name: str,
+) -> None:
+    """FastMCP would validate a returned ``CallToolResult`` against the output schema it
+    derives from a non-mapping annotation; registered without structured output, the
+    refusal reaches the client flagged, categorised, and as the payload text."""
+    mcp = _real_registry()
+    async with create_connected_server_and_client_session(mcp._mcp_server) as session:
+        result = await session.call_tool(tool_name, {})
+
+    assert result.isError is True
+    assert result.meta == {MCP_ERROR_CATEGORY_META: TOOL_ERROR_CATEGORY}
+    assert [c.text for c in result.content] == ['{\n  "error": "order is closed"\n}']
+
+
+async def test_registry_tools_publish_no_output_schema_and_an_empty_answer_has_no_content() -> None:
+    mcp = _real_registry()
+    async with create_connected_server_and_client_session(mcp._mcp_server) as session:
+        listed = await session.list_tools()
+        empty = await session.call_tool("answer_none", {})
+
+    schemas = {tool.name: tool.outputSchema for tool in listed.tools}
+    assert schemas["refuse_list"] is None
+    assert schemas["refuse_model"] is None
+    assert schemas["answer_none"] is None
+    assert empty.isError is False
+    assert empty.content == []
+    assert empty.structuredContent is None
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +377,7 @@ class TestDecoratorSideEffects:
 
         assert self.mock_mcp.tool.call_count == count_before + 1
         assert self.mock_mcp.tool.call_args == call(
-            description="One tool.", annotations=None, meta=None
+            description="One tool.", annotations=None, meta=None, structured_output=False
         )
 
     def test_a_declared_mutates_state_becomes_the_read_only_hint(self):
@@ -315,7 +386,10 @@ class TestDecoratorSideEffects:
             return "x"
 
         assert self.mock_mcp.tool.call_args == call(
-            description="Read.", annotations=ToolAnnotations(readOnlyHint=True), meta=None
+            description="Read.",
+            annotations=ToolAnnotations(readOnlyHint=True),
+            meta=None,
+            structured_output=False,
         )
 
         @self.registry.tool("Write.", mutates_state=True)
@@ -323,7 +397,10 @@ class TestDecoratorSideEffects:
             return "x"
 
         assert self.mock_mcp.tool.call_args == call(
-            description="Write.", annotations=ToolAnnotations(readOnlyHint=False), meta=None
+            description="Write.",
+            annotations=ToolAnnotations(readOnlyHint=False),
+            meta=None,
+            structured_output=False,
         )
 
     def test_the_internal_state_tools_declare_themselves(self):

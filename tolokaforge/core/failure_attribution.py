@@ -230,7 +230,10 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         )
     else:
         for idx, call in enumerate(trajectory.tool_log):
-            if call.status is ToolExecutionStatus.SUCCESS:
+            # A tool's declared refusal (``tool_error``) is the environment answering
+            # the agent's request, not the tool failing to execute: a trial that met
+            # one and failed later is not a tool-execution failure.
+            if call.status in (ToolExecutionStatus.SUCCESS, ToolExecutionStatus.TOOL_ERROR):
                 continue
             # A failed call records its failure text as the call's output.
             err_text = call.output

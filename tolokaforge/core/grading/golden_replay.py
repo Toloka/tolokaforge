@@ -394,6 +394,17 @@ def declared_failure(payload: object) -> str | None:
     return f"{error} ({'; '.join(str(detail) for detail in details)})"
 
 
+def is_empty_tool_error(payload: str) -> bool:
+    """Whether ``payload`` is what ``ToolError("")`` serialises to: an ``"error"`` of ``""``.
+
+    The one refusal :func:`declared_failure` reads as no failure that a ``DomainToolRegistry``
+    tool can produce, so a replay reading a flagged refusal off its text reads this one the way
+    core reads it off ``invoke``. ``{"error": null}`` is not it: ``str(exc)`` is never ``None``.
+    """
+    decoded = _decoded_json(payload)
+    return isinstance(decoded, Mapping) and decoded.get("error") == ""
+
+
 def _decoded_json(payload: str) -> object:
     """What the string carries, or the string itself when it carries no JSON."""
     try:

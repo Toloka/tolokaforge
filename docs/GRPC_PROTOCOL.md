@@ -305,6 +305,8 @@ enum ExecutionStatus {
   EXECUTION_STATUS_TOOL_NOT_FOUND = 4;
   EXECUTION_STATUS_INVALID_ARGUMENTS = 5;
   EXECUTION_STATUS_TRIAL_NOT_FOUND = 6;
+  EXECUTION_STATUS_ENVIRONMENT_ERROR = 7;  // MCP isError, untyped: the call completed
+  EXECUTION_STATUS_TOOL_ERROR = 8;         // MCP isError, category tool_error: the tool refused
 }
 
 message ToolMetrics {
@@ -686,6 +688,8 @@ Version 5 is the first that records an MCP tool's typed refusal of its arguments
 
 Version 6 is the first that carries `RunTestSuiteRequest.user` and `RunTestSuiteRequest.require_reward`, so a task pack can say which Unix user grades it and refuse a trial whose verifier wrote no reward. An older image drops both fields silently (proto3 discards unknown fields): the verifier runs as the agent's user, the reward read keeps its `|| echo 0.0` fallback, and a pack that seals its reward directory against the agent scores every trial `0.0` while reporting them complete. That is indistinguishable from a model that failed — it zeroed 77 of 100 tasks on the TBench Arena board before anyone noticed — so the host refuses such an image before a trial starts rather than let the silence recur.
 
+Version 7 is the first that records a call an MCP tool refused — an `isError: true` reply whose `_meta` carries `tolokaforge/error_category: tool_error`, which `DomainToolRegistry` answers a `ToolError` with — as `EXECUTION_STATUS_TOOL_ERROR`. An older image ships its own `DomainToolRegistry`, which still answers a `ToolError` as a success, and would record a third-party server's declared refusal as `EXECUTION_STATUS_ENVIRONMENT_ERROR`; an older host could not record the new status at all. Both pairings are refused before a trial starts.
+
 The runner's request gate is a lower bound, not an equality: a newer engine still sends `call_id`. From version 3 onward the host also checks `runner_protocol_version` in the successful registration response, so an older image cannot silently omit a newer outcome or grading field.
 
 #### Trial spec payload
@@ -812,6 +816,8 @@ The tool execution flow:
 | `ERROR` | Tool raised exception | Return error message to LLM | yes |
 | `TIMEOUT` | Execution exceeded timeout | Return timeout message to LLM | yes |
 | `TOOL_NOT_FOUND` | Tool name not registered | Log error, fail trial | yes |
+| `ENVIRONMENT_ERROR` | The MCP tool answered `isError: true` with no category: the call completed | Return the response to LLM verbatim; it counts as an environment error | yes |
+| `TOOL_ERROR` | The tool ran and refused the request: `isError: true` with `_meta` `tolokaforge/error_category: tool_error` (`DomainToolRegistry` answers a `ToolError` so) | Return the response to LLM verbatim; it counts as an environment error | yes |
 | `INVALID_ARGUMENTS` | Arguments don't match the schema, or an MCP tool refused them in a typed way (JSON-RPC `-32602`, or `isError: true` with `_meta` `tolokaforge/error_category: invalid_arguments`) | Return the feedback to LLM; it does not count as an environment error | yes; with empty `arguments` when the runner refused unparseable JSON |
 | `TRIAL_NOT_FOUND` | Trial ID not registered | Abort the trial as `trial_lost` | no — on either side; the call reached no tool |
 

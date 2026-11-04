@@ -425,7 +425,7 @@ def test_a_status_literal_no_executor_produces_is_rejected_at_load() -> None:
 
 def test_a_status_literal_that_is_a_real_enum_member_is_admitted() -> None:
     """Every ``ToolExecutionStatus`` value stays a valid predicate literal."""
-    for admitted in ("success", "error", "timeout", "tool_not_found", "invalid_arguments"):
+    for admitted in (status.value for status in ToolExecutionStatus):
         TraceMatcher(
             kind=TraceEventKind.TOOL_RESULT,
             status=ValuePredicate(equals=admitted),

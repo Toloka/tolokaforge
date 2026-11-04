@@ -482,7 +482,12 @@ arguments, set `category="invalid_arguments"` on the outcome: the runner then
 records the call as `INVALID_ARGUMENTS`, which the environment-error budget does
 not count, instead of `ENVIRONMENT_ERROR`. `MCPServerToolWrapper` sets it for the
 JSON-RPC error `-32602` and for an `isError: true` reply whose `_meta` carries
-`"tolokaforge/error_category": "invalid_arguments"`. Never derive it from the
+`"tolokaforge/error_category": "invalid_arguments"`. When it says the tool ran
+and refused the request, set `category="tool_error"`: the runner records the call
+as `TOOL_ERROR`, which the budget counts like an environment error and the agent
+reads verbatim. `MCPServerToolWrapper` sets it for an `isError: true` reply whose
+`_meta` carries `"tolokaforge/error_category": "tool_error"` — what
+`DomainToolRegistry` answers a `ToolError` with. Never derive either from the
 error prose; a failure without a typed category stays an environment error.
 
 Keep one request path, as above: `execute` delegates to `execute_call` and drops

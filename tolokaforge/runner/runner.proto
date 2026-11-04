@@ -195,6 +195,9 @@ enum ExecutionStatus {
   EXECUTION_STATUS_TRIAL_NOT_FOUND = 6;
   // The MCP tool answered with isError=true; unlike ERROR, its call completed.
   EXECUTION_STATUS_ENVIRONMENT_ERROR = 7;
+  // The MCP tool ran and refused the request: isError=true with _meta
+  // tolokaforge/error_category: tool_error (DomainToolRegistry's ToolError).
+  EXECUTION_STATUS_TOOL_ERROR = 8;
 }
 
 message ToolMetrics {
