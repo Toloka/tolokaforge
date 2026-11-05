@@ -195,6 +195,7 @@ class TestCompanionDataclassFields:
             "grpc_max_message_mb",
             "state_read_timeout_s",
             "tool_artifact_refs_root",
+            "final_state_dir",
         ]
 
     def test_run_ctx_fields(self) -> None:
@@ -238,6 +239,7 @@ class TestCompanionDataclassFields:
             "trial_stack_handles",
             "trial_endpoints",
             "trial_runner_client",
+            "final_state_dir",
         ]
 
 

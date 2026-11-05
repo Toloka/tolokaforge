@@ -16,7 +16,10 @@ with the frozen inline-flow baseline fixture for the single-stack shapes.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+import shutil
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +55,7 @@ from tolokaforge.core.service_lifecycle_dispatchers import DISPATCHER_REGISTRY
 from tolokaforge.core.service_readiness import DiagnosticPayload, ReadinessResult, ResolvedEndpoint
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
+from tolokaforge.runner.compose_naming import compose_trial_slug
 from tolokaforge.runner.models import ServiceIsolation, ServiceSpec, StackDecl
 
 __all__ = ["DefaultSubstrateComposer"]
@@ -201,11 +205,36 @@ class DefaultSubstrateComposer:
         manifest = _require_manifest(spec)
         _refuse_reserved_prefix(manifest, spec.trial_id)
         _refuse_refs_no_trial_runner_can_take(plan, spec)
+        _refuse_final_state_mount_no_trial_runner_can_take(plan, spec, manifest)
 
+        final_state_dir = (
+            _make_final_state_dir(spec.trial_id)
+            if manifest.final_state_delivery == "mount"
+            else None
+        )
+        try:
+            handle = self._provision_trial_stacks(plan, spec, manifest, run_sub, final_state_dir)
+        except BaseException:
+            _remove_final_state_dir(final_state_dir)
+            raise
+        if final_state_dir is None:
+            return handle
+        return dataclasses.replace(handle, final_state_dir=final_state_dir)
+
+    def _provision_trial_stacks(
+        self,
+        plan: CompositionPlan,
+        spec: TrialSpec,
+        manifest: EnvironmentManifest,
+        run_sub: RunSubstrate,
+        final_state_dir: Path | None,
+    ) -> ComposedEnvHandle:
         newly: list[tuple[StackDecl, StackHandle]] = []
         try:
             self._materialise_task_stacks(plan, spec, manifest, run_sub, newly)
-            trial_handles = self._materialise_trial_stacks(plan, spec, manifest, run_sub, newly)
+            trial_handles = self._materialise_trial_stacks(
+                plan, spec, manifest, run_sub, newly, final_state_dir
+            )
         except BaseException:
             _teardown_handles_best_effort(self.materialiser, [h for _, h in newly])
             raise
@@ -263,6 +292,7 @@ class DefaultSubstrateComposer:
         manifest: EnvironmentManifest,
         run_sub: RunSubstrate,
         newly: list[tuple[StackDecl, StackHandle]],
+        final_state_dir: Path | None = None,
     ) -> list[StackHandle]:
         trial_handles: list[StackHandle] = []
         for decl in [d for d in plan if d.stack_scope == "trial"]:
@@ -287,6 +317,7 @@ class DefaultSubstrateComposer:
                 events=run_sub.events,
                 component_id_prefix=f"trial/{spec.trial_id}",
                 tool_artifact_refs_root=_tool_artifact_refs_root(decl, spec),
+                final_state_dir=final_state_dir if decl.runner_service is not None else None,
             )
             handle = self.materialiser.materialise(decl, ctx)
             trial_handles.append(handle)
@@ -424,6 +455,7 @@ class DefaultSubstrateComposer:
                     env_handle.trial_id,
                 )
         _teardown_handles_best_effort(self.materialiser, list(env_handle.trial_stack_handles))
+        _remove_final_state_dir(env_handle.final_state_dir)
 
     def teardown_run(self, run_sub: RunSubstrate) -> None:
         if run_sub.runner_client is not None:
@@ -633,6 +665,57 @@ def _refuse_refs_no_trial_runner_can_take(plan: CompositionPlan, spec: TrialSpec
             f"mount the task's directory into it; the runner here: {found}"
         ),
     )
+
+
+def _refuse_final_state_mount_no_trial_runner_can_take(
+    plan: CompositionPlan, spec: TrialSpec, manifest: EnvironmentManifest
+) -> None:
+    """Refuse ``final_state_delivery: mount`` when no trial-scope stack owns the runner.
+
+    The composer's counterpart of the resolver's refusal, as
+    :func:`_refuse_refs_no_trial_runner_can_take` is for tool artefacts: the
+    final-state directory is made per trial and mounted into the runner the
+    composer materialises for it, which a run- or task-scope runner is not.
+    """
+    if manifest.final_state_delivery != "mount":
+        return
+    owners = [decl for decl in plan if decl.runner_service is not None]
+    if owners and all(decl.stack_scope == "trial" for decl in owners):
+        return
+    found = (
+        ", ".join(f"{decl.stack_id!r} (stack_scope={decl.stack_scope})" for decl in owners)
+        or "no stack sets runner_service"
+    )
+    raise ProvisionError(
+        trial_id=spec.trial_id,
+        stage="provision",
+        reason=(
+            "the task delivers its final state by reference (final_state_delivery: mount), "
+            "which needs a trial-scope stack to own the runner so the engine can mount a "
+            f"final-state directory into it; the runner here: {found}"
+        ),
+    )
+
+
+def _make_final_state_dir(trial_id: str) -> Path:
+    """A fresh host directory for one trial's final-state file (ADR-0069).
+
+    Private to this process's user (``mkdtemp``), except for the directory
+    itself: it is made writable by every user so a runner image that runs as
+    a user other than the engine's can write into the bind mount. Removed by
+    :meth:`DefaultSubstrateComposer.teardown_trial`.
+    """
+    parent = Path(tempfile.mkdtemp(prefix="tolokaforge-final-state-"))
+    directory = parent / compose_trial_slug(trial_id)
+    directory.mkdir()
+    directory.chmod(0o777)  # noqa: S103 - only the runner's mount; the parent is 0700
+    return directory
+
+
+def _remove_final_state_dir(directory: Path | None) -> None:
+    if directory is None:
+        return
+    shutil.rmtree(directory.parent, ignore_errors=True)
 
 
 def _validate_plan(plan: CompositionPlan) -> None:

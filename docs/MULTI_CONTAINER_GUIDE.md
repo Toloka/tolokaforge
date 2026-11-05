@@ -240,6 +240,17 @@ The pieces that matter:
   needs a `trial`-scope stack to own the runner and the `runner_rpc`
   grader without snapshot bundles; the run refuses anything else up front.
   Use it for a task whose world is too large to travel inline.
+- **`final_state_delivery`** — `inline` (default) or `mount`, the reverse
+  direction. Under `mount` the engine bind-mounts a per-trial writable
+  directory into the runner service at `/tolokaforge/final-state`; the
+  runner writes the trial's final database state there and answers
+  `GetState` with the file's path, SHA-256 and size, and the engine checks
+  the file and copies it into the trial bundle as `final_state.json`
+  without parsing it (ADR-0069). The same scope and grader rules apply
+  (`trial`-scope runner, `runner_rpc` without snapshot bundles); a
+  redacting artifact-write policy withholds the file. Use it for a task
+  whose final database state is too large to cross the wire in one
+  message or to be parsed by the engine.
 
 A task can declare its own `environment_manifest` with the same shape; it
 deep-merges on top of `default_environment` per service. A task that

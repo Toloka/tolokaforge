@@ -140,6 +140,11 @@ class MaterialiseContext:
     read-only into the stack's runner service. ``None`` — every stack but the
     trial-scope runner owner of a description with references — mounts
     nothing."""
+    final_state_dir: Path | None = None
+    """The trial's final-state directory (ADR-0069), bind-mounted writable into
+    the stack's runner service. ``None`` — every stack but the trial-scope
+    runner owner of a task that declares ``final_state_delivery: mount`` —
+    mounts nothing."""
 
 
 @dataclass(frozen=True)
@@ -215,6 +220,11 @@ class ComposedEnvHandle:
     trial_stack_handles: tuple[StackHandle, ...]
     trial_endpoints: EnvEndpoints | None
     trial_runner_client: RunnerClient | None
+    final_state_dir: Path | None = None
+    """The host directory the trial's runner writes its final state into
+    (ADR-0069), mounted into it at materialise time; ``None`` unless the task
+    declares ``final_state_delivery: mount``. The composer that made it removes
+    it at :meth:`SubstrateComposer.teardown_trial`."""
 
     @property
     def compose(self) -> Any:

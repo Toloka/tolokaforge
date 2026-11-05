@@ -530,6 +530,12 @@ def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
     )
 
 
+def _declares_final_state_mount(description: Any) -> bool:
+    """Whether a task description's environment declares ``final_state_delivery: mount``."""
+    manifest = getattr(description, "environment_manifest", None)
+    return manifest is not None and manifest.final_state_delivery == "mount"
+
+
 @dataclass(frozen=True)
 class OrchestratorDeps:
     """Pluggable seams the :class:`Orchestrator` delegates to.
@@ -2877,6 +2883,41 @@ class Orchestrator:
             "mode, or deliver these tasks' artefacts inline."
         )
 
+    def _refuse_final_state_mount_the_grader_cannot_read(self) -> None:
+        """Refuse, before any trial, tasks whose final state the grader would have to read whole.
+
+        A task that declares ``final_state_delivery: mount`` (ADR-0069) has its
+        final DB state written to a file on the engine's machine, which the
+        engine never parses. The ``grader_rpc`` and ``queue`` graders read the
+        final state over the wire in one message, and a snapshot grade bundle
+        embeds it, so each would rebuild the very copies the delivery removes —
+        or refuse at grade time, after the trial's tokens were spent. The
+        ``runner_rpc`` grader reads the state where it lives, on the runner.
+        Every offending task is named in one error.
+        """
+        grader = self.config.grader
+        grader_name = grader.name if grader else None
+        if not grader_name and self.adapter is not None:
+            grader_name = self.adapter.trial_grader_name
+        remote_grader = grader_name in ("grader_rpc", "queue")
+        snapshot = grader is not None and grader.snapshot is not None and grader.snapshot.enabled
+        if not (remote_grader or snapshot) or self.adapter is None:
+            return
+        offending = sorted(
+            task.task_id
+            for task in self.tasks
+            if _declares_final_state_mount(self._task_description(task.task_id))
+        )
+        if not offending:
+            return
+        how = f"grader {grader_name!r}" if remote_grader else "grader.snapshot.enabled=true"
+        raise ValueError(
+            f"{how} reads the final state whole, which tasks {offending} deliver by reference "
+            "(final_state_delivery: mount, ADR-0069) so that the engine never holds it. Grade "
+            "with the runner_rpc grader without snapshot mode, or deliver these tasks' final "
+            "state inline."
+        )
+
     def _reject_ungradeable_packs(self) -> None:
         """Refuse a run whose selected packs cannot be graded as written.
 
@@ -3141,6 +3182,7 @@ class Orchestrator:
         judge_config = self._resolve_judge_config()
         self._reject_ungradeable_packs()
         self._refuse_tool_artifact_refs_the_grader_cannot_read()
+        self._refuse_final_state_mount_the_grader_cannot_read()
 
         # Log model configuration for all roles
         self.logger.info(

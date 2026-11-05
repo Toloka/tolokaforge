@@ -192,11 +192,19 @@ class PerTrialRuntimeBackend:
         trial_id: str,
         include_unstable: bool = True,
         tables: list[str] | None = None,
+        by_reference: bool = False,
     ) -> dict[str, Any]:
+        if not by_reference:
+            return self._delegate.get_state(
+                trial_id=trial_id,
+                include_unstable=include_unstable,
+                tables=tables,
+            )
         return self._delegate.get_state(
             trial_id=trial_id,
             include_unstable=include_unstable,
             tables=tables,
+            by_reference=True,
         )
 
     def reset_trial(self, trial_id: str, execute_init_actions: bool = False) -> dict[str, Any]:

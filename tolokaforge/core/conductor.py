@@ -62,6 +62,7 @@ from tolokaforge.core.models import (
     validate_rate_limit_probe_budget,
 )
 from tolokaforge.core.output.artifacts import TrialArtifactWriter
+from tolokaforge.core.output_writer import FINAL_STATE_REF_KEY
 from tolokaforge.core.plugin_registry import load_user_simulator
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
@@ -84,6 +85,11 @@ from tolokaforge.observability.observer import (
     TrialIdentity,
     TrialObserver,
     safely,
+)
+from tolokaforge.runner.final_state_file import (
+    FinalStateFileError,
+    StateFile,
+    verify_state_file,
 )
 from tolokaforge.runner.models import MutatesStateRule, provisions_database
 
@@ -361,6 +367,12 @@ class _TrialSetup:
 _DB_DERIVED_FINAL_STATE_KEYS = ("agent", "user", "db")
 
 
+def _final_state_by_reference(spec: TrialSpec) -> bool:
+    """Whether the trial's task declares ``final_state_delivery: mount`` (ADR-0069)."""
+    manifest = spec.task.environment_manifest
+    return manifest is not None and manifest.final_state_delivery == "mount"
+
+
 class FinalStateUnavailableError(Exception):
     """The Runner could not report the final state of a trial that provisions a database."""
 
@@ -589,7 +601,7 @@ class InProcessConductor:
             )
             # Every bundle, including the snapshot grader's, records the traced attempt.
             trajectory.attempt_id = spec.attempt_id
-            self._capture_final_state(spec, setup, trajectory)
+            final_state_file = self._capture_final_state(spec, setup, trajectory)
             self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
             self._produce_grade_bundle(spec, setup, trajectory)
         except BaseException as exc:
@@ -604,7 +616,12 @@ class InProcessConductor:
             )
             raise
         safely(self.trial_observer.trial_finished, identity, trajectory=trajectory)
-        self._write_artifacts(spec, task_config, setup, trajectory, runner)
+        if final_state_file is None:
+            self._write_artifacts(spec, task_config, setup, trajectory, runner)
+        else:
+            self._write_artifacts(
+                spec, task_config, setup, trajectory, runner, final_state_file=final_state_file
+            )
         return TrialResult.from_trajectory(
             trial_id=setup.trial_id, trajectory=trajectory, worker_id=spec.worker_id
         )
@@ -1194,7 +1211,7 @@ class InProcessConductor:
         spec: TrialSpec,
         setup: _TrialSetup,
         trajectory: Trajectory,
-    ) -> None:
+    ) -> StateFile | None:
         """Sync the trial's final environment state from the Runner DB
         service and stash it on ``trajectory.final_env_state``.
 
@@ -1226,7 +1243,14 @@ class InProcessConductor:
         environment identity is recorded under the ``environment`` key so a
         post-mortem can read which services, images, DSNs, and mounts backed
         the trial. Manifest-less trials keep the JSON-DB-only shape.
+
+        A task that declares ``final_state_delivery: mount`` (ADR-0069) has
+        the Runner write the DB state to a file on this machine instead; see
+        :meth:`_capture_final_state_file`. Only then is a :class:`StateFile`
+        returned, for :meth:`_write_artifacts` to place in the bundle.
         """
+        if _final_state_by_reference(spec) and provisions_database(spec.task.initial_state):
+            return self._capture_final_state_file(spec, setup, trajectory)
         capture_error: str | None = None
         if provisions_database(spec.task.initial_state):
             try:
@@ -1267,6 +1291,85 @@ class InProcessConductor:
             )
 
         trajectory.final_env_state = final_state
+        return None
+
+    def _capture_final_state_file(
+        self,
+        spec: TrialSpec,
+        setup: _TrialSetup,
+        trajectory: Trajectory,
+    ) -> StateFile | None:
+        """Capture the DB state as the file the Runner wrote, never parsing it (ADR-0069).
+
+        The Runner writes the state into the final-state directory the engine
+        mounted into it and answers with the file's path, SHA-256 and size;
+        the file is checked against both here, reading it in chunks. The
+        stash on ``trajectory.final_env_state`` then carries the entries that
+        do not come from the DB state, and ``final_state`` — the reference
+        ``env.yaml`` records — in place of ``agent``, ``user`` and ``db``.
+        A read that fails or a file that does not match records
+        ``final_state_error``, as an inline capture does, and no reference.
+        """
+        capture_error: str | None = None
+        state_file: StateFile | None = None
+        try:
+            state_file = self._read_runner_state_file(setup.trial_id)
+        except FinalStateUnavailableError as e:
+            capture_error = str(e)
+            self.logger.error(
+                "Could not capture the trial's final state",
+                task_id=spec.task.task_id,
+                trial_index=setup.trial_idx,
+                trial_id=setup.trial_id,
+                error=capture_error,
+            )
+        else:
+            self.logger.debug(
+                "Captured final state file from Runner",
+                size_bytes=state_file.size,
+                sha256=state_file.sha256,
+            )
+
+        final_state: dict[str, Any] = {}
+        if state_file is not None:
+            final_state[FINAL_STATE_REF_KEY] = state_file.as_ref()
+        final_state.update(setup.env_state.get_final_state_outside_db())
+        if capture_error is not None:
+            final_state["final_state_error"] = capture_error
+        final_state["agent_visible_dir"] = str(setup.env_state.agent_visible_dir)
+        manifest = spec.task.environment_manifest
+        if manifest is not None:
+            final_state["environment"] = describe_environment_identity(manifest).model_dump(
+                mode="json"
+            )
+        trajectory.final_env_state = final_state
+        return state_file
+
+    def _read_runner_state_file(self, trial_id: str) -> StateFile:
+        """The trial's final DB state as a checked file on this machine.
+
+        Raises:
+            FinalStateUnavailableError: the read raised or failed, the answer
+                named no file, or the file is not the bytes the Runner reported.
+        """
+        try:
+            state_result = self.runtime_backend.get_state(trial_id, by_reference=True)
+        except Exception as e:
+            raise FinalStateUnavailableError(f"GetState raised {type(e).__name__}: {e}") from e
+        if not state_result.get("success"):
+            raise FinalStateUnavailableError(
+                f"GetState failed: {state_result.get('error') or 'no cause reported'}"
+            )
+        state_file = state_result.get("state_file")
+        if not isinstance(state_file, StateFile):
+            raise FinalStateUnavailableError(
+                "GetState was asked for the state by reference and answered without a file"
+            )
+        try:
+            verify_state_file(state_file)
+        except FinalStateFileError as e:
+            raise FinalStateUnavailableError(f"GetState wrote an unusable state file: {e}") from e
+        return state_file
 
     def _read_runner_state(self, trial_id: str) -> dict[str, Any]:
         """The trial's final DB state as the Runner's ``GetState`` reports it.
@@ -1458,10 +1561,15 @@ class InProcessConductor:
         setup: _TrialSetup,
         trajectory: Trajectory,
         runner: TrialRunner,
+        *,
+        final_state_file: StateFile | None = None,
     ) -> None:
         """Persist the trial bundle (trajectory, prompts, tools schemas,
         task config snapshot) via the shared
         :class:`TrialArtifactWriter`.
+
+        ``final_state_file`` is the DB state the Runner wrote to a file
+        (ADR-0069); the writer copies it into the bundle beside ``env.yaml``.
 
         The trial directory was created during :meth:`_setup_trial` for
         video recording. This phase writes the remaining artifacts
@@ -1543,13 +1651,23 @@ class InProcessConductor:
             ),
         }
 
-        writer.write_trial_bundle(
-            setup.trial_dir,
-            trajectory,
-            task_config_dict,
-            trajectory.final_env_state,
-            runner.logger,
-        )
+        if final_state_file is None:
+            writer.write_trial_bundle(
+                setup.trial_dir,
+                trajectory,
+                task_config_dict,
+                trajectory.final_env_state,
+                runner.logger,
+            )
+        else:
+            writer.write_trial_bundle(
+                setup.trial_dir,
+                trajectory,
+                task_config_dict,
+                trajectory.final_env_state,
+                runner.logger,
+                final_state_file=final_state_file,
+            )
 
         self.logger.info(
             "Trial output saved",

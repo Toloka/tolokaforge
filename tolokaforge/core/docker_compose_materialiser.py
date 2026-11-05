@@ -20,7 +20,8 @@ structurally. Each :meth:`materialise` call:
    ``compute.state_read_timeout_s`` unless the compose file declares them,
    and bind-mounts the trial's tool-artefact reference root read-only into
    the runner when its description delivers artefacts by reference
-   (ADR-0068).
+   (ADR-0068), and a writable final-state directory when the task's final
+   state is delivered by reference (ADR-0069).
 3. Constructs a ``testcontainers.compose.DockerCompose`` via the
    injectable :attr:`DockerComposeMaterialiser.docker_compose_factory`
    seam (defaults to the real class; tests substitute a stub) and
@@ -59,6 +60,7 @@ from tolokaforge.core.compose_materialisation import (
     inject_substrate_env_into_runner,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
+    mount_final_state_dir_into_runner,
     mount_tool_artifact_refs_into_runner,
     resolve_host_port,
     shutdown_compose,
@@ -170,6 +172,10 @@ class DockerComposeMaterialiser:
                 if ctx.tool_artifact_refs_root is not None:
                     mount_tool_artifact_refs_into_runner(
                         compose_file, decl.runner_service, ctx.tool_artifact_refs_root
+                    )
+                if ctx.final_state_dir is not None:
+                    mount_final_state_dir_into_runner(
+                        compose_file, decl.runner_service, ctx.final_state_dir
                     )
             compose = self.docker_compose_factory(
                 context=str(temp_dir),

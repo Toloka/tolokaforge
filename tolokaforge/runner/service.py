@@ -151,6 +151,11 @@ from tolokaforge.runner.env_exec import (
     exec_tool_for_service,
     first_env_exec_tool,
 )
+from tolokaforge.runner.final_state_file import (
+    FINAL_STATE_DIR_ENV_VAR,
+    final_state_dir_from_env,
+    write_state_file,
+)
 from tolokaforge.runner.grading import (
     compute_state_diff,
     grade_to_runner_wire,
@@ -4151,9 +4156,29 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
 
     async def _get_state_async(self, request: pb2.GetStateRequest) -> pb2.GetStateResponse:
-        """Async implementation of GetState."""
+        """Async implementation of GetState.
+
+        With ``state_by_reference`` (ADR-0069) the state is written to the
+        final-state directory the engine mounted into this runner, and the
+        answer carries the file's path, SHA-256 and size instead of the JSON.
+        A runner with no such mount refuses before it reads any state.
+        """
         trial_id = request.trial_id
         tables = list(request.tables) if request.tables else None
+
+        final_state_dir: Path | None = None
+        if request.state_by_reference:
+            final_state_dir = final_state_dir_from_env()
+            if final_state_dir is None or not final_state_dir.is_dir():
+                return pb2.GetStateResponse(
+                    success=False,
+                    error=(
+                        "GetState asked for the state by reference, but this runner has no "
+                        "final-state directory: the engine mounts one and sets "
+                        f"{FINAL_STATE_DIR_ENV_VAR} only for a task that declares "
+                        "final_state_delivery: mount on a trial-scope runner"
+                    ),
+                )
 
         await self._refresh_db_mirror(trial_id)
 
@@ -4162,7 +4187,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             state_response = await self.db_client.get_state(
                 trial_id, tables, timeout=self._whole_state_read_s(trial_id)
             )
-            state_json = json.dumps(state_response.data)
+            state = state_response.data
             stable_hash = state_response.stable_hash
             full_hash = state_response.full_hash
         else:
@@ -4170,14 +4195,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             stable_state_response = await self.db_client.get_stable_state(
                 trial_id, timeout=self._whole_state_read_s(trial_id)
             )
-            state_json = json.dumps(stable_state_response.data)
+            state = stable_state_response.data
             stable_hash = stable_state_response.stable_hash
             full_hash = ""  # Not available for stable state
 
+        if final_state_dir is not None:
+            written = await asyncio.to_thread(write_state_file, final_state_dir, state)
+            return pb2.GetStateResponse(
+                success=True,
+                error="",
+                state_file=pb2.StateFileRef(
+                    path=written.path, sha256=written.sha256, size=written.size
+                ),
+                stable_hash=stable_hash,
+                full_hash=full_hash,
+            )
         return pb2.GetStateResponse(
             success=True,
             error="",
-            state_json=state_json,
+            state_json=json.dumps(state),
             stable_hash=stable_hash,
             full_hash=full_hash,
         )
