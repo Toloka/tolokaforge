@@ -34,14 +34,16 @@ PLACEHOLDER = "MASKED"
 VECTORS = Path(__file__).parent / "fixtures" / "mask_vectors.json"
 # the file is copied byte for byte wherever another gate is held to the same rows: a change to
 # one copy fails here until both carry it
-VECTORS_SHA256 = "5b0d8c317336f5aab64c11225ae769c53b5f640adb348e0cbed4ff08f62d710f"
+VECTORS_SHA256 = "93628b78ed11ebbca5371c6d681046586ad88a8ec33ffa5afe7b11a7ed7f0b0d"
 
 # the fake secrets behind the vector file's placeholders, assembled so no literal is key-shaped
 TOKENS = {
     "AT_PW": "Pass" + "@" + "word1",
+    "EARLY_AT_PW": "P" + "@" + "ssw0rd-2024",
     "GH_PAT": "ghp" + "_" + "FakeTokenForUnitTests" + "0123456789ABCDEF",
     "GLPAT": "glpat" + "-" + "FakeGitlabTokenAbcde",
     "HEX40": "0123456789ABCDEF" * 2 + "01234567",
+    "LEAD_AT_PW": "@" + "dmin-2024",
     "PEM_BEGIN": "-----BEGIN " + "RSA PRIVATE KEY" + "-----",
     "PEM_END": "-----END " + "RSA PRIVATE KEY" + "-----",
     "PG": "postgres" + "ql",

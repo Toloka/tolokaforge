@@ -134,7 +134,7 @@ SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
         "url-credentials",
         re.compile(
             rb"(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,15}://[^/\s:@]+:(?!(?:[*]+|MASKED)@)"
-            rb"(?:(?!(?<!\\)\\[nrt])[^@\s/]){3,}@(?:(?!(?<!\\)\\[nrt])[^\s/])+"
+            rb"(?:(?!(?<!\\)\\[nrt])[^\s/]){3,}@(?:(?!(?<!\\)\\[nrt])[^\s/])+"
         ),
     ),
     (
@@ -229,7 +229,7 @@ _TEXT_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
         "url-credentials",
         re.compile(
             rb"(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,15}://[^/\s:@]+:(?!(?:[*]+|MASKED)@)"
-            rb"[^@\s/]{3,}@[^\s/]+"
+            rb"[^\s/]{3,}@[^\s/]+"
         ),
     ),
 )

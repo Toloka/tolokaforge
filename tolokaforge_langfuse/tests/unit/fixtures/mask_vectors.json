@@ -3,9 +3,11 @@
   "placeholder": "MASKED",
   "tokens": [
     "AT_PW",
+    "EARLY_AT_PW",
     "GH_PAT",
     "GLPAT",
     "HEX40",
+    "LEAD_AT_PW",
     "PEM_BEGIN",
     "PEM_END",
     "PG",
@@ -282,6 +284,46 @@
       "known": [],
       "also": [],
       "expected": "{PG}://app:MASKED@db.example.com/x",
+      "counts": {
+        "url-credentials": 1
+      }
+    },
+    {
+      "id": "url-early-at",
+      "case": "a URL password with an at sign in its first three characters",
+      "kind": "bytes",
+      "input": "{PG}://admin:{EARLY_AT_PW}@db.example.com/app",
+      "known": [],
+      "also": [],
+      "expected": "{PG}://admin:MASKED@db.example.com/app",
+      "counts": {
+        "url-credentials": 1
+      }
+    },
+    {
+      "id": "url-leading-at",
+      "case": "a URL password that starts with an at sign",
+      "kind": "bytes",
+      "input": "{PG}://app:{LEAD_AT_PW}@db.example.com/x",
+      "known": [],
+      "also": [],
+      "expected": "{PG}://app:MASKED@db.example.com/x",
+      "counts": {
+        "url-credentials": 1
+      }
+    },
+    {
+      "id": "url-early-at-in-a-field",
+      "case": "a URL password with an early at sign in a structured string",
+      "kind": "structured",
+      "input": {
+        "output": "connect to {PG}://admin:{EARLY_AT_PW}@db.example.com/app now"
+      },
+      "known": [],
+      "also": [],
+      "expected": {
+        "output": "connect to {PG}://admin:MASKED@db.example.com/app now"
+      },
       "counts": {
         "url-credentials": 1
       }
