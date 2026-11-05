@@ -1286,15 +1286,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                         tables=initial_state.tables,
                         schemas=[s.model_dump() for s in initial_state.schemas],
                         unstable_fields=[u.model_dump() for u in initial_state.unstable_fields],
+                        # The whole initial state in one request: a large world's
+                        # takes as long to send and load as a whole-state read
+                        # takes to answer, which the client's default does not cover.
+                        timeout=self._whole_state_read_s(trial_id),
                     )
                 )
                 logger.info(f"RegisterTrial: {trial_id} - DB Service initialized")
             except Exception as e:
-                # FAIL FAST: DB init failure is a critical error
-                logger.error(f"RegisterTrial: Failed to initialize DB Service: {e}")
+                # FAIL FAST: DB init failure is a critical error. The type is named:
+                # an httpx timeout's message is empty.
+                cause = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                logger.error(f"RegisterTrial: Failed to initialize DB Service: {cause}")
                 return pb2.RegisterTrialResponse(
                     success=False,
-                    error=f"DB Service initialization failed: {e}",
+                    error=f"DB Service initialization failed: {cause}",
                 )
         else:
             logger.info(
