@@ -196,7 +196,7 @@ class LiveRunnerCallbackGradingSubstrate:
         self,
         *,
         src_service: str | None,
-        dst_service: str,
+        dst_service: str | None,
         path: str,
         exclude: Sequence[str] = (),
     ) -> None:

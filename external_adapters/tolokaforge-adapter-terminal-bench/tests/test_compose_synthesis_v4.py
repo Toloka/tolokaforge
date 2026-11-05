@@ -107,10 +107,14 @@ def test_v21_task_has_no_verifier_service(tmp_path: Path) -> None:
 
     agent = services[env.agent_service]
     agent_targets = _volume_targets(agent)
-    assert "/tests" in agent_targets
+    # The 2.1 shape grades inside the agent's container, but the suite only
+    # arrives there at grading time: during the episode it sits on the sidecar,
+    # so the agent cannot read the assertions it is scored by.
+    assert "/tests" not in agent_targets
     assert "/logs" in agent_targets
-    # The 2.1 shape keeps the /tests mount, so TEST_DIR still names it.
-    assert _env_map(agent).get("TEST_DIR") == "/tests"
+    assert "TEST_DIR" not in _env_map(agent)
+    assert env.tests_sidecar_service == "tests-vault"
+    assert _volume_targets(services["tests-vault"]) == ["/tests"]
 
 
 _TIER3_TOML = (

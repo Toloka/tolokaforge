@@ -365,6 +365,7 @@ class CodingHarnessAdapterMixin:
         service: str | None = None,
         artifacts: list[dict[str, Any]] | None = None,
         collect: list[dict[str, Any]] | None = None,
+        stage_paths: list[dict[str, Any]] | None = None,
         user: str | None = None,
         require_reward: bool = False,
     ) -> dict[str, Any]:
@@ -392,6 +393,13 @@ class CodingHarnessAdapterMixin:
         artifact then carries across. All omitted leaves the single-container
         behaviour untouched.
 
+        *stage_paths* is the opposite direction, and is not part of that shape:
+        each entry (``{"source", "src_service", "exclude"}``) is copied INTO the
+        container the suite runs in before it runs. A pack whose suite is graded
+        inside the agent's own container uses it to keep that suite out of the
+        agent's filesystem until the episode is over — an agent that can read
+        the assertions it is scored by is not being measured.
+
         *user* is the Unix user the verifier runs as. A pack whose suite must
         outrank its agent — reading an oracle, or writing a reward the agent
         must not be able to forge — names that user; without it the suite
@@ -416,6 +424,8 @@ class CodingHarnessAdapterMixin:
             config["artifacts"] = artifacts
         if collect:
             config["collect"] = collect
+        if stage_paths:
+            config["stage_paths"] = stage_paths
         if user is not None:
             config["user"] = user
         if require_reward:
