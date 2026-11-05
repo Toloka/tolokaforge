@@ -798,7 +798,7 @@ class TestFalsePositives:
 # -- the mask policy at the attachment step -------------------------------------------------------
 
 
-def _trial_with_secrets(trial_dir: Path) -> Path:
+def _trial_to_mask(trial_dir: Path) -> Path:
     """A trial whose two gzip-stored files each carry a fake secret: env.yaml a password line,
     trajectory.yaml a provider key in a tool's output."""
     trial = write_trial(trial_dir, V1_FILES)
@@ -844,7 +844,7 @@ class TestMaskedAttachments:
     the manifest says so; every hash and size describes what was sent."""
 
     def test_a_gzip_file_is_masked_encoded_again_and_marked(self, tmp_path: Path) -> None:
-        trial = _trial_with_secrets(tmp_path / "trials" / "T" / "0")
+        trial = _trial_to_mask(tmp_path / "trials" / "T" / "0")
         fake = _FakeLangfuse()
         step = _attachments(fake, secrets="mask", scan=SecretScan(gate=SafetyGate()))
         counts = step.attach("a" * 32, trial)
@@ -871,7 +871,7 @@ class TestMaskedAttachments:
         assert "masked" not in manifest["attachments"]["task.yaml"]
 
     def test_no_hash_or_byte_of_an_original_is_sent(self, tmp_path: Path) -> None:
-        trial = _trial_with_secrets(tmp_path / "trials" / "T" / "0")
+        trial = _trial_to_mask(tmp_path / "trials" / "T" / "0")
         originals = {name: (trial / name).read_bytes() for name in ("env.yaml", "trajectory.yaml")}
         fake = _FakeLangfuse()
         _attachments(fake, secrets="mask", scan=SecretScan(gate=SafetyGate())).attach(
