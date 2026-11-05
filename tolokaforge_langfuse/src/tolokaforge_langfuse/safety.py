@@ -9,18 +9,27 @@ keys. So every payload a producer sends, ingestion events and media alike, is sc
 - **known secret values**: every credential the process itself holds (environment variables whose
   name looks like a secret; the caller may add the values it resolved another way) and, when the
   caller names one, the values of a ``.env`` file under secret-like keys;
-- **shape patterns**: dotenv lines with secret-like keys, ``Authorization`` headers, PEM blocks,
-  URL credentials (a redacted ``***`` password is not a hit), well-known key prefixes
-  (``pk-lf-``, ``sk-lf-``, ``sk-or-``, ``sk-ant-``, ``ghp_``, ``github_pat_``, ``xox?-``,
-  ``AKIA``, ``AIza``, ``glpat-``), JWTs, and secret-named JSON / YAML fields holding a long
-  opaque value;
+- **shape patterns**: upper-case dotenv lines with secret-like names, ``Authorization`` headers,
+  PEM blocks, URL credentials (a redacted ``***`` password is not a hit), well-known key
+  prefixes (``pk-lf-``, ``sk-lf-``, ``sk-or-``, ``sk-ant-``, ``ghp_``, ``github_pat_``,
+  ``xox?-``, ``AKIA``, ``AIza``, ``glpat-``), JWTs, and secret-named JSON / YAML fields holding a
+  long opaque value;
 
-A structured value (a span's attributes, a list of events) is scanned as its JSON, shapes and
-known values, and its raw strings are scanned for the known values too, which JSON escaping hides
-(:meth:`SafetyGate.scan_structured`). A known value carries the name of the variable it came from,
-so a warning can say which one withheld a span (``Finding.describe``), a run leaves out the values
-its own tracing values contain (:meth:`SafetyGate.drop_ambient`), and a gate can be told to re-read
-its values (:attr:`SafetyGate.reload`).
+Raw bytes (a file, a media object, a span name: :meth:`SafetyGate.scan`) are read with
+:data:`RAW_SHAPES`, where a dotenv line may also start after a ``\\n`` / ``\\r`` escape, the way YAML
+and JSON write a line break inside a string. A structured value (a span's attributes, a list of
+events) is scanned as its JSON with :data:`SHAPES`, and its raw strings are scanned for the known
+values too, which JSON escaping hides (:meth:`SafetyGate.scan_structured`). A known value carries
+the name of the variable it came from, so a warning can say which one withheld a span
+(``Finding.describe``), a run leaves out the values its own tracing values contain
+(:meth:`SafetyGate.drop_ambient`), and a gate can be told to re-read its values
+(:attr:`SafetyGate.reload`).
+
+Two shapes have a narrow exemption for committed fixture data that is no credential
+(:func:`_exempt`): a database URL whose password is its user name and whose host can only be
+local, and the public ``GPG_KEY`` fingerprint the ``python`` Docker image sets. The scan goes on
+past an exempt match, so it never hides a reportable one, and the gate counts the exemptions per
+rule (:attr:`SafetyGate.exempted`).
 
 On a hit the bytes are **never rewritten** (an attachment must stay byte-exact): the caller skips
 the file and names it in its receipt, or stops; a hit in the structured events blocks the send
@@ -48,6 +57,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote_to_bytes
 
 SECRET_NAME = re.compile(
     r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|PRIVATE|SIGNING|COOKIE|SESSION)", re.I
@@ -66,13 +76,14 @@ MIN_SECRET_VALUE = 8
 # whose strings hold JSON text)
 JSON_NESTING = 3
 
+# an environment variable's name, upper case by convention: an agent's `txn_key = compute(x)` is
+# code, not a dotenv line
+_DOTENV_NAME = rb"[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)[A-Z0-9_]*"
+
 SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     (
         "dotenv-secret",
-        re.compile(
-            rb"(?im)^\s*(?:export\s+)?[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)"
-            rb"[A-Z0-9_]*\s*=\s*['\"]?[^\s'\"#]{8,}"
-        ),
+        re.compile(rb"(?m)^\s*(?:export\s+)?" + _DOTENV_NAME + rb"\s*=\s*['\"]?[^\s'\"#]{8,}"),
     ),
     (
         "authorization-header",
@@ -82,10 +93,13 @@ SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     # user:password@host with a real password (a redacted *** is the engine's own DSN masking)
     (
         # the scheme is anchored and bounded (a free `[a-z][a-z0-9+.-]*` before `://` scans a long
-        # lowercase run quadratically)
+        # lowercase run quadratically); the password and the host end at a `\n`, `\r` or `\t`
+        # escape, the way JSON and YAML write a line break (an escaped backslash is no escape):
+        # no URL runs on over one. The user part does not, so `CORP\tom` stays a user name
         "url-credentials",
         re.compile(
-            rb"(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,15}://[^/\s:@]+:(?![*]+@)[^@\s/]{3,}@[^\s/]+"
+            rb"(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,15}://[^/\s:@]+:(?![*]+@)"
+            rb"(?:(?!(?<!\\)\\[nrt])[^@\s/]){3,}@(?:(?!(?<!\\)\\[nrt])[^\s/])+"
         ),
     ),
     (
@@ -115,6 +129,51 @@ SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
         ),
     ),
 )
+
+# the shapes over raw bytes (a file, a media object, a span name): YAML and JSON write a line
+# break inside a double-quoted string as a `\n` or `\r` escape, so there a dotenv line may also
+# start after one and its value ends at one. A structured value keeps SHAPES over its JSON: there
+# every tool output's environment listing would otherwise read as dotenv lines
+RAW_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = tuple(
+    (
+        (
+            rule,
+            re.compile(
+                rb"(?m)(?:^|(?<=\\n)|(?<=\\r))\s*(?:export\s+)?"
+                + _DOTENV_NAME
+                + rb"\s*=\s*['\"]?(?:(?!(?<!\\)\\[nr])[^\s'\"#]){8,}"
+            ),
+        )
+        if rule == "dotenv-secret"
+        else (rule, pattern)
+    )
+    for rule, pattern in SHAPES
+)
+
+# a url-credentials match that is a committed fixture DSN: the user name as the password and a
+# host that can only be local (one letter-first label such as a compose service or `localhost`, or
+# a loopback address); a numeric label such as 134744072 is an IPv4 address, so it is not local
+_LOCAL_DSN = re.compile(
+    rb"[a-z][a-z0-9+.\-]*://(?P<user>[^:]+):(?P<password>[^@]+)@"
+    rb"(?:[A-Za-z][A-Za-z0-9_\-]*|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?"
+)
+# a byte after the host that would make it a longer host, a port or another userinfo
+_HOST_CONTINUES = frozenset(
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:%[]-@"
+)
+# a libpq parameter that names the server another way: host, hostaddr, or a service file entry
+_SERVER_PARAMETER = re.compile(rb"(?i)(?:host|hostaddr|service)=")
+# the rest of a URL after a url-credentials match, which stops at the first `/`: its path and
+# query, up to a space, a quote, a backtick, an angle bracket or an escaped line break or quote
+# (an escaped backslash is none), read for at most _URL_TAIL_LIMIT bytes: a longer URL is no
+# fixture, and the bound keeps a long line of repeated fixture DSNs from a quadratic scan
+_URL_TAIL_LIMIT = 1024
+_URL_TAIL = re.compile(rb"(?:(?!(?<!\\)\\[nrt\"'])[^\s\"'`<>]){0,%d}" % _URL_TAIL_LIMIT)
+# a character a writer encoded as a backslash-u or backslash-x escape: what it stands for cannot
+# be read from the bytes
+_ENCODED_CHARACTER = re.compile(rb"(?i)\\(?:u[0-9a-f]{4}|x[0-9a-f]{2})")
+# a dotenv-secret match that is the public signing-key fingerprint the python image sets
+_GPG_FINGERPRINT = re.compile(rb"\s*(?:export\s+)?GPG_KEY\s*=\s*['\"]?[0-9A-Fa-f]{40}")
 
 
 class SafetyError(RuntimeError):
@@ -179,11 +238,15 @@ class SafetyGate:
     # re-reads the known values: the new gate when what they came from changed (a secret
     # registered after this one was built), else None; see :meth:`refresh`
     reload: Callable[[], SafetyGate | None] | None = field(default=None, repr=False)
+    # every rule -> how many scans met a match it exempts (see _exempt)
+    exempted: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._known = _Known(self.known_values, self.sources)
         # trials start in parallel: one of them re-reads, the others wait for the new values
         self._refreshing = threading.Lock()
+        # trials scan in parallel: the counters are read, then written
+        self._counting = threading.Lock()
 
     @classmethod
     def from_environment(
@@ -228,7 +291,17 @@ class SafetyGate:
         )
 
     def scan(self, payload: bytes, *, what: str = "payload") -> list[Finding]:
-        """Every finding in ``payload`` (empty when the bytes are clean)."""
+        """Every finding in raw ``payload`` (empty when the bytes are clean), with the raw-bytes
+        shapes (:data:`RAW_SHAPES`)."""
+        return self._scan_bytes(payload, RAW_SHAPES)
+
+    def _scan_bytes(
+        self,
+        payload: bytes,
+        shapes: Iterable[tuple[str, re.Pattern[bytes]]],
+        *,
+        count_exempted: bool = True,
+    ) -> list[Finding]:
         known = self._known
         findings: list[Finding] = []
         for value in known.values:
@@ -242,13 +315,22 @@ class SafetyGate:
                         known.sources.get(value, ""),
                     )
                 )
-        for rule, pattern in SHAPES:
-            match = pattern.search(payload)
+        passed: list[str] = []
+        for rule, pattern in shapes:
+            match, exempt = _first_reportable(rule, pattern, payload)
+            if exempt:
+                passed.append(rule)
             if match:
                 findings.append(Finding(rule, _mask(match.group(0))))
-        for finding in findings:
-            self.hits[finding.rule] = self.hits.get(finding.rule, 0) + 1
+        self._count(findings, passed if count_exempted else ())
         return findings
+
+    def _count(self, findings: Iterable[Finding], exempted: Iterable[str] = ()) -> None:
+        with self._counting:
+            for finding in findings:
+                self.hits[finding.rule] = self.hits.get(finding.rule, 0) + 1
+            for rule in exempted:
+                self.exempted[rule] = self.exempted.get(rule, 0) + 1
 
     def scan_structured(self, value: Any, *, what: str = "payload") -> list[Finding]:
         """Every finding in a JSON-like ``value`` (a span's attributes, a list of events).
@@ -260,13 +342,17 @@ class SafetyGate:
         over raw strings: a line-anchored one would stop ordinary code (``api_key = os.environ...``)
         and is quadratic on a long line. So a credential this gate does not know by value, inside
         JSON text and without a provider shape, passes."""
+        return self._scan_structured(value, count_exempted=True)
+
+    def _scan_structured(self, value: Any, *, count_exempted: bool) -> list[Finding]:
         known = self._known
         serialised = json.dumps(value, ensure_ascii=False, default=str).encode("utf-8", "replace")
-        found = self.scan(serialised, what=what)
+        found = self._scan_bytes(serialised, SHAPES, count_exempted=count_exempted)
         if not known.values:
             return found
         raw = "\x00".join(strings_in(value)).encode("utf-8", "replace")
         seen = {(finding.rule, finding.excerpt, finding.source) for finding in found}
+        extra: list[Finding] = []
         for known_value, forms in known.forms:
             if any(form in raw for form in forms):
                 finding = Finding(
@@ -276,9 +362,9 @@ class SafetyGate:
                 )
                 if (finding.rule, finding.excerpt, finding.source) not in seen:
                     seen.add((finding.rule, finding.excerpt, finding.source))
-                    found.append(finding)
-                    self.hits[finding.rule] = self.hits.get(finding.rule, 0) + 1
-        return found
+                    extra.append(finding)
+        self._count(extra)
+        return found + extra
 
     def drop_ambient(self, ambient: Iterable[str]) -> list[str]:
         """Leave out, in place, every known value one of the ``ambient`` strings contains, and
@@ -338,6 +424,58 @@ def _mask(value: bytes) -> str:
     text = value.decode("utf-8", "replace").strip()
     head = text[:4] if len(text) > 12 else ""
     return f"{head}**** ({len(text)} chars)"
+
+
+def _first_reportable(
+    rule: str, pattern: re.Pattern[bytes], view: bytes
+) -> tuple[re.Match[bytes] | None, bool]:
+    """The first match of ``rule`` in ``view`` that is not exempt, and whether the search passed
+    an exempt one. After an exempt match the search resumes one byte on, not at its end: the
+    greedy host part of a URL runs on to the next ``/`` and can hold the start of the next URL."""
+    passed = False
+    position = 0
+    while (match := pattern.search(view, position)) is not None:
+        if not _exempt(rule, match, view):
+            return match, passed
+        passed = True
+        position = match.start() + 1
+    return None, passed
+
+
+def _exempt(rule: str, match: re.Match[bytes], view: bytes) -> bool:
+    """A match of ``rule`` in ``view`` known to be committed fixture data, not a credential."""
+    if rule == "url-credentials":
+        tail = _URL_TAIL.match(view, match.end())
+        return _local_fixture_dsn(match.group(0), tail.group(0) if tail else b"")
+    if rule == "dotenv-secret":
+        return _GPG_FINGERPRINT.fullmatch(match.group(0)) is not None
+    return False
+
+
+def _local_fixture_dsn(match: bytes, tail: bytes) -> bool:
+    """A DSN whose password is its user name and whose URL can reach no host but a local one.
+
+    ``match`` ends at the first ``/``; ``tail`` is the rest of the URL (its path and query). What
+    follows the host and port must not lead anywhere else: no ``@`` before the path (a URL parser
+    reads everything before the last one as the user info, so the host would be the part after
+    it), no ``,`` there but a closing one (a libpq multi-host list), and no libpq ``host``,
+    ``hostaddr`` or ``service`` parameter anywhere, percent-encoded or not; a character encoded as
+    ``\\u`` or ``\\x`` refuses the exemption too, and so does a URL longer than the tail's limit.
+    A comma may close the match because serialised JSON puts ``", "`` after a string value and
+    the match runs on to the next space. The URL alone is read: a ``PGHOST``, ``PGHOSTADDR`` or
+    ``PGSERVICE`` set elsewhere can still send the pair to another server."""
+    parsed = _LOCAL_DSN.match(match)
+    if parsed is None or parsed["user"] != parsed["password"]:
+        return False
+    rest = match[parsed.end() :]
+    if rest and rest[0] in _HOST_CONTINUES:
+        return False
+    if b"@" in rest or b"," in rest[:-1] or len(tail) >= _URL_TAIL_LIMIT:
+        return False
+    after = rest + tail
+    if _ENCODED_CHARACTER.search(after):
+        return False
+    return not _SERVER_PARAMETER.search(unquote_to_bytes(after))
 
 
 def strings_in(value: Any) -> Iterator[str]:
