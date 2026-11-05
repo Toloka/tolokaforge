@@ -59,6 +59,7 @@ try:
         compute_stable_hash,
         filter_unstable_fields,
         resolve_unstable_table_name,
+        table_digest,
     )
 except ImportError:
     logger.warning(
@@ -234,6 +235,27 @@ except ImportError:
             if table.endswith(data_table + "s"):
                 return data_table
         return None
+
+    def table_digest(rows: Any) -> str:
+        """SHA-256 of one table's canonical JSON, encoded a row at a time."""
+
+        def canonical(value: Any) -> bytes:
+            text = json.dumps(
+                value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
+            )
+            return text.encode("ascii")
+
+        digest = hashlib.sha256()
+        if isinstance(rows, list):
+            digest.update(b"[")
+            for index, row in enumerate(rows):
+                if index:
+                    digest.update(b",")
+                digest.update(canonical(row))
+            digest.update(b"]")
+        else:
+            digest.update(canonical(rows))
+        return digest.hexdigest()
 
 
 app = FastAPI(title="JSON DB Service", version="1.0.0")
@@ -1130,6 +1152,33 @@ async def get_state_hash(
         return {
             "stable_hash": trial.compute_stable_hash(numeric_string_fields=numeric_string_fields),
             "full_hash": trial.compute_full_hash(),
+            "version": trial.version,
+        }
+
+
+@app.get("/trials/{trial_id}/state/digests")
+async def get_state_digests(
+    trial_id: str, tables: str | None = Query(None, description="Comma-separated table names")
+) -> dict[str, Any]:
+    """Each table's :func:`table_digest`, in the state's own table order.
+
+    A state holder's sync compares these with its own tables' digests and reads back
+    only the tables that differ; a reader holding a copy of a table whose digest
+    agrees takes that copy instead of the table's rows.
+    """
+    try:
+        trial = db_service.get_trial(trial_id)
+    except TrialNotFoundError as e:
+        handle_trial_not_found(e)
+
+    with trial._lock:
+        wanted = {t.strip() for t in tables.split(",")} if tables else None
+        return {
+            "digests": {
+                name: table_digest(rows)
+                for name, rows in trial.data.items()
+                if wanted is None or name in wanted
+            },
             "version": trial.version,
         }
 
