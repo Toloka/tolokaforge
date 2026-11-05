@@ -85,13 +85,20 @@ Adopt **Option 4**, in three steps.
    encoded a row at a time, in the state's own table order. The db-service
    image runs a vendored copy held to core's by a parity test. The sync
    digests the held tables, reads back from the mirror only the tables whose
-   digests differ, one at a time, mutates them, and re-digests them. A table
-   whose mirror and held digests then agree is the same canonical (sorted-key)
-   JSON, so the grading's RAW final state takes it from the held copy and
-   reads only the rest, in the mirror's table order. A second sync of the same
-   state reads no rows. These partial reads ask the service not to hash the
-   whole state into the answer (`hashes=false`, ignored by an older service),
-   as every state read did. A table name the state endpoint cannot select (a
+   digests differ, one at a time, mutates them, and re-digests them. The
+   mutations cannot always say what the holder holds: an upsert merges into
+   the mirror's row (a key the holder dropped stays), an insert appends (a row
+   the holder placed mid-table lands last), and a table the holder gained
+   empty is never created. A table whose digest still differs is therefore
+   replaced whole by the holder's rows (a `replace` op, which also creates
+   it), so the mirror ends as the holder's state, keys and order included. A
+   table whose mirror and held digests then agree is the same canonical
+   (sorted-key) JSON, so the grading's RAW final state, and `GetState`'s
+   answer, take it from the held copy and read only the rest, in the mirror's
+   table order; `GetState`'s hashes come from `GET .../state/hash`, without
+   rows. A second sync of the same state reads no rows. A state read that
+   wants rows and not hashes asks the service to skip hashing the whole state
+   (`hashes=false`; an older service ignores it and hashes, as before). A table name the state endpoint cannot select (a
    comma, edge spaces) is read with the whole state. A db-service without the
    digests route (FastAPI's bare 404 or 405) is synced and read whole, as
    before.
@@ -99,14 +106,17 @@ Adopt **Option 4**, in three steps.
 3. **A table mutation costs its table.** `PATCH /trials/{id}/state/{table}`
    re-mirrored every table into SQL and hashed the whole state for its answer;
    it now re-mirrors only its table, and `?hashes=false` (sent by the sync)
-   answers an empty `new_hash`. For a world laid out as many tables, a sync
+   answers an empty `new_hash`. The full rebuild also undid writes made through
+   `POST /trials/{id}/sql` and dropped tables it created; a per-table rebuild
+   leaves other tables' SQL as it is. A table named like another but for case
+   (SQLite folds the case of table names) still takes the full rebuild, which
+   refuses the collision as before. For a world laid out as many tables, a sync
    that mutated K of them paid K whole-world rebuilds: on the measured world,
    laid out one table per application field, `GetState`'s sync ran out of its
    budget before this step.
 
-A digest mismatch is always safe: it only makes the runner read the mirror's
-table instead of trusting its own copy (an int the holder keeps as a float is
-equal in Python, never mutated, and so read back).
+A digest mismatch is always safe: the table is replaced by the holder's rows
+or, on a service without `replace`, read from the mirror instead of trusted.
 
 ## Consequences
 
@@ -145,8 +155,6 @@ equal in Python, never mutated, and so read back).
 - **The first sync's mirror read**: the sync after the episode still reads the
   changed table whole to compute its ops; for a one-row world that is the whole
   world. Row digests, or a replace-table op, would remove it.
-- **`GetState`'s final-state read** could take the synced copy too; it still
-  reads the mirror whole after its sync.
 - **STABLE derived in the runner** (first draft, step 1), for tasks with
   JSONPath checks; the measured task reads no STABLE view.
 - The 77–86 s before the state server answers each state read: a CPU sample
@@ -196,5 +204,6 @@ touches.
   reference).
 - Related code: `core/grading/state_diff.py`, `core/hash.py` (`table_digest`),
   `env/json_db_service/app.py` (`get_state_digests`), `runner/db_client.py`
-  (`get_table_digests`), `runner/service.py` (`_sync_mcp_state_to_db`,
-  `_HeldStateSync`, `_mirror_state_after`, `_build_grading_substrate`).
+  (`get_table_digests`, `get_state_hashes`), `runner/service.py`
+  (`_sync_mcp_state_to_db`, `_replace_unequal_tables`, `_HeldStateSync`,
+  `_mirror_state_after`, `_build_grading_substrate`, `_get_state_async`).

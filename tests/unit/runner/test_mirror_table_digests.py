@@ -165,3 +165,32 @@ class TestAMutationTouchesItsTable:
 
         assert plain.json()["new_hash"] == ""
         assert hashed.json()["new_hash"]
+
+
+class TestReplace:
+    def test_a_replace_makes_the_table_exactly_its_rows(self, client: TestClient) -> None:
+        trial_id = _init(client, {"a": [{"id": 1, "v": 1, "gone": True}, {"id": 2}]})
+        rows = [{"id": 0}, {"id": 1, "v": 2}]
+
+        answer = client.patch(
+            f"/trials/{trial_id}/state/a", json={"operations": [{"op": "replace", "records": rows}]}
+        )
+
+        assert answer.status_code == 200, answer.text
+        state = client.get(f"/trials/{trial_id}/state").json()["data"]
+        assert state["a"] == rows
+        sql = client.post(f"/trials/{trial_id}/sql", json={"query": "SELECT id FROM a"}).json()
+        assert sql["results"] == [{"id": 0}, {"id": 1}]
+        digests = client.get(f"/trials/{trial_id}/state/digests").json()["digests"]
+        assert digests["a"] == table_digest(rows)
+
+    def test_a_replace_creates_a_missing_table_even_empty(self, client: TestClient) -> None:
+        trial_id = _init(client, {"a": [{"id": 1}]})
+
+        answer = client.patch(
+            f"/trials/{trial_id}/state/links",
+            json={"operations": [{"op": "replace", "records": []}]},
+        )
+
+        assert answer.status_code == 200, answer.text
+        assert client.get(f"/trials/{trial_id}/state").json()["data"]["links"] == []

@@ -1204,12 +1204,11 @@ class TestTheSyncReadsOnlyTheTablesThatDiffer:
         assert final == mirror and list(final) == list(mirror)
         assert list(final)[0] == "audit"
 
-    def test_a_table_the_mirror_stores_otherwise_is_read_from_the_mirror(
+    def test_a_table_the_mutations_leave_unlike_the_holders_is_replaced_with_it(
         self, runner_service, mcp_trial, trial_id, monkeypatch
     ) -> None:
-        """A sync whose mutations leave the mirror's JSON unlike the holder's — an int the
-        holder keeps as a float, equal in Python and so never mutated — trusts nothing it
-        cannot vouch for."""
+        """An int the holder keeps as a float is equal in Python, so no op changes it; the
+        digests disagree, and the table is replaced by the holder's rows."""
         wrapper = mcp_trial(_task())
         _mutate(runner_service, wrapper, 120)
         runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
@@ -1223,8 +1222,10 @@ class TestTheSyncReadsOnlyTheTablesThatDiffer:
 
         final = substrate.final_state()
 
-        assert self._rows_read(recorder) == ["users"]
-        assert type(final["users"][0]["balance"]) is int
+        assert self._rows_read(recorder) == []
+        assert type(final["users"][0]["balance"]) is float
+        mirror = runner_service._run_async(db_client.get_state(trial_id)).data
+        assert type(mirror["users"][0]["balance"]) is float
 
     def test_get_state_answers_the_synced_copy_with_the_mirrors_hashes(
         self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
@@ -1284,22 +1285,6 @@ class TestTableNamesTheStateEndpointCannotSelect:
         assert substrate.final_state()[name] == [{"id": "r1", "v": 2}]
         del wrapper
 
-    def test_a_holder_that_drops_a_field_grades_on_the_mirrors_row(
-        self, runner_service, mcp_trial, trial_id, monkeypatch
-    ) -> None:
-        """The mirror's upsert merges, so the dropped field stays there; the digests
-        disagree and the final state is the mirror's, as a whole read would be."""
-        wrapper = mcp_trial(_task())
-        state = wrapper.get_state()
-        for user in state["users"]:
-            user.pop("balance", None)
-        monkeypatch.setattr(wrapper, "get_state", lambda: state)
-        substrate = _substrate(runner_service, trial_id, synced=True)
-
-        mirror = runner_service._run_async(runner_service.db_client.get_state(trial_id)).data
-        assert substrate.final_state() == mirror
-        assert "balance" in substrate.final_state()["users"][0]
-
 
 class TestPartialReadsSkipTheWholeStateHashes:
     def test_the_sync_and_the_final_read_ask_for_no_hashes(
@@ -1331,3 +1316,74 @@ class TestPartialReadsSkipTheWholeStateHashes:
         assert plain.data == hashed.data
         assert plain.full_hash == plain.stable_hash == ""
         assert hashed.full_hash and hashed.stable_hash
+
+
+class TestTheMirrorEndsByteForByteTheHolders:
+    """Where the mutations cannot say what the holder holds, the table is replaced whole."""
+
+    def _sync(self, runner_service, trial_id, wrapper, monkeypatch, held):
+        monkeypatch.setattr(wrapper, "get_state", lambda: held)
+        synced = runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+        mirror = runner_service._run_async(runner_service.db_client.get_state(trial_id)).data
+        return synced, mirror
+
+    def test_a_key_the_holder_dropped_from_a_row_is_gone_from_the_mirror(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        held = wrapper.get_state()
+        for user in held["users"]:
+            user.pop("balance", None)
+
+        synced, mirror = self._sync(runner_service, trial_id, wrapper, monkeypatch, held)
+
+        assert mirror["users"] == held["users"]
+        assert "users" in synced.trusted
+
+    def test_a_row_the_holder_placed_first_is_first_in_the_mirror(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        held = wrapper.get_state()
+        held["users"].insert(0, {"id": "u0", "name": "New", "balance": 1})
+
+        synced, mirror = self._sync(runner_service, trial_id, wrapper, monkeypatch, held)
+
+        assert [u["id"] for u in mirror["users"]] == [u["id"] for u in held["users"]]
+        assert "users" in synced.trusted
+
+    def test_an_empty_table_the_holder_gained_exists_in_the_mirror(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        held = {**wrapper.get_state(), "links": []}
+
+        synced, mirror = self._sync(runner_service, trial_id, wrapper, monkeypatch, held)
+
+        assert mirror["links"] == []
+        assert "links" in synced.trusted
+
+
+class TestTableNamesOfOneCase:
+    def test_a_table_named_like_another_but_for_case_is_refused_as_before(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from tolokaforge.env.json_db_service.app import app
+
+        client = TestClient(app, raise_server_exceptions=False)
+        trial = f"case_{uuid.uuid4().hex[:8]}:0"
+        assert (
+            client.post(
+                f"/trials/{trial}/init", json={"tables": {"users": [{"id": 1}]}}
+            ).status_code
+            == 200
+        )
+
+        answer = client.patch(
+            f"/trials/{trial}/state/Users",
+            json={"operations": [{"op": "insert", "record": {"id": 2}}]},
+        )
+
+        assert answer.status_code >= 400
+        rows = client.post(f"/trials/{trial}/sql", json={"query": "SELECT id FROM users"}).json()
+        assert rows["results"] == [{"id": 1}]
