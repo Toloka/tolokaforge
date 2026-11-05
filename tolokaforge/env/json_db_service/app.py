@@ -1088,9 +1088,15 @@ async def init_trial(trial_id: str, req: InitRequest) -> dict[str, Any]:
 
 @app.get("/trials/{trial_id}/state")
 async def get_state(
-    trial_id: str, tables: str | None = Query(None, description="Comma-separated table names")
+    trial_id: str,
+    tables: str | None = Query(None, description="Comma-separated table names"),
+    hashes: bool = Query(True, description="Hash the whole state into the answer"),
 ) -> dict[str, Any]:
-    """Get the complete current state including all fields."""
+    """Get the complete current state including all fields.
+
+    ``hashes=false`` answers ``""`` for both hashes: a reader that wants a few tables'
+    rows does not pay two hashes of the whole state for them.
+    """
     try:
         trial = db_service.get_trial(trial_id)
     except TrialNotFoundError as e:
@@ -1105,8 +1111,8 @@ async def get_state(
         return {
             "data": data,
             "version": trial.version,
-            "full_hash": trial.compute_full_hash(),
-            "stable_hash": trial.compute_stable_hash(),
+            "full_hash": trial.compute_full_hash() if hashes else "",
+            "stable_hash": trial.compute_stable_hash() if hashes else "",
         }
 
 

@@ -87,6 +87,8 @@ class _FakeDBServiceClient:
         trial_id: str,  # noqa: ARG002
         tables: list[str] | None = None,  # noqa: ARG002
         timeout: float | None = None,  # noqa: ARG002
+        *,
+        hashes: bool = True,  # noqa: ARG002
     ) -> StateResponse:
         return StateResponse(data=self._tables, version=1, full_hash="full", stable_hash="stable")
 
