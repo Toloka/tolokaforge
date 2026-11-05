@@ -85,6 +85,12 @@ CONTAINER_LOGS_DIR = "/logs"
 ``T_BENCH_CONTAINER_LOGS_PATH`` a terminal-bench pack authors against."""
 
 STAGING_LOGS_DIRNAME = "_logs"
+# The task's own grading suite, as it sits in the staging directory. It is
+# mounted into the sidecar and never into the agent.
+_TESTS_STAGING_DIRNAME = "tests"
+# Where the suite appears inside the sidecar, and the path the agent is kept
+# away from. Also the value task compose files see as ``${TEST_DIR}``.
+_TESTS_CONTAINER_DIR = "/tests"
 """Directory inside the staging tree the agent service's ``/logs`` mounts from.
 
 Relative, so the mount resolves against whichever copy of the compose context
@@ -613,12 +619,13 @@ def _agent_volumes(declared: Any, *, reserve_tests_target: bool = True) -> list[
     ours: list[Any] = []
     reserved = {CONTAINER_LOGS_DIR}
     if reserve_tests_target:
-        reserved.add("/tests")
+        reserved.add(_TESTS_CONTAINER_DIR)
     ours.append(f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}")
     kept = [
         mount
         for mount in (declared or [])
         if not _mount_target_is_under(_mount_target(mount), reserved)
+        and not (reserve_tests_target and _mount_source_is_the_suite(_mount_source(mount)))
     ]
     return kept + ours
 
@@ -634,6 +641,43 @@ def _mount_target(mount: Any) -> str | None:
         parts = mount.split(":")
         return parts[1] if len(parts) >= 2 else parts[0]
     return None
+
+
+def _mount_source(mount: Any) -> str | None:
+    """The host path *mount* binds from, in either compose spelling.
+
+    Returns ``None`` for an anonymous volume and for a named volume, neither of
+    which can carry the task's own ``tests/`` directory.
+    """
+    if isinstance(mount, Mapping):
+        if mount.get("type") not in (None, "bind"):
+            return None
+        source = mount.get("source")
+        return source if isinstance(source, str) else None
+    if isinstance(mount, str):
+        parts = mount.split(":")
+        if len(parts) < 2:
+            return None  # anonymous volume: "/data"
+        source = parts[0]
+        # A named volume ("coop_src:/app") is not a path and cannot be the suite.
+        return source if source.startswith((".", "/", "~")) else None
+    return None
+
+
+def _mount_source_is_the_suite(source: str | None) -> bool:
+    """Whether *source* is the task's ``tests/`` directory, or inside it.
+
+    Checked independently of the target: a task that binds ``./tests`` to
+    ``/opt/suite`` hands the agent the assertions just as surely as one that
+    binds it to ``/tests``, and the reserved-target check alone would let it
+    through.
+    """
+    if source is None or "${" in source:
+        return False
+    path = PurePosixPath(posixpath.normpath(source))
+    if path.is_absolute():
+        return False
+    return path == PurePosixPath(_TESTS_STAGING_DIRNAME) or path.is_relative_to(_TESTS_STAGING_DIRNAME)
 
 
 def _mount_target_is_under(target: str | None, reserved: set[str]) -> bool:
@@ -1353,7 +1397,12 @@ def _tests_sidecar_service_body(agent_image: str, agent_build: Any) -> dict[str,
             "entrypoint": ["sh", "-c", "sleep infinity"],
             "user": "root",
             "network_mode": "none",
-            "volumes": ["./tests:/tests:ro"],
+            "volumes": [f"./{_TESTS_STAGING_DIRNAME}:{_TESTS_CONTAINER_DIR}:ro"],
+            # The entrypoint above replaces whatever the task image starts, so
+            # a HEALTHCHECK baked into that image probes a process that is not
+            # running and can never report healthy. The stack is brought up
+            # with `--wait`, which would then fail the whole trial.
+            "healthcheck": {"disable": True},
         }
     )
     return body

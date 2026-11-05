@@ -825,6 +825,75 @@ class TestAgentCannotReadTheSuite:
         _, doc = self._single_container(tmp_path, volumes=["./tests:/tests", "keep:/srv"])
         assert doc["services"]["main"]["volumes"] == ["keep:/srv", "./_logs:/logs"]
 
+    def test_a_root_compose_tests_mount_aimed_elsewhere_is_dropped_by_source(self, tmp_path):
+        """Reserving the target alone is not enough.
+
+        A root-compose task is authored against the directory the merged file
+        is staged from, so its relative binds are *not* re-rooted — ``./tests``
+        there resolves to the real staged suite. ``./tests:/opt/suite`` then
+        hands the agent exactly the assertions it is scored by; only the path
+        it reads them at differs. The filter has to look at where a mount comes
+        *from*, not just where it lands.
+        """
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "root-leak",
+            {
+                "services": {
+                    "main": {
+                        "image": "python:3.11-slim",
+                        "command": ["sleep", "infinity"],
+                        "volumes": [
+                            "./tests:/opt/suite",
+                            "./tests/data:/data",
+                            "keep:/srv",
+                        ],
+                    }
+                }
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+        doc = _load_synthesised(env)
+        assert doc["services"]["main"]["volumes"] == ["keep:/srv", "./_logs:/logs"]
+
+    def test_an_environment_compose_tests_dir_is_not_the_suite(self, tmp_path):
+        """``./tests`` under ``environment/`` is a different directory.
+
+        For the canonical shape the synthesiser re-roots relative binds onto
+        ``environment/``, so the task's own ``environment/tests`` fixture is
+        not the staged grading suite and must survive. Over-matching here would
+        silently break tasks that ship such a directory.
+        """
+        _, doc = self._single_container(tmp_path, volumes=["./tests:/opt/fixtures"])
+        assert doc["services"]["main"]["volumes"] == [
+            "./environment/tests:/opt/fixtures",
+            "./_logs:/logs",
+        ]
+
+    def test_a_named_volume_is_not_mistaken_for_the_suite(self, tmp_path):
+        """``tests:/app`` is a named volume, not the task's tests directory."""
+        _, doc = self._single_container(tmp_path, volumes=["tests:/app", "./src:/src"])
+        assert doc["services"]["main"]["volumes"] == [
+            "tests:/app",
+            "./environment/src:/src",
+            "./_logs:/logs",
+        ]
+
+    def test_the_sidecar_disables_the_images_healthcheck(self, tmp_path):
+        """The sidecar replaces the entrypoint, so an inherited probe can never pass.
+
+        The stack comes up with ``--wait``. A task image that declares a
+        HEALTHCHECK against a process its own entrypoint starts would leave
+        ``tests-vault`` permanently unhealthy and kill every trial of that task
+        in provisioning — the same shape that took out six tasks on 2026-10-30.
+        """
+        _, doc = self._single_container(tmp_path)
+        assert doc["services"]["tests-vault"]["healthcheck"] == {"disable": True}
+
     def test_the_agent_has_no_TEST_DIR(self, tmp_path):
         """The variable and the mount move together, or it advertises the path."""
         _, doc = self._single_container(tmp_path)

@@ -12,7 +12,6 @@
       ],
       "container_name": "tbench_${TOLOKAFORGE_TRIAL_SLUG}_main",
       "environment": [
-        "TEST_DIR=/tests",
         "ANTHROPIC_API_KEY=${TBENCH_PROVIDER_ANTHROPIC_API_KEY}",
         "ANTHROPIC_BASE_URL=${TBENCH_PROVIDER_ANTHROPIC_BASE_URL}",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
@@ -21,7 +20,6 @@
       ],
       "image": "tbench-echo-hello-skills:local-claude-code-2.1.233-e211d3d2",
       "volumes": [
-        "./tests:/tests",
         "./_logs:/logs"
       ]
     },
@@ -33,6 +31,27 @@
       "image": "tbench-echo-hello-skills:local",
       "profiles": [
         "tolokaforge-build"
+      ]
+    },
+    "tests-vault": {
+      "build": {
+        "context": ".",
+        "dockerfile": "_harness/harness.Dockerfile"
+      },
+      "container_name": "tbench_${TOLOKAFORGE_TRIAL_SLUG}_tests-vault",
+      "entrypoint": [
+        "sh",
+        "-c",
+        "sleep infinity"
+      ],
+      "healthcheck": {
+        "disable": true
+      },
+      "image": "tbench-echo-hello-skills:local-claude-code-2.1.233-e211d3d2",
+      "network_mode": "none",
+      "user": "root",
+      "volumes": [
+        "./tests:/tests:ro"
       ]
     }
   }
