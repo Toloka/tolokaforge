@@ -93,9 +93,37 @@ class TestRegisterTrial:
                 mock_grpc_context,
             )
             (call,) = db_client.init_trial.await_args_list
-            expected = StateReadDeadlines(holder_read_s=300.0).final_state_read_s
-            assert call.kwargs["timeout"] == expected
-            assert expected > 30.0
+            budget = StateReadDeadlines(holder_read_s=300.0).final_state_read_s
+            # Cut to what the call has left before it unwinds, and far above the
+            # client's 30 s default.
+            assert 30.0 < call.kwargs["timeout"] <= budget
+        finally:
+            service.shutdown()
+
+    def test_the_wait_for_the_init_is_the_whole_state_call_budget(
+        self, mock_grpc_context: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wait outlasts the request: a ``state_read_timeout_s`` of 300 makes the
+        request's budget longer than ``_run_async``'s 300 s default."""
+        db_client = MagicMock()
+        db_client.init_trial = AsyncMock(side_effect=RuntimeError("stop after the init"))
+        service = RunnerServiceImpl(db_client, state_read_timeout_s=300.0)
+        waits: list[float] = []
+        run_async = service._run_async
+
+        def recording(coro: Any, timeout: float = 300.0) -> Any:
+            waits.append(timeout)
+            return run_async(coro, timeout=timeout)
+
+        monkeypatch.setattr(service, "_run_async", recording)
+        try:
+            service.RegisterTrial(
+                register_request(trial_spec_json(_world_task(), trial_id="world:0"), "world:0"),
+                mock_grpc_context,
+            )
+            budget = StateReadDeadlines(holder_read_s=300.0).final_state_read_s
+            assert waits[0] == budget > 300.0
+            assert db_client.init_trial.await_args.kwargs["timeout"] < budget
         finally:
             service.shutdown()
 
