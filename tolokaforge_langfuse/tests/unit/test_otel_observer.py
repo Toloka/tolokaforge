@@ -2276,6 +2276,8 @@ class TestSecretsPolicy:
         roots = [s for s in exporter.get_finished_spans() if s.name == "trial"]
         traces = [e["body"] for e in step.ingested if e["type"] == "trace-create"]
         assert {format(s.context.trace_id, "032x") for s in roots} >= {broken.trace_id}
+        if server_api == "v3":
+            assert traces, "the v3 projection sends its trace through ingestion"
         if policy == "mask":
             assert roots and all(
                 s.attributes.get("langfuse.trace.metadata.secrets") == "mask" for s in roots
@@ -2383,9 +2385,51 @@ class TestSecretsPolicy:
         )
         assert spans == ()
         assert receipt.spans_queued == 0
-        withheld = receipt.extra["langfuse.spans_refused_secret"]
-        assert withheld + receipt.extra.get("langfuse.spans_failed", 0) == 4
+        # a gate that failed is no secret found: the spans count as failed, not refused
+        assert receipt.extra["langfuse.spans_failed"] == 4
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
         assert receipt.extra["langfuse.spans_masked"] == 0
+
+    def test_a_masked_name_is_not_logged_when_the_span_is_withheld(self, caplog) -> None:
+        """What masking left may be in the span's name: the warning does not show it."""
+        tail = "q" + "rst"
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse"):
+            spans, receipt = self._live(
+                "v3", "mask", tool_name="password: abcdefghijklmnop'" + tail
+            )
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        lines = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("(name withheld)" in line for line in lines), lines
+        assert not [line for line in lines if tail in line]
+
+    @FAMILIES
+    def test_a_grade_file_that_does_not_parse_does_not_stop_the_pass(
+        self, tmp_path, server_api
+    ) -> None:
+        def broken_grade(trial_dir) -> None:
+            (trial_dir / "grade.yaml").write_text("reasons: [unclosed\n", encoding="utf-8")
+
+        _, _, receipt = self._persisted(tmp_path, server_api, "mask", edit=broken_grade)
+        assert receipt.extra["langfuse.projections_sent"] == 1
+        assert receipt.extra["langfuse.projections_failed"] == 0
+
+    def test_a_value_one_event_shows_is_masked_in_every_event_of_the_pass(self, tmp_path) -> None:
+        """The pass's events are one unit for the copies: a password a field shows in one event
+        is masked where another event of the same pass has it bare."""
+        value = "Zx9vQ2mL7pR4tK8w" + "Yb3n"
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(exporter, secrets="mask")
+        events = [
+            {"id": "e1", "type": "span-create", "body": {"input": {"password": value}}},
+            {"id": "e2", "type": "span-create", "body": {"output": f"mysql -p{value} -e x"}},
+        ]
+        verdict, sent, masked = observer._screen_events(
+            events, "a" * 32, "projection", tmp_path, frozenset()
+        )
+        assert (verdict, masked) == (None, True)
+        assert value not in json.dumps(sent)
+        assert sent[1]["body"]["output"] == "mysql -pMASKED -e x"
+        observer.run_finished()
 
     @FAMILIES
     def test_a_projection_pass_fails_closed(self, tmp_path, server_api) -> None:

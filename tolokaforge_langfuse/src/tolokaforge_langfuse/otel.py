@@ -545,6 +545,8 @@ class OTelTrialObserver:
         self._gate = gate if gate is not None else SafetyGate.from_environment()
         self._spans_withheld = 0
         self._spans_masked = 0
+        # live spans a failing gate kept back under mask (a gate that raised, not a secret)
+        self._spans_failed = 0
         # what withheld a span or a pass, by rule and variable name, for the run-end summary
         self._withheld_by: Counter[str] = Counter()
         # what was masked in a span or a pass, the same way
@@ -1010,7 +1012,11 @@ class OTelTrialObserver:
             digests[hashlib.sha256(raw).hexdigest()] = hashlib.sha256(masked).hexdigest()
         grade_path = trial_dir / "grade.yaml"
         if grade_path.is_file():
-            grade = yaml.safe_load(grade_path.read_text(encoding="utf-8"))
+            try:
+                grade = yaml.safe_load(grade_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, yaml.YAMLError):
+                # the projection reads it the same way and carries no grading for it
+                grade = None
             if isinstance(grade, Mapping):
                 masked_grade = self._gate.screen_structured(
                     grade, policy=SECRETS_MASK, also=found
@@ -1152,6 +1158,8 @@ class OTelTrialObserver:
         sent: list[dict[str, Any]] = []
         causes: list[str] = []
         try:
+            # a value one event shows in a shape is masked where it stands bare in another
+            found = found | self._gate.found_values(events)
             digests = self._masked_digests(trial_dir, found)
             for event in events:
                 screened = self._gate.screen_structured(event, policy=SECRETS_MASK, also=found)
@@ -1374,6 +1382,8 @@ class OTelTrialObserver:
                 # live spans the data-safety gate withheld (neither queued nor dropped); a
                 # trial-end pass it withheld is counted as ``*_refused_secret``, not ``*_failed``
                 "langfuse.spans_refused_secret": self._spans_withheld,
+                # live spans kept back because the gate failed on them (``secrets: mask``)
+                "langfuse.spans_failed": self._spans_failed,
                 # what ``secrets: mask`` sent masked; each a part of its sent / registered count
                 "langfuse.spans_masked": self._spans_masked,
                 "langfuse.projections_masked": self._projection_counts["masked"],
@@ -1706,8 +1716,7 @@ class OTelTrialObserver:
             )
         except Exception as exc:  # noqa: BLE001 - a span the gate could not screen stays here
             with self._states_lock:
-                self._spans_withheld += 1
-                self._withheld_by.update(["screen-failed"])
+                self._spans_failed += 1
             _log.warning(
                 "span (%s) of trace %s not exported, the data-safety gate failed: %s",
                 span_id,
@@ -1721,9 +1730,17 @@ class OTelTrialObserver:
             with self._states_lock:
                 self._spans_withheld += 1
                 self._withheld_by.update(causes)
+            # what masking left may be in the name itself: it is shown only when masking did not
+            # touch it and it is clean
+            shown = (
+                masked_name
+                if masked_name == name
+                and not self._gate.scan(masked_name.encode("utf-8", "replace"))
+                else "(name withheld)"
+            )
             _log.warning(
                 "span %r (%s) of trace %s not exported, masking left a secret in it: %s",
-                masked_name,
+                shown,
                 span_id,
                 identity.trace_id,
                 ", ".join(causes),

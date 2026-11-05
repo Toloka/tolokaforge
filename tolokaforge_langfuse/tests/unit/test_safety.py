@@ -34,7 +34,7 @@ PLACEHOLDER = "MASKED"
 VECTORS = Path(__file__).parent / "fixtures" / "mask_vectors.json"
 # the file is copied byte for byte wherever another gate is held to the same rows: a change to
 # one copy fails here until both carry it
-VECTORS_SHA256 = "77d6ea0353c1cc7c1c587386668d5c5f3138b9869af819f737dd14f955433991"
+VECTORS_SHA256 = "5b0d8c317336f5aab64c11225ae769c53b5f640adb348e0cbed4ff08f62d710f"
 
 # the fake secrets behind the vector file's placeholders, assembled so no literal is key-shaped
 TOKENS = {
@@ -685,6 +685,44 @@ class TestMask:
         screened = SafetyGate().screen_structured({GH_PAT: "x"}, policy="mask")
         text = " ".join(str(f) for f in screened.findings)
         assert GH_PAT not in text and GH_PAT[8:] not in text
+
+    # -- a value that holds a quote: its part after the quote is no part of any mask
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b"DB_PASSWORD=abcdefgh'ijklmnop\n",
+            b'DB_PASSWORD=abcdefgh"ijklmnop\n',
+            b"password: abcdefghijklmnop'qrstuv\n",
+        ],
+        ids=["dotenv apostrophe", "dotenv double quote", "field apostrophe"],
+    )
+    def test_residue_a_quote_inside_an_unquoted_value_withholds_raw_bytes(
+        self, payload: bytes
+    ) -> None:
+        screened = SafetyGate().screen(payload, policy="mask")
+        assert "mask-residue" in {f.rule for f in screened.findings}
+
+    @pytest.mark.parametrize("quote", ["'", '"'], ids=["apostrophe", "double quote"])
+    def test_residue_a_quote_inside_a_field_value_withholds_the_unit(self, quote: str) -> None:
+        screened = SafetyGate().screen_structured(
+            {"password": "abcdefghijklmnop" + quote + "qrst"}, policy="mask"
+        )
+        assert "mask-residue" in {f.rule for f in screened.findings}
+
+    def test_an_env_listing_yaml_ends_with_its_closing_quote_is_masked_cleanly(self) -> None:
+        """yaml.safe_dump closes a single-quoted scalar right after the last value: that quote
+        ends the value, the file still parses."""
+        payload = yaml.safe_dump({"content": "A=1\nPGPASSWORD=postgres-fake-01"}).encode()
+        screened = SafetyGate().screen(payload, policy="mask")
+        assert screened.findings == ()
+        assert yaml.safe_load(screened.value) == {"content": "A=1\nPGPASSWORD=MASKED"}
+
+    def test_masking_a_long_run_of_keywords_is_not_quadratic(self) -> None:
+        started = time.perf_counter()
+        SafetyGate().screen_structured({"output": "KEY" * 20_000}, policy="mask")
+        SafetyGate().screen(("KEY" * 20_000).encode(), policy="mask")
+        assert time.perf_counter() - started < 2.0
 
 
 class _MaskerThat(SafetyGate):

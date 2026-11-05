@@ -46,7 +46,13 @@ from tolokaforge_langfuse.attachments import (
     syntax_of,
 )
 from tolokaforge_langfuse.retry import Answer, Retrier
-from tolokaforge_langfuse.safety import RULE_UNPARSEABLE, SECRETS_MASK, SECRETS_REJECT, parses
+from tolokaforge_langfuse.safety import (
+    RULE_UNPARSEABLE,
+    SECRETS_MASK,
+    SECRETS_POLICIES,
+    SECRETS_REJECT,
+    parses,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -249,8 +255,8 @@ class LangfuseAttachments:
         retrier: Retrier | None = None,
         secrets: str = SECRETS_REJECT,
     ) -> None:
-        if secrets not in (SECRETS_REJECT, SECRETS_MASK):
-            raise ValueError(f"secrets must be reject or mask, got {secrets!r}")
+        if secrets not in SECRETS_POLICIES:
+            raise ValueError(f"secrets must be one of {SECRETS_POLICIES}, got {secrets!r}")
         self._api_base = api_base.rstrip("/")
         self._headers = dict(headers or {})
         self._mode = mode

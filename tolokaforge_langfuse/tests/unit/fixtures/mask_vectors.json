@@ -431,6 +431,42 @@
       }
     },
     {
+      "id": "two-dsns",
+      "case": "two URLs joined by a comma: the second starts inside the first's host, both are masked",
+      "kind": "bytes",
+      "input": "DATABASE_URLS={PG}://a:FakePwOne-01@db1.example.com,{PG}://b:FakePwTwo-02@db2.example.com/x\n",
+      "known": [],
+      "also": [],
+      "expected": "DATABASE_URLS={PG}://a:MASKED@db1.example.com,{PG}://b:MASKED@db2.example.com/x\n",
+      "counts": {
+        "url-credentials": 2
+      }
+    },
+    {
+      "id": "bearer-escaped-slash",
+      "case": "a token JSON wrote with an escaped slash is masked past it",
+      "kind": "bytes",
+      "input": "{\"h\": \"Authorization: Bearer FakeBearerToken12\\/rest0123456789\"}",
+      "known": [],
+      "also": [],
+      "expected": "{\"h\": \"Authorization: Bearer MASKED\"}",
+      "counts": {
+        "authorization-header": 1
+      }
+    },
+    {
+      "id": "yaml-doubled-quote",
+      "case": "YAML writes a quote inside a single-quoted value as two: the value runs past them",
+      "kind": "bytes",
+      "input": "password: 'Fake16charsAAAAAA''tail-part'\n",
+      "known": [],
+      "also": [],
+      "expected": "password: 'MASKED'\n",
+      "counts": {
+        "secret-field": 1
+      }
+    },
+    {
       "id": "clean",
       "case": "ordinary code stays",
       "kind": "bytes",

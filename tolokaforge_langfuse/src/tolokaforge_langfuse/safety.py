@@ -110,7 +110,9 @@ RULE_UNPARSEABLE = "mask-unparseable"
 
 # an environment variable's name, upper case by convention: an agent's `txn_key = compute(x)` is
 # code, not a dotenv line
-_DOTENV_NAME = rb"[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)[A-Z0-9_]*"
+# (each part bounded: a long run of keywords in one word would otherwise backtrack
+# quadratically)
+_DOTENV_NAME = rb"[A-Z][A-Z0-9_]{0,63}(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)[A-Z0-9_]{0,63}"
 
 SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     (
@@ -266,7 +268,7 @@ class Screened:
     ``mask``. ``masked`` counts the masks by rule (read-only; empty under ``reject``). Non-empty
     ``findings`` withhold the unit, whatever the policy."""
 
-    value: Any
+    value: Any = field(repr=False)
     masked: Mapping[str, int] = _EMPTY
     findings: tuple[Finding, ...] = ()
     # the variables whose known values were masked (names only, for a warning)
@@ -448,13 +450,11 @@ class SafetyGate:
         *,
         policy: str,
         also: Iterable[bytes] = (),
-        syntax: str | None = None,
     ) -> Screened:
         """Raw ``payload`` under ``policy``: under ``reject`` what :meth:`scan` finds; under
-        ``mask`` the masked copy and what the backstop finds (the gate over the copy, the check
-        of the byte after each mask, and for ``syntax`` ``"yaml"`` / ``"json"`` whether a payload
-        that parsed still parses). ``also``: values found elsewhere in the same trial, masked
-        here too."""
+        ``mask`` the masked copy and what the backstop finds (the gate over the copy, and the
+        check of what follows each mask). ``also``: values found elsewhere in the same trial,
+        masked here too."""
         _check_policy(policy)
         if policy == SECRETS_REJECT:
             return Screened(payload, _EMPTY, tuple(self.scan(payload)))
@@ -464,10 +464,6 @@ class SafetyGate:
         self._count((), exempted)
         findings = self._scan_bytes(masked, RAW_SHAPES, count_exempted=False)
         findings += self._broken(broken)
-        if counts and syntax is not None and parses(payload, syntax):
-            if not parses(masked, syntax):
-                findings.append(Finding(RULE_UNPARSEABLE, f"no longer {syntax}"))
-                self._count(findings[-1:])
         return Screened(
             masked,
             MappingProxyType(dict(counts)),
@@ -620,7 +616,9 @@ class SafetyGate:
                     continue
                 start, end = _extent(rule, match, view)
                 spans.append(_Span(start, end, rule))
-                position = max(match.end(), match.start() + 1)
+                # the greedy host of a URL can hold the start of the next one
+                resume = end if rule == "url-credentials" else match.end()
+                position = max(resume, match.start() + 1)
         return spans
 
     def _broken(self, rules: Iterable[str]) -> list[Finding]:
@@ -815,7 +813,8 @@ def _value_extent(view: bytes, start: int) -> tuple[int, int]:
 
 def _closing_quote(view: bytes, i: int, quote: bytes) -> int:
     """The next quote of the kind that opened a value just before ``i`` (``"``, ``'``, or an
-    escaped ``\\"`` / ``\\'``); -1 when there is none, or the enclosing string ends first."""
+    escaped ``\\"`` / ``\\'``; YAML's ``''`` is no closing quote); -1 when there is none, or,
+    for an escaped opener, when the enclosing string ends first."""
     escaped_opener = len(quote) == 2
     target = quote[-1]
     while i < len(view):
@@ -828,6 +827,9 @@ def _closing_quote(view: bytes, i: int, quote: bytes) -> int:
         if escaped_opener and byte == 0x22:
             return -1
         if not escaped_opener and byte == target:
+            if target == 0x27 and view[i + 1 : i + 2] == b"'":
+                i += 2  # YAML's '' inside a single-quoted scalar
+                continue
             return i
         i += 1
     return -1
@@ -877,7 +879,12 @@ def _string_end(view: bytes, i: int) -> int:
 
 
 def _token_end(view: bytes, i: int) -> int:
-    while i < len(view) and view[i] not in _TOKEN_STOP:
+    while i < len(view):
+        if view[i : i + 2] == b"\\/":  # JSON may write a / as \/
+            i += 2
+            continue
+        if view[i] in _TOKEN_STOP:
+            return i
         i += 1
     return i
 
@@ -892,20 +899,56 @@ def _authority_end(view: bytes, i: int) -> int:
     return len(view)
 
 
-def _ends_cleanly(rule: str, view: bytes, end: int) -> bool:
-    """The check of one mask: the byte after it is one its rule's extent ends at."""
+def _ends_cleanly(rule: str, view: bytes, start: int, end: int) -> bool:
+    """The check of one mask over ``view[start:end]``: what follows it is where its rule's
+    extent may end. A value that stopped at a quote, with a value character right after the
+    quote, held the quote (``pass'word``): what follows is the rest of it, so the check
+    fails and the unit is withheld."""
     if rule in (RULE_KNOWN, RULE_COPY) or end >= len(view):
         return True
     byte = view[end]
     if rule == "url-credentials":
         return byte == 0x40
-    if rule in ("dotenv-secret", "secret-field"):
-        return byte in b"\r\n\"'" or (
-            byte == 0x5C and view[end + 1 : end + 2] in (b"n", b"r", b'"', b"'")
-        )
     if rule == "pem-private-key":
         return view[:end].endswith(b"KEY-----") or byte == 0x22
-    return byte in _TOKEN_STOP
+    if rule in ("dotenv-secret", "secret-field"):
+        opener = _opener_before(view, start)
+        if opener is not None:  # a quoted value ends at its own closing quote
+            return view.startswith(opener, end)
+        if byte in b"\r\n" or view[end : end + 2] in (b"\\n", b"\\r"):
+            return True
+    elif byte in _SPACE or byte in b"`<>":
+        return True
+    elif byte == 0x5C:
+        return view[end + 1 : end + 2] in (b"n", b"r", b"t", b'"', b"'") and (
+            view[end + 1] not in b"\"'" or _after_a_value(view, end + 2)
+        )
+    if view[end : end + 2] in (b'\\"', b"\\'"):
+        return _after_a_value(view, end + 2)
+    if byte in b"\"'":
+        return _after_a_value(view, end + 1)
+    return False
+
+
+def _opener_before(view: bytes, start: int) -> bytes | None:
+    """The quote that opened the value at ``start``, if one did."""
+    for quote in (b'\\"', b"\\'", b'"', b"'"):
+        if start >= len(quote) and view[start - len(quote) : start] == quote:
+            return quote
+    return None
+
+
+def _after_a_value(view: bytes, i: int) -> bool:
+    """Whether ``i`` (just past a quote a value stopped at) is outside the value: the end,
+    whitespace, a separator or a closing bracket, or an escaped line break or quote."""
+    if i >= len(view):
+        return True
+    return view[i] in b" \t\r\n,;:)]}" or view[i : i + 2] in (
+        b"\\n",
+        b"\\r",
+        b"\\t",
+        b'\\"',
+    )
 
 
 def _promotable(view: bytes, span: _Span) -> set[bytes]:
@@ -957,7 +1000,7 @@ def _replace(
         cursor = end
         # a found value at the place a shape found it is that shape's mask, not a copy
         counts.update(rules - {RULE_COPY} if rules - {RULE_COPY, RULE_KNOWN} else rules)
-        if not any(_ends_cleanly(rule, view, end) for rule in rules):
+        if not _ends_cleanly(last, view, start, end):
             broken.append(last)
     out += view[cursor:]
     return bytes(out), counts, broken
@@ -985,7 +1028,7 @@ def parses(payload: bytes, syntax: str) -> bool:
         if syntax == "json":
             json.loads(payload)
         else:
-            yaml.safe_load(payload)
+            list(yaml.safe_load_all(payload))
     except Exception:  # noqa: BLE001 - any parser failure means it does not parse
         return False
     return True
