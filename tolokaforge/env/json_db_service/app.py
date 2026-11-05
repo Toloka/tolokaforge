@@ -408,6 +408,26 @@ class TrialState(BaseModel):
             self._mirror_table(cursor, table_name, table_data)
         self._sql_conn.commit()
 
+    def sync_table_to_sql(self, table_name: str) -> None:
+        """Rebuild one table's SQL mirror from ``data``, as :meth:`sync_json_to_sql` would.
+
+        The other tables' mirrors are left as they are: a mutation of one table changes
+        nothing else, so re-mirroring the whole state for it (a large world's every
+        table) would rebuild the same rows.
+
+        Raises:
+            SQLMirrorError: If the table, a key or a value cannot be stored in SQLite.
+        """
+        if not self._sql_conn:
+            self._init_sql_db()
+
+        assert self._sql_conn is not None  # For type checker
+        cursor = self._sql_conn.cursor()
+        cursor.execute(f"DROP TABLE IF EXISTS {_sql_identifier(table_name)}")
+        if table_name in self.data:
+            self._mirror_table(cursor, table_name, self.data[table_name])
+        self._sql_conn.commit()
+
     def _mirror_table(self, cursor: sqlite3.Cursor, table_name: str, rows: Any) -> None:
         if not isinstance(rows, list):
             return
@@ -1190,8 +1210,17 @@ async def get_state_digests(
 
 
 @app.patch("/trials/{trial_id}/state/{table_name}")
-async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> dict[str, Any]:
+async def mutate_state(
+    trial_id: str,
+    table_name: str,
+    req: MutationRequest,
+    hashes: bool = Query(True, description="Hash the whole state into the answer"),
+) -> dict[str, Any]:
     """Apply mutations to a specific table.
+
+    Only the mutated table is re-mirrored into SQL. ``hashes=false`` answers ``""`` for
+    ``new_hash``: a caller that mutates many tables in turn does not pay a hash of the
+    whole state for each.
 
     Every upsert's key is validated before any operation applies, so a batch
     refused over an upsert mutates nothing.
@@ -1323,7 +1352,7 @@ async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> 
                 )
 
         trial.version += 1
-        trial.sync_json_to_sql()
+        trial.sync_table_to_sql(table_name)
 
         logger.debug(
             "Mutation completed",
@@ -1339,7 +1368,7 @@ async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> 
             "status": "ok",
             "version": trial.version,
             "affected_rows": affected_rows,
-            "new_hash": trial.compute_stable_hash(),
+            "new_hash": trial.compute_stable_hash() if hashes else "",
         }
 
 
