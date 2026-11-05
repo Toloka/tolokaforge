@@ -562,6 +562,8 @@ class DBServiceClient:
         operations: list[dict[str, Any]],
         etag: str | None = None,
         timeout: float | None = None,
+        *,
+        hashes: bool = True,
     ) -> MutateResponse:
         """
         Apply mutations to a specific table.
@@ -575,6 +577,8 @@ class DBServiceClient:
             etag: Optional ETag for optimistic locking
             timeout: Budget for this one request, overriding the client's default
                 ``timeout``
+            hashes: ``False`` asks the service not to hash the whole state into the
+                answer (``new_hash`` comes back ``""``); an older service ignores it
 
         Returns:
             MutateResponse with status, version, affected_rows, new_hash
@@ -594,6 +598,7 @@ class DBServiceClient:
                 response = await client.patch(
                     f"/trials/{trial_id}/state/{table_name}",
                     json=payload,
+                    params={} if hashes else {"hashes": "false"},
                     timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:

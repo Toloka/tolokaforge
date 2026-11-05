@@ -57,6 +57,8 @@ class FakeMutatingDBClient:
         table_name: str,
         operations: list[dict],
         timeout: float | None = None,
+        *,
+        hashes: bool = True,
     ) -> Any:
         self.mutations.append((table_name, operations))
         return SimpleNamespace(success=True)

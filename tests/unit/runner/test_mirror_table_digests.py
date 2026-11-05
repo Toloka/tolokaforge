@@ -125,3 +125,43 @@ class TestTheClient:
 
         with pytest.raises(TrialNotFoundError):
             await client.get_table_digests("t:0")
+
+
+class TestAMutationTouchesItsTable:
+    def test_only_the_mutated_table_is_re_mirrored_into_sql(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tolokaforge.env.json_db_service import app as service
+
+        trial_id = _init(client, {"a": [{"id": 1, "v": 1}], "b": [{"id": 2, "v": 2}]})
+        mirrored: list[str] = []
+        real = service.TrialState._mirror_table
+
+        def recording(self: Any, cursor: Any, table_name: str, rows: Any) -> None:
+            mirrored.append(table_name)
+            real(self, cursor, table_name, rows)
+
+        monkeypatch.setattr(service.TrialState, "_mirror_table", recording)
+        ops = {"operations": [{"op": "upsert", "key": "id", "record": {"id": 1, "v": 9}}]}
+
+        response = client.patch(f"/trials/{trial_id}/state/a", json=ops)
+
+        assert response.status_code == 200, response.text
+        assert mirrored == ["a"]
+        rows = client.post(f"/trials/{trial_id}/sql", json={"query": "SELECT id, v FROM a"}).json()
+        assert rows["results"] == [{"id": 1, "v": 9}]
+        rows = client.post(f"/trials/{trial_id}/sql", json={"query": "SELECT id, v FROM b"}).json()
+        assert rows["results"] == [{"id": 2, "v": 2}]
+
+    def test_a_mutation_without_hashes_answers_an_empty_hash(self, client: TestClient) -> None:
+        trial_id = _init(client, {"a": [{"id": 1}]})
+        ops = {"operations": [{"op": "insert", "record": {"id": 2}}]}
+
+        plain = client.patch(f"/trials/{trial_id}/state/a", json=ops, params={"hashes": "false"})
+        hashed = client.patch(
+            f"/trials/{trial_id}/state/a",
+            json={"operations": [{"op": "insert", "record": {"id": 3}}]},
+        )
+
+        assert plain.json()["new_hash"] == ""
+        assert hashed.json()["new_hash"]

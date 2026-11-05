@@ -4149,7 +4149,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         operations = compute_diff_ops(current_records, new_records, table_name, id_fields)
         if operations:
             await self.db_client.mutate(
-                trial_id, table_name, operations, timeout=self._whole_state_read_s(trial_id)
+                trial_id,
+                table_name,
+                operations,
+                timeout=self._whole_state_read_s(trial_id),
+                hashes=False,
             )
             logger.debug(
                 f"_sync_mcp_state_to_db: {trial_id}/{table_name} — {len(operations)} op(s)"
