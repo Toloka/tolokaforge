@@ -262,7 +262,7 @@ def test_a_field_too_large_to_show_is_diffed_path_by_path() -> None:
     assert "truncated" not in out
     assert '  ~ id="w":' in out
     assert '      state.apps.jira.issues.12.assignee: null → "analyst"' in out
-    assert '      state.apps.jira.issues.30: {"assignee": null' in out and "→ null" in out
+    assert '      state.apps.jira.issues.30: {"assignee": null' in out and "→ (absent)" in out
     assert '      state.apps.workplace.orders[id="PO-7"].state: "open" → "cancelled"' in out
     assert (
         '      + state.apps.workplace.orders[id="PO-new"]: {"id": "PO-new", "state": "open"}' in out
@@ -343,3 +343,39 @@ def test_keyless_rows_too_large_to_show_still_match_as_a_multiset() -> None:
 
     assert "notes: 1 removed" in out
     assert "… (cut)" in out
+
+
+def test_a_key_dropped_from_a_large_field_is_shown_absent() -> None:
+    initial, final = _world(), _world()
+    initial["world"][0]["state"]["apps"]["jira"]["issues"]["3"]["resolution"] = None
+
+    out = render_state_diff(initial, final, primary_keys={"world": "id"})
+
+    assert "No changes detected" not in out
+    assert "      state.apps.jira.issues.3.resolution: null → (absent)" in out
+
+
+def test_a_reordered_keyed_list_in_a_large_field_says_so() -> None:
+    initial, final = _world(), _world()
+    orders = final["world"][0]["state"]["apps"]["workplace"]["orders"]
+    orders[0], orders[1] = orders[1], orders[0]
+
+    out = render_state_diff(initial, final, primary_keys={"world": "id"})
+
+    assert "      state.apps.workplace.orders: order changed" in out
+
+
+def test_a_key_that_reads_as_a_path_is_quoted() -> None:
+    initial, final = _world(), _world()
+    initial["world"][0]["state"]["apps"]["a.b"] = {"x": 1}
+    final["world"][0]["state"]["apps"]["a.b"] = {"x": 2}
+
+    out = render_state_diff(initial, final, primary_keys={"world": "id"})
+
+    assert '      state.apps["a.b"].x: 1 → 2' in out
+
+
+def test_a_lone_surrogate_in_a_keyless_table_still_diffs() -> None:
+    out = render_state_diff({"notes": [{"text": "\ud800"}]}, {"notes": []})
+
+    assert "notes: 1 removed" in out

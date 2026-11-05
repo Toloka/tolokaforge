@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
@@ -115,7 +116,9 @@ def _cut_json(value: Any, limit: int) -> str:
 
 def _record_digest(record: dict[str, Any]) -> bytes:
     """A whole-record match key that holds 32 bytes, not the record's JSON."""
-    return hashlib.sha256(_fmt_record(record).encode()).digest()
+    # ``surrogatepass``: a JSON parse keeps a lone surrogate (``"\\ud800"``), which
+    # strict UTF-8 refuses to encode.
+    return hashlib.sha256(_fmt_record(record).encode("utf-8", "surrogatepass")).digest()
 
 
 def _pk_key(value: Any) -> str:
@@ -205,8 +208,26 @@ class _PathDiffs:
             self.more += 1
 
 
+#: A key one side of a nested dict lacks: shown as ``(absent)``, never as ``null``,
+#: so a key dropped from a large field is not mistaken for no change.
+_ABSENT = object()
+
+#: A key that reads unambiguously after a ``.`` in a path; any other is quoted.
+_PLAIN_KEY = re.compile(r"[A-Za-z0-9_@:-]+")
+
+
 def _too_large(value: Any) -> bool:
     return _bounded_json(value, _MAX_NESTED_VALUE_CHARS) is None
+
+
+def _shown(value: Any) -> str:
+    return "(absent)" if value is _ABSENT else _cut_json(value, _MAX_NESTED_VALUE_CHARS)
+
+
+def _key_path(path: str, key: Any) -> str:
+    if isinstance(key, str) and _PLAIN_KEY.fullmatch(key):
+        return f"{path}.{key}"
+    return f"{path}[{_fmt_value(key)}]"
 
 
 def _walk(path: str, old: Any, new: Any, out: _PathDiffs) -> None:
@@ -220,22 +241,17 @@ def _walk(path: str, old: Any, new: Any, out: _PathDiffs) -> None:
         return
     if isinstance(old, dict) and isinstance(new, dict):
         for key in sorted(set(old) | set(new), key=str):
-            _walk(f"{path}.{key}", old.get(key), new.get(key), out)
+            _walk(_key_path(path, key), old.get(key, _ABSENT), new.get(key, _ABSENT), out)
         return
     if isinstance(old, list) and isinstance(new, list) and (_too_large(old) or _too_large(new)):
         _walk_list(path, old, new, out)
         return
-    out.add(
-        lambda: (
-            f"{path}: {_cut_json(old, _MAX_NESTED_VALUE_CHARS)} → "
-            f"{_cut_json(new, _MAX_NESTED_VALUE_CHARS)}"
-        )
-    )
+    out.add(lambda: f"{path}: {_shown(old)} → {_shown(new)}")
 
 
 def _line(sign: str, path: str, value: Any) -> str:
     """One added (``+``) or removed (``-``) element of a nested list."""
-    return f"{sign} {path}: {_cut_json(value, _MAX_NESTED_VALUE_CHARS)}"
+    return f"{sign} {path}: {_shown(value)}"
 
 
 def _walk_list(path: str, old: list[Any], new: list[Any], out: _PathDiffs) -> None:
@@ -257,6 +273,8 @@ def _walk_list(path: str, old: list[Any], new: list[Any], out: _PathDiffs) -> No
 
     before = {_row_key(r, pk): r for r in old}
     after = {_row_key(r, pk): r for r in new}
+    if [k for k in before if k in after] != [k for k in after if k in before]:
+        out.add(lambda: f"{path}: order changed")
     for key, row in after.items():
         if key in before:
             _walk(at(row), before[key], row, out)
@@ -292,6 +310,9 @@ def _field_diffs(
         frags.extend(paths.shown)
         if paths.more:
             frags.append(f"… ({paths.more} more changed paths)")
+        if not paths.shown:
+            # The walk compares by its own rules; a difference it cannot place still is one.
+            frags.append(f"{field}: changed (not shown)")
     return frags, nested
 
 

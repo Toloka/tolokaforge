@@ -31,7 +31,12 @@ class FakeMutatingDBClient:
         self.mutations: list[tuple[str, list[dict]]] = []
 
     async def get_state(
-        self, trial_id: str, tables: list[str] | None = None, timeout: float | None = None
+        self,
+        trial_id: str,
+        tables: list[str] | None = None,
+        timeout: float | None = None,
+        *,
+        hashes: bool = True,
     ) -> Any:
         if tables:
             return SimpleNamespace(data={t: self._state[t] for t in tables if t in self._state})

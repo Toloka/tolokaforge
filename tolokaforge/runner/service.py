@@ -259,6 +259,12 @@ def _holder_kind(holder: AppWorldClient | MCPServerToolWrapper) -> str:
     return "app world" if isinstance(holder, AppWorldClient) else "MCP server"
 
 
+def _selectable(table: str) -> bool:
+    """Whether the db-service's state endpoint can select ``table`` by name: it takes
+    names comma-joined and strips each, so a name with a comma or edge spaces is not."""
+    return bool(table) and "," not in table and table == table.strip()
+
+
 def _holder_call(
     holder: AppWorldClient | MCPServerToolWrapper, call: Callable[[], Any]
 ) -> asyncio.Future[Any]:
@@ -835,9 +841,9 @@ class _HeldStateSync:
 
     ``held`` is the holder's state as the sync read it. ``order`` is the mirror's
     tables after the sync, in the mirror's own order, and ``trusted`` those of them
-    whose mirror digest equals the held table's: byte for byte the same JSON, so a
-    reader of the mirror may take such a table from ``held`` instead of reading it
-    back. ``order`` is ``None`` when the mirror gives no digests (a db-service that
+    whose mirror digest equals the held table's: the same canonical (sorted-key)
+    JSON, so a reader of the mirror may take such a table from ``held`` instead of
+    reading it back (only the key order inside a row may be the holder's). ``order`` is ``None`` when the mirror gives no digests (a db-service that
     predates them), and then nothing is trusted.
     """
 
@@ -4073,7 +4079,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         id_fields = self._id_fields_for_trial(trial_id)
         mirror = await self.db_client.get_table_digests(trial_id, timeout=timeout)
         if mirror is None:
-            current_state = (await self.db_client.get_state(trial_id, timeout=timeout)).data
+            current_state = (
+                await self.db_client.get_state(trial_id, timeout=timeout, hashes=False)
+            ).data
             for table_name, new_records in mcp_state.items():
                 current_records = current_state.get(table_name, [])
                 if current_records != new_records:
@@ -4082,33 +4090,49 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     )
             return _HeldStateSync(held=mcp_state)
 
-        held = {name: table_digest(rows) for name, rows in mcp_state.items()}
-        changed = [name for name, digest in held.items() if mirror.get(name) != digest]
+        # A digest encodes its table's JSON whole (a one-row world: the whole world), so
+        # it runs off the event loop the runner's other trials share.
+        held_digests = await asyncio.to_thread(
+            lambda: {name: table_digest(rows) for name, rows in mcp_state.items()}
+        )
+        changed = [name for name, digest in held_digests.items() if mirror.get(name) != digest]
+        by_name = all(_selectable(name) for name in changed)
+        whole = (
+            None
+            if by_name or not changed
+            else (await self.db_client.get_state(trial_id, timeout=timeout, hashes=False)).data
+        )
         for table_name in changed:
-            current = await self.db_client.get_state(trial_id, [table_name], timeout=timeout)
+            if whole is None:
+                current = (
+                    await self.db_client.get_state(
+                        trial_id, [table_name], timeout=timeout, hashes=False
+                    )
+                ).data
+            else:
+                current = whole
             await self._mutate_table(
-                trial_id,
-                table_name,
-                current.data.get(table_name, []),
-                mcp_state[table_name],
-                id_fields,
+                trial_id, table_name, current.get(table_name, []), mcp_state[table_name], id_fields
             )
             del current
-        if any(name not in mirror for name in changed):
-            # A table the mirror did not have: its place in the mirror's order is the
-            # mirror's to say.
-            after = await self.db_client.get_table_digests(trial_id, timeout=timeout)
-        elif changed:
+        del whole
+        after: dict[str, str] | None
+        if not changed:
+            after = mirror
+        elif by_name:
+            # The mirror appends a table it creates, so the merged order is the mirror's.
             after = mirror | (
                 await self.db_client.get_table_digests(trial_id, changed, timeout=timeout) or {}
             )
         else:
-            after = mirror
+            after = await self.db_client.get_table_digests(trial_id, timeout=timeout)
         if after is None:
             return _HeldStateSync(held=mcp_state)
-        trusted = frozenset(name for name, digest in after.items() if held.get(name) == digest)
+        trusted = frozenset(
+            name for name, digest in after.items() if held_digests.get(name) == digest
+        )
         logger.debug(
-            f"_sync_mcp_state_to_db: {trial_id} — {len(changed)} of {len(held)} held "
+            f"_sync_mcp_state_to_db: {trial_id} — {len(changed)} of {len(held_digests)} held "
             f"table(s) differed; {len(trusted)} of {len(after)} mirror table(s) match"
         )
         return _HeldStateSync(held=mcp_state, order=tuple(after), trusted=trusted)
@@ -4141,13 +4165,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         whole-state read, as before.
         """
         if synced is None or synced.order is None:
-            return (await self.db_client.get_state(trial_id, timeout=timeout)).data
+            return (await self.db_client.get_state(trial_id, timeout=timeout, hashes=False)).data
         rest = [name for name in synced.order if name not in synced.trusted]
-        if any("," in name for name in rest):
-            # The state endpoint takes table names comma-joined.
-            return (await self.db_client.get_state(trial_id, timeout=timeout)).data
+        if not all(_selectable(name) for name in rest):
+            return (await self.db_client.get_state(trial_id, timeout=timeout, hashes=False)).data
         read = (
-            (await self.db_client.get_state(trial_id, rest, timeout=timeout)).data if rest else {}
+            (await self.db_client.get_state(trial_id, rest, timeout=timeout, hashes=False)).data
+            if rest
+            else {}
         )
         return {
             name: synced.held[name] if name in synced.trusted else read[name]

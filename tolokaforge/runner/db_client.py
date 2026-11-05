@@ -396,6 +396,8 @@ class DBServiceClient:
         trial_id: str,
         tables: list[str] | None = None,
         timeout: float | None = None,
+        *,
+        hashes: bool = True,
     ) -> StateResponse:
         """
         Get the complete current state including all fields.
@@ -407,6 +409,9 @@ class DBServiceClient:
             tables: Optional list of table names to return (default: all)
             timeout: Budget for this one request, overriding the client's default
                 ``timeout``
+            hashes: ``False`` asks the service not to hash the whole state into the
+                answer (``full_hash`` and ``stable_hash`` come back ``""``); a service
+                that predates the flag ignores it and hashes as before
 
         Returns:
             StateResponse with data, version, full_hash, stable_hash
@@ -414,9 +419,11 @@ class DBServiceClient:
         Raises:
             TrialNotFoundError: If trial not found
         """
-        params = {}
+        params: dict[str, str] = {}
         if tables:
             params["tables"] = ",".join(tables)
+        if not hashes:
+            params["hashes"] = "false"
 
         async with self._create_client() as client:
             try:
@@ -469,7 +476,8 @@ class DBServiceClient:
             if _is_unknown_route(response):
                 return None
             self._handle_error_response(response)
-            return dict(response.json()["digests"])
+            digests = response.json().get("digests")
+            return dict(digests) if isinstance(digests, dict) else None
 
     async def get_stable_state(
         self, trial_id: str, timeout: float | None = None

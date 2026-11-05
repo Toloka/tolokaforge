@@ -877,9 +877,9 @@ class TestJudgeReadsOfTheState:
         )
         real_get_state = runner_service.db_client.get_state
 
-        async def stall(trial: str, tables: Any = None, timeout: Any = None) -> Any:  # noqa: ARG001
-            if tables is None:  # the sync's own read
-                return await real_get_state(trial)
+        async def stall(trial: str, tables: Any = None, timeout: Any = None, **kwargs: Any) -> Any:
+            if tables is None or kwargs.get("hashes") is False:  # the sync's own reads
+                return await real_get_state(trial, tables, timeout=timeout, **kwargs)
             await asyncio.sleep(5)
 
         monkeypatch.setattr(runner_service.db_client, "get_state", stall)
@@ -1245,3 +1245,71 @@ class TestTheSyncReadsOnlyTheTablesThatDiffer:
 
         assert self._rows_read(recorder) == ["*", "*"]
         assert final["users"][0]["balance"] == 120
+
+
+class TestTableNamesTheStateEndpointCannotSelect:
+    """A name with a comma or edge spaces is read with the whole state, never by name."""
+
+    @pytest.mark.parametrize("name", ["a,b", " pad"])
+    def test_such_a_table_syncs_without_duplicating_its_rows(
+        self, runner_service, mcp_trial, trial_id, name
+    ) -> None:
+        task = _task()
+        task["initial_state"]["tables"][name] = [{"id": "r1", "v": 1}]
+        held = dict(task["initial_state"]["tables"])
+        held[name] = [{"id": "r1", "v": 2}]
+        wrapper = mcp_trial(task, child_tables=held)
+        substrate = _substrate(runner_service, trial_id, synced=True)
+
+        mirror = runner_service._run_async(runner_service.db_client.get_state(trial_id)).data
+        assert mirror[name] == [{"id": "r1", "v": 2}]
+        assert substrate.final_state()[name] == [{"id": "r1", "v": 2}]
+        del wrapper
+
+    def test_a_holder_that_drops_a_field_grades_on_the_mirrors_row(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """The mirror's upsert merges, so the dropped field stays there; the digests
+        disagree and the final state is the mirror's, as a whole read would be."""
+        wrapper = mcp_trial(_task())
+        state = wrapper.get_state()
+        for user in state["users"]:
+            user.pop("balance", None)
+        monkeypatch.setattr(wrapper, "get_state", lambda: state)
+        substrate = _substrate(runner_service, trial_id, synced=True)
+
+        mirror = runner_service._run_async(runner_service.db_client.get_state(trial_id)).data
+        assert substrate.final_state() == mirror
+        assert "balance" in substrate.final_state()["users"][0]
+
+
+class TestPartialReadsSkipTheWholeStateHashes:
+    def test_the_sync_and_the_final_read_ask_for_no_hashes(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        db_client = runner_service.db_client
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        _substrate(runner_service, trial_id, synced=True).final_state()
+
+        reads = [
+            params
+            for (method, url, _), params in zip(recorder.sent, recorder.params, strict=True)
+            if method == "get" and url.endswith("/state")
+        ]
+        assert reads and all(params.get("hashes") == "false" for params in reads)
+
+    def test_a_read_without_hashes_answers_empty_hashes(
+        self, runner_service, mcp_trial, trial_id
+    ) -> None:
+        mcp_trial(_task())
+        db_client = runner_service.db_client
+        plain = runner_service._run_async(db_client.get_state(trial_id, hashes=False))
+        hashed = runner_service._run_async(db_client.get_state(trial_id))
+
+        assert plain.data == hashed.data
+        assert plain.full_hash == plain.stable_hash == ""
+        assert hashed.full_hash and hashed.stable_hash
