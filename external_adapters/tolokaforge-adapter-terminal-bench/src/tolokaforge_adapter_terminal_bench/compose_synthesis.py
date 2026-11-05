@@ -1401,8 +1401,22 @@ def _tests_sidecar_service_body(agent_image: str, agent_build: Any) -> dict[str,
             # The entrypoint above replaces whatever the task image starts, so
             # a HEALTHCHECK baked into that image probes a process that is not
             # running and can never report healthy. The stack is brought up
-            # with `--wait`, which would then fail the whole trial.
-            "healthcheck": {"disable": True},
+            # with `--wait`, so that would hang until the retries expired and
+            # then fail the whole trial.
+            #
+            # This overrides any inherited probe with one that passes as soon
+            # as the container runs. It is deliberately not `disable: true`:
+            # compose treats a service whose healthcheck is *disabled* as an
+            # error under `--wait` ("has no healthcheck configured") and fails
+            # provisioning, where a service that simply declares none is waited
+            # on for "running". Measured on run 42120491828.
+            "healthcheck": {
+                "test": ["CMD-SHELL", "true"],
+                "interval": "2s",
+                "timeout": "2s",
+                "retries": 3,
+                "start_period": "0s",
+            },
         }
     )
     return body

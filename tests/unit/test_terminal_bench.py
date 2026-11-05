@@ -883,16 +883,25 @@ class TestAgentCannotReadTheSuite:
             "./_logs:/logs",
         ]
 
-    def test_the_sidecar_disables_the_images_healthcheck(self, tmp_path):
+    def test_the_sidecar_overrides_the_images_healthcheck_without_disabling_it(
+        self, tmp_path
+    ):
         """The sidecar replaces the entrypoint, so an inherited probe can never pass.
 
         The stack comes up with ``--wait``. A task image that declares a
         HEALTHCHECK against a process its own entrypoint starts would leave
         ``tests-vault`` permanently unhealthy and kill every trial of that task
         in provisioning — the same shape that took out six tasks on 2026-10-30.
+
+        The override must not be ``disable: true``. Compose refuses to wait on a
+        service whose healthcheck is disabled and fails the stack outright with
+        "has no healthcheck configured", which is how run 42120491828 died; a
+        service that declares none at all is merely waited on for "running".
         """
         _, doc = self._single_container(tmp_path)
-        assert doc["services"]["tests-vault"]["healthcheck"] == {"disable": True}
+        probe = doc["services"]["tests-vault"]["healthcheck"]
+        assert probe["test"] == ["CMD-SHELL", "true"]
+        assert "disable" not in probe
 
     def test_the_agent_has_no_TEST_DIR(self, tmp_path):
         """The variable and the mount move together, or it advertises the path."""
