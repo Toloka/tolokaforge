@@ -418,6 +418,42 @@ class AppWorldConfig(BaseModel):
         return None
 
 
+class InitialStateTablesRef(BaseModel):
+    """A task's initial tables as one of its referenced tool artefacts (ADR-0071).
+
+    :attr:`artifact` names the entry of :attr:`TaskDescription.tool_artifact_refs`
+    the runner copies the state file to, and :attr:`sha256` / :attr:`size` repeat
+    that entry's, so a reader of :class:`RunnerInitialStateConfig` alone knows what
+    the file must hash to. The file holds the task's ``json_db`` as written; the
+    runner normalises it to tables as the inline delivery does.
+    """
+
+    artifact: str
+    """The state file's path in the trial's artefact directory."""
+
+    sha256: str
+    """Lowercase hex SHA-256 of the file's bytes, as its tool-artefact reference records."""
+
+    size: int = Field(ge=0)
+    """The file's size in bytes, as its tool-artefact reference records."""
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+    @field_validator("artifact")
+    @classmethod
+    def _normalised_artifact(cls, value: str) -> str:
+        return _refuse_unnormalised_artifact_path(value, "initial_state.tables_ref artifact")
+
+    @field_validator("sha256")
+    @classmethod
+    def _hex_digest(cls, value: str) -> str:
+        if not _SHA256_HEX_RE.match(value):
+            raise ValueError(
+                f"initial_state.tables_ref sha256 {value!r} is not 64 lowercase hex characters"
+            )
+        return value
+
+
 class RunnerInitialStateConfig(BaseModel):
     """
     Complete initial state specification.
@@ -443,11 +479,25 @@ class RunnerInitialStateConfig(BaseModel):
     # (ADR-0062). ``tables`` above is that world as the runner loads it.
     app_world: AppWorldConfig | None = None
 
+    tables_ref: InitialStateTablesRef | None = None
+    """The tables delivered by reference instead of in :attr:`tables` (ADR-0071):
+    the task's state file, one of the trial's referenced tool artefacts, which the
+    runner reads where the tables are needed. :attr:`tables` is empty when set."""
+
     model_config = {"extra": "forbid"}
 
-    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"app_world"})
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"app_world", "tables_ref"})
     """Left out of the dump while absent, so an image that predates the field
     accepts every pack that does not declare it."""
+
+    @model_validator(mode="after")
+    def _tables_inline_or_by_reference(self) -> RunnerInitialStateConfig:
+        if self.tables_ref is not None and self.tables:
+            raise ValueError(
+                "initial_state carries tables both inline and by reference (tables_ref); "
+                "a description delivers them one way"
+            )
+        return self
 
     @model_serializer(mode="wrap")
     @schema_from_the_fields
@@ -461,8 +511,16 @@ def provisions_database(initial_state: RunnerInitialStateConfig) -> bool:
     Every field the DB service is initialised from counts, not just the rows: a task
     declaring only ``schemas`` or only ``unstable_fields`` still provisions a database,
     and every grading branch that reads one still reaches it.
+
+    Tables delivered by reference (``tables_ref``, ADR-0071) count without being
+    read: the description is built and checked without parsing the file.
     """
-    return bool(initial_state.tables or initial_state.schemas or initial_state.unstable_fields)
+    return bool(
+        initial_state.tables
+        or initial_state.tables_ref is not None
+        or initial_state.schemas
+        or initial_state.unstable_fields
+    )
 
 
 # =============================================================================
@@ -3085,6 +3143,11 @@ FinalStateDelivery = Literal["inline", "mount"]
 :attr:`EnvironmentManifest.final_state_delivery` (ADR-0069)."""
 
 
+InitialStateDelivery = Literal["inline", "mount"]
+"""How a task's initial database state reaches the runner — see
+:attr:`EnvironmentManifest.initial_state_delivery` (ADR-0071)."""
+
+
 ServiceIsolation = Literal["shared", "reset", "ephemeral"]
 """Per-service isolation vocabulary.
 
@@ -3659,6 +3722,12 @@ class EnvironmentPatch(BaseModel):
     replacement, as :attr:`tool_artifacts_delivery` does; the resolver refuses
     ``mount`` on a plan whose runner is not owned by a ``trial``-scope stack."""
 
+    initial_state_delivery: InitialStateDelivery | None = None
+    """How the task's initial database state reaches the runner — see
+    :attr:`EnvironmentManifest.initial_state_delivery`. Survives atomic ``stack``
+    replacement, as :attr:`tool_artifacts_delivery` does; the resolver refuses
+    ``mount`` unless the resolved :attr:`tool_artifacts_delivery` is ``mount`` too."""
+
     services: dict[str, ServiceSpec] | None = None
     """Per-service isolation + reset declarations, keyed by compose
     service name. Discarded on atomic ``stack`` replacement — the
@@ -3816,6 +3885,20 @@ class EnvironmentManifest(BaseModel):
     ``runner_rpc`` without snapshot bundles: no host-side consumer of the
     state is served."""
 
+    initial_state_delivery: InitialStateDelivery = "inline"
+    """How the task's initial database state reaches the runner (ADR-0071).
+
+    ``inline`` (the default) parses the task's ``initial_state.json_db`` file on
+    the engine host into :attr:`RunnerInitialStateConfig.tables`, which travels
+    in the registration message. ``mount`` leaves the file unparsed: the native
+    adapter delivers it as one of the task's referenced tool artefacts and names
+    it in :attr:`RunnerInitialStateConfig.tables_ref`, and the runner initialises
+    the database service from the file and reads the tables from it again only
+    to grade. The runner reads it from the task directory the engine mounts for
+    ``tool_artifacts_delivery: mount``, so ``mount`` here is refused unless that
+    delivery is ``mount`` too. A ``json_db`` written inline in the task, or no
+    ``json_db``, travels inline whatever this says."""
+
     services: dict[str, ServiceSpec] = Field(default_factory=dict)
     """Per-service isolation + reset declarations, keyed by compose
     service name. Populated by :func:`tolokaforge.core.project_loader.resolve`
@@ -3932,6 +4015,23 @@ class EnvironmentManifest(BaseModel):
         if duplicates:
             raise ValueError(f"limited_internet_allowlist contains duplicate entries: {duplicates}")
         return normalised
+
+    @model_validator(mode="after")
+    def _initial_state_by_reference_rides_the_artifact_mount(self) -> EnvironmentManifest:
+        """``initial_state_delivery: mount`` needs ``tool_artifacts_delivery: mount`` (ADR-0071).
+
+        The runner reads the state file from the task directory the engine mounts
+        for referenced tool artefacts; without that mount there is nothing to read
+        it from.
+        """
+        if self.initial_state_delivery == "mount" and self.tool_artifacts_delivery != "mount":
+            raise ValueError(
+                "initial_state_delivery: mount needs tool_artifacts_delivery: mount: the "
+                "runner reads the initial state from the task directory the engine mounts "
+                "for referenced tool artefacts. Declare both, or deliver the initial state "
+                "inline."
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_allowlist_matches_policy(self) -> EnvironmentManifest:
@@ -4176,6 +4276,28 @@ class TaskDescription(BaseModel):
             raise ValueError(
                 f"{len(both)} artefact path(s) are both inline in tool_artifacts and "
                 f"referenced in tool_artifact_refs: {both[:5]}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _initial_tables_ref_names_a_referenced_artifact(self) -> TaskDescription:
+        """Tables by reference name a tool artefact the runner copies and verifies (ADR-0071)."""
+        ref = self.initial_state.tables_ref
+        if ref is None:
+            return self
+        refs = self.tool_artifact_refs
+        entry = refs.files.get(ref.artifact) if refs is not None else None
+        if entry is None:
+            raise ValueError(
+                f"initial_state.tables_ref names the artefact {ref.artifact!r}, which "
+                "tool_artifact_refs does not reference; the runner reads the initial state "
+                "from the trial's referenced artefacts only"
+            )
+        if (entry.sha256, entry.size) != (ref.sha256, ref.size):
+            raise ValueError(
+                f"initial_state.tables_ref records sha256 {ref.sha256} and {ref.size} bytes "
+                f"for {ref.artifact!r}, and its tool artefact reference sha256 "
+                f"{entry.sha256} and {entry.size} bytes"
             )
         return self
 

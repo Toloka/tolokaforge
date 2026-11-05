@@ -423,7 +423,9 @@ class InProcessGradingSubstrate:
     pre-fetched value verbatim, or ``final_state_factory=`` for a
     memoised-on-first-read lambda the composite can gate on. Both together
     is a construction-time ``ValueError`` — the two argument shapes are
-    mutually exclusive. :meth:`final_state_stable` and
+    mutually exclusive. :meth:`initial_state` takes the same two shapes
+    (``initial_state=`` or ``initial_state_factory=``, ADR-0071).
+    :meth:`final_state_stable` and
     :meth:`filesystem_state` are factory-only; the composite lazily invokes
     them at most once per grade call, and only when its own gates say
     the read is needed.
@@ -436,6 +438,7 @@ class InProcessGradingSubstrate:
         knowledge_search: KnowledgeSearch | None,
         filesystem_root: Path | None,
         initial_state: dict[str, Any] | None = None,
+        initial_state_factory: Callable[[], dict[str, Any]] | None = None,
         final_state: dict[str, Any] | None = None,
         final_state_factory: Callable[[], dict[str, Any]] | None = None,
         final_state_stable_factory: Callable[[], dict[str, Any]] | None = None,
@@ -449,10 +452,20 @@ class InProcessGradingSubstrate:
                 "InProcessGradingSubstrate: 'final_state' and 'final_state_factory' "
                 "are mutually exclusive — pass one or the other, not both."
             )
+        if initial_state is not None and initial_state_factory is not None:
+            raise ValueError(
+                "InProcessGradingSubstrate: 'initial_state' and 'initial_state_factory' "
+                "are mutually exclusive — pass one or the other, not both."
+            )
         self._db_reader = db_reader
         self._knowledge_search = knowledge_search
         self._filesystem_root = filesystem_root
-        self._initial_state = initial_state if initial_state is not None else {}
+        self._initial_state: dict[str, Any] | Any = (
+            initial_state
+            if initial_state is not None
+            else (_MISSING if initial_state_factory is not None else {})
+        )
+        self._initial_state_factory = initial_state_factory
         self._final_state = final_state
         self._final_state_factory = final_state_factory
         self._final_state_stable_factory = final_state_stable_factory
@@ -474,7 +487,13 @@ class InProcessGradingSubstrate:
         return self._filesystem_root
 
     def initial_state(self) -> dict[str, Any]:
-        return self._initial_state
+        # A factory (the initial state read from a file, ADR-0071) is called on the
+        # first read and memoised for the substrate's one grade call.
+        if self._initial_state is _MISSING:
+            assert self._initial_state_factory is not None
+            self._initial_state = self._initial_state_factory()
+        result: dict[str, Any] = self._initial_state
+        return result
 
     def final_state(self) -> dict[str, Any]:
         if self._final_state is None and self._final_state_factory is not None:
@@ -524,8 +543,7 @@ class InProcessGradingSubstrate:
             # offline lanes do.
             if is_db_transport_error(exc):
                 raise SubstrateUnreachableError(
-                    f"db_probe could not reach postgres (dsn={dsn!r}): "
-                    f"{type(exc).__name__}: {exc}"
+                    f"db_probe could not reach postgres (dsn={dsn!r}): {type(exc).__name__}: {exc}"
                 ) from exc
             raise DbProbeQueryError(f"{type(exc).__name__}: {exc}") from exc
         return json.loads(json.dumps(rows, default=str))
@@ -621,7 +639,10 @@ class InProcessGradingSubstrate:
 
     def close(self) -> None:
         # Nothing to release — the caller owns the DB reader, KB search,
-        # and workspace paths; the substrate is a thin view.
+        # and workspace paths; the substrate is a thin view. A factory-built
+        # initial state is dropped so it does not outlive the grade.
+        if self._initial_state_factory is not None:
+            self._initial_state = _MISSING
         self._closed = True
 
 

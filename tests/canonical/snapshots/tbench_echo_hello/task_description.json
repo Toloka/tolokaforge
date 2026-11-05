@@ -42,6 +42,7 @@
     "db_service": null,
     "final_state_delivery": "inline",
     "initial_state": {},
+    "initial_state_delivery": "inline",
     "limited_internet_allowlist": [],
     "network_policy": "full_internet",
     "rag_port": null,

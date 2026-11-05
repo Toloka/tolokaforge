@@ -43,7 +43,7 @@ from jsonpath_ng.exceptions import JSONPathError
 from jsonpath_ng.ext import parse  # .ext: supports filter exprs, superset of base grammar
 from jsonpath_ng.ext.string import DefintionInvalid
 from jsonpath_ng.jsonpath import Child, Fields, JSONPath
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +301,37 @@ class InitRequest(BaseModel):
     tables: dict[str, list[dict[str, Any]]]
     schemas: list[TableSchema] | None = None
     unstable_fields: list[UnstableFieldSpec] | None = None
+
+
+class InitFromJsonDbRequest(BaseModel):
+    """Trial initialization from a task's ``json_db`` as written (ADR-0071).
+
+    The runner streams the task's state file into :attr:`json_db` without
+    parsing it; the service normalises each collection to the table the inline
+    :class:`InitRequest` would carry (:func:`seeded_records`).
+    """
+
+    json_db: dict[str, Any]
+    schemas: list[TableSchema] | None = None
+    unstable_fields: list[UnstableFieldSpec] | None = None
+
+
+def seeded_records(collection: Any) -> list[Any]:
+    """Normalise one seeded collection to the record list its table carries.
+
+    A vendored copy of :func:`tolokaforge.runner.initial_state_file.seeded_records`
+    (the db-service image installs this directory alone); the parity test
+    ``tests/unit/runner/test_initial_state_by_reference.py`` holds the two equal. A
+    list is the records, a mapping of mappings is records keyed by id, anything
+    else is one record.
+    """
+    if isinstance(collection, list):
+        return collection
+    if isinstance(collection, dict):
+        values = list(collection.values())
+        if values and all(isinstance(value, dict) for value in values):
+            return values
+    return [collection]
 
 
 class MutationOperation(BaseModel):
@@ -1073,6 +1104,34 @@ db_service = DBService()
 @app.post("/trials/{trial_id}/init")
 async def init_trial(trial_id: str, req: InitRequest) -> dict[str, Any]:
     """Initialize a trial with initial state, schemas, and unstable field specifications."""
+    return _init_trial(trial_id, req)
+
+
+@app.post("/trials/{trial_id}/init/json_db")
+async def init_trial_from_json_db(trial_id: str, req: InitFromJsonDbRequest) -> dict[str, Any]:
+    """Initialize a trial from a task's ``json_db`` as written (ADR-0071).
+
+    Each collection is normalised to its records exactly as the engine normalises
+    it for the inline :func:`init_trial`, then held to the same table shape; the
+    rest is :func:`init_trial`'s.
+    """
+    tables = {name: seeded_records(collection) for name, collection in req.json_db.items()}
+    req.json_db = {}
+    try:
+        init = InitRequest(tables=tables, schemas=req.schemas, unstable_fields=req.unstable_fields)
+    except ValidationError as exc:
+        # The offending values are left out: a collection can be the whole world.
+        detail = [
+            {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
+            for error in exc.errors(include_url=False)
+        ]
+        raise HTTPException(status_code=422, detail=detail) from exc
+    del tables
+    return _init_trial(trial_id, init)
+
+
+def _init_trial(trial_id: str, req: InitRequest) -> dict[str, Any]:
+    """Create ``trial_id`` from ``req``; the body both init routes share."""
     logger.info("Initializing trial", extra={"trial_id": trial_id, "num_tables": len(req.tables)})
     try:
         trial = db_service.create_trial(trial_id)

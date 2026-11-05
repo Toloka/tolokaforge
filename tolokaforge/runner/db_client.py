@@ -10,8 +10,9 @@ Usage:
     state = await client.get_state("task:0")
 """
 
+import json
 import logging
-from collections.abc import Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import Any
 
 import httpx
@@ -163,6 +164,17 @@ def _is_unknown_route(response: httpx.Response) -> bool:
     except ValueError:
         return False
     return isinstance(body, dict) and body.get("detail") in ("Not Found", "Method Not Allowed")
+
+
+async def _wrapped_json_db_body(
+    head: dict[str, Any], json_db: AsyncIterable[bytes]
+) -> AsyncIterator[bytes]:
+    """``{**head, "json_db": <the streamed object>}`` as bytes, one chunk of the object at a time."""
+    prefix = json.dumps(head)[:-1]
+    yield (f'{prefix}, "json_db": ' if head else '{"json_db": ').encode()
+    async for chunk in json_db:
+        yield chunk
+    yield b"}"
 
 
 class DBServiceClient:
@@ -384,6 +396,65 @@ class DBServiceClient:
             try:
                 response = await client.post(
                     f"/trials/{trial_id}/init", json=payload, timeout=self._request_timeout(timeout)
+                )
+            except httpx.ConnectError as e:
+                raise ConnectionError(f"Failed to connect to DB Service: {e}")
+
+            self._handle_error_response(response)
+            return InitTrialResponse.model_validate(response.json())
+
+    async def init_trial_from_json_db(
+        self,
+        trial_id: str,
+        json_db: AsyncIterable[bytes],
+        schemas: list[dict[str, Any]] | None = None,
+        unstable_fields: list[dict[str, Any]] | None = None,
+        timeout: float | None = None,
+    ) -> InitTrialResponse | None:
+        """Initialize a trial from a task's ``json_db`` bytes, streamed as they are (ADR-0071).
+
+        Maps to: POST /trials/{trial_id}/init/json_db
+
+        ``json_db`` is the task's state file, a JSON object, in chunks; the request
+        body is that object wrapped beside ``schemas`` and ``unstable_fields``, sent
+        without being parsed or held whole here. The service normalises each
+        collection to its records as the engine does for :meth:`init_trial`.
+
+        A service that predates the route is asked first, with a body it must
+        refuse, so the file is not sent to a service that cannot take it.
+
+        Returns:
+            The service's answer, or ``None`` when it predates the route; the caller
+            then reads the file and calls :meth:`init_trial`.
+
+        Raises:
+            TrialAlreadyExistsError: If trial already exists
+            ValidationError: If the file is not a JSON object of tables
+            ConnectionError: If cannot connect to DB Service
+        """
+        async with self._create_client() as client:
+            try:
+                probe = await client.post(
+                    f"/trials/{trial_id}/init/json_db",
+                    content=b"{}",
+                    headers={"Content-Type": "application/json"},
+                )
+            except httpx.ConnectError as e:
+                raise ConnectionError(f"Failed to connect to DB Service: {e}")
+            if _is_unknown_route(probe):
+                return None
+
+            head: dict[str, Any] = {}
+            if schemas is not None:
+                head["schemas"] = schemas
+            if unstable_fields is not None:
+                head["unstable_fields"] = unstable_fields
+            try:
+                response = await client.post(
+                    f"/trials/{trial_id}/init/json_db",
+                    content=_wrapped_json_db_body(head, json_db),
+                    headers={"Content-Type": "application/json"},
+                    timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")

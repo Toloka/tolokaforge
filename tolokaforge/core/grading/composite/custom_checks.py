@@ -190,7 +190,13 @@ def grade_custom_checks(
         )
     checks_file = artifacts_dir / resolved_config.file
 
-    initial_tables = task_description.initial_state.tables
+    # Tables delivered by reference (ADR-0071) are read through the substrate, which
+    # parses the trial's state file on the grade's first read of it.
+    initial_tables = (
+        substrate.initial_state()
+        if task_description.initial_state.tables_ref is not None
+        else task_description.initial_state.tables
+    )
     initial_state_json_db: dict[str, Any] | None = dict(initial_tables) if initial_tables else None
 
     # noqa marker below covers degrade-to-empty per shipped semantics: any

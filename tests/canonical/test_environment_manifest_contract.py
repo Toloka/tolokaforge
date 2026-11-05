@@ -807,6 +807,7 @@ class TestManifestWireShape:
             "security_context_defaults",
             "tool_artifacts_delivery",  # ADR-0068; default "inline" preserves backward compat.
             "final_state_delivery",  # ADR-0069; default "inline" preserves backward compat.
+            "initial_state_delivery",  # ADR-0071; default "inline" preserves backward compat.
             "services",
             "runner_port",
             "db_service",
@@ -827,6 +828,7 @@ class TestManifestWireShape:
         assert wire["network_policy"] == "no_internet"
         assert wire["tool_artifacts_delivery"] == "inline"
         assert wire["final_state_delivery"] == "inline"
+        assert wire["initial_state_delivery"] == "inline"
         assert wire["services"] == {
             "db": {
                 "isolation": "reset",
