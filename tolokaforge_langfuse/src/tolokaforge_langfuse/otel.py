@@ -1158,9 +1158,10 @@ class OTelTrialObserver:
         sent: list[dict[str, Any]] = []
         causes: list[str] = []
         try:
+            # the digests describe the files as attached: masked with the trial files' values
+            digests = self._masked_digests(trial_dir, found)
             # a value one event shows in a shape is masked where it stands bare in another
             found = found | self._gate.found_values(events)
-            digests = self._masked_digests(trial_dir, found)
             for event in events:
                 screened = self._gate.screen_structured(event, policy=SECRETS_MASK, also=found)
                 if screened.findings:
@@ -1823,15 +1824,21 @@ class OTelTrialObserver:
         """One warning at run end when the gate withheld anything: the per-span lines say which,
         this one says that the run's traces are incomplete and why, by rule and variable."""
         passes = self._projection_counts["withheld"], self._grading_counts["withheld"]
-        if not (self._spans_withheld or any(passes)):
-            return
-        _log.warning(
-            "live tracing withheld %d span(s), %d projection pass(es) and %d gradings pass(es) "
-            "that would have carried a secret (%s); the traces of this run are incomplete",
-            self._spans_withheld,
-            *passes,
-            ", ".join(f"{cause} x{count}" for cause, count in self._withheld_by.most_common(5)),
-        )
+        if self._spans_withheld or any(passes):
+            _log.warning(
+                "live tracing withheld %d span(s), %d projection pass(es) and %d gradings "
+                "pass(es) that would have carried a secret (%s); the traces of this run are "
+                "incomplete",
+                self._spans_withheld,
+                *passes,
+                ", ".join(f"{c} x{n}" for c, n in self._withheld_by.most_common(5)),
+            )
+        if self._spans_failed:
+            _log.warning(
+                "live tracing withheld %d span(s) the data-safety gate failed on; the traces of "
+                "this run are incomplete",
+                self._spans_failed,
+            )
 
     def _warn_of_what_was_masked(self) -> None:
         """One warning at run end when ``secrets: mask`` replaced anything: what was sent masked,

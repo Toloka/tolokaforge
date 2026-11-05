@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -2379,10 +2380,13 @@ class TestSecretsPolicy:
 
     # -- a screen that fails sends nothing
 
-    def test_a_live_span_fails_closed(self) -> None:
-        spans, receipt = self._live(
-            "v3", "mask", gate=_ScreenRaises(), tool_output=f"found {self.PROVIDER_KEY}"
-        )
+    def test_a_live_span_fails_closed(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse"):
+            spans, receipt = self._live(
+                "v3", "mask", gate=_ScreenRaises(), tool_output=f"found {self.PROVIDER_KEY}"
+            )
+        lines = [r.getMessage() for r in caplog.records]
+        assert any("withheld 4 span(s) the data-safety gate failed on" in line for line in lines)
         assert spans == ()
         assert receipt.spans_queued == 0
         # a gate that failed is no secret found: the spans count as failed, not refused
@@ -2429,6 +2433,25 @@ class TestSecretsPolicy:
         assert (verdict, masked) == (None, True)
         assert value not in json.dumps(sent)
         assert sent[1]["body"]["output"] == "mysql -pMASKED -e x"
+        observer.run_finished()
+
+    def test_the_env_digest_describes_env_yaml_as_attached(self, tmp_path) -> None:
+        """env.yaml holds a value bare that only an event shows in a shape: the file is
+        attached as it is (its own shapes find nothing), so the digest stays the file's."""
+        value = "Zx9vQ2mL7pR4tK8w" + "Yb3n"
+        raw = f"notes: {value}\n".encode()
+        (tmp_path / "env.yaml").write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(exporter, secrets="mask")
+        found = observer._found_in_trial(tmp_path)
+        assert found == frozenset()
+        events = [
+            {"id": "e1", "type": "span-create", "body": {"input": {"password": value}}},
+            {"id": "e2", "type": "trace-create", "body": {"metadata": {"env_sha256": digest}}},
+        ]
+        _, sent, _ = observer._screen_events(events, "a" * 32, "projection", tmp_path, found)
+        assert sent[1]["body"]["metadata"]["env_sha256"] == digest
         observer.run_finished()
 
     @FAMILIES

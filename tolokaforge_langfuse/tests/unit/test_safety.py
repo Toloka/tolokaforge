@@ -694,14 +694,50 @@ class TestMask:
             b"DB_PASSWORD=abcdefgh'ijklmnop\n",
             b'DB_PASSWORD=abcdefgh"ijklmnop\n',
             b"password: abcdefghijklmnop'qrstuv\n",
+            b'DB_PASSWORD="abcdefgh"ijklmnop\n',
+            b"DB_PASSWORD='abcdefgh'ijklmnop\n",
+            b"export DB_PASSWORD='p4ssw0rd'\"'\"'tail-1234'\n",
+            b"content: \"A=1\\nDB_PASSWORD='p4ssw0rd'\\\"'\\\"'tail-1234'\"\n",
         ],
-        ids=["dotenv apostrophe", "dotenv double quote", "field apostrophe"],
+        ids=[
+            "dotenv apostrophe",
+            "dotenv double quote",
+            "field apostrophe",
+            "text after a closing double quote",
+            "text after a closing apostrophe",
+            "a shell-concatenated value",
+            "a shell-concatenated value in a YAML string",
+        ],
     )
-    def test_residue_a_quote_inside_an_unquoted_value_withholds_raw_bytes(
+    def test_residue_a_value_that_goes_on_past_a_quote_withholds_raw_bytes(
         self, payload: bytes
     ) -> None:
         screened = SafetyGate().screen(payload, policy="mask")
         assert "mask-residue" in {f.rule for f in screened.findings}
+
+    @pytest.mark.parametrize(
+        "text",
+        ["DB_PASSWORD='abcdefgh'ijklmnop\n", "export DB_PASSWORD='p4ssw0rd'\"'\"'tail-1234'\n"],
+        ids=["text after the closing quote", "a shell-concatenated value"],
+    )
+    def test_residue_a_quoted_value_that_goes_on_withholds_the_unit(self, text: str) -> None:
+        screened = SafetyGate().screen_structured({"output": text}, policy="mask")
+        assert "mask-residue" in {f.rule for f in screened.findings}
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b"DB_PASSWORD='abcdefghij'\n",
+            b'DB_PASSWORD="abcdefghij" # a comment\n',
+            b'{"content": "A=1\\nDB_PASSWORD=\'abcdefghij\'\\nNEXT=1"}\n',
+            b"content: \"A=1\\nDB_PASSWORD='abcdefghij'\"\n",
+        ],
+        ids=["own line", "a comment after it", "inside a JSON string", "last in a YAML string"],
+    )
+    def test_a_quoted_value_that_ends_at_its_quote_is_masked_cleanly(self, payload: bytes) -> None:
+        screened = SafetyGate().screen(payload, policy="mask")
+        assert screened.findings == () and screened.masked
+        assert b"abcdefghij" not in screened.value
 
     @pytest.mark.parametrize("quote", ["'", '"'], ids=["apostrophe", "double quote"])
     def test_residue_a_quote_inside_a_field_value_withholds_the_unit(self, quote: str) -> None:

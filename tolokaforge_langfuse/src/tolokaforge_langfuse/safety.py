@@ -914,7 +914,7 @@ def _ends_cleanly(rule: str, view: bytes, start: int, end: int) -> bool:
     if rule in ("dotenv-secret", "secret-field"):
         opener = _opener_before(view, start)
         if opener is not None:  # a quoted value ends at its own closing quote
-            return view.startswith(opener, end)
+            return view.startswith(opener, end) and _after_a_closing_quote(view, end + len(opener))
         if byte in b"\r\n" or view[end : end + 2] in (b"\\n", b"\\r"):
             return True
     elif byte in _SPACE or byte in b"`<>":
@@ -938,17 +938,32 @@ def _opener_before(view: bytes, start: int) -> bytes | None:
     return None
 
 
+def _after_a_closing_quote(view: bytes, i: int) -> bool:
+    """Whether ``i`` (just past a quoted value's closing quote) is outside the value: what
+    :func:`_outside` accepts, or the quote of an enclosing string followed by that. A value
+    character (``"pass"word``) or a quote that opens the next part of a concatenated value
+    (``'pass'"'"'word'``) is more of the value."""
+    if _outside(view, i):
+        return True
+    if view[i : i + 2] in (b'\\"', b"\\'"):
+        return _outside(view, i + 2)
+    if view[i : i + 1] in (b'"', b"'"):
+        return _outside(view, i + 1)
+    return False
+
+
+def _outside(view: bytes, i: int) -> bool:
+    """Whether ``i`` is past any value: the end, whitespace, a separator or a closing bracket,
+    or an escaped line break or tab."""
+    if i >= len(view):
+        return True
+    return view[i] in b" \t\r\n,;:)]}" or view[i : i + 2] in (b"\\n", b"\\r", b"\\t")
+
+
 def _after_a_value(view: bytes, i: int) -> bool:
     """Whether ``i`` (just past a quote a value stopped at) is outside the value: the end,
     whitespace, a separator or a closing bracket, or an escaped line break or quote."""
-    if i >= len(view):
-        return True
-    return view[i] in b" \t\r\n,;:)]}" or view[i : i + 2] in (
-        b"\\n",
-        b"\\r",
-        b"\\t",
-        b'\\"',
-    )
+    return _outside(view, i) or view[i : i + 2] == b'\\"'
 
 
 def _promotable(view: bytes, span: _Span) -> set[bytes]:

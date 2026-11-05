@@ -718,7 +718,7 @@ Every counter the Langfuse plugin reports under `extra` (each key has the `langf
 | `gradings_sent`, `gradings_failed`, `gradings_refused_secret` | the grading pass, counted like a projection (a grading whose scores did not reach the receiver is a failure) |
 | `scores_sent`, `user_generations_sent` | the scores and simulated user turns the grading passes sent |
 | `previews_sent`, `final_observations_sent`, `error_roots_sent`, `roots_unconfirmed` | the v4 layout (§ The write-once producer layout) |
-| `spans_refused_secret` | live spans the gate withheld |
+| `spans_refused_secret`, `spans_failed` | live spans the gate withheld, and live spans withheld because the gate failed on them |
 | `spans_masked`, `projections_masked`, `gradings_masked`, `attachments_masked` | under `secrets: mask`, the spans, passes and files sent masked; each a part of its queued, sent or registered count, never added to it |
 | `gate_exempted` | matches the gate exempted as committed fixture data (a local DSN, `GPG_KEY`) |
 | `retried_requests`, `retry_attempts`, `retries_recovered`, `retries_exhausted`, `retry_wait_s`, `retry_breaker_trips` | the retry policy over every write route (§ Retries): requests posted more than once, the posts after the first, retried requests that landed, requests still refused when the policy, a deadline, the breaker or the run's end stopped them, the seconds waited (rounded up), and how often the breaker stopped the waiting |

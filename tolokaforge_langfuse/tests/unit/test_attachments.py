@@ -893,6 +893,33 @@ class TestMaskedAttachments:
         assert _manifest_of(masking) == _manifest_of(rejecting)
         assert masking.blobs == rejecting.blobs
 
+    def test_a_masked_multi_document_file_is_sent_when_it_still_parses(
+        self, tmp_path: Path
+    ) -> None:
+        trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
+        (trial / "task.yaml").write_text(f"task_id: T\n---\nnote: use {PROVIDER_KEY}\n")
+        fake = _FakeLangfuse()
+        counts = _attachments(fake, secrets="mask", scan=SecretScan(gate=SafetyGate())).attach(
+            "a" * 32, trial
+        )
+        assert (counts.skipped, counts.masked) == (0, 1)
+        entry = _manifest_of(fake)["attachments"]["task.yaml"]
+        documents = list(yaml.safe_load_all(fake.blobs[entry["media_id"]]))
+        assert documents == [{"task_id": "T"}, {"note": "use MASKED"}]
+
+    def test_a_multi_document_file_whose_second_document_stops_parsing_is_withheld(
+        self, tmp_path: Path
+    ) -> None:
+        trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
+        (trial / "task.yaml").write_text(f"task_id: T\n---\nnote: use {PROVIDER_KEY}\n")
+        fake = _FakeLangfuse()
+        step = _attachments(fake, secrets="mask", scan=SecretScan(gate=_BreaksTheYaml()))
+        counts = step.attach("a" * 32, trial)
+        assert (counts.registered, counts.skipped) == (7, 1)
+        (skipped,) = _manifest_of(fake)["attachments_skipped"]
+        assert skipped["name"] == "task.yaml" and "mask-unparseable" in skipped["rule"]
+        assert PROVIDER_KEY.encode() not in _everything_sent(fake)
+
     def test_a_file_that_stops_parsing_is_withheld(self, tmp_path: Path) -> None:
         trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
         (trial / "task.yaml").write_text(f"task_id: T\nnote: use {PROVIDER_KEY}\n")
