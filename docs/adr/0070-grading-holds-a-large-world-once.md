@@ -65,7 +65,7 @@ Three of those copies are redundant:
 
 ## Decision
 
-Adopt **Option 4**, in two steps.
+Adopt **Option 4**, in three steps.
 
 1. **The judge's state diff descends into a field too large to show.** A
    changed field whose JSON would run past the diff's cap is diffed path by
@@ -95,6 +95,14 @@ Adopt **Option 4**, in two steps.
    comma, edge spaces) is read with the whole state. A db-service without the
    digests route (FastAPI's bare 404 or 405) is synced and read whole, as
    before.
+
+3. **A table mutation costs its table.** `PATCH /trials/{id}/state/{table}`
+   re-mirrored every table into SQL and hashed the whole state for its answer;
+   it now re-mirrors only its table, and `?hashes=false` (sent by the sync)
+   answers an empty `new_hash`. For a world laid out as many tables, a sync
+   that mutated K of them paid K whole-world rebuilds: on the measured world,
+   laid out one table per application field, `GetState`'s sync ran out of its
+   budget before this step.
 
 A digest mismatch is always safe: it only makes the runner read the mirror's
 table instead of trusting its own copy (an int the holder keeps as a float is
@@ -141,9 +149,11 @@ equal in Python, never mutated, and so read back).
   reads the mirror whole after its sync.
 - **STABLE derived in the runner** (first draft, step 1), for tasks with
   JSONPath checks; the measured task reads no STABLE view.
-- The 77–78 s pause before the MCP server begins to answer the `GradeTrial`
-  sync, seen on both measured trials with every process's memory flat; it
-  needs a CPU sample to place.
+- The 77–86 s before the state server answers each state read: a CPU sample
+  placed it in the server building its state snapshot (every application
+  exported and JSON-copied), at the end of the episode and again at
+  `GradeTrial`, with nothing changed between. A server that keeps the last
+  snapshot while no tool call has run would answer the second read at once.
 
 ## Measured result
 
@@ -158,7 +168,20 @@ resident memory per process in each phase, sampled once a second:
 | Judge | **8.7 GiB** | 3.8 GiB | **22.2 GiB** | 17.8 GiB |
 | Custom checks | 3.9 GiB | 3.4 GiB | 17.2 GiB | 17.6 GiB |
 
-The trial's peak moved from the judge to `GetState`'s first sync, whose
+The same task with its world laid out as tables (one per application field,
+249 tables, the largest 65 MB) and its state server keeping the initial state
+as a digest, on all three steps:
+
+| Phase | Runner | State server | Database service | Sandbox, anonymous |
+|---|---|---|---|---|
+| Episode | 2.6 GiB | 2.6 GiB | 1.9 GiB | 10.2 GiB |
+| `GetState` | 4.9 GiB | 3.9 GiB | 2.5 GiB | **13.2 GiB** |
+| `GradeTrial` | 4.1 GiB | 3.9 GiB | 1.9 GiB | 12.4 GiB |
+
+The sandbox's anonymous memory peaked at 13.2 GiB, against 18.8 GiB on the
+engine stack before this ADR.
+
+In the one-row runs, the trial's peak moved from the judge to `GetState`'s first sync, whose
 changed table is still read back whole (see Follow-ups). The judge's diff went
 from a truncation flag to the agent's edits by path: new Jira comments and
 issues, Slack messages, the cancellation of one order line, a grant schedule's
