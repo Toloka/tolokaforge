@@ -883,9 +883,7 @@ class TestAgentCannotReadTheSuite:
             "./_logs:/logs",
         ]
 
-    def test_the_sidecar_overrides_the_images_healthcheck_without_disabling_it(
-        self, tmp_path
-    ):
+    def test_the_sidecar_overrides_the_images_healthcheck_without_disabling_it(self, tmp_path):
         """The sidecar replaces the entrypoint, so an inherited probe can never pass.
 
         The stack comes up with ``--wait``. A task image that declares a
@@ -907,9 +905,9 @@ class TestAgentCannotReadTheSuite:
         """The variable and the mount move together, or it advertises the path."""
         _, doc = self._single_container(tmp_path)
         env_block = doc["services"]["main"].get("environment") or {}
-        keys = env_block if isinstance(env_block, dict) else [
-            str(e).split("=")[0] for e in env_block
-        ]
+        keys = (
+            env_block if isinstance(env_block, dict) else [str(e).split("=")[0] for e in env_block]
+        )
         assert "TEST_DIR" not in keys
 
     def test_the_sidecar_still_carries_the_suite_and_reaches_nothing(self, tmp_path):

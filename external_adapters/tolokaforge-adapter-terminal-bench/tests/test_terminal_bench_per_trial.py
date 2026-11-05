@@ -22,8 +22,10 @@ is required:
    ``Orchestrator.run()``, so it performs these steps itself;
 3. ``connect`` (materialise the run-scope engine + connect the runner
    client) → ``provision`` → ``endpoints`` → ``register_trial`` →
-   ``execute_tool`` asserting ``/tests/test.sh``, ``/logs/verifier`` and
-   ``/logs/agent`` are present inside the container the runner execs into;
+   ``execute_tool`` asserting ``/logs/verifier`` and ``/logs/agent`` are
+   present inside the container the runner execs into, and that ``/tests``
+   and ``TEST_DIR`` are **not** — the agent is never given the suite it is
+   scored by;
 4. ``grade_trial`` — a real ``bash test.sh`` run against the unsolved
    baseline: some tests pass, most fail, so the reward is strictly
    between 0 and 1;
@@ -248,12 +250,18 @@ class TestTerminalBenchPerTrialBracket:
             )
             assert register["success"] is True, register.get("error")
 
+            # The agent gets its log directories and nothing else. It must not
+            # be able to see the grading suite: the assertions it is scored by
+            # live in the tests-vault sidecar and are staged into the grading
+            # container after this phase ends. The `grade_trial` call below is
+            # what proves they still arrive — it cannot score without them.
             probe = backend.execute_tool(
                 trial_id=spec.trial_id,
                 tool_name="bash",
                 arguments={
                     "command": (
-                        "test -f /tests/test.sh && "
+                        "test ! -e /tests && "
+                        'test -z "$TEST_DIR" && '
                         "test -d /logs/verifier && "
                         "test -d /logs/agent && "
                         "echo READY"

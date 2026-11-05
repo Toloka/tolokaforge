@@ -677,7 +677,9 @@ def _mount_source_is_the_suite(source: str | None) -> bool:
     path = PurePosixPath(posixpath.normpath(source))
     if path.is_absolute():
         return False
-    return path == PurePosixPath(_TESTS_STAGING_DIRNAME) or path.is_relative_to(_TESTS_STAGING_DIRNAME)
+    return path == PurePosixPath(_TESTS_STAGING_DIRNAME) or path.is_relative_to(
+        _TESTS_STAGING_DIRNAME
+    )
 
 
 def _mount_target_is_under(target: str | None, reserved: set[str]) -> bool:
