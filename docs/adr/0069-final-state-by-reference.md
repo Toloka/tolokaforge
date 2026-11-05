@@ -189,7 +189,11 @@ the engine materialises per trial from a task-declared stack, and, independently
   unchanged rather than removed.
 - The final-state directory is in the engine's temporary directory, on the
   machine that materialises the stack; a Docker daemon that cannot bind-mount from
-  there cannot serve `mount`.
+  there cannot serve `mount`. That is the case when the engine runs in a container
+  that drives the host's daemon through its socket: the engine's `/tmp` is not the
+  host's. `tempfile` honours `TMPDIR`, so pointing it at a directory both see (a
+  volume mounted at the same path in the engine's container and on the host) is
+  the way out, as a task directory under ADR-0068 must be on such a path.
 - Protocol 9 requires rebuilding or re-pinning runner images even for runs that
   never use `mount`; bundle generation 9 is stamped on every bundle.
 

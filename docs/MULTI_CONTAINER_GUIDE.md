@@ -250,7 +250,11 @@ The pieces that matter:
   (`trial`-scope runner, `runner_rpc` without snapshot bundles); a
   redacting artifact-write policy withholds the file. Use it for a task
   whose final database state is too large to cross the wire in one
-  message or to be parsed by the engine.
+  message or to be parsed by the engine. The directory is made under the
+  engine's temporary directory, so an engine that drives the host's Docker
+  daemon from inside a container needs `TMPDIR` on a path the daemon can
+  bind from (the same applies to the task directory under
+  `tool_artifacts_delivery: mount`).
 
 A task can declare its own `environment_manifest` with the same shape; it
 deep-merges on top of `default_environment` per service. A task that
