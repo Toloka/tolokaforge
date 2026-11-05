@@ -2000,3 +2000,536 @@ class TestARootStillWithTheExporterAtTheRunEnd:
         assert exporter.done.wait(10)
         queue._thread.join(5)
         assert queue.receipt(flushed=False).spans_dropped == receipt.spans_dropped
+
+
+# -- the secrets policy: reject (the default) or mask -----------------------------------------------
+
+
+class _RecordingStep(_V4Attachments):
+    """The trial-end step of either family without files: every ingested event is recorded."""
+
+    def attach_with_manifest(self, trace_id, trial_dir, **kwargs):
+        from tolokaforge_langfuse.media import AttachCounts
+
+        return AttachCounts(), dict(self.manifest)
+
+
+class _MediaReceiver:
+    """The receiver's media and ingestion routes behind a real attachment step: records every
+    request with its headers and keeps every upload."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict, bytes]] = []
+        self.blobs: dict[str, bytes] = {}
+        self._ids: dict[str, str] = {}
+
+    def __call__(self, method, url, headers, body, timeout):
+        self.calls.append((method, url, dict(headers), body or b""))
+        if method == "POST" and url.endswith("/api/public/media"):
+            sha = json.loads(body)["sha256Hash"]
+            media_id = self._ids.setdefault(sha, f"m{len(self._ids) + 1}")
+            answer = {"mediaId": media_id, "uploadUrl": f"https://store.example/{media_id}?sig=x"}
+            return 201, json.dumps(answer).encode()
+        if method == "PUT":
+            self.blobs[url.rsplit("/", 1)[1].split("?")[0]] = body
+            return 201, b""
+        if method == "PATCH":
+            return 200, b"{}"
+        if url.endswith("/api/public/ingestion"):
+            return 207, json.dumps({"successes": [], "errors": []}).encode()
+        return 404, b""
+
+    def documents(self) -> list[tuple[bytes, object]]:
+        """Every upload as the receiver stores it, gunzipped, with its parsed YAML."""
+        import gzip
+
+        import yaml
+
+        out = []
+        for blob in self.blobs.values():
+            raw = gzip.decompress(blob) if blob[:2] == b"\x1f\x8b" else blob
+            try:
+                parsed = yaml.safe_load(raw)
+            except yaml.YAMLError:
+                parsed = None
+            out.append((raw, parsed))
+        return out
+
+
+class _ScreenRaises(SafetyGate):
+    """A gate whose screens fail: every caller must send nothing and count the unit failed."""
+
+    def screen(self, *args, **kwargs):
+        raise RuntimeError("screen failed")
+
+    def screen_structured(self, *args, **kwargs):
+        raise RuntimeError("screen failed")
+
+
+def _json_forms(value: str) -> set[str]:
+    """``value`` raw and as JSON writes it, escaped up to three times, raw and ASCII-only."""
+    forms = {value}
+    for ascii_only in (False, True):
+        text = value
+        for _ in range(3):
+            text = json.dumps(text, ensure_ascii=ascii_only)[1:-1]
+            forms.add(text)
+    return forms
+
+
+def _span_texts(spans) -> list[str]:
+    """Every name and raw attribute value the spans carry, and each span's attributes as JSON."""
+    texts: list[str] = []
+    for span in spans:
+        texts.append(span.name)
+        for value in span.attributes.values():
+            texts.append(value if isinstance(value, str) else json.dumps(value, default=str))
+        texts.append(json.dumps(dict(span.attributes), default=str))
+    return texts
+
+
+class TestSecretsPolicy:
+    """``secrets: reject`` (the default) withholds a unit that would carry a secret, as before;
+    ``secrets: mask`` replaces every match with ``MASKED`` and sends the unit, counted and
+    stamped, and withholds only what masking cannot remove."""
+
+    PROVIDER_KEY = "sk-" + "or-" + "v1-" + "0123456789abcdef" * 4
+    # no shape, only the gate knows it; JSON escapes its quote and its backslash
+    AWKWARD_SECRET = 'tok"en\\8f3a91c2b7d04e56'
+    TRIAL_PASSWORD = "Fake" + "TrialPassw0rd" + "Copy42"
+    FAMILIES = pytest.mark.parametrize("server_api", ["v3", "v4"])
+
+    @pytest.fixture(autouse=True)
+    def only_the_tests_own_credentials(self, monkeypatch) -> None:
+        for name in [name for name in os.environ if SECRET_NAME.search(name)]:
+            monkeypatch.delenv(name)
+
+    def _knowing(self) -> SafetyGate:
+        return SafetyGate.from_environment({"FOO_TOKEN": self.AWKWARD_SECRET})
+
+    def _live(self, server_api, policy, *, gate=None, error=None, **trial):
+        """One trial's live rows under ``policy``: the spans that left and the receipt."""
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(
+            exporter,
+            server_api=server_api,
+            gate=gate if gate is not None else self._knowing(),
+            previews=True,
+            secrets=policy,
+        )
+        TestEverySpanIsScannedBeforeItLeaves._trial(observer, **trial)
+        messages = [
+            Message(role=MessageRole.USER, content="hello", ts=T0),
+            Message(role=MessageRole.ASSISTANT, content="done", ts=T0),
+        ]
+        if error is None:
+            observer.trial_finished(IDENTITY, trajectory=_Trajectory(messages, grade=_Grade()))
+        else:
+            observer.trial_finished(IDENTITY, trajectory=None, error=error)
+        # the run's end flushes the queue: only then are the spans that left all exported
+        receipt = observer.run_finished()
+        return exporter.get_finished_spans(), receipt
+
+    def _carried(self, spans, value: str) -> bool:
+        texts = _span_texts(spans)
+        return any(form in text for form in _json_forms(value) for text in texts)
+
+    @staticmethod
+    def _kinds(spans) -> list[str]:
+        return sorted(span.name.removeprefix("preview: ") for span in spans)
+
+    # -- the live spans
+
+    @FAMILIES
+    def test_a_live_span_is_masked_and_queued(self, server_api) -> None:
+        spans, receipt = self._live(
+            server_api,
+            "mask",
+            assistant_text=f"the token is {self.AWKWARD_SECRET}",
+            tool_output=f"found {self.PROVIDER_KEY} in it",
+        )
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_masked"] == 2
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+        assert not self._carried(spans, self.PROVIDER_KEY)
+        assert not self._carried(spans, self.AWKWARD_SECRET)
+        stamped = {
+            span.name.removeprefix("preview: "): json.loads(
+                span.attributes["langfuse.observation.metadata.secrets_masked"]
+            )
+            for span in spans
+            if "langfuse.observation.metadata.secrets_masked" in span.attributes
+        }
+        assert set(stamped) == {"agent", "tool: shell"}
+        assert "known-secret-value" in stamped["agent"]
+        assert "openrouter-key" in stamped["tool: shell"]
+
+    @FAMILIES
+    @pytest.mark.parametrize("field", ["assistant_text", "request_text", "tool_arguments"])
+    def test_a_live_span_is_masked_in_every_json_form(self, server_api, field) -> None:
+        """A generation's input and output and a tool's input are JSON text: the value is
+        escaped once more there, and masked all the same."""
+        value = {"cmd": f"echo {self.AWKWARD_SECRET}"}
+        if field != "tool_arguments":
+            value = f"the token is {self.AWKWARD_SECRET}"
+        spans, receipt = self._live(server_api, "mask", **{field: value})
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_masked"] == 1
+        assert not self._carried(spans, self.AWKWARD_SECRET)
+
+    @FAMILIES
+    def test_a_live_span_is_masked_in_its_name(self, server_api) -> None:
+        spans, receipt = self._live(server_api, "mask", tool_name=self.PROVIDER_KEY)
+        assert self._kinds(spans) == ["agent", "tool: MASKED", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_masked"] == 1
+        assert not self._carried(spans, self.PROVIDER_KEY)
+
+    @FAMILIES
+    def test_reject_still_withholds_the_span(self, server_api) -> None:
+        spans, receipt = self._live(
+            server_api, "reject", tool_output=f"found {self.PROVIDER_KEY} in it"
+        )
+        assert self._kinds(spans) == ["agent", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert receipt.extra["langfuse.spans_masked"] == 0
+
+    @FAMILIES
+    def test_a_secret_in_the_runs_tags_is_masked_on_every_row(self, server_api) -> None:
+        """The tags ride on every row: under mask each row is sent with the tag masked."""
+        exporter = InMemorySpanExporter()
+        queue = SpanQueue(exporter, max_size=100, batch_size=4, interval_s=0.05)
+        observer = OTelTrialObserver(
+            queue=queue,
+            label="l",
+            session_id="s",
+            tags=(f"note:{self.PROVIDER_KEY}",),
+            server_api=server_api,
+            previews=True,
+            gate=SafetyGate(),
+            secrets="mask",
+        )
+        TestEverySpanIsScannedBeforeItLeaves._trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
+        receipt = observer.run_finished()
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 4
+        assert receipt.extra["langfuse.spans_masked"] == 4
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+        assert not self._carried(spans, self.PROVIDER_KEY)
+
+    def test_warnings_name_no_value(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse"):
+            spans, _ = self._live(
+                "v3",
+                "mask",
+                tool_name=self.PROVIDER_KEY,
+                tool_output=f"it said {self.AWKWARD_SECRET}",
+            )
+        assert self._kinds(spans) == ["agent", "tool: MASKED", "trial", "trial"]
+        lines = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        masked = [line for line in lines if "mask" in line.lower()]
+        assert masked, lines
+        assert any("known-secret-value from FOO_TOKEN" in line for line in masked)
+        assert any("openrouter-key" in line for line in masked)
+        for line in lines:
+            assert "sk-or" not in line and "0123456789abcdef" not in line
+            assert "8f3a91c2" not in line
+
+    def test_the_run_end_says_what_was_masked_by_rule_and_variable(self, caplog) -> None:
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(exporter, gate=self._knowing(), secrets="mask")
+        TestEverySpanIsScannedBeforeItLeaves._trial(
+            observer, tool_output=f"it said {self.AWKWARD_SECRET}"
+        )
+        observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse"):
+            observer.run_finished()
+        lines = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        summary = [line for line in lines if "masked" in line.lower()]
+        assert len(summary) == 1, lines
+        assert "known-secret-value from FOO_TOKEN" in summary[0]
+        assert "8f3a91c2" not in summary[0]
+
+    # -- every trace says which policy wrote it
+
+    @FAMILIES
+    @pytest.mark.parametrize("policy", ["reject", "mask"])
+    def test_every_trace_says_it_was_masked(self, tmp_path, server_api, policy) -> None:
+        """Under mask every trace carries ``secrets: mask``, a clean one and an error root
+        included; under reject no trace carries the key, so its output is as before."""
+        import parity_bundle as pb
+
+        step = _RecordingStep()
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(exporter, server_api=server_api, attachments=step, secrets=policy)
+        persisted = _parity_identity()
+        _v4_trial(observer, persisted)
+        observer.trial_finished(persisted, trajectory=_Trajectory([], grade=_Grade()))
+        observer.trial_persisted(persisted, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
+        broken = TrialIdentity(
+            run_id=pb.RUN_ID, task_id="T-2", trial_index=0, attempt_id=0, run_tag=pb.RUN_TAG
+        )
+        observer.trial_started(broken, models={}, started_at=T0)
+        observer.trial_finished(broken, trajectory=None, error="RuntimeError: sandbox died")
+        observer.run_finished()
+        roots = [s for s in exporter.get_finished_spans() if s.name == "trial"]
+        traces = [e["body"] for e in step.ingested if e["type"] == "trace-create"]
+        assert {format(s.context.trace_id, "032x") for s in roots} >= {broken.trace_id}
+        if policy == "mask":
+            assert roots and all(
+                s.attributes.get("langfuse.trace.metadata.secrets") == "mask" for s in roots
+            )
+            assert all((t.get("metadata") or {}).get("secrets") == "mask" for t in traces)
+        else:
+            assert not [
+                key
+                for span in exporter.get_finished_spans()
+                for key in span.attributes
+                if key.endswith(".metadata.secrets")
+            ]
+            assert not [t for t in traces if "secrets" in (t.get("metadata") or {})]
+
+    def test_the_secrets_key_is_reserved(self) -> None:
+        from tolokaforge_langfuse.projection import schema_keys
+
+        assert "secrets" in schema_keys()
+
+    # -- the trial-end passes
+
+    def _persisted(self, tmp_path, server_api, policy, *, edit=None, gate=None, **kwargs):
+        """One persisted trial whose bundle ``edit`` changed; the step, the spans, the receipt."""
+        import parity_bundle as pb
+
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        if edit is not None:
+            edit(trial_dir)
+        step = kwargs.pop("attachments", None) or _RecordingStep()
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(
+            exporter,
+            server_api=server_api,
+            attachments=step,
+            gate=gate if gate is not None else SafetyGate(),
+            secrets=policy,
+            **kwargs,
+        )
+        identity = _parity_identity()
+        _v4_trial(observer, identity)
+        observer.trial_finished(identity, trajectory=_Trajectory([], grade=_Grade()))
+        observer.trial_persisted(identity, trial_dir=trial_dir)
+        receipt = observer.run_finished()
+        return step, exporter.get_finished_spans(), receipt
+
+    def _key_in_a_tool_output(self, trial_dir) -> None:
+        import parity_bundle as pb
+        import yaml
+
+        trajectory = pb.trajectory()
+        trajectory["messages"][2]["content"] = f"found {self.PROVIDER_KEY} in the config"
+        (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), encoding="utf-8")
+
+    def _key_in_the_grading(self, trial_dir) -> None:
+        import parity_bundle as pb
+        import yaml
+
+        grade = pb.grade()
+        grade["reasons"] = f"the agent printed {self.PROVIDER_KEY}"
+        (trial_dir / "grade.yaml").write_text(yaml.safe_dump(grade), encoding="utf-8")
+
+    @FAMILIES
+    def test_the_projection_pass_is_masked(self, tmp_path, server_api) -> None:
+        step, spans, receipt = self._persisted(
+            tmp_path, server_api, "mask", edit=self._key_in_a_tool_output
+        )
+        assert receipt.extra["langfuse.projections_sent"] == 1
+        assert receipt.extra["langfuse.projections_masked"] == 1
+        assert receipt.extra["langfuse.projections_refused_secret"] == 0
+        sent = "\n".join([*_span_texts(spans), json.dumps(step.ingested)])
+        assert self.PROVIDER_KEY not in sent and "MASKED" in sent
+        assert "secrets_masked" in sent
+
+    @FAMILIES
+    def test_reject_still_withholds_the_projection_pass(self, tmp_path, server_api) -> None:
+        step, _, receipt = self._persisted(
+            tmp_path, server_api, "reject", edit=self._key_in_a_tool_output
+        )
+        assert receipt.extra["langfuse.projections_refused_secret"] == 1
+        assert receipt.extra["langfuse.projections_masked"] == 0
+        assert self.PROVIDER_KEY not in json.dumps(step.ingested)
+
+    def test_the_gradings_pass_is_masked(self, tmp_path) -> None:
+        """The gradings-only pass exists on the v3 family; the v4 layout needs the full one."""
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        step, _, receipt = self._persisted(
+            tmp_path,
+            "v3",
+            "mask",
+            edit=self._key_in_the_grading,
+            projection=ProjectionSettings(mode="gradings"),
+        )
+        assert receipt.extra["langfuse.gradings_sent"] == 1
+        assert receipt.extra["langfuse.gradings_masked"] == 1
+        assert receipt.extra["langfuse.gradings_refused_secret"] == 0
+        sent = json.dumps(step.ingested)
+        assert step.ingested and self.PROVIDER_KEY not in sent and "MASKED" in sent
+
+    # -- a screen that fails sends nothing
+
+    def test_a_live_span_fails_closed(self) -> None:
+        spans, receipt = self._live(
+            "v3", "mask", gate=_ScreenRaises(), tool_output=f"found {self.PROVIDER_KEY}"
+        )
+        assert spans == ()
+        assert receipt.spans_queued == 0
+        withheld = receipt.extra["langfuse.spans_refused_secret"]
+        assert withheld + receipt.extra.get("langfuse.spans_failed", 0) == 4
+        assert receipt.extra["langfuse.spans_masked"] == 0
+
+    @FAMILIES
+    def test_a_projection_pass_fails_closed(self, tmp_path, server_api) -> None:
+        step, spans, receipt = self._persisted(
+            tmp_path, server_api, "mask", gate=_ScreenRaises(), edit=self._key_in_a_tool_output
+        )
+        assert receipt.extra["langfuse.projections_failed"] == 1
+        assert receipt.extra["langfuse.projections_sent"] == 0
+        assert step.ingested == []
+        assert not [s for s in spans if s.name == "trial"]
+
+    def test_a_gradings_pass_fails_closed(self, tmp_path) -> None:
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        step, _, receipt = self._persisted(
+            tmp_path,
+            "v3",
+            "mask",
+            gate=_ScreenRaises(),
+            edit=self._key_in_the_grading,
+            projection=ProjectionSettings(mode="gradings"),
+        )
+        assert receipt.extra["langfuse.gradings_failed"] == 1
+        assert receipt.extra["langfuse.gradings_sent"] == 0
+        assert step.ingested == []
+
+    # -- the receipt
+
+    @pytest.mark.parametrize("policy", ["reject", "mask"])
+    def test_the_receipt_names_the_policy_and_counts_what_was_masked(self, policy) -> None:
+        _, receipt = self._live("v3", policy)
+        assert receipt.details[0]["secrets"] == policy
+        for key in ("spans", "projections", "gradings", "attachments"):
+            assert receipt.extra[f"langfuse.{key}_masked"] == 0
+
+    @pytest.mark.parametrize("policy", ["reject", "mask"])
+    def test_the_receipt_counts_exemptions(self, policy) -> None:
+        fixture = "postgres" + "ql://app:app@postgres:5432/appdb"
+        spans, receipt = self._live("v3", policy, tool_output=f"psql {fixture} -c 'select 1'")
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.gate_exempted"] == 1
+
+    # -- a whole trial through a real attachment step
+
+    def _real_step(self, receiver, server_api, gate, policy):
+        from tolokaforge_langfuse.attachments import SecretScan
+        from tolokaforge_langfuse.media import LangfuseAttachments
+
+        return LangfuseAttachments(
+            api_base="https://langfuse.example",
+            opener=receiver,
+            mode="all",
+            scan=SecretScan(gate=gate),
+            send_manifest_event=server_api == "v3",
+            secrets=policy,
+        )
+
+    def _everything_sent(self, receiver, spans) -> str:
+        texts = _span_texts(spans)
+        for _, url, headers, body in receiver.calls:
+            texts += [url, json.dumps(headers), body.decode("utf-8", "replace")]
+        texts += [raw.decode("utf-8", "replace") for raw, _ in receiver.documents()]
+        return "\n".join(texts)
+
+    def _password_in_env(self, trial_dir) -> None:
+        (trial_dir / "env.yaml").write_text(
+            "environment:\n  network_policy: isolated\nsetup: |\n  export PATH=/usr/bin\n"
+            f"  PGPASSWORD={self.TRIAL_PASSWORD}\n",
+            encoding="utf-8",
+        )
+
+    @FAMILIES
+    def test_a_found_value_is_masked_across_the_trial(self, tmp_path, server_api) -> None:
+        """env.yaml holds a password line; the agent's message repeats the bare password. The
+        value env.yaml gives away is masked in every file and every event of the trial."""
+        import parity_bundle as pb
+        import yaml
+
+        def edit(trial_dir) -> None:
+            self._password_in_env(trial_dir)
+            trajectory = pb.trajectory()
+            trajectory["messages"][5]["content"] = f"I logged in with {self.TRIAL_PASSWORD}."
+            (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), "utf-8")
+
+        receiver = _MediaReceiver()
+        gate = SafetyGate()
+        step = self._real_step(receiver, server_api, gate, "mask")
+        _, spans, receipt = self._persisted(
+            tmp_path, server_api, "mask", edit=edit, gate=gate, attachments=step
+        )
+        assert receipt.extra["langfuse.projections_sent"] == 1
+        assert receipt.extra["langfuse.attachments_masked"] == 2
+        sent = self._everything_sent(receiver, spans)
+        assert self.TRIAL_PASSWORD not in sent
+        assert "I logged in with MASKED." in sent
+
+    @FAMILIES
+    def test_no_hash_of_an_original_is_sent(self, tmp_path, server_api) -> None:
+        import base64
+        import gzip
+        import hashlib
+        import re
+
+        import yaml
+        from tolokaforge_langfuse.gradings import content_fingerprint
+
+        originals: dict[str, bytes] = {}
+
+        def edit(trial_dir) -> None:
+            self._password_in_env(trial_dir)
+            self._key_in_the_grading(trial_dir)
+            for name in ("env.yaml", "grade.yaml"):
+                originals[name] = (trial_dir / name).read_bytes()
+
+        receiver = _MediaReceiver()
+        gate = SafetyGate()
+        step = self._real_step(receiver, server_api, gate, "mask")
+        _, spans, _ = self._persisted(
+            tmp_path, server_api, "mask", edit=edit, gate=gate, attachments=step
+        )
+        sent = self._everything_sent(receiver, spans)
+        for name, raw in originals.items():
+            for data in (raw, gzip.compress(raw, compresslevel=6, mtime=0)):
+                digest = hashlib.sha256(data).digest()
+                assert digest.hex() not in sent, name
+                assert base64.b64encode(digest).decode() not in sent, name
+        original_grade = yaml.safe_load(originals["grade.yaml"])
+        assert content_fingerprint(original_grade) not in sent
+        # what is sent describes the masked forms
+        documents = receiver.documents()
+        env = next(
+            raw for raw, parsed in documents if isinstance(parsed, dict) and "setup" in parsed
+        )
+        grade = next(
+            parsed
+            for _, parsed in documents
+            if isinstance(parsed, dict) and "binary_pass" in parsed
+        )
+        assert b"MASKED" in env and self.PROVIDER_KEY not in json.dumps(grade)
+        env_hashes = set(re.findall(r'env_sha256": "([0-9a-f]{64})"', sent))
+        assert env_hashes == {hashlib.sha256(env).hexdigest()}
+        fingerprints = set(re.findall(r'content_fingerprint": "([0-9a-f]{64})"', sent))
+        masked_grade = gate.screen_structured(original_grade, policy="mask").value
+        assert fingerprints and fingerprints <= {
+            content_fingerprint(grade),
+            content_fingerprint(masked_grade),
+        }

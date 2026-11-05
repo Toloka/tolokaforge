@@ -105,6 +105,9 @@ LIVE_ONLY_KEYS = frozenset(
         "scope",
     }
 )
+# the trace metadata key a producer writes on every trace of a ``secrets: mask`` run (absent
+# under ``reject``): reserved whatever the policy, so no caller can write it
+SECRETS_METADATA_KEY = "secrets"
 # the part of the primary grading's summary a trace mirrors (the connector's list; the full
 # summary stays on the grading observation and every detail is a score)
 TRACE_GRADE_SUMMARY_KEYS: tuple[str, ...] = ("pass", "score", "judge_status")
@@ -1280,7 +1283,7 @@ def schema_keys() -> frozenset[str]:
         grading_ids=(),
         manifest=None,
     )
-    return frozenset(probe) | LIVE_ONLY_KEYS
+    return frozenset(probe) | LIVE_ONLY_KEYS | {SECRETS_METADATA_KEY}
 
 
 # -- the projection --------------------------------------------------------------------------------

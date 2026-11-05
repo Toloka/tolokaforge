@@ -757,7 +757,10 @@ def tail_runs(secret: str) -> set[str]:
     return {tail[i : i + 4] for i in range(len(tail) - 3)}
 
 
-def false_positive_texts() -> dict[str, str]:
+def false_positive_texts(*, structured: bool = False) -> dict[str, str]:
+    """The false-positive sets as raw bytes hold them, or (``structured``) as a string of a
+    structured value holds them: there the web app is the tool output itself, since its JSON text
+    as a string is serialised with doubled backslashes, which no longer read as line breaks."""
     texts = {f"ordinary: {name}": text for name, text in ORDINARY_TEXT.items()}
     texts.update({f"agent code: {name}": text + "\n" for name, text in AGENT_CODE.items()})
     texts["agent source"] = AGENT_SOURCE + "\n"
@@ -767,11 +770,13 @@ def false_positive_texts() -> dict[str, str]:
     texts["gpg: escaped listing"] = escaped("PATH=/usr/bin", f"GPG_KEY={HEX40}", "HOME=/root")
     texts["gpg: folded listing"] = yaml.safe_dump({"content": FOLDED_LISTING})
     for name, separator in (("LF", "\n\n"), ("CRLF", "\r\n"), ("tab", "\t")):
-        texts[f"web app: {name}"] = json.dumps({"output": web_app(separator)})
+        app = web_app(separator)
+        texts[f"web app: {name}"] = app if structured else json.dumps({"output": app})
     return texts
 
 
 FALSE_POSITIVES = false_positive_texts()
+STRUCTURED_FALSE_POSITIVES = false_positive_texts(structured=True)
 
 
 class TestMaskInvariants:
@@ -813,7 +818,9 @@ class TestMaskInvariants:
             (),
         )
 
-    @pytest.mark.parametrize("text", FALSE_POSITIVES.values(), ids=list(FALSE_POSITIVES))
+    @pytest.mark.parametrize(
+        "text", STRUCTURED_FALSE_POSITIVES.values(), ids=list(STRUCTURED_FALSE_POSITIVES)
+    )
     def test_a_false_positive_stays_as_it_is_in_a_structured_value(self, text: str) -> None:
         value = events_saying(text)
         screened = SafetyGate().screen_structured(value, policy="mask")

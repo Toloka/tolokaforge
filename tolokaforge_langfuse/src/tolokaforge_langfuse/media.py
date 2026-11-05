@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,9 +41,12 @@ from tolokaforge_langfuse.attachments import (
     TrialFile,
     allowed_attachment,
     build_manifest,
+    encode,
     plan_attachments,
+    syntax_of,
 )
 from tolokaforge_langfuse.retry import Answer, Retrier
+from tolokaforge_langfuse.safety import RULE_UNPARSEABLE, SECRETS_MASK, SECRETS_REJECT, parses
 
 _log = logging.getLogger(__name__)
 
@@ -244,11 +247,16 @@ class LangfuseAttachments:
         environment: str | None = None,
         send_manifest_event: bool = True,
         retrier: Retrier | None = None,
+        secrets: str = SECRETS_REJECT,
     ) -> None:
+        if secrets not in (SECRETS_REJECT, SECRETS_MASK):
+            raise ValueError(f"secrets must be reject or mask, got {secrets!r}")
         self._api_base = api_base.rstrip("/")
         self._headers = dict(headers or {})
         self._mode = mode
         self._scan = scan or SecretScan()
+        # what a file with a secret becomes: withheld (reject) or masked and sent (mask)
+        self._secrets = secrets
         self._timeout_s = max(1.0, timeout_s)
         self._budget_s = max(1.0, budget_s)
         self._breaker_failures = max(1, breaker_failures)
@@ -285,6 +293,11 @@ class LangfuseAttachments:
         """The ``attach`` mode this step was built with (``all`` / ``core`` / ``none``)."""
         return self._mode
 
+    @property
+    def secrets(self) -> str:
+        """The ``secrets`` policy this step was built with (``reject`` / ``mask``)."""
+        return self._secrets
+
     def ingest(
         self,
         events: list[dict[str, Any]],
@@ -310,6 +323,23 @@ class LangfuseAttachments:
                 raise LangfuseApiError(
                     f"ingestion rejected an event: {first.get('status')} {first.get('message')}"
                 )
+
+    def _screen(self, file: TrialFile, also: Iterable[bytes]) -> tuple[TrialFile, list[str]]:
+        """``file`` under the step's policy: the file to send (encoded again from the masked
+        bytes when something was masked) and what withholds it. A masked file that parsed before
+        and no longer does is withheld too."""
+        if self._secrets == SECRETS_REJECT:
+            return file, self._scan.scan(file.original)
+        screened = self._scan.screen(file.original, policy=SECRETS_MASK, also=also)
+        if screened.findings:
+            return file, [str(finding) for finding in screened.findings]
+        if not screened.masked:
+            return file, []
+        syntax = syntax_of(file.name)
+        if syntax is not None and parses(file.original, syntax):
+            if not parses(screened.value, syntax):
+                return file, [f"{RULE_UNPARSEABLE} (no longer {syntax})"]
+        return encode(file.name, screened.value, screened.masked), []
 
     def register_media(
         self, trace_id: str, observation_id: str | None, field: str, content_type: str, raw: bytes
@@ -380,10 +410,13 @@ class LangfuseAttachments:
         *,
         trace_timestamp: datetime | None = None,
         metadata: Mapping[str, Any] | None = None,
+        also: Iterable[bytes] | None = None,
     ) -> tuple[AttachCounts, dict[str, Any]]:
         """:meth:`attach`, also returning manifest v2 as sent (for the trial-end projection,
         whose trace metadata carries the same complete manifest). Runs under the budget the
-        caller opened, else under one of its own."""
+        caller opened, else under one of its own. Under ``secrets: mask``, ``also`` holds the
+        values found anywhere in the trial (by default, in the files this step attaches): each
+        file masks them too."""
         counts = AttachCounts()
         manifest = build_manifest(trial_dir, [], [])
         attached: list[AttachedFile] = []
@@ -402,11 +435,17 @@ class LangfuseAttachments:
         if own_budget:
             self._deadline = self._clock() + self._budget_s
         budget_spent = False
+        if self._secrets == SECRETS_MASK and also is None:
+            found: set[bytes] = set()
+            for file in files:
+                if allowed_attachment(file.name):
+                    found |= self._scan.found_values(file.original)
+            also = found
         for file in files:
             if not allowed_attachment(file.name):
                 skipped.append({"name": file.name, "rule": "file-type"})
                 continue
-            findings = self._scan.scan(file.original)
+            file, findings = self._screen(file, also or ())
             if findings:
                 skipped.append({"name": file.name, "rule": ", ".join(findings)})
                 continue
@@ -438,6 +477,8 @@ class LangfuseAttachments:
                 continue
             media_id, uploaded = registered
             counts.registered += 1
+            if file.masked:
+                counts.masked += 1
             if uploaded:
                 counts.uploaded += 1
             else:

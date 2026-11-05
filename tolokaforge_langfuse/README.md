@@ -45,11 +45,21 @@ observability:
       langfuse:
         expect_project: pilot
         attach: all
+        secrets: reject                         # or mask
         gradings: true
         projection: full
         server_api: auto
         profile: deploy/langfuse_tracing.toml   # or the profile inline
 ```
+
+`secrets` says what a span, a trial-end pass or an attached file that would carry a secret
+becomes. `reject` (the default) withholds it, as the data-safety gate always did. `mask` replaces
+each secret by `MASKED` and sends it: the trace carries `secrets: mask`, a masked observation
+`secrets_masked` and a masked file `masked` in its manifest entry, with every hash describing the
+masked bytes. Masking withholds what it cannot remove, but it does not see an encoded copy of a
+secret or a credential with no known shape next to one it masked, which `reject` would have
+withheld with the whole unit; on a receiver that keeps the first write of a trace, a masked trace
+is final (`docs/OBSERVABILITY.md`, "Delivery").
 
 A deployment usually puts the block once under `run_defaults` of its `project.yaml`, with its one
 `project` and that project's `environments` (what each accepts); `LANGFUSE_ENVIRONMENT` then

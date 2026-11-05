@@ -54,6 +54,11 @@ class LangfuseConfig(BaseModel):
     whose ``accepts`` admits the trace's source."""
     attach: Literal["all", "core", "none"] = "all"
     """Files uploaded through the media API after the trial bundle is persisted."""
+    secrets: Literal["reject", "mask"] = "reject"
+    """What a span, a trial-end pass or an attached file that would carry a secret becomes:
+    ``reject`` withholds it; ``mask`` replaces each secret by ``MASKED`` and sends it, stamped
+    ``secrets: mask``, and withholds only what masking cannot remove (``tolokaforge_langfuse.safety``
+    lists what masking cannot see)."""
     gradings: bool = True
     """Include the grading observation, its judge transcript and scores at trial end."""
     projection: Literal["full", "gradings", "none"] = "full"
