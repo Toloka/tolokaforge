@@ -594,6 +594,14 @@ the mount, and no grader that reads the world from elsewhere can grade the task:
 refuses `grader_rpc`, `queue` and `grader.snapshot.enabled` for it before any
 trial, and so does `run_trial_from_inputs` for the one trial it is handed.
 
+The reverse direction has its own declaration, `environment_manifest.final_state_delivery:
+mount` (ADR-0069): the description carries no new field for it, the trial's final
+database state is written by the runner to a mounted directory and reaches the trial
+bundle as `final_state.json` instead of crossing the wire in `GetStateResponse.state_json`.
+The same scope and grader rules apply. See
+[MULTI_CONTAINER_GUIDE.md](MULTI_CONTAINER_GUIDE.md) and
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md#a-final-state-delivered-by-reference-adr-0069).
+
 ---
 
 ## Examples

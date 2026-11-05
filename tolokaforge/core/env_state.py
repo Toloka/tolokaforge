@@ -34,6 +34,46 @@ _BINARY_EXTENSIONS = frozenset(
 )
 
 
+def final_db_state_views(db_state: dict[str, Any]) -> dict[str, Any]:
+    """The ``agent`` / ``user`` / ``db`` views a final state derives from *db_state*.
+
+    τ²-compatible: ``agent`` is the DB records (customers, lines, plans,
+    devices, bills — everything but the user-side device), ``user`` the current
+    device state and surroundings, ``db`` the whole state in the legacy format.
+    Every view is its own deep copy of *db_state*. Shared by
+    :meth:`EnvironmentState.get_final_state` and by the bundle reader that
+    rebuilds these keys from a state delivered by reference (ADR-0069).
+    """
+    db_copy = deepcopy(db_state)
+
+    user_device = {}
+    user_surroundings = {}
+
+    if "user_db" in db_copy:
+        user_db = db_copy.pop("user_db") or {}
+        user_device = deepcopy(user_db.get("device", {}))
+        user_surroundings = deepcopy(user_db.get("surroundings", {}))
+    else:
+        user_device = deepcopy(db_copy.pop("device", {}))
+        user_surroundings = (
+            deepcopy(db_copy.pop("surroundings", {})) if "surroundings" in db_copy else {}
+        )
+
+    # Everything else is agent state (DB records)
+    agent_state = db_copy
+
+    # Build τ²-compatible state structure
+    state: dict[str, Any] = {
+        "agent": agent_state,  # DB records: customers, lines, plans, devices, bills
+        "user": {"device": user_device},  # Current device state
+        "db": deepcopy(db_state),  # Legacy format for backward compatibility
+    }
+
+    if user_surroundings:
+        state["user"]["surroundings"] = user_surroundings
+    return state
+
+
 class EnvironmentState:
     """Manages environment state for a single trial"""
 
@@ -153,34 +193,19 @@ class EnvironmentState:
         - db: Legacy format (full db_state)
         - filesystem: File system state
         """
-        db_copy = deepcopy(self.db_state)
+        state = final_db_state_views(self.db_state)
+        state.update(self.get_final_state_outside_db())
+        return state
 
-        user_device = {}
-        user_surroundings = {}
+    def get_final_state_outside_db(self) -> dict[str, Any]:
+        """The final-state entries that do not come from the DB state.
 
-        if "user_db" in db_copy:
-            user_db = db_copy.pop("user_db") or {}
-            user_device = deepcopy(user_db.get("device", {}))
-            user_surroundings = deepcopy(user_db.get("surroundings", {}))
-        else:
-            user_device = deepcopy(db_copy.pop("device", {}))
-            user_surroundings = (
-                deepcopy(db_copy.pop("surroundings", {})) if "surroundings" in db_copy else {}
-            )
-
-        # Everything else is agent state (DB records)
-        agent_state = db_copy
-
-        # Build τ²-compatible state structure
-        state = {
-            "agent": agent_state,  # DB records: customers, lines, plans, devices, bills
-            "user": {"device": user_device},  # Current device state
-            "db": deepcopy(self.db_state),  # Legacy format for backward compatibility
-            "filesystem": deepcopy(self.filesystem_state),
-        }
-
-        if user_surroundings:
-            state["user"]["surroundings"] = user_surroundings
+        The filesystem, and the mock-web and RAG references when configured —
+        what :meth:`get_final_state` adds after its ``agent``, ``user`` and
+        ``db`` keys. A trial whose DB state is delivered by reference
+        (ADR-0069) records these alone in ``env.yaml``.
+        """
+        state: dict[str, Any] = {"filesystem": deepcopy(self.filesystem_state)}
 
         # Add mock web URL if configured (actual state would come from service)
         if self.mock_web_url:

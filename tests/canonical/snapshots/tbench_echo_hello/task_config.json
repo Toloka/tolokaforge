@@ -12,6 +12,7 @@
   "category": "terminal",
   "description": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
   "environment_manifest": {
+    "final_state_delivery": null,
     "initial_state": null,
     "limited_internet_allowlist": null,
     "network_policy": "full_internet",

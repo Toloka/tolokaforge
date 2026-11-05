@@ -3075,6 +3075,12 @@ class StackDecl(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+
+FinalStateDelivery = Literal["inline", "mount"]
+"""How a trial's final database state reaches the engine host — see
+:attr:`EnvironmentManifest.final_state_delivery` (ADR-0069)."""
+
+
 ServiceIsolation = Literal["shared", "reset", "ephemeral"]
 """Per-service isolation vocabulary.
 
@@ -3681,6 +3687,7 @@ class EnvironmentPatch(BaseModel):
     Survives atomic ``stack`` replacement (policy request,
     substrate-neutral)."""
 
+
     services: dict[str, ServiceSpec] | None = None
     """Per-service isolation + reset declarations, keyed by compose
     service name. Discarded on atomic ``stack`` replacement — the
@@ -3809,6 +3816,21 @@ class EnvironmentManifest(BaseModel):
     security_context_defaults: SecurityContext | None = None
     """Applied by the provisioner to every service that does not override
     the equivalent settings in the compose file."""
+
+    final_state_delivery: FinalStateDelivery = "inline"
+    """How the trial's final database state reaches the engine host (ADR-0069).
+
+    ``inline`` (the default) returns the whole state as one JSON string in
+    ``GetStateResponse.state_json``, which the host parses into the trial's
+    ``env.yaml``. ``mount`` has the engine bind-mount a per-trial writable
+    directory into the runner service; the runner writes the state there as
+    a JSON file and answers with its path, SHA-256 and size, and the host
+    verifies the file and places it in the trial bundle as
+    ``final_state.json`` without parsing it. ``mount`` needs a runner the
+    engine materialises for this trial, so it is refused unless a
+    ``trial``-scope stack owns the runner, and the grader must be
+    ``runner_rpc`` without snapshot bundles: no host-side consumer of the
+    state is served."""
 
     services: dict[str, ServiceSpec] = Field(default_factory=dict)
     """Per-service isolation + reset declarations, keyed by compose
