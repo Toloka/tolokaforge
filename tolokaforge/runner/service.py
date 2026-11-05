@@ -140,6 +140,7 @@ from tolokaforge.runner.capabilities import BUILTIN_ADAPTERS
 from tolokaforge.runner.db_client import (
     DBServiceClient,
     DBServiceError,
+    InvalidOperationError,
     TableNotFoundError,
 )
 from tolokaforge.runner.db_client import (
@@ -4128,6 +4129,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             after = await self.db_client.get_table_digests(trial_id, timeout=timeout)
         if after is None:
             return _HeldStateSync(held=mcp_state)
+        after = await self._replace_unequal_tables(trial_id, mcp_state, held_digests, after)
         trusted = frozenset(
             name for name, digest in after.items() if held_digests.get(name) == digest
         )
@@ -4136,6 +4138,54 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             f"table(s) differed; {len(trusted)} of {len(after)} mirror table(s) match"
         )
         return _HeldStateSync(held=mcp_state, order=tuple(after), trusted=trusted)
+
+    async def _replace_unequal_tables(
+        self,
+        trial_id: str,
+        mcp_state: dict[str, list[dict]],
+        held_digests: dict[str, str],
+        after: dict[str, str],
+    ) -> dict[str, str]:
+        """Replace whole every held table the mutations left unlike the holder's.
+
+        An upsert merges into the mirror's row, so a key the holder dropped from a row
+        stays there, and an insert appends, so a row the holder placed mid-table lands
+        last. The digests show either; the holder is the state's source, so such a
+        table is replaced by its rows, which leaves it byte for byte the holder's. A
+        db-service without the ``replace`` op keeps the table as the mutations left it,
+        and readers then read it from the mirror, as before digests.
+        """
+        unequal = [
+            name
+            for name, digest in held_digests.items()
+            if isinstance(mcp_state[name], list) and after.get(name) != digest
+        ]
+        if not unequal:
+            return after
+        timeout = self._whole_state_read_s(trial_id)
+        replaced = []
+        for table_name in unequal:
+            try:
+                await self.db_client.mutate(
+                    trial_id,
+                    table_name,
+                    [{"op": "replace", "records": mcp_state[table_name]}],
+                    timeout=timeout,
+                    hashes=False,
+                )
+            except (InvalidOperationError, TableNotFoundError):
+                logger.info(
+                    f"_sync_mcp_state_to_db: {trial_id} — the DB service cannot replace a "
+                    "table; tables unlike the holder's are read from the mirror"
+                )
+                break
+            replaced.append(table_name)
+        if not replaced:
+            return after
+        if all(_selectable(name) for name in replaced):
+            fresh = await self.db_client.get_table_digests(trial_id, replaced, timeout=timeout)
+            return after | (fresh or {})
+        return await self.db_client.get_table_digests(trial_id, timeout=timeout) or after
 
     async def _mutate_table(
         self,

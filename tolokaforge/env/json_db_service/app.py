@@ -306,8 +306,9 @@ class InitRequest(BaseModel):
 class MutationOperation(BaseModel):
     """Single mutation operation"""
 
-    op: str  # "insert", "update", "delete", "upsert"
+    op: str  # "insert", "update", "delete", "upsert", "replace"
     record: dict[str, Any] | None = None  # for insert/upsert
+    records: list[dict[str, Any]] | None = None  # for replace: the table's rows, whole
     filter: dict[str, Any] | None = None  # for update/delete
     set: dict[str, Any] | None = None  # for update
     key: str | list[str] | None = None  # for upsert; a list is an ordered composite key
@@ -422,6 +423,11 @@ class TrialState(BaseModel):
             self._init_sql_db()
 
         assert self._sql_conn is not None  # For type checker
+        if any(other != table_name and other.lower() == table_name.lower() for other in self.data):
+            # SQLite folds the case of table names, so dropping this table's mirror would
+            # drop its namesake's; the full rebuild refuses the collision as it always has.
+            self.sync_json_to_sql()
+            return
         cursor = self._sql_conn.cursor()
         cursor.execute(f"DROP TABLE IF EXISTS {_sql_identifier(table_name)}")
         if table_name in self.data:
@@ -1245,9 +1251,11 @@ async def mutate_state(
 
     with trial._lock:
         # A missing table is auto-created only when the first operation could
-        # seed it (insert/upsert), and only after the batch passed validation.
+        # seed it (insert/upsert/replace), and only after the batch passed validation.
         table_missing = table_name not in trial.data
-        if table_missing and not (req.operations and req.operations[0].op in ("insert", "upsert")):
+        if table_missing and not (
+            req.operations and req.operations[0].op in ("insert", "upsert", "replace")
+        ):
             logger.warning(
                 "Table not found for mutation",
                 extra={"trial_id": trial_id, "table_name": table_name},
@@ -1325,6 +1333,20 @@ async def mutate_state(
                 ]
                 affected_rows += original_len - len(trial.data[table_name])
                 table_data = trial.data[table_name]
+
+            elif op.op == "replace":
+                # The table's rows become exactly these, in this order: what an upsert,
+                # which merges into a row, cannot say when a row lost a key.
+                if op.records is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=error_response(
+                            "InvalidOperation", "Replace requires 'records'", {"op": op.op}
+                        ),
+                    )
+                trial.data[table_name] = copy.deepcopy(op.records)
+                table_data = trial.data[table_name]
+                affected_rows += len(table_data)
 
             elif op.op == "upsert":
                 key_fields = upsert_key_fields_by_op[op_index]
