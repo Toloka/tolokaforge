@@ -9,6 +9,7 @@ Utility scripts for developing with Tolokaforge.
     ├── generate_task_pack_compose_override.py  # Generate Docker compose overrides for task packs
     ├── analysis/
     │   ├── audit_preset_fallthrough.py         # Read-only audit: which models resolve to a shared preset that carries none of the budget knobs a sibling carries
+    │   ├── bench_final_state_write.py          # Time and peak memory of writing a large final environment state into a trial bundle
     │   └── calibrate_rubric.sh                 # Calibrate a rubric judge against golden fixtures + apply the trust gate
     ├── docker/
     │   └── prune-docker.sh                     # Reclaim Docker disk between many-trial runs (keeps layers held by running containers)

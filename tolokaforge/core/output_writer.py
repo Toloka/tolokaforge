@@ -18,6 +18,7 @@ from tolokaforge.core.redaction import (
     RedactionPolicyName,
     RedactionStamp,
 )
+from tolokaforge.core.streaming_yaml import dump_mapping_streaming
 
 TRIAL_BUNDLE_SCHEMA_VERSION = 8
 """The per-trial bundle generation stamped into ``metrics.yaml``.
@@ -377,17 +378,19 @@ class OutputWriter:
         key-name rule reaches it — an environment that ends holding the
         credential the agent was issued names it under a key the rule reads.
 
+        The state can be the whole world a task's database holds, written
+        twice (``agent`` and the legacy ``db``), so it is streamed to disk
+        (:func:`~tolokaforge.core.streaming_yaml.dump_mapping_streaming`)
+        rather than handed to ``yaml.dump``, which builds a node object per
+        scalar before it writes anything. Without a redacting policy the
+        mapping is written as given, not copied first.
+
         Args:
             env_state: Final environment state dictionary
         """
+        payload = self.redaction.redact_mapping(env_state) if self._redacting else env_state
         with open(self.output_dir / ENV_FILENAME, "w") as f:
-            yaml.dump(
-                self.redaction.redact_mapping(env_state),
-                f,
-                default_flow_style=False,
-                allow_unicode=True,
-                sort_keys=False,
-            )
+            dump_mapping_streaming(payload, f)
         self._note_rewritten(ENV_FILENAME)
 
     def write_metrics(self, trajectory: Trajectory):
