@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.6 (2026-11-05)
+
+### Fix
+
+- **terminal-bench**: the agent must not hold the grading suite (#1976)
+
 ## v0.34.5 (2026-11-04)
 
 ### BREAKING CHANGE
