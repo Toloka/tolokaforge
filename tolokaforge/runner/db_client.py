@@ -555,6 +555,25 @@ class DBServiceClient:
             hash_response = HashResponse.model_validate(response.json())
             return hash_response.stable_hash
 
+    async def get_state_hashes(self, trial_id: str, timeout: float | None = None) -> HashResponse:
+        """The stable and full hashes of the whole state, without its rows.
+
+        Maps to: GET /trials/{trial_id}/state/hash
+
+        Raises:
+            TrialNotFoundError: If trial not found
+        """
+        async with self._create_client() as client:
+            try:
+                response = await client.get(
+                    f"/trials/{trial_id}/state/hash", timeout=self._request_timeout(timeout)
+                )
+            except httpx.ConnectError as e:
+                raise ConnectionError(f"Failed to connect to DB Service: {e}")
+
+            self._handle_error_response(response)
+            return HashResponse.model_validate(response.json())
+
     async def mutate(
         self,
         trial_id: str,

@@ -1226,6 +1226,24 @@ class TestTheSyncReadsOnlyTheTablesThatDiffer:
         assert self._rows_read(recorder) == ["users"]
         assert type(final["users"][0]["balance"]) is int
 
+    def test_get_state_answers_the_synced_copy_with_the_mirrors_hashes(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+        db_client = runner_service.db_client
+        mirror = runner_service._run_async(db_client.get_state(trial_id))
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        answer = _get_state(runner_service, mock_grpc_context, trial_id)
+
+        assert answer.success, answer.error
+        assert self._rows_read(recorder) == []
+        assert json.loads(answer.state_json) == mirror.data
+        assert (answer.stable_hash, answer.full_hash) == (mirror.stable_hash, mirror.full_hash)
+
     def test_a_db_service_without_digests_syncs_and_reads_the_whole_state(
         self, runner_service, mcp_trial, trial_id, monkeypatch
     ) -> None:
