@@ -4284,14 +4284,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id = request.trial_id
         tables = list(request.tables) if request.tables else None
 
-        await self._refresh_db_mirror(trial_id)
+        synced = await self._refresh_db_mirror(trial_id)
 
-        if request.include_unstable:
+        if request.include_unstable and tables is None and synced is not None and synced.order:
+            # The whole state as the mirror holds it, from the sync's own copy wherever the
+            # mirror's digests vouch for it (ADR-0070); the hashes are the mirror's.
+            timeout = self._whole_state_read_s(trial_id)
+            state = await self._mirror_state_after(trial_id, synced, timeout=timeout)
+            hashes = await self.db_client.get_state_hashes(trial_id, timeout=timeout)
+            stable_hash, full_hash = hashes.stable_hash, hashes.full_hash
+        elif request.include_unstable:
             # Get full state
             state_response = await self.db_client.get_state(
                 trial_id, tables, timeout=self._whole_state_read_s(trial_id)
             )
-            state_json = json.dumps(state_response.data)
+            state = state_response.data
             stable_hash = state_response.stable_hash
             full_hash = state_response.full_hash
         else:
@@ -4299,14 +4306,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             stable_state_response = await self.db_client.get_stable_state(
                 trial_id, timeout=self._whole_state_read_s(trial_id)
             )
-            state_json = json.dumps(stable_state_response.data)
+            state = stable_state_response.data
             stable_hash = stable_state_response.stable_hash
             full_hash = ""  # Not available for stable state
 
         return pb2.GetStateResponse(
             success=True,
             error="",
-            state_json=state_json,
+            state_json=json.dumps(state),
             stable_hash=stable_hash,
             full_hash=full_hash,
         )
