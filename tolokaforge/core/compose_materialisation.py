@@ -174,6 +174,11 @@ def _enforce_no_internet(
     for service_name, service in services.items():
         if service_name in restricted_services:
             continue
+        if "network_mode" in service:
+            # Compose refuses a service that declares both `network_mode` and
+            # `networks:`. A service that has pinned its own network mode (e.g.
+            # `none`) is already off the trial's networks and needs no policy.
+            continue
         attachments = [NETPOLICY_INTERNAL_NETWORK]
         if service_name == runner_service or service_name in bridged_services:
             attachments.append(NETPOLICY_EDGE_NETWORK)
@@ -199,6 +204,10 @@ def _enforce_limited_internet(
     proxy_url = f"http://{NETPOLICY_PROXY_SERVICE}:{NETPOLICY_PROXY_PORT}"
     for service_name, service in services.items():
         if service_name in restricted_services:
+            continue
+        if "network_mode" in service:
+            # See `_enforce_no_internet`: `network_mode` and `networks:` are
+            # mutually exclusive, and such a service reaches nothing to proxy.
             continue
         if service_name == runner_service or service_name in bridged_services:
             service["networks"] = _merge_service_networks(

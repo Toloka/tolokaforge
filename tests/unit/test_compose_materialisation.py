@@ -676,6 +676,44 @@ class TestEnforceNetworkPolicy:
         assert NETPOLICY_INTERNAL_NETWORK in nets
         assert NETPOLICY_EDGE_NETWORK in nets
 
+    def test_no_internet_leaves_a_network_mode_service_alone(self) -> None:
+        """Compose refuses a service declaring both `network_mode` and `networks:`.
+
+        A service that has pinned `network_mode: none` is already off every
+        network the trial has, so there is nothing for the policy to enforce —
+        and attaching one anyway makes `docker compose up` fail at provisioning
+        for the whole stack.
+        """
+        doc = {
+            "services": {
+                "runner": {"image": "r:local"},
+                "tests-vault": {"image": "t:local", "network_mode": "none"},
+            }
+        }
+        result = enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner", [])
+
+        vault = result["services"]["tests-vault"]
+        assert vault["network_mode"] == "none"
+        assert "networks" not in vault
+        assert NETPOLICY_INTERNAL_NETWORK in result["services"]["runner"]["networks"]
+
+    def test_limited_internet_leaves_a_network_mode_service_alone(self) -> None:
+        """Same exclusivity, and such a service has no route to proxy anyway."""
+        doc = {
+            "services": {
+                "runner": {"image": "r:local"},
+                "tests-vault": {"image": "t:local", "network_mode": "none"},
+            }
+        }
+        result = enforce_network_policy(
+            doc, NetworkPolicy.LIMITED_INTERNET, "runner", ["example.com"]
+        )
+
+        vault = result["services"]["tests-vault"]
+        assert vault["network_mode"] == "none"
+        assert "networks" not in vault
+        assert "environment" not in vault
+
     def test_no_internet_restricted_service_skips_internal_net(self) -> None:
         """A service in ``restricted_services`` is left untouched by the
         transform — no injected internal-net attachment, no injected edge

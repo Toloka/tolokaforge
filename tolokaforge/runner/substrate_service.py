@@ -378,7 +378,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         try:
             self._runner._materialise_path(
                 src_service=request.src_service or None,
-                dst_service=request.dst_service,
+                dst_service=request.dst_service or None,
                 path=request.path,
                 exclude=list(request.exclude),
                 trial_id=request.trial_id,

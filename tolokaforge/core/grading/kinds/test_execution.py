@@ -33,6 +33,7 @@ script timeout, 10s reward-cat timeout, 65536-char output truncation.
 from __future__ import annotations
 
 import math
+import shlex
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ArtifactSpec",
     "CollectSpec",
+    "StagedPathSpec",
     "TestExecutionGraderKind",
     "TestExecutionKindConfig",
 ]
@@ -70,6 +72,34 @@ class ArtifactSpec(BaseModel):
     source: str
     exclude: list[str] = Field(default_factory=list)
     src_service: str | None = None
+
+
+class StagedPathSpec(BaseModel):
+    """One path carried INTO the container the suite runs in, before it runs.
+
+    The mirror image of :class:`ArtifactSpec`. An artifact moves the *agent's
+    work* to where the suite is; a staged path moves *the suite* to where the
+    work is — the single-container shape, where the verifier execs in the
+    agent's own container and so the suite has to be in it.
+
+    It exists because the suite must NOT be in it any earlier. Bind-mounting
+    the suite onto the agent service makes the assertions the agent is scored
+    by, and any reference solution shipped beside them, readable for the whole
+    episode. The mount goes on a sidecar the agent cannot reach instead, and
+    this carries it across once the episode is over.
+
+    ``source`` is an absolute path, identical in both containers. ``src_service``
+    names the sidecar holding it and is required — a staged path whose source
+    defaulted to the agent's own container would copy the agent's ``/tests`` over
+    itself and assert nothing. ``exclude`` lists glob patterns pruned from the
+    copy.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source: str
+    src_service: str
+    exclude: list[str] = Field(default_factory=list)
 
 
 class CollectSpec(BaseModel):
@@ -111,9 +141,20 @@ class TestExecutionKindConfig(BaseModel):
     timeout_s: float = Field(default=300.0, gt=0.0)
     reward_read_timeout_s: float = Field(default=10.0, gt=0.0)
     output_truncation_chars: int = Field(default=65_536, ge=0)
+    stage_probe_timeout_s: float = Field(default=30.0, gt=0.0)
+    """Wall-clock cap on the one ``test -e`` that confirms a staged path landed."""
     service: str | None = None
     artifacts: list[ArtifactSpec] = Field(default_factory=list)
     collect: list[CollectSpec] = Field(default_factory=list)
+    stage_paths: list[StagedPathSpec] = Field(default_factory=list)
+    """Paths carried into the verifier's container before anything else runs.
+
+    Unlike ``artifacts`` this does NOT belong to the separate-verifier shape —
+    it is what lets the single-container shape keep its suite away from the
+    agent until grading. So it is deliberately outside the ``service``
+    requirement below: with no ``service`` the destination is the agent's own
+    container, which is exactly the case this field exists for.
+    """
     user: str | None = None
     """Unix user the verifier runs as, or ``None`` to inherit the container's
     default user.
@@ -146,11 +187,28 @@ class TestExecutionKindConfig(BaseModel):
 
     @model_validator(mode="after")
     def _artifacts_and_collect_need_a_service(self) -> TestExecutionKindConfig:
+        # ``stage_paths`` is NOT in this check on purpose: it is the one hook
+        # whose destination may legitimately be the agent's own container.
         if (self.artifacts or self.collect) and self.service is None:
             raise ValueError(
                 "artifacts and collect hooks belong to the separate-verifier shape, so "
                 "a 'service' (the verifier) must be set when either is non-empty."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _staged_path_cannot_be_its_own_source(self) -> TestExecutionKindConfig:
+        # Copying a service's path onto itself empties it (materialise_path is
+        # empty-then-copy against a source it has just deleted), so the suite
+        # would be gone at the moment it is needed and the trial would grade on
+        # nothing. Refuse the config instead of discovering it as a zero.
+        for staged in self.stage_paths:
+            if staged.src_service == self.service:
+                raise ValueError(
+                    f"stage_paths entry for {staged.source!r} names src_service "
+                    f"{staged.src_service!r}, which is also the verifier service: a "
+                    "path cannot be staged from the container it is staged into."
+                )
         return self
 
 
@@ -182,6 +240,36 @@ class TestExecutionGraderKind:
         logger: StructuredLogger,  # noqa: ARG002
     ) -> Grade | None:
         cfg = TestExecutionKindConfig(**(dict(kind_config) if kind_config else {}))
+        for staged in cfg.stage_paths:
+            # Carry the suite into the container it runs in, now that the agent
+            # is done. Everything below — the collect hooks, the artifacts, the
+            # run itself — presupposes the suite is there, so this goes first.
+            substrate.materialise_path(
+                src_service=staged.src_service,
+                dst_service=cfg.service,
+                path=staged.source,
+                exclude=staged.exclude,
+            )
+            # materialise_path treats an absent SOURCE as "the verifier runs
+            # without it": correct for an artifact the agent never produced,
+            # catastrophic for the test suite. Without this probe a sidecar that
+            # never came up grades every trial 0.0 — a number that reads as a
+            # hundred model failures and is really one provisioning bug. Check
+            # the destination, which also catches a copy that silently landed
+            # nothing.
+            exit_code, output = substrate.exec_in_service(
+                service=cfg.service,
+                command=f"test -e {shlex.quote(staged.source)}",
+                timeout_s=cfg.stage_probe_timeout_s,
+            )
+            if exit_code != 0:
+                raise GraderKindRefusedError(
+                    f"the test suite was not staged: {staged.source!r} is absent from "
+                    f"{cfg.service or 'the agent container'} after copying it from "
+                    f"{staged.src_service!r}. Nothing was measured, so this trial is "
+                    f"ungradeable rather than a zero. Probe said: "
+                    f"{output[: cfg.output_truncation_chars]!r}"
+                )
         for hook in cfg.collect:
             # Snapshot a stateful sidecar to a file inside it (e.g. pg_dumpall),
             # which the matching artifact below carries into the verifier. A

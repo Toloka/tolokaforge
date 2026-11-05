@@ -87,9 +87,15 @@
     "custom_checks": null,
     "grading_method": "test_execution",
     "grading_method_config": {
+      "require_reward": true,
+      "stage_paths": [
+        {
+          "source": "/tests",
+          "src_service": "tests-vault"
+        }
+      ],
       "timeout_s": 30.0,
-      "user": "root",
-      "require_reward": true
+      "user": "root"
     },
     "llm_judge": null,
     "pass_threshold": 0.5,

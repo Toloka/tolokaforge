@@ -944,7 +944,9 @@ message MaterialisePathRequest {
   string trial_id = 1;
   // Compose service to copy FROM. Empty → the trial's agent service.
   string src_service = 2;
-  // Compose service to copy INTO.
+  // Compose service to copy INTO. Empty → the trial's agent service, the same
+  // convention as src_service: the suite is staged INTO the agent's container
+  // from the sidecar that held it away from the agent during the episode.
   string dst_service = 3;
   // Absolute POSIX path (file or directory) re-created in the destination.
   string path = 4;

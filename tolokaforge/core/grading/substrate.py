@@ -281,7 +281,7 @@ class GradingSubstrate(Protocol):
         self,
         *,
         src_service: str | None,
-        dst_service: str,
+        dst_service: str | None,
         path: str,
         exclude: Sequence[str] = (),
     ) -> None:
@@ -289,8 +289,11 @@ class GradingSubstrate(Protocol):
 
         Empties *path* in the destination container, then copies *path* (a file
         or a whole directory tree) from the source container into it, skipping
-        any entry matching an *exclude* glob. ``src_service`` of ``None`` means
-        the trial's agent container.
+        any entry matching an *exclude* glob. ``src_service`` or ``dst_service``
+        of ``None`` means the trial's agent container — on either end, because
+        the copy runs in both directions: the agent's work out to a verifier,
+        and the grading suite in from the sidecar that kept it away from the
+        agent.
 
         This is the primitive the separate-verifier shape builds on: the agent
         worked in one container and the verifier runs in another, so the files
@@ -563,7 +566,7 @@ class InProcessGradingSubstrate:
         self,
         *,
         src_service: str | None,
-        dst_service: str,
+        dst_service: str | None,
         path: str,
         exclude: Sequence[str] = (),
     ) -> None:

@@ -2304,7 +2304,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self,
         *,
         src_service: str | None,
-        dst_service: str,
+        dst_service: str | None,
         path: str,
         exclude: Collection[str] = (),
         trial_id: str,
@@ -2315,8 +2315,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         prefix and trial id name every service in the per-trial stack), then:
         removes *path* in the destination, recreates its parent, and streams the
         source's *path* across with ``docker cp`` (which tars through the daemon,
-        so neither container needs ``tar``). ``src_service`` of ``None`` means
-        the agent's own service. Any *exclude* glob is pruned from the
+        so neither container needs ``tar``). ``src_service`` or *dst_service* of
+        ``None`` means the agent's own service — either end may be it, because
+        the copy also runs inwards: the grading suite is staged into the agent's
+        container from the sidecar that kept it out of the agent's reach. Any *exclude* glob is pruned from the
         destination afterwards.
 
         Raises :class:`SubstrateUnreachableError` when the containers cannot be
@@ -2345,7 +2347,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 "materialisation."
             )
         src_tool = bash_tool if src_service is None else bash_tool.for_service(src_service)
-        dst_tool = bash_tool.for_service(dst_service)
+        dst_tool = bash_tool if dst_service is None else bash_tool.for_service(dst_service)
         src_container = src_tool.container_name
         dst_container = dst_tool.container_name
         if src_container is None or dst_container is None:
@@ -2447,7 +2449,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             if src_rc != 0 or dst_rc != 0:
                 raise SubstrateUnreachableError(
                     f"Trial {trial_id!r}: docker cp of {path!r} from {src_service or 'agent'!r} "
-                    f"to {dst_service!r} failed (src rc={src_rc}, dst rc={dst_rc})."
+                    f"to {dst_service or 'agent'!r} failed (src rc={src_rc}, dst rc={dst_rc})."
                 )
             # Prune excludes in the destination. A bare name (no separator) matches
             # at every depth via ``find -name``, so a nested ``__pycache__`` /
@@ -2483,13 +2485,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     # ungradeable rather than scoring a knowingly-wrong tree.
                     raise SubstrateUnreachableError(
                         f"Trial {trial_id!r}: pruning exclude {glob!r} under {path!r} in "
-                        f"{dst_service!r} failed (rc={pruned.returncode}): "
+                        f"{dst_service or 'agent'!r} failed (rc={pruned.returncode}): "
                         f"{pruned.stderr.strip()}"
                     )
         except (subprocess.SubprocessError, OSError) as exc:
             raise SubstrateUnreachableError(
                 f"Trial {trial_id!r}: materialising {path!r} from {src_service or 'agent'!r} "
-                f"to {dst_service!r} failed: {type(exc).__name__}: {exc}"
+                f"to {dst_service or 'agent'!r} failed: {type(exc).__name__}: {exc}"
             ) from exc
 
     async def _dispatch_via_grader_kind(

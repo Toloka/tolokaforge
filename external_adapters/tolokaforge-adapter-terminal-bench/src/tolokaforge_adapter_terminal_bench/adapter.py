@@ -846,6 +846,20 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                         if meta.is_v4
                         else None
                     ),
+                    # The single-container shape grades inside the agent's own
+                    # container, so the suite has to be in it — but only now, not
+                    # while the agent works. It spent the episode on a sidecar the
+                    # agent cannot reach; this carries it across.
+                    stage_paths=(
+                        [
+                            {
+                                "source": "/tests",
+                                "src_service": env.tests_sidecar_service,
+                            }
+                        ]
+                        if env.tests_sidecar_service is not None
+                        else None
+                    ),
                 )
             ),
             metadata=self._metadata(meta),

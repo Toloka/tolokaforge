@@ -79,11 +79,18 @@ Contents of a staging directory:
     or `{image_registry}/{task_id}:{image_tag}` when `image_registry` is
     set (with `build:` dropped so the image is pulled);
   - `container_name: tbench_${TOLOKAFORGE_TRIAL_SLUG}_{agent_service}`;
-  - `./tests:/tests` and `./_logs:/logs` appended to whatever volumes the
-    task declared — relative binds against the staging dir. A task mount
-    targeting `/tests` or `/logs` gives way to these; anything else it
-    declares (a named volume shared with a sibling service, say) is kept;
-  - `TEST_DIR=/tests` in its `environment:`;
+  - `./_logs:/logs` appended to whatever volumes the task declared — a
+    relative bind against the staging dir. A task mount targeting `/logs`
+    gives way to it; anything else it declares (a named volume shared with
+    a sibling service, say) is kept;
+  - **no mount of the grading suite, and no `TEST_DIR`.** A task mount that
+    targets `/tests`, or that is *sourced* from `./tests` whatever it
+    targets, is dropped: an agent that can read the assertions it is scored
+    by is not being measured. The suite lives in a `tests-vault` sidecar
+    (read-only, `network_mode: none`, healthcheck disabled) and is copied
+    into the grading container at verification time via the `stage_paths`
+    entry on the grading config. This matches upstream, where the verifier
+    uploads `tests/` only after the agent phase has ended;
   - `build.context: ./environment` when the task's compose declares no
     build of its own. The upstream harness supplies this from a base compose
     layer it merges underneath the task's, so most canonical compose files

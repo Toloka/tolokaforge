@@ -85,6 +85,12 @@ CONTAINER_LOGS_DIR = "/logs"
 ``T_BENCH_CONTAINER_LOGS_PATH`` a terminal-bench pack authors against."""
 
 STAGING_LOGS_DIRNAME = "_logs"
+# The task's own grading suite, as it sits in the staging directory. It is
+# mounted into the sidecar and never into the agent.
+_TESTS_STAGING_DIRNAME = "tests"
+# Where the suite appears inside the sidecar, and the path the agent is kept
+# away from. Also the value task compose files see as ``${TEST_DIR}``.
+_TESTS_CONTAINER_DIR = "/tests"
 """Directory inside the staging tree the agent service's ``/logs`` mounts from.
 
 Relative, so the mount resolves against whichever copy of the compose context
@@ -104,6 +110,24 @@ _VERIFIER_SERVICE = "verifier"
 task's ``tests/Dockerfile`` and idles so the grader can exec the suite in it
 rather than in the agent's container. Not an engine service — it lives on the
 task stack alongside the agent."""
+_TESTS_SIDECAR_SERVICE = "tests-vault"
+"""Trial-scope service that holds the grading suite OUT of the agent's reach.
+
+The single-container shape runs the suite inside the agent's own container, so
+the suite has to be somewhere on this host when grading starts. Mounting it on
+the agent service put it there early: the agent could read ``/tests`` — the
+assertions it is scored by, and in half of the Arena pack a ``ref*.py`` that is
+a working answer — for the whole of its episode. Upstream Harbor uploads
+``tests/`` inside ``verify()``, strictly after the agent phase, and treats
+agent-side test visibility as cheating.
+
+So the bind mount moves to this service, which runs nothing, serves nothing and
+is on no network; the grader copies ``/tests`` from here into the agent's
+container at grading time (``stage_paths``), after the episode has ended. The
+agent cannot reach another container's filesystem, so the suite is unreadable
+until it is too late to use.
+"""
+
 _VERIFIER_SERVICE_PREFIX = "verifier_"
 """Key prefix for the tier-3 verifier stack's services when they are merged into
 the trial compose (``main`` → ``verifier_main``, ``postgres`` → ``verifier_postgres``),
@@ -186,6 +210,16 @@ class MaterialisedEnvironment:
     image, or ``None`` for the single-container shape whose tests run in the
     agent's container. When set, the grader execs the test suite here and
     re-materialises the task's declared artifacts into it first."""
+
+    tests_sidecar_service: str | None = None
+    """Trial-scope service holding the grading suite out of the agent's reach,
+    or ``None`` for the separate-verifier shape, which already bakes the suite
+    into a container the agent never touched.
+
+    Set for the single-container shape, whose suite must end up inside the
+    agent's own container to run but must not be there while the agent works.
+    The adapter turns this into a ``stage_paths`` entry on the grading config,
+    which copies ``/tests`` across after the episode."""
 
 
 def materialise_task_environment(
@@ -287,6 +321,8 @@ def materialise_task_environment(
         extra_reserved.append(base_service)
     if meta.is_v4:
         extra_reserved.append(_VERIFIER_SERVICE)
+    else:
+        extra_reserved.append(_TESTS_SIDECAR_SERVICE)
     _check_no_reserved_service_collisions(meta.task_id, task_services, extra_reserved)
 
     resolver = DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
@@ -390,6 +426,7 @@ def materialise_task_environment(
         verifier_image=(
             _verifier_image(meta.task_id, image_registry, image_tag) if meta.is_v4 else None
         ),
+        tests_sidecar_service=None if meta.is_v4 else _TESTS_SIDECAR_SERVICE,
     )
 
 
@@ -458,9 +495,10 @@ def _reroot_relative_paths(doc: dict[str, Any], skip: Collection[str] = ()) -> N
     environment directory directly, and a named volume (``pgdata:/var/lib``)
     is not a path at all — only a source starting with ``.`` is re-rooted.
 
-    Runs before :func:`_agent_volumes` appends our own ``./tests`` and
-    ``./_logs``: those are authored against the staging root already, and
-    moving them under ``environment/`` would point the agent at nothing.
+    Runs before :func:`_agent_volumes` appends our own ``./_logs`` (and before
+    the ``./tests`` mount on :data:`_TESTS_SIDECAR_SERVICE` is injected): those
+    are authored against the staging root already, and moving them under
+    ``environment/`` would point the service at nothing.
     """
     for name, body in (doc.get("services") or {}).items():
         if not isinstance(body, dict) or name in skip:
@@ -555,8 +593,8 @@ def _reroot_mount_source(mount: Any) -> Any:
     return mount
 
 
-def _agent_volumes(declared: Any, *, include_tests_mount: bool = True) -> list[Any]:
-    """The agent service's mounts: the task's own, plus ours for tests and logs.
+def _agent_volumes(declared: Any, *, reserve_tests_target: bool = True) -> list[Any]:
+    """The agent service's mounts: the task's own, plus ours for logs.
 
     84 of the canonical compose files mount a named volume on the agent service
     — ``app_src:/app`` and the like — shared with the sibling services that run
@@ -564,25 +602,30 @@ def _agent_volumes(declared: Any, *, include_tests_mount: bool = True) -> list[A
     those tasks with an empty ``/app`` and siblings that never saw an edit, so
     what is declared is kept and ours is appended.
 
-    A task mount targeting ``/tests`` or ``/logs`` is dropped in favour of ours.
-    Both are the harness's directories rather than the task's — the verifier
-    reads its reward from under ``/logs`` and the suite it runs from ``/tests``
-    — and two mounts on one target leave which of them wins up to compose.
+    A task mount targeting ``/logs`` is dropped in favour of ours: it is the
+    harness's directory rather than the task's — the verifier reads its reward
+    from under it — and two mounts on one target leave which of them wins up to
+    compose.
 
-    *include_tests_mount* is ``False`` for the separate-verifier shape, where the
-    suite runs in its own container: the agent never sees ``/tests`` and only the
-    log mount is appended.
+    ``/tests`` is never mounted here. The suite reaches the agent's container
+    only at grading time, copied in from :data:`_TESTS_SIDECAR_SERVICE`, because
+    an agent that can read the assertions it is scored by is not being measured.
+    *reserve_tests_target* additionally drops a task-authored mount aimed at
+    ``/tests``, which would otherwise put the suite back where the sidecar exists
+    to keep it from. It is ``False`` only for the separate-verifier shape, whose
+    agent container has no grading relationship with ``/tests`` at all and whose
+    behaviour here is unchanged.
     """
     ours: list[Any] = []
     reserved = {CONTAINER_LOGS_DIR}
-    if include_tests_mount:
-        ours.append("./tests:/tests")
-        reserved.add("/tests")
+    if reserve_tests_target:
+        reserved.add(_TESTS_CONTAINER_DIR)
     ours.append(f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}")
     kept = [
         mount
         for mount in (declared or [])
         if not _mount_target_is_under(_mount_target(mount), reserved)
+        and not (reserve_tests_target and _mount_source_is_the_suite(_mount_source(mount)))
     ]
     return kept + ours
 
@@ -598,6 +641,45 @@ def _mount_target(mount: Any) -> str | None:
         parts = mount.split(":")
         return parts[1] if len(parts) >= 2 else parts[0]
     return None
+
+
+def _mount_source(mount: Any) -> str | None:
+    """The host path *mount* binds from, in either compose spelling.
+
+    Returns ``None`` for an anonymous volume and for a named volume, neither of
+    which can carry the task's own ``tests/`` directory.
+    """
+    if isinstance(mount, Mapping):
+        if mount.get("type") not in (None, "bind"):
+            return None
+        source = mount.get("source")
+        return source if isinstance(source, str) else None
+    if isinstance(mount, str):
+        parts = mount.split(":")
+        if len(parts) < 2:
+            return None  # anonymous volume: "/data"
+        source = parts[0]
+        # A named volume ("coop_src:/app") is not a path and cannot be the suite.
+        return source if source.startswith((".", "/", "~")) else None
+    return None
+
+
+def _mount_source_is_the_suite(source: str | None) -> bool:
+    """Whether *source* is the task's ``tests/`` directory, or inside it.
+
+    Checked independently of the target: a task that binds ``./tests`` to
+    ``/opt/suite`` hands the agent the assertions just as surely as one that
+    binds it to ``/tests``, and the reserved-target check alone would let it
+    through.
+    """
+    if source is None or "${" in source:
+        return False
+    path = PurePosixPath(posixpath.normpath(source))
+    if path.is_absolute():
+        return False
+    return path == PurePosixPath(_TESTS_STAGING_DIRNAME) or path.is_relative_to(
+        _TESTS_STAGING_DIRNAME
+    )
 
 
 def _mount_target_is_under(target: str | None, reserved: set[str]) -> bool:
@@ -622,9 +704,9 @@ def _single_container_compose(meta: TerminalBenchTask) -> dict[str, Any]:
     root compose file nor one under ``environment/``. Only the two
     fields the synthesiser does not go on to overwrite are set here: where to
     build from, and a command that keeps the container alive for the agent to
-    exec into. ``image``, ``container_name``, ``volumes`` and ``TEST_DIR`` are
-    all written unconditionally downstream, so setting them here would be
-    writing something twice and inviting the two to drift.
+    exec into. ``image``, ``container_name`` and ``volumes`` are all written
+    unconditionally downstream, so setting them here would be writing something
+    twice and inviting the two to drift.
 
     Raises when the Dockerfile is missing rather than emitting a compose doc
     that would fail at ``docker compose build`` with a message about a path
@@ -1183,15 +1265,24 @@ def _build_synthesised_compose(
         agent_body.pop("build", None)
     agent_body["container_name"] = agent_container_name
     agent_body["volumes"] = _agent_volumes(
-        agent_body.get("volumes"), include_tests_mount=not meta.is_v4
+        agent_body.get("volumes"), reserve_tests_target=not meta.is_v4
     )
     agent_env = agent_body.get("environment")
+    # TEST_DIR is NOT set on the agent. It named the ``/tests`` mount, and that
+    # mount is gone (see :data:`_TESTS_SIDECAR_SERVICE`): the two have to move
+    # together, or the variable points the agent at a path that does not exist
+    # for most of the trial and advertises where the suite will land. The suite
+    # itself does not need it — every ``test.sh`` in the pack derives its own
+    # test directory from ``BASH_SOURCE``, and the handful that read ``TEST_DIR``
+    # read it as ``${TEST_DIR:-<fallback>}`` on a branch that only fires when
+    # ``/logs/verifier`` is absent, which the log mount guarantees it is not.
     if not meta.is_v4:
-        # TEST_DIR names the ``/tests`` mount the agent reads fixtures from. The
-        # separate-verifier shape drops that mount (``include_tests_mount`` above),
-        # so injecting TEST_DIR there would point the agent at a path that does not
-        # exist in its container.
-        agent_env = _set_env_key(agent_env, "TEST_DIR", "/tests")
+        # A task may author TEST_DIR in its OWN compose (the upstream echo-hello
+        # shape does). Dropping it too is what makes "nothing on the agent
+        # service points at /tests" a one-line invariant rather than a rule with
+        # an exception that can quietly come back. Scoped to the shape this fix
+        # changes: the separate-verifier agent's env is left exactly as it was.
+        agent_env = _drop_env_key(agent_env, "TEST_DIR")
     for key in sorted(provider_env_keys):
         agent_env = _set_env_key(agent_env, key, f"${{{provider_env_input(key)}}}")
     if harness_spec is not None:
@@ -1213,6 +1304,14 @@ def _build_synthesised_compose(
         if task_build is not None and not image_registry:
             services[base_service] = _harness_base_service_body(base_image, task_build)
             base_build_service = base_service
+
+    if not meta.is_v4:
+        # Single-container shape: the suite is graded inside the agent's own
+        # container, so it has to exist on this host — but not where the agent
+        # can read it. It waits here instead.
+        services[_TESTS_SIDECAR_SERVICE] = _tests_sidecar_service_body(
+            agent_image, agent_body.get("build")
+        )
 
     if meta.is_v4:
         verifier_image = _verifier_image(meta.task_id, image_registry, image_tag)
@@ -1259,6 +1358,70 @@ def _stamp_trial_container_names(task_services: dict[str, Any]) -> None:
         if not isinstance(body, dict):
             continue
         body["container_name"] = _trial_scoped_container_name(name)
+
+
+def _tests_sidecar_service_body(agent_image: str, agent_build: Any) -> dict[str, Any]:
+    """Trial-scope service that only holds ``./tests`` until grading asks for it.
+
+    Reuses *agent_image* rather than naming an image of its own: that image is
+    already built or pulled for this trial, so the sidecar costs no extra pull,
+    no extra build target, and no second thing to keep pinned. All it has to be
+    able to do is hold a bind mount and answer ``docker exec sh -c 'test -e'``.
+
+    *agent_build* — the agent service's final ``build`` block, or ``None`` when
+    the image is pulled — is carried over verbatim. Without it a run with
+    ``prebuild_images: false`` would reach ``docker compose up`` with a service
+    that names a local tag and no way to produce it, and compose would try to
+    PULL ``tbench-<task>:local`` from a registry that has never heard of it.
+    Mirroring the agent's own build makes the sidecar exactly as buildable as
+    the agent, and because both name the same image ref it is the same build,
+    not a second one.
+
+    Everything else is shut off. ``entrypoint`` replaces whatever the task image
+    declares, so the container idles instead of running the task's own start-up.
+    ``network_mode: none`` leaves it off every network the trial has, including
+    the default one the agent is on — the agent cannot reach a container that is
+    not addressable and is listening on nothing anyway. The mount is read-only:
+    nothing in grading writes to the suite, and a verifier that tried would be
+    editing the task pack. ``user: root`` so the probe can stat the tree
+    whatever the task image's own ``USER`` happens to be.
+
+    The agent's isolation from this does not rest on any of that hardening: a
+    container's filesystem is its own mount namespace, and the agent has no
+    docker socket to go around it. The settings above remove the ways a task
+    image could accidentally undo that.
+    """
+    body: dict[str, Any] = {"image": agent_image}
+    if agent_build is not None:
+        body["build"] = deepcopy(agent_build)
+    body.update(
+        {
+            "entrypoint": ["sh", "-c", "sleep infinity"],
+            "user": "root",
+            "network_mode": "none",
+            "volumes": [f"./{_TESTS_STAGING_DIRNAME}:{_TESTS_CONTAINER_DIR}:ro"],
+            # The entrypoint above replaces whatever the task image starts, so
+            # a HEALTHCHECK baked into that image probes a process that is not
+            # running and can never report healthy. The stack is brought up
+            # with `--wait`, so that would hang until the retries expired and
+            # then fail the whole trial.
+            #
+            # This overrides any inherited probe with one that passes as soon
+            # as the container runs. It is deliberately not `disable: true`:
+            # compose treats a service whose healthcheck is *disabled* as an
+            # error under `--wait` ("has no healthcheck configured") and fails
+            # provisioning, where a service that simply declares none is waited
+            # on for "running". Measured on run 42120491828.
+            "healthcheck": {
+                "test": ["CMD-SHELL", "true"],
+                "interval": "2s",
+                "timeout": "2s",
+                "retries": 3,
+                "start_period": "0s",
+            },
+        }
+    )
+    return body
 
 
 def _verifier_service_body(verifier_image: str) -> dict[str, Any]:
@@ -1502,6 +1665,23 @@ def _substitute_str(s: str, values: dict[str, str]) -> str:
         return m.group(0)
 
     return _SUBSTITUTION_PATTERN.sub(_replace, s)
+
+
+def _drop_env_key(existing: Any, key: str) -> Any:
+    """*existing* compose ``environment:`` without *key*, in either spelling.
+
+    Mapping form drops the key; list form drops any ``KEY=...`` or bare ``KEY``
+    entry (compose reads a bare name as "inherit from the host", which is a
+    second way to hand the agent the same value). An empty result is returned as
+    an empty container rather than ``None`` so the caller's
+    ``if agent_env is not None`` still writes the key back and the service does
+    not silently keep a stale block.
+    """
+    if isinstance(existing, Mapping):
+        return {k: v for k, v in existing.items() if k != key}
+    if isinstance(existing, list):
+        return [e for e in existing if not (isinstance(e, str) and e.split("=")[0] == key)]
+    return existing
 
 
 def _set_env_key(existing: Any, key: str, value: str) -> Any:

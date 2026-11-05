@@ -564,7 +564,9 @@ class TestSingleContainerTaskIsRunnable:
         service = doc["services"]["main"]
         assert service["build"]["context"] == "./environment"
         assert service["image"]
-        assert service["volumes"] == ["./tests:/tests", "./_logs:/logs"]
+        # No ``/tests`` on the agent: the suite waits in the sidecar until grading.
+        assert service["volumes"] == ["./_logs:/logs"]
+        assert doc["services"]["tests-vault"]["volumes"] == ["./tests:/tests:ro"]
         # The pre-harbor ${T_BENCH_*} variables are the task-side dialect; the
         # synthesised doc is ours and nothing sets them, so one surviving here
         # would expand to an empty string at compose time. The trial-slug
@@ -582,6 +584,9 @@ class TestSingleContainerTaskIsRunnable:
         assert td.grading.grading_method == "test_execution"
         assert td.grading.grading_method_config == {
             "timeout_s": 45.0,
+            # The suite is carried into the agent's container at grading time,
+            # from the sidecar that kept it out of the agent's reach.
+            "stage_paths": [{"source": "/tests", "src_service": "tests-vault"}],
             # Every terminal-bench task grades as root unless it names another
             # user, and refuses a trial whose verifier wrote no reward.
             "user": "root",
@@ -603,6 +608,7 @@ class TestSingleContainerTaskIsRunnable:
         td = adapter.to_task_description("echo-hello-single")
         assert td.grading.grading_method_config == {
             "timeout_s": 135.0,
+            "stage_paths": [{"source": "/tests", "src_service": "tests-vault"}],
             "user": "root",
             "require_reward": True,
         }
@@ -752,7 +758,6 @@ class TestComposeSynthesisHarborFormat:
         doc = _load_synthesised(env)
         assert doc["services"]["main"]["volumes"] == [
             "app_src:/app",
-            "./tests:/tests",
             "./_logs:/logs",
         ]
         assert "app_src" in doc["volumes"]
@@ -782,9 +787,172 @@ class TestComposeSynthesisHarborFormat:
 
         assert _load_synthesised(env)["services"]["main"]["volumes"] == [
             "keep_me:/srv",
-            "./tests:/tests",
             "./_logs:/logs",
         ]
+
+
+class TestAgentCannotReadTheSuite:
+    """The agent's container must not carry the suite it is scored by.
+
+    Measured on the TBench Arena 100 pack, within-arm and within-task: trials
+    whose agent could read ``/tests`` passed 90.8%, trials that did not 67.5%
+    (sign test p < 1e-5 over 444 cells). Upstream Harbor uploads ``tests/``
+    inside ``verify()``, after the agent phase, for exactly this reason. These
+    tests pin the three halves of keeping it that way: no mount, no TEST_DIR,
+    and something that still holds the suite until grading asks for it.
+    """
+
+    def _single_container(self, tmp_path, volumes=None):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "leaky",
+            {"services": {"main": {"volumes": list(volumes)} if volumes else {}}},
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+        return env, _load_synthesised(env)
+
+    def test_the_agent_has_no_mount_targeting_tests(self, tmp_path):
+        _, doc = self._single_container(tmp_path)
+        targets = [str(m).split(":")[1] for m in doc["services"]["main"]["volumes"]]
+        assert "/tests" not in targets
+
+    def test_a_task_authored_tests_mount_is_dropped_too(self, tmp_path):
+        """Otherwise a task could put the suite back where the sidecar removed it."""
+        _, doc = self._single_container(tmp_path, volumes=["./tests:/tests", "keep:/srv"])
+        assert doc["services"]["main"]["volumes"] == ["keep:/srv", "./_logs:/logs"]
+
+    def test_a_root_compose_tests_mount_aimed_elsewhere_is_dropped_by_source(self, tmp_path):
+        """Reserving the target alone is not enough.
+
+        A root-compose task is authored against the directory the merged file
+        is staged from, so its relative binds are *not* re-rooted — ``./tests``
+        there resolves to the real staged suite. ``./tests:/opt/suite`` then
+        hands the agent exactly the assertions it is scored by; only the path
+        it reads them at differs. The filter has to look at where a mount comes
+        *from*, not just where it lands.
+        """
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "root-leak",
+            {
+                "services": {
+                    "main": {
+                        "image": "python:3.11-slim",
+                        "command": ["sleep", "infinity"],
+                        "volumes": [
+                            "./tests:/opt/suite",
+                            "./tests/data:/data",
+                            "keep:/srv",
+                        ],
+                    }
+                }
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+        doc = _load_synthesised(env)
+        assert doc["services"]["main"]["volumes"] == ["keep:/srv", "./_logs:/logs"]
+
+    def test_an_environment_compose_tests_dir_is_not_the_suite(self, tmp_path):
+        """``./tests`` under ``environment/`` is a different directory.
+
+        For the canonical shape the synthesiser re-roots relative binds onto
+        ``environment/``, so the task's own ``environment/tests`` fixture is
+        not the staged grading suite and must survive. Over-matching here would
+        silently break tasks that ship such a directory.
+        """
+        _, doc = self._single_container(tmp_path, volumes=["./tests:/opt/fixtures"])
+        assert doc["services"]["main"]["volumes"] == [
+            "./environment/tests:/opt/fixtures",
+            "./_logs:/logs",
+        ]
+
+    def test_a_named_volume_is_not_mistaken_for_the_suite(self, tmp_path):
+        """``tests:/app`` is a named volume, not the task's tests directory."""
+        _, doc = self._single_container(tmp_path, volumes=["tests:/app", "./src:/src"])
+        assert doc["services"]["main"]["volumes"] == [
+            "tests:/app",
+            "./environment/src:/src",
+            "./_logs:/logs",
+        ]
+
+    def test_the_sidecar_overrides_the_images_healthcheck_without_disabling_it(self, tmp_path):
+        """The sidecar replaces the entrypoint, so an inherited probe can never pass.
+
+        The stack comes up with ``--wait``. A task image that declares a
+        HEALTHCHECK against a process its own entrypoint starts would leave
+        ``tests-vault`` permanently unhealthy and kill every trial of that task
+        in provisioning — the same shape that took out six tasks on 2026-10-30.
+
+        The override must not be ``disable: true``. Compose refuses to wait on a
+        service whose healthcheck is disabled and fails the stack outright with
+        "has no healthcheck configured", which is how run 42120491828 died; a
+        service that declares none at all is merely waited on for "running".
+        """
+        _, doc = self._single_container(tmp_path)
+        probe = doc["services"]["tests-vault"]["healthcheck"]
+        assert probe["test"] == ["CMD-SHELL", "true"]
+        assert "disable" not in probe
+
+    def test_the_agent_has_no_TEST_DIR(self, tmp_path):
+        """The variable and the mount move together, or it advertises the path."""
+        _, doc = self._single_container(tmp_path)
+        env_block = doc["services"]["main"].get("environment") or {}
+        keys = (
+            env_block if isinstance(env_block, dict) else [str(e).split("=")[0] for e in env_block]
+        )
+        assert "TEST_DIR" not in keys
+
+    def test_the_sidecar_still_carries_the_suite_and_reaches_nothing(self, tmp_path):
+        env, doc = self._single_container(tmp_path)
+        assert env.tests_sidecar_service == "tests-vault"
+        vault = doc["services"]["tests-vault"]
+        assert vault["volumes"] == ["./tests:/tests:ro"]
+        # Not on any network, so the agent cannot reach it even if the image
+        # happened to start something that listens.
+        assert vault["network_mode"] == "none"
+        # Resolvable by the grader: the name the runner derives must be stamped.
+        assert vault["container_name"] == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_tests-vault"
+        # Costs no second image to build or pin.
+        assert vault["image"] == doc["services"]["main"]["image"]
+
+    def test_a_task_naming_the_sidecar_itself_is_refused(self, tmp_path):
+        """Silently replacing the task's own service would hide the suite."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "collide",
+            {"services": {"main": {}, "tests-vault": {"image": "busybox"}}},
+        )
+        with pytest.raises(ValueError, match="tests-vault"):
+            materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+    def test_the_grading_config_stages_the_suite_in(self, fixture_dir, tmp_path):
+        """The compose half is only half: grading has to carry /tests across."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+            }
+        )
+        cfg = adapter.to_task_description("echo-hello-single").grading.grading_method_config
+        assert cfg["stage_paths"] == [{"source": "/tests", "src_service": "tests-vault"}]
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
 
 
 class TestTerminalBenchAgentSystemPromptVerbatim:
@@ -1157,11 +1325,11 @@ class TestComposeSynthesisFixBillingHolds:
         env = materialise_task_environment(tasks["fix-billing-holds"], staging_root=tmp_path)
 
         compose = _load_synthesised(env)
-        assert set(compose["services"]) == {"main"}
+        assert set(compose["services"]) == {"main", "tests-vault"}
         main = compose["services"]["main"]
         assert main["image"] == "tbench-fix-billing-holds:local"
         assert main["container_name"] == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_main"
-        assert main["volumes"] == ["./tests:/tests", "./_logs:/logs"]
+        assert main["volumes"] == ["./_logs:/logs"]
 
         text = env.compose_file.read_text()
         assert "T_BENCH_" not in text
@@ -1232,7 +1400,7 @@ class TestComposeSynthesisAgentServiceResolution:
 
         assert env.agent_service == "app"
         compose = _load_synthesised(env)
-        assert set(compose["services"]) == {"app"}
+        assert set(compose["services"]) == {"app", "tests-vault"}
         assert (
             compose["services"]["app"]["container_name"] == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_app"
         )
@@ -1465,7 +1633,6 @@ class TestComposeSynthesisRelativeBindSources:
 
         assert _load_synthesised(env)["services"]["main"]["volumes"] == [
             "./environment/fixtures:/fixtures",
-            "./tests:/tests",
             "./_logs:/logs",
         ]
 
@@ -1921,7 +2088,7 @@ class TestComposeSynthesisHarnessLayer:
         env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
 
         compose = _load_synthesised(env)
-        assert set(compose["services"]) == {"main"}
+        assert set(compose["services"]) == {"main", "tests-vault"}
         assert compose["services"]["main"]["image"] == "tbench-plain:local"
         assert env.base_build_service is None
         assert not (env.staging_dir / "_harness").exists()
@@ -1937,7 +2104,7 @@ class TestComposeSynthesisHarnessLayer:
         )
 
         compose = _load_synthesised(env)
-        assert set(compose["services"]) == {"main", "main-base"}
+        assert set(compose["services"]) == {"main", "main-base", "tests-vault"}
 
         base = compose["services"]["main-base"]
         assert base["image"] == "tbench-layered:local"
@@ -2564,7 +2731,8 @@ class TestProviderEnvWire:
         env = adapter._environment("echo-hello")
         environment = _load_synthesised(env)["services"]["main"]["environment"]
         assert "GOOGLE_API_KEY=${TBENCH_PROVIDER_GOOGLE_API_KEY}" in environment
-        assert "TEST_DIR=/tests" in environment
+        # TEST_DIR went with the /tests mount; see TestAgentCannotReadTheSuite.
+        assert not any(str(entry).startswith("TEST_DIR") for entry in environment)
         assert "sk-google" not in env.compose_file.read_text()
 
     def test_the_compose_input_is_namespaced_away_from_the_provider_name(

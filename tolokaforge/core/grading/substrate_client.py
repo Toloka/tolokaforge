@@ -259,7 +259,7 @@ class GrpcSubstrateClient:
         self,
         *,
         src_service: str | None,
-        dst_service: str,
+        dst_service: str | None,
         path: str,
         exclude: Sequence[str] = (),
     ) -> None:
@@ -268,7 +268,10 @@ class GrpcSubstrateClient:
                 pb2.MaterialisePathRequest(
                     trial_id=self._trial_id,
                     src_service=src_service or "",
-                    dst_service=dst_service,
+                    # proto3 has no null string, so empty means "the agent's own
+                    # container" on BOTH ends — the same convention src_service
+                    # already uses, rather than a second spelling for one idea.
+                    dst_service=dst_service or "",
                     path=path,
                     exclude=list(exclude),
                 )
