@@ -108,8 +108,11 @@ the engine materialises per trial from a task-declared stack.
   both.
 - **Adapter.** Under `mount` the native adapter references every file it would
   have bundled — the task directory's files, the case state copy, the RAG corpus —
-  hashing each in 1 MiB chunks, and puts nothing in `tool_artifacts`. A source
-  outside the task directory is refused. Tool libraries (ADR-0060) keep merging
+  hashing each in 1 MiB chunks, and puts nothing in `tool_artifacts`. Both
+  deliveries take the set from one hook, `_task_artifact_sources`; a subclass
+  that overrides the inline bundler alone is refused under `mount`, so its
+  references cannot name a different set than its bundle. A source outside the
+  task directory is refused. Tool libraries (ADR-0060) keep merging
   inline; a library path that collides with a referenced artefact is refused like
   an inline collision.
 - **Engine.** The composer hands the description's `root` to the stack that owns
@@ -179,6 +182,10 @@ the engine materialises per trial from a task-declared stack.
   task that needs `mount` also needs detached grading.
 - A world seeded into the database as `initial_state.tables` still travels
   inline; it is not a tool artefact.
+- `copy_compose_context` copies the compose file's whole directory into every
+  trial's context; a pack whose compose file sits beside a large world copies
+  that world once per trial. Copy the compose file and its relative bind
+  sources only.
 - Documentation updated: `TASK_DESCRIPTION_SCHEMA.md`, `GRPC_PROTOCOL.md`,
   `MULTI_CONTAINER_GUIDE.md`, `NATIVE_ADAPTER.md`.
 - Tests added: wire validation, verified copy and every refusal, `RegisterTrial`

@@ -411,6 +411,14 @@ verifies every file at `RegisterTrial`. A file outside the task directory (a `js
 path with `..`) is refused under `mount`. See
 [`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifact_refs`](TASK_DESCRIPTION_SCHEMA.md#tool_artifact_refs-the-tasks-files-by-reference-adr-0068).
 
+Two things to know before a pack opts in. The runner service sees the whole task directory,
+read-only, not only the referenced files: a directory that holds something the runner (and so
+a tool that reads files) must not see keeps inline delivery. And a subclass that ships its
+own set of the task's files overrides `_task_artifact_sources(task_dir)`, the one hook both
+deliveries read; a subclass that overrides `_bundle_task_artifacts` alone is refused under
+`mount`, since its references would name the default set and the runner would miss what its
+bundle used to carry.
+
 ### Tool schema resolution for Docker
 
 The same producer as local runs, in its `allow_subprocess=True` mode.  The
