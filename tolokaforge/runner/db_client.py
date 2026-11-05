@@ -169,12 +169,14 @@ def _is_unknown_route(response: httpx.Response) -> bool:
 async def _wrapped_json_db_body(
     head: dict[str, Any], json_db: AsyncIterable[bytes]
 ) -> AsyncIterator[bytes]:
-    """``{**head, "json_db": <the streamed object>}`` as bytes, one chunk of the object at a time."""
-    prefix = json.dumps(head)[:-1]
-    yield (f'{prefix}, "json_db": ' if head else '{"json_db": ').encode()
+    """``head`` as one line of JSON, then the state file's bytes as they are, a chunk at a time.
+
+    The two are framed apart, not nested, so nothing in the file can be read as a field
+    of the head; the service refuses a file that is not exactly one JSON object.
+    """
+    yield json.dumps(head).encode() + b"\n"
     async for chunk in json_db:
         yield chunk
-    yield b"}"
 
 
 class DBServiceClient:
@@ -453,7 +455,7 @@ class DBServiceClient:
                 response = await client.post(
                     f"/trials/{trial_id}/init/json_db",
                     content=_wrapped_json_db_body(head, json_db),
-                    headers={"Content-Type": "application/json"},
+                    headers={"Content-Type": "application/octet-stream"},
                     timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:

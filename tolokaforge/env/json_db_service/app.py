@@ -29,7 +29,7 @@ from threading import Lock
 from typing import Any, NoReturn
 
 try:
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import FastAPI, HTTPException, Query, Request
 except ImportError as exc:  # noqa: BLE001 -- explicit re-raise below
     raise ImportError(
         "tolokaforge.env.json_db_service.app requires `fastapi`. "
@@ -314,6 +314,8 @@ class InitFromJsonDbRequest(BaseModel):
     json_db: dict[str, Any]
     schemas: list[TableSchema] | None = None
     unstable_fields: list[UnstableFieldSpec] | None = None
+
+    model_config = {"extra": "forbid"}
 
 
 def seeded_records(collection: Any) -> list[Any]:
@@ -1107,14 +1109,61 @@ async def init_trial(trial_id: str, req: InitRequest) -> dict[str, Any]:
     return _init_trial(trial_id, req)
 
 
+_JSON_WHITESPACE = re.compile(r"[ \t\n\r]*")
+
+
+def _non_finite_as_null(_constant: str) -> None:
+    """``NaN`` and ``Infinity`` read as ``null``, as the engine's serialiser writes them inline."""
+    return None
+
+
+def _refuse_init_body(reason: str) -> NoReturn:
+    raise HTTPException(
+        status_code=422, detail=[{"loc": ["body"], "msg": reason, "type": "value_error"}]
+    )
+
+
 @app.post("/trials/{trial_id}/init/json_db")
-async def init_trial_from_json_db(trial_id: str, req: InitFromJsonDbRequest) -> dict[str, Any]:
+async def init_trial_from_json_db(trial_id: str, request: Request) -> dict[str, Any]:
     """Initialize a trial from a task's ``json_db`` as written (ADR-0071).
 
+    The body is one line of JSON, the init's ``schemas`` and ``unstable_fields``,
+    then the task's state file as written, which must be exactly one JSON object:
+    framed apart from the head, nothing in the file can be read as part of it.
     Each collection is normalised to its records exactly as the engine normalises
     it for the inline :func:`init_trial`, then held to the same table shape; the
     rest is :func:`init_trial`'s.
     """
+    body = await request.body()
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        _refuse_init_body("the body is not UTF-8")
+    del body
+    head_end = text.find("\n")
+    if head_end < 0:
+        _refuse_init_body("expected a line of init fields, then the state file")
+    decoder = json.JSONDecoder(parse_constant=_non_finite_as_null)
+    try:
+        head = json.loads(text[:head_end])
+        start = _JSON_WHITESPACE.match(text, head_end + 1).end()  # type: ignore[union-attr]
+        json_db, end = decoder.raw_decode(text, start)
+    except ValueError as exc:
+        _refuse_init_body(f"not JSON: {exc}")
+    if _JSON_WHITESPACE.match(text, end).end() != len(text):  # type: ignore[union-attr]
+        _refuse_init_body("the state file holds more than one JSON value")
+    del text
+    if not isinstance(head, dict) or not isinstance(json_db, dict):
+        _refuse_init_body("the init fields and the state file must each be a JSON object")
+    try:
+        req = InitFromJsonDbRequest.model_validate({**head, "json_db": json_db})
+    except ValidationError as exc:
+        detail = [
+            {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
+            for error in exc.errors(include_url=False)
+        ]
+        raise HTTPException(status_code=422, detail=detail) from exc
+    del json_db
     tables = {name: seeded_records(collection) for name, collection in req.json_db.items()}
     req.json_db = {}
     try:

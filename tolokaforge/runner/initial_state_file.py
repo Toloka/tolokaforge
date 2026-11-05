@@ -123,7 +123,8 @@ class InitialStateFile:
         # text and the objects it builds, not a third copy of the file.
         text = self._read_verified_text()
         try:
-            parsed = json.loads(text)
+            # NaN and Infinity read as null, as the engine's serialiser writes them inline.
+            parsed = json.loads(text, parse_constant=lambda _constant: None)
         except ValueError as exc:
             raise InitialStateFileError(
                 f"the initial-state file {self.path} is not JSON: {exc}"

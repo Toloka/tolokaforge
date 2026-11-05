@@ -94,9 +94,13 @@ Adopt **Option 3**, opt-in through the task's environment.
   `get_grading_config`) move to `RegisterTrial`. `create_environment` leaves
   `data` empty, and the grading gate's seeded-tables layer reads the file only if
   a rule asks for the tables (a pack declaring neither `id_fields`, a view, a
-  database-reading state check nor a JSON-DB builtin is gated without it). The
+  database-reading state check nor a JSON-DB builtin is gated without it). A pack
+  that declares one of those is therefore parsed once on the host at run start,
+  task by task, and dropped; only a pack graded by custom checks and a judge alone
+  never has its state file parsed by the engine host. The
   normalisation from `json_db` to tables is one function,
-  `runner/initial_state_file.seeded_tables`, which both deliveries apply.
+  `runner/initial_state_file.seeded_tables`, which both deliveries apply; both
+  read `NaN` and `Infinity` as `null`, as the inline serialiser writes them.
 - **Engine host.** The conductor hydrates the trial's `EnvironmentState` without
   the DB seed for such a trial, and does not replay `initialization_actions` on
   the host: that replay only shaped the host's copy of the DB state, which a task
@@ -104,10 +108,12 @@ Adopt **Option 3**, opt-in through the task's environment.
 - **Runner, registration.** The state file arrives with the other references,
   copied into the trial's artefact directory and verified (ADR-0068). The trial
   context keeps an `InitialStateFile` — the copy's path, SHA-256 and size — and no
-  tables. The database service is seeded by streaming the file's bytes, unparsed,
-  inside a JSON body to a new route, `POST /trials/{id}/init/json_db`, which
-  normalises each collection as the engine does and initialises the trial as
-  `/init` does. The client asks the route first with a body it must refuse, so a
+  tables. The database service is seeded by streaming the file's bytes, unparsed, to a
+  new route, `POST /trials/{id}/init/json_db`: the body is one line of JSON
+  carrying `schemas` and `unstable_fields`, then the file as written, which the
+  service requires to be exactly one JSON object (framed apart, nothing in the
+  file can be read as an init field). The route normalises each collection as the
+  engine does and initialises the trial as `/init` does. The client asks the route first with a body it must refuse, so a
   database service that predates it (FastAPI's bare 404) is seeded inline from
   the file read once instead. The tables are parsed at registration only when
   something there reads rows — `id_fields`, a comparison view (checked with the
@@ -128,10 +134,11 @@ Adopt **Option 3**, opt-in through the task's environment.
   ADR-0068's refusals already cover the topologies that cannot read it:
   `grader_rpc`, `queue` and snapshot bundles at run start, and the detached
   grader, the offline composite kind and the bundle producer as a second line.
-- **Protocol.** `ENGINE_PROTOCOL_VERSION` becomes 10. An older image forbids
-  `initial_state_delivery` and `tables_ref` and refuses every trial spec at
-  `Invalid trial_spec_json` (an image that ignored them would seed an empty
-  database); an older engine is refused by the runner's version gate.
+- **Protocol.** `ENGINE_PROTOCOL_VERSION` becomes 10. The environment manifest
+  does not cross the wire; an older image forbids `tables_ref` and refuses every
+  such trial spec at `Invalid trial_spec_json` (an image that ignored it would
+  seed an empty database), though the engine's runner-version gate refuses the
+  pairing first; an older engine is refused by the runner's version gate.
 
 ## Consequences
 
@@ -162,9 +169,6 @@ Adopt **Option 3**, opt-in through the task's environment.
 - The grading gate's classmethods see the task's own opt-in, not a project-wide
   one; a pack opted in by the project's `default_environment` alone is gated with
   the file read once, as an inline pack is.
-- Non-finite numbers (`NaN`, `Infinity`), which JSON does not define, reach the
-  database service as written by reference; inline, the description's serialiser
-  writes them as `null`.
 - Protocol 10 requires rebuilding or re-pinning runner images, as 8 and 9 did.
 
 ### Follow-ups

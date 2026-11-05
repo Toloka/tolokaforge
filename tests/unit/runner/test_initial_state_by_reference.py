@@ -507,6 +507,17 @@ class TestInitialStateFile:
         state_file = self._file(tmp_path)
         assert b"".join(state_file.iter_chunks()) == state_file.path.read_bytes()
 
+    def test_non_finite_numbers_read_as_null_as_the_inline_serialiser_writes_them(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "initial_state.json"
+        path.write_text('{"m": [{"id": 1, "a": NaN, "b": Infinity, "c": -Infinity}]}')
+        sha256, size = file_sha256(path)
+
+        tables = InitialStateFile(path=path, sha256=sha256, size=size).read_tables()
+
+        assert tables == {"m": [{"id": 1, "a": None, "b": None, "c": None}]}
+
 
 def test_the_db_services_vendored_normaliser_is_the_engines() -> None:
     samples: list[Any] = [
@@ -560,6 +571,41 @@ class TestSeedingFromTheFile:
             asyncio.run(
                 db_client.init_trial_from_json_db("initial_ref_bad:0", state_file.aiter_chunks())
             )
+
+    def test_a_file_that_closes_the_object_early_cannot_add_init_fields(
+        self, db_client: DBServiceClient, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "initial_state.json"
+        path.write_text(
+            '{"t": [{"id": 1}]}, "unstable_fields": [{"table_name": "t", "field_name": "x"}]'
+        )
+        sha256, size = file_sha256(path)
+        state_file = InitialStateFile(path=path, sha256=sha256, size=size)
+
+        with pytest.raises(DBValidationError, match="more than one JSON value"):
+            asyncio.run(
+                db_client.init_trial_from_json_db(
+                    "initial_ref_inject:0", state_file.aiter_chunks(), unstable_fields=[]
+                )
+            )
+
+    def test_non_finite_numbers_seed_as_null(
+        self, db_client: DBServiceClient, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "initial_state.json"
+        path.write_text('{"m": [{"id": 1, "a": NaN}]}')
+        sha256, size = file_sha256(path)
+        state_file = InitialStateFile(path=path, sha256=sha256, size=size)
+        trial_id = "initial_ref_nan:0"
+
+        async def seed_and_read() -> Any:
+            await db_client.init_trial_from_json_db(trial_id, state_file.aiter_chunks())
+            try:
+                return await db_client.get_state(trial_id)
+            finally:
+                await db_client.delete_trial(trial_id)
+
+        assert asyncio.run(seed_and_read()).data == {"m": [{"id": 1, "a": None}]}
 
     def test_a_service_without_the_route_answers_none(self, db_test_client: Any) -> None:
         client = DBServiceClient("http://testserver")
