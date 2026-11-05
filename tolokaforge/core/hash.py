@@ -980,3 +980,36 @@ def compute_etag(data: dict[str, Any]) -> str:
         Hexadecimal string of the SHA-256 hash
     """
     return compute_stable_hash(data)
+
+
+def table_digest(rows: Any) -> str:
+    """SHA-256 of one table's canonical JSON, encoded a row at a time.
+
+    The digest is the hash of ``json.dumps(rows, sort_keys=True,
+    separators=(",", ":"), ensure_ascii=True, default=str)``: equal digests mean
+    byte-identical JSON, so two copies of a table that digest alike hold the same
+    rows, values and types. A list is encoded row by row into the hash, so the
+    largest string alive is one row's JSON, not the table's.
+
+    This is not a grading digest and nothing persists it. It answers one
+    question, whether the db-service mirror and a state holder hold the same
+    table right now, and both sides of that comparison compute it with this
+    function (the db-service image with its vendored copy). A mismatch, from a
+    real difference or from two engine versions that encode differently, only
+    makes the caller read the table instead of trusting its own copy.
+    """
+    digest = hashlib.sha256()
+    if isinstance(rows, list):
+        digest.update(b"[")
+        for index, row in enumerate(rows):
+            if index:
+                digest.update(b",")
+            digest.update(_canonical_table_json(row).encode("ascii"))
+        digest.update(b"]")
+    else:
+        digest.update(_canonical_table_json(rows).encode("ascii"))
+    return digest.hexdigest()
+
+
+def _canonical_table_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)

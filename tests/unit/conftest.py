@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from tests.utils.secret_state import cold_secret_manager
+from tolokaforge.core.hash import table_digest
 from tolokaforge.docker.wheel_resolver import WheelArtifact
 
 
@@ -29,8 +30,21 @@ class FakeMutatingDBClient:
         self._state = {t: [dict(r) for r in v] for t, v in (state or {}).items()}
         self.mutations: list[tuple[str, list[dict]]] = []
 
-    async def get_state(self, trial_id: str, timeout: float | None = None) -> Any:
+    async def get_state(
+        self, trial_id: str, tables: list[str] | None = None, timeout: float | None = None
+    ) -> Any:
+        if tables:
+            return SimpleNamespace(data={t: self._state[t] for t in tables if t in self._state})
         return SimpleNamespace(data=self._state)
+
+    async def get_table_digests(
+        self, trial_id: str, tables: list[str] | None = None, timeout: float | None = None
+    ) -> dict[str, str]:
+        return {
+            name: table_digest(rows)
+            for name, rows in self._state.items()
+            if not tables or name in tables
+        }
 
     async def mutate(
         self,

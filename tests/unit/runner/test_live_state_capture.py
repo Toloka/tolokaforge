@@ -194,12 +194,14 @@ class _RecordingRequests:
     def __init__(self, inner: Any) -> None:
         self._inner = inner
         self.sent: list[tuple[str, str, Any]] = []
+        self.params: list[dict[str, Any]] = []
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
     async def _send(self, method: str, url: str, kwargs: dict[str, Any]) -> httpx.Response:
         self.sent.append((method, url, kwargs.get("timeout")))
+        self.params.append(dict(kwargs.get("params") or {}))
         return await getattr(self._inner, method)(url, **kwargs)
 
     async def get(self, url: str, **kwargs: Any) -> httpx.Response:
@@ -688,9 +690,19 @@ class TestMirrorReadFailsAfterASuccessfulSync:
     def test_a_raw_state_read_raises_rather_than_answer_empty(
         self, runner_service, mcp_trial, trial_id, monkeypatch
     ) -> None:
-        """The custom-checks read: a lost DB is not an empty world."""
+        """The custom-checks read: a lost DB is not an empty world.
+
+        The mirror here gives no table digests, as a db-service before them, so the
+        read is the mirror's whole state rather than the holder's copies the sync
+        left trusted.
+        """
         wrapper = mcp_trial(_task())
         _mutate(runner_service, wrapper, 120)
+
+        async def no_digests(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        monkeypatch.setattr(runner_service.db_client, "get_table_digests", no_digests)
 
         substrate = _substrate(runner_service, trial_id, synced=True)
 
@@ -709,14 +721,16 @@ class _LateJudgeReads:
     A judge read (``GET .../state`` naming tables, or ``POST .../query``) answers after
     ``delay_s``. When its budget is shorter, it raises ``httpx.ReadTimeout`` at the budget
     instead. The budget is the request's own ``timeout`` when the client passes one, and the
-    client's default otherwise. Every other request, the sync's own whole-state read among
-    them, passes through on time.
+    client's default otherwise. Every other request passes through on time, and so does
+    every request the sync makes while :attr:`syncing` is set — it reads a changed table by
+    name, as a judge does.
     """
 
     def __init__(self, inner: Any, db_client: Any, delay_s: float) -> None:
         self._inner = inner
         self._db_client = db_client
         self._delay_s = delay_s
+        self.syncing = False
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -731,7 +745,11 @@ class _LateJudgeReads:
         await asyncio.sleep(self._delay_s)
 
     async def get(self, url: str, **kwargs: Any) -> httpx.Response:
-        if (kwargs.get("params") or {}).get("tables"):
+        if (
+            not self.syncing
+            and url.endswith("/state")
+            and (kwargs.get("params") or {}).get("tables")
+        ):
             await self._answer_late(kwargs)
         return await self._inner.get(url, **kwargs)
 
@@ -884,9 +902,18 @@ class TestJudgeReadsOfTheState:
         db_client = runner_service.db_client
         # The client's default, far below the deadline, as 30 s sits below a large world's.
         monkeypatch.setattr(db_client, "timeout", 0.05)
-        monkeypatch.setattr(
-            db_client, "_test_client", _LateJudgeReads(db_client._test_client, db_client, delay_s)
-        )
+        late = _LateJudgeReads(db_client._test_client, db_client, delay_s)
+        monkeypatch.setattr(db_client, "_test_client", late)
+        sync = runner_service._sync_mcp_state_to_db
+
+        async def on_time(*args: Any, **kwargs: Any) -> Any:
+            late.syncing = True
+            try:
+                return await sync(*args, **kwargs)
+            finally:
+                late.syncing = False
+
+        monkeypatch.setattr(runner_service, "_sync_mcp_state_to_db", on_time)
 
     @pytest.mark.parametrize("read", _JUDGE_READS)
     def test_a_read_slower_than_the_clients_default_is_judged(
@@ -1086,3 +1113,135 @@ class TestStateAnswerShape:
         monkeypatch.setattr(MCPServerProcess, "send_request", lambda *_a, **_k: answer)
 
         assert MCPServerProcess(script_path="/unused.py").get_state() == {}
+
+
+class TestTheSyncReadsOnlyTheTablesThatDiffer:
+    """The mirror's table digests decide what the sync and the final read fetch."""
+
+    @staticmethod
+    def _rows_read(recorder: _RecordingRequests) -> list[str]:
+        """The table selections of every state read: ``*`` for a whole-state read."""
+        return [
+            params.get("tables") or "*"
+            for (method, url, _), params in zip(recorder.sent, recorder.params, strict=True)
+            if method == "get" and url.endswith("/state")
+        ]
+
+    def test_a_second_sync_of_the_same_state_reads_no_rows(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        first = runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+        assert first is not None and first.trusted == frozenset(first.order or ())
+        db_client = runner_service.db_client
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        second = runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+
+        assert self._rows_read(recorder) == []
+        assert [method for method, _, _ in recorder.sent] == ["get"]  # the digests alone
+        assert second is not None and second.trusted == first.trusted
+
+    def test_a_changed_table_is_the_only_one_read_back(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        task = _task()
+        task["initial_state"]["tables"]["ledger"] = [{"id": "e1", "amount": 5}]
+        wrapper = mcp_trial(task)
+        db_client = runner_service.db_client
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+        _mutate(runner_service, wrapper, 120)
+
+        runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+
+        assert self._rows_read(recorder) == ["users"]
+        assert [
+            url.rsplit("/", 1)[-1] for method, url, _ in recorder.sent if method == "patch"
+        ] == ["users"]
+
+    def test_the_final_state_is_the_held_copy_and_equals_the_mirror(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        substrate = _substrate(runner_service, trial_id, synced=True)
+        db_client = runner_service.db_client
+        mirror = runner_service._run_async(db_client.get_state(trial_id)).data
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        final = substrate.final_state()
+
+        assert self._rows_read(recorder) == []
+        assert final == mirror
+        assert list(final) == list(mirror)
+        assert final["users"][0]["balance"] == 120
+
+    def test_a_table_only_the_mirror_holds_is_read_from_it_in_the_mirrors_order(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        task = _task()
+        task["initial_state"]["tables"] = {
+            "audit": [{"id": "a1", "by": "seed"}],
+            **task["initial_state"]["tables"],
+        }
+        # The child holds every table but the audit, which only the mirror has.
+        held = {k: v for k, v in task["initial_state"]["tables"].items() if k != "audit"}
+        wrapper = mcp_trial(task, child_tables=held)
+        _mutate(runner_service, wrapper, 120)
+        substrate = _substrate(runner_service, trial_id, synced=True)
+        db_client = runner_service.db_client
+        mirror = runner_service._run_async(db_client.get_state(trial_id)).data
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        final = substrate.final_state()
+
+        assert self._rows_read(recorder) == ["audit"]
+        assert final == mirror and list(final) == list(mirror)
+        assert list(final)[0] == "audit"
+
+    def test_a_table_the_mirror_stores_otherwise_is_read_from_the_mirror(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """A sync whose mutations leave the mirror's JSON unlike the holder's — an int the
+        holder keeps as a float, equal in Python and so never mutated — trusts nothing it
+        cannot vouch for."""
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+        held = wrapper.get_state()
+        held["users"][0]["balance"] = 120.0
+        monkeypatch.setattr(wrapper, "get_state", lambda: held)
+        substrate = _substrate(runner_service, trial_id, synced=True)
+        db_client = runner_service.db_client
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        final = substrate.final_state()
+
+        assert self._rows_read(recorder) == ["users"]
+        assert type(final["users"][0]["balance"]) is int
+
+    def test_a_db_service_without_digests_syncs_and_reads_the_whole_state(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        db_client = runner_service.db_client
+
+        async def no_digests(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        monkeypatch.setattr(db_client, "get_table_digests", no_digests)
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        substrate = _substrate(runner_service, trial_id, synced=True)
+        final = substrate.final_state()
+
+        assert self._rows_read(recorder) == ["*", "*"]
+        assert final["users"][0]["balance"] == 120

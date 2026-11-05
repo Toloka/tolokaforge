@@ -153,6 +153,18 @@ class _TestClientContextManager:
 # =============================================================================
 
 
+def _is_unknown_route(response: httpx.Response) -> bool:
+    """Whether the service answered that it has no such route (an older service),
+    rather than an error of the route itself: FastAPI's bare 404 or 405."""
+    if response.status_code not in (404, 405):
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("detail") in ("Not Found", "Method Not Allowed")
+
+
 class DBServiceClient:
     """
     Async HTTP client for the DB Service.
@@ -418,6 +430,46 @@ class DBServiceClient:
 
             self._handle_error_response(response)
             return StateResponse.model_validate(response.json())
+
+    async def get_table_digests(
+        self,
+        trial_id: str,
+        tables: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, str] | None:
+        """Each table's digest, in the state's own table order.
+
+        Maps to: GET /trials/{trial_id}/state/digests
+
+        Args:
+            trial_id: Trial identifier
+            tables: Optional list of table names to digest (default: all)
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
+
+        Returns:
+            ``table -> digest`` (:func:`tolokaforge.core.hash.table_digest`), or
+            ``None`` when the service predates the endpoint, so the caller falls
+            back to reading the state.
+
+        Raises:
+            TrialNotFoundError: If trial not found
+        """
+        params = {"tables": ",".join(tables)} if tables else {}
+        async with self._create_client() as client:
+            try:
+                response = await client.get(
+                    f"/trials/{trial_id}/state/digests",
+                    params=params,
+                    timeout=self._request_timeout(timeout),
+                )
+            except httpx.ConnectError as e:
+                raise ConnectionError(f"Failed to connect to DB Service: {e}")
+
+            if _is_unknown_route(response):
+                return None
+            self._handle_error_response(response)
+            return dict(response.json()["digests"])
 
     async def get_stable_state(
         self, trial_id: str, timeout: float | None = None
