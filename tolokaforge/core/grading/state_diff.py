@@ -24,9 +24,11 @@ unstable fields from ``InitialStateConfig``, all as plain data.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from typing import Any
 
 __all__ = ["render_state_diff"]
@@ -41,6 +43,22 @@ _MAX_OUTPUT_CHARS = 50_000
 #: field-level old→new that is the whole point of a diff) up to the same cap.
 _MAX_ROWS_PER_CATEGORY = 20
 
+#: A changed field whose JSON runs past the diff's ``max_chars`` cannot be shown
+#: whole: its line would be cut with every line after it. It is diffed path by
+#: path instead, down to the values that changed, and no value is serialised
+#: past the size it is shown at. A world kept as one row whose single field
+#: nests every table is the case this serves: shown whole, it was dumped twice
+#: — gigabytes of strings in the grading process — to render a truncation flag.
+#: The longest a value under such a path is shown before it is cut.
+_MAX_NESTED_VALUE_CHARS = 2_000
+
+#: How many changed paths of one large field are listed before the rest
+#: collapse to a count.
+_MAX_PATHS_PER_FIELD = 50
+
+#: ``_fmt_value``'s encoding, chunk by chunk: the same text, abandoned at a limit.
+_ENCODER = json.JSONEncoder(default=str, ensure_ascii=False, sort_keys=True)
+
 
 def _fmt_value(value: Any) -> str:
     """Format a single field value unambiguously (``null``, quoted strings, …)."""
@@ -50,6 +68,54 @@ def _fmt_value(value: Any) -> str:
 def _fmt_record(record: dict[str, Any]) -> str:
     """Format a whole record as compact one-line JSON with stable key order."""
     return json.dumps(record, default=str, ensure_ascii=False, sort_keys=True)
+
+
+def _bounded_json(value: Any, limit: int) -> str | None:
+    """``_fmt_value(value)`` when it is at most ``limit`` characters, else ``None``.
+
+    A non-empty ``dict`` or ``list`` is encoded chunk by chunk and given up at
+    the limit, so refusing a large value costs ``limit`` characters, not the
+    value's whole JSON.
+    """
+    if isinstance(value, (dict, list)) and value:
+        chunks: list[str] = []
+        size = 0
+        for chunk in _ENCODER.iterencode(value):
+            size += len(chunk)
+            if size > limit:
+                return None
+            chunks.append(chunk)
+        return "".join(chunks)
+    if isinstance(value, str) and len(value) > limit:
+        return None
+    text = _fmt_value(value)
+    return text if len(text) <= limit else None
+
+
+def _cut_json(value: Any, limit: int) -> str:
+    """``value``'s JSON, or its first ``limit`` characters and a flag when longer."""
+    text = _bounded_json(value, limit)
+    if text is not None:
+        return text
+    if isinstance(value, str):
+        head = _fmt_value(value[:limit])
+    elif isinstance(value, (dict, list)):
+        chunks: list[str] = []
+        size = 0
+        for chunk in _ENCODER.iterencode(value):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size >= limit:
+                break
+        head = "".join(chunks)
+    else:
+        head = _fmt_value(value)
+    return f"{head[:limit]}… (cut)"
+
+
+def _record_digest(record: dict[str, Any]) -> bytes:
+    """A whole-record match key that holds 32 bytes, not the record's JSON."""
+    return hashlib.sha256(_fmt_record(record).encode()).digest()
 
 
 def _pk_key(value: Any) -> str:
@@ -125,14 +191,108 @@ def _resolve_pk(
     return None
 
 
-def _field_diffs(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
-    """Field-level ``name: old → new`` fragments for changed fields only."""
+class _PathDiffs:
+    """The changed paths under one large field: the first few rendered, the rest counted."""
+
+    def __init__(self) -> None:
+        self.shown: list[str] = []
+        self.more = 0
+
+    def add(self, render: Callable[[], str]) -> None:
+        if len(self.shown) < _MAX_PATHS_PER_FIELD:
+            self.shown.append(render())
+        else:
+            self.more += 1
+
+
+def _too_large(value: Any) -> bool:
+    return _bounded_json(value, _MAX_NESTED_VALUE_CHARS) is None
+
+
+def _walk(path: str, old: Any, new: Any, out: _PathDiffs) -> None:
+    """Record where ``old`` and ``new`` differ under ``path``.
+
+    Two dicts are descended into, as a row's fields are, and so are two lists
+    either side of which is too large to show; anything else that differs is
+    one ``path: old → new`` line, each side cut to ``_MAX_NESTED_VALUE_CHARS``.
+    """
+    if old == new:
+        return
+    if isinstance(old, dict) and isinstance(new, dict):
+        for key in sorted(set(old) | set(new), key=str):
+            _walk(f"{path}.{key}", old.get(key), new.get(key), out)
+        return
+    if isinstance(old, list) and isinstance(new, list) and (_too_large(old) or _too_large(new)):
+        _walk_list(path, old, new, out)
+        return
+    out.add(
+        lambda: (
+            f"{path}: {_cut_json(old, _MAX_NESTED_VALUE_CHARS)} → "
+            f"{_cut_json(new, _MAX_NESTED_VALUE_CHARS)}"
+        )
+    )
+
+
+def _line(sign: str, path: str, value: Any) -> str:
+    """One added (``+``) or removed (``-``) element of a nested list."""
+    return f"{sign} {path}: {_cut_json(value, _MAX_NESTED_VALUE_CHARS)}"
+
+
+def _walk_list(path: str, old: list[Any], new: list[Any], out: _PathDiffs) -> None:
+    """Descend into two lists: rows matched by a key when they have one, else by position."""
+
+    rows = all(isinstance(r, dict) for r in old) and all(isinstance(r, dict) for r in new)
+    pk = _resolve_pk(old, new, None) if rows else None
+    if pk is None:
+        for i in range(min(len(old), len(new))):
+            _walk(f"{path}[{i}]", old[i], new[i], out)
+        for i in range(len(old), len(new)):
+            out.add(partial(_line, "+", f"{path}[{i}]", new[i]))
+        for i in range(len(new), len(old)):
+            out.add(partial(_line, "-", f"{path}[{i}]", old[i]))
+        return
+
+    def at(row: dict[str, Any]) -> str:
+        return f"{path}[{', '.join(f'{f}={_fmt_value(row[f])}' for f in pk)}]"
+
+    before = {_row_key(r, pk): r for r in old}
+    after = {_row_key(r, pk): r for r in new}
+    for key, row in after.items():
+        if key in before:
+            _walk(at(row), before[key], row, out)
+        else:
+            out.add(partial(_line, "+", at(row), row))
+    for key, row in before.items():
+        if key not in after:
+            out.add(partial(_line, "-", at(row), row))
+
+
+def _field_diffs(
+    before: dict[str, Any], after: dict[str, Any], limit: int
+) -> tuple[list[str], bool]:
+    """Field-level ``name: old → new`` fragments for changed fields only.
+
+    A field either side of which runs past ``limit`` characters is diffed path
+    by path instead (:func:`_walk`); the flag says whether any was, since those
+    fragments render one per line.
+    """
     frags: list[str] = []
+    nested = False
     for field in sorted(set(before) | set(after)):
         old, new = before.get(field), after.get(field)
-        if old != new:
-            frags.append(f"{field}: {_fmt_value(old)} → {_fmt_value(new)}")
-    return frags
+        if old == new:
+            continue
+        old_text, new_text = _bounded_json(old, limit), _bounded_json(new, limit)
+        if old_text is not None and new_text is not None:
+            frags.append(f"{field}: {old_text} → {new_text}")
+            continue
+        nested = True
+        paths = _PathDiffs()
+        _walk(field, old, new, paths)
+        frags.extend(paths.shown)
+        if paths.more:
+            frags.append(f"… ({paths.more} more changed paths)")
+    return frags, nested
 
 
 def _diff_table(
@@ -142,20 +302,27 @@ def _diff_table(
     table: str,
     declared_pk: str | Sequence[str] | None,
     unstable: set[tuple[str, str]],
-) -> tuple[list[str], list[str], list[tuple[str, list[str]]]]:
+    max_chars: int = _MAX_OUTPUT_CHARS,
+) -> tuple[list[str], list[str], list[tuple[str, list[str], bool]]]:
     """Return (added, removed, modified) for one table.
 
     ``added`` / ``removed`` are formatted record strings; ``modified`` is a list
-    of ``(row_label, field_diff_fragments)``. Row matching is done on the **raw**
+    of ``(row_label, field_diff_fragments, nested)``. Row matching is done on the **raw**
     records so a primary key that is itself flagged unstable (``id`` with
     ``reason="auto_id"`` is common) still correlates rows; unstable fields are
     stripped only for the displayed record and the field-level diff, so
     non-deterministic noise never shows up as a change. Output is sorted for
-    determinism.
+    determinism. A record longer than ``max_chars`` is shown cut to
+    ``_MAX_NESTED_VALUE_CHARS``.
     """
 
     def strip(r: dict[str, Any]) -> dict[str, Any]:
         return _strip_unstable(r, table, unstable)
+
+    def shown(r: dict[str, Any]) -> str:
+        record = strip(r)
+        text = _bounded_json(record, max_chars)
+        return text if text is not None else _cut_json(record, _MAX_NESTED_VALUE_CHARS)
 
     # Resolve the PK on RAW rows (before stripping): the PK field must be present
     # to key rows, even when it is registered as an unstable (auto-id) field.
@@ -165,30 +332,36 @@ def _diff_table(
         # No reliable key: fall back to whole-record (post-strip) matching with
         # MULTISET semantics so removing one of two identical rows is not lost to
         # set collapse. Only added / removed can be reported, never modifications.
-        before_counts = Counter(_fmt_record(strip(r)) for r in initial_rows)
-        after_counts = Counter(_fmt_record(strip(r)) for r in final_rows)
-        added = sorted((after_counts - before_counts).elements())
-        removed = sorted((before_counts - after_counts).elements())
+        # Records are counted by digest, so the table is never held as JSON.
+        def counted(rows: list[dict[str, Any]]) -> tuple[Counter[bytes], dict[bytes, Any]]:
+            counts: Counter[bytes] = Counter()
+            first: dict[bytes, Any] = {}
+            for r in rows:
+                digest = _record_digest(strip(r))
+                counts[digest] += 1
+                first.setdefault(digest, r)
+            return counts, first
+
+        before_counts, before_rows = counted(initial_rows)
+        after_counts, after_rows = counted(final_rows)
+        added = sorted(shown(after_rows[d]) for d in (after_counts - before_counts).elements())
+        removed = sorted(shown(before_rows[d]) for d in (before_counts - after_counts).elements())
         return added, removed, []
 
     before_by_pk = {_row_key(r, pk): r for r in initial_rows}
     after_by_pk = {_row_key(r, pk): r for r in final_rows}
 
-    added = sorted(
-        _fmt_record(strip(row)) for key, row in after_by_pk.items() if key not in before_by_pk
-    )
-    removed = sorted(
-        _fmt_record(strip(row)) for key, row in before_by_pk.items() if key not in after_by_pk
-    )
-    modified: list[tuple[str, list[str]]] = []
+    added = sorted(shown(row) for key, row in after_by_pk.items() if key not in before_by_pk)
+    removed = sorted(shown(row) for key, row in before_by_pk.items() if key not in after_by_pk)
+    modified: list[tuple[str, list[str], bool]] = []
     for key in before_by_pk.keys() & after_by_pk.keys():
         before_row, after_row = before_by_pk[key], after_by_pk[key]
-        frags = _field_diffs(strip(before_row), strip(after_row))
+        frags, nested = _field_diffs(strip(before_row), strip(after_row), max_chars)
         if frags:
             # Label from the actual PK values (not the internal match key), and
             # from the final row so it reflects the surviving entity.
             label = ", ".join(f"{f}={_fmt_value(after_row[f])}" for f in pk)
-            modified.append((label, frags))
+            modified.append((label, frags, nested))
     modified.sort(key=lambda m: m[0])
 
     return added, removed, modified
@@ -236,6 +409,7 @@ def render_state_diff(
             table=table,
             declared_pk=primary_keys.get(table),
             unstable=unstable_fields,
+            max_chars=max_chars,
         )
         if not (added or removed or modified):
             unchanged.append(table)
@@ -251,8 +425,12 @@ def render_state_diff(
             counts.append(f"{len(modified)} modified")
         lines.append(f"{table}: {', '.join(counts)}")
 
-        for label, frags in modified[:_MAX_ROWS_PER_CATEGORY]:
-            lines.append(f"  ~ {label}: {'; '.join(frags)}")
+        for label, frags, nested in modified[:_MAX_ROWS_PER_CATEGORY]:
+            if nested:
+                lines.append(f"  ~ {label}:")
+                lines.extend(f"      {frag}" for frag in frags)
+            else:
+                lines.append(f"  ~ {label}: {'; '.join(frags)}")
         if len(modified) > _MAX_ROWS_PER_CATEGORY:
             lines.append(f"  ~ … ({len(modified) - _MAX_ROWS_PER_CATEGORY} more modified)")
 
