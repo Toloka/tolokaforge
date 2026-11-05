@@ -1219,7 +1219,8 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             environment_manifest is not None
             and environment_manifest.tool_artifacts_delivery == "mount"
         ):
-            sources = self._task_artifact_paths(task_dir) if needs_bundle else {}
+            _refuse_a_bundler_without_sources(type(self), task_id)
+            sources = self._task_artifact_sources(task_dir) if needs_bundle else {}
             if state_copy is not None:
                 sources[state_copy[0]] = state_copy[1]
             if search_config.documents_path:
@@ -1542,7 +1543,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             dict mapping relative path → base64-encoded content.
         """
         artifacts: dict[str, str] = {}
-        for rel_path, file_path in self._task_artifact_paths(task_dir).items():
+        for rel_path, file_path in self._task_artifact_sources(task_dir).items():
             try:
                 artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode("ascii")
             except Exception as e:
@@ -1551,9 +1552,22 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         logger.info("Bundled task artifacts", count=len(artifacts), task_dir=str(task_dir))
         return artifacts
 
+    def _task_artifact_sources(self, task_dir: Path) -> dict[str, Path]:
+        """The task directory's files the runner needs, keyed by artefact path: one set for both deliveries.
+
+        Inline delivery base64-encodes each of them (:meth:`_bundle_task_artifacts`);
+        ``tool_artifacts_delivery: mount`` references each by path, SHA-256 and size
+        (ADR-0068). An adapter that ships another set of the task's files overrides
+        this method, and both deliveries follow. One that overrides
+        :meth:`_bundle_task_artifacts` alone is refused under ``mount``: its
+        references would name this default set, and the runner would miss what its
+        bundle used to carry.
+        """
+        return self._task_artifact_paths(task_dir)
+
     @staticmethod
     def _task_artifact_paths(task_dir: Path) -> dict[str, Path]:
-        """The files :meth:`_bundle_task_artifacts` bundles, keyed by artefact path."""
+        """The default of :meth:`_task_artifact_sources`: the task directory's code and data files."""
         paths: dict[str, Path] = {}
         for pattern in (
             "*.py",
@@ -1574,6 +1588,24 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     continue
                 paths.setdefault(file_path.relative_to(task_dir).as_posix(), file_path)
         return paths
+
+
+def _refuse_a_bundler_without_sources(adapter: type, task_id: str) -> None:
+    """Refuse ``mount`` for an adapter whose inline bundle and references would name different files.
+
+    The references come from :meth:`NativeAdapter._task_artifact_sources`; a
+    subclass that overrides :meth:`NativeAdapter._bundle_task_artifacts` without
+    it ships one set inline and would reference another.
+    """
+    own_bundle = adapter._bundle_task_artifacts is not NativeAdapter._bundle_task_artifacts
+    own_sources = adapter._task_artifact_sources is not NativeAdapter._task_artifact_sources
+    if own_bundle and not own_sources:
+        raise ValueError(
+            f"{task_id}: tool_artifacts_delivery: mount references the files "
+            f"{adapter.__name__}._task_artifact_sources names, but {adapter.__name__} overrides "
+            "_bundle_task_artifacts alone, so the runner would miss what its bundle carries; "
+            "override _task_artifact_sources with the same set, or deliver the artefacts inline"
+        )
 
 
 def _reference_artifacts(

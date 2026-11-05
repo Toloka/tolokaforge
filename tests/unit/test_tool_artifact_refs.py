@@ -417,7 +417,13 @@ class TestResolver:
 # ---------------------------------------------------------------------------
 
 
-def _mcp_pack(tmp_path: Path, *, delivery: str | None, with_corpus: bool = False) -> NativeAdapter:
+def _mcp_pack(
+    tmp_path: Path,
+    *,
+    delivery: str | None,
+    with_corpus: bool = False,
+    adapter: type[NativeAdapter] = NativeAdapter,
+) -> NativeAdapter:
     """A shared-domain-shaped MCP pack: the server under ``_shared/``, the state per case."""
     task_dir = tmp_path / "tasks" / "refs_pack"
     (task_dir / "_shared").mkdir(parents=True)
@@ -474,10 +480,63 @@ def _mcp_pack(tmp_path: Path, *, delivery: str | None, with_corpus: bool = False
             "components": {"state_checks": {"jsonpaths": []}},
         },
     )
-    return NativeAdapter({"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"})
+    return adapter({"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"})
+
+
+class _OwnSetAdapter(NativeAdapter):
+    """An adapter that ships the task directory's binary blobs too, through the sources hook."""
+
+    def _task_artifact_sources(self, task_dir: Path) -> dict[str, Path]:
+        return {
+            **super()._task_artifact_sources(task_dir),
+            **{p.relative_to(task_dir).as_posix(): p for p in sorted(task_dir.rglob("*.bin"))},
+        }
+
+
+class _OwnBundleAdapter(NativeAdapter):
+    """An adapter that overrides the inline bundler alone, as one written before ADR-0068 would."""
+
+    def _bundle_task_artifacts(self, task_dir: Path) -> dict[str, str]:
+        return {
+            p.relative_to(task_dir).as_posix(): base64.b64encode(p.read_bytes()).decode("ascii")
+            for p in sorted(task_dir.rglob("*"))
+            if p.is_file()
+        }
 
 
 class TestNativeAdapter:
+    def test_an_adapter_s_own_set_reaches_both_deliveries_through_the_sources_hook(
+        self, tmp_path: Path
+    ) -> None:
+        adapters = {
+            name: _mcp_pack(tmp_path / name, delivery=delivery, adapter=_OwnSetAdapter)
+            for name, delivery in (("inline", None), ("mount", "mount"))
+        }
+        for name in adapters:
+            (
+                tmp_path / name / "tasks" / "refs_pack" / "_shared" / "world" / "blob.bin"
+            ).write_bytes(b"\x00\x01\x02")
+        inline = adapters["inline"].to_task_description("refs_pack")
+        mounted = adapters["mount"].to_task_description("refs_pack")
+
+        assert base64.b64decode(inline.tool_artifacts["_shared/world/blob.bin"]) == b"\x00\x01\x02"
+        assert mounted.tool_artifact_refs is not None
+        assert set(mounted.tool_artifact_refs.files) == set(inline.tool_artifacts)
+        assert mounted.tool_artifact_refs.files["_shared/world/blob.bin"].size == 3
+
+    def test_an_adapter_that_overrides_the_bundler_alone_is_refused_under_mount(
+        self, tmp_path: Path
+    ) -> None:
+        inline = _mcp_pack(
+            tmp_path / "inline", delivery=None, adapter=_OwnBundleAdapter
+        ).to_task_description("refs_pack")
+        assert "grading.yaml" in inline.tool_artifacts  # its own set, inline as before
+
+        with pytest.raises(ValueError, match="overrides _bundle_task_artifacts alone"):
+            _mcp_pack(
+                tmp_path / "mount", delivery="mount", adapter=_OwnBundleAdapter
+            ).to_task_description("refs_pack")
+
     def test_mount_delivers_every_file_by_reference_and_none_inline(self, tmp_path: Path) -> None:
         inline = _mcp_pack(tmp_path / "inline", delivery=None).to_task_description("refs_pack")
         mounted = _mcp_pack(tmp_path / "mount", delivery="mount").to_task_description("refs_pack")
