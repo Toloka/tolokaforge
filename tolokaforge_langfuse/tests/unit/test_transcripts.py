@@ -1299,10 +1299,15 @@ class TestScrub:
         assert value not in scrubbed and "next line" in scrubbed
 
     def test_a_long_text_scrubs_in_linear_time(self) -> None:
+        """A ratio, not a wall-clock bound, so a busy runner cannot flake."""
         import time
 
-        text = ("a" * 1997 + "KEY ") * 500
-        started = time.perf_counter()
-        scrubbed, _ = tr.scrub(text)
-        assert time.perf_counter() - started < 5.0
+        def seconds(repeats: int) -> tuple[float, str]:
+            text = ("a" * 1997 + "KEY ") * repeats
+            started = time.perf_counter()
+            scrubbed, _ = tr.scrub(text)
+            return time.perf_counter() - started, scrubbed
+
+        (small, _), (large, scrubbed) = seconds(125), seconds(500)
+        assert large < 8 * small + 0.05
         assert scrubbed.endswith("more characters]")
