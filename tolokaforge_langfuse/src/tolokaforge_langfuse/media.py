@@ -457,42 +457,12 @@ class LangfuseAttachments:
                 skipped.append({"name": file.name, "rule": "upload-failed: budget spent"})
                 continue
             try:
-                registered = self._register_and_upload(trace_id, file)
+                done = self._attach_one(trace_id, file, counts, skipped)
             except AttachBudgetExceeded:
                 budget_spent = True
-                counts.failed += 1
-                skipped.append({"name": file.name, "rule": "upload-failed: budget spent"})
-                _log.warning(
-                    "attachments: budget of %.0fs spent on trace %s", self._budget_s, trace_id
-                )
                 continue
-            except Exception as exc:  # noqa: BLE001 - the observability layer only warns
-                # only the class of a foreign exception is logged: a malformed presigned URL
-                # would otherwise print its signature
-                reason = str(exc) if isinstance(exc, LangfuseApiError) else type(exc).__name__
-                _log.warning("attachments: %s of trace %s failed: %s", file.name, trace_id, reason)
-                counts.failed += 1
-                skipped.append({"name": file.name, "rule": f"upload-failed: {reason[:80]}"})
-                continue
-            if registered is None:
-                counts.failed += 1
-                skipped.append({"name": file.name, "rule": "no-media-id"})
-                continue
-            media_id, uploaded = registered
-            counts.registered += 1
-            if file.masked:
-                counts.masked += 1
-            if uploaded:
-                counts.uploaded += 1
-            else:
-                counts.deduplicated += 1
-            attached.append(
-                AttachedFile(
-                    file=file,
-                    media_id=media_id,
-                    token=f"@@@langfuseMedia:type={file.content_type}|id={media_id}|source=bytes@@@",
-                )
-            )
+            if done is not None:
+                attached.append(done)
         counts.skipped = len(skipped) - counts.failed  # failures are listed by name, not skips
         manifest = build_manifest(trial_dir, attached, skipped)
         if counts.failed:
@@ -509,9 +479,56 @@ class LangfuseAttachments:
                 counts.manifests_failed += 1
         if own_budget:
             self._deadline = None
-        # the breaker: a trial whose every attempt failed (nothing registered, nothing sent)
-        # counts against the receiver; a trial that got anything through resets the count
-        if files and counts.registered == 0 and counts.manifests_sent == 0:
+        self._judge_the_trial(bool(files), counts)
+        return counts, manifest
+
+    def _attach_one(
+        self,
+        trace_id: str,
+        file: TrialFile,
+        counts: AttachCounts,
+        skipped: list[dict[str, str]],
+    ) -> AttachedFile | None:
+        """Register and upload one screened file and count it; a file that did not get through
+        is counted, listed in ``skipped`` and gives None. A spent budget is counted and listed
+        too, then raised (:class:`AttachBudgetExceeded`) so the caller stops trying."""
+        try:
+            registered = self._register_and_upload(trace_id, file)
+        except AttachBudgetExceeded:
+            counts.failed += 1
+            skipped.append({"name": file.name, "rule": "upload-failed: budget spent"})
+            _log.warning("attachments: budget of %.0fs spent on trace %s", self._budget_s, trace_id)
+            raise
+        except Exception as exc:  # noqa: BLE001 - the observability layer only warns
+            # only the class of a foreign exception is logged: a malformed presigned URL
+            # would otherwise print its signature
+            reason = str(exc) if isinstance(exc, LangfuseApiError) else type(exc).__name__
+            _log.warning("attachments: %s of trace %s failed: %s", file.name, trace_id, reason)
+            counts.failed += 1
+            skipped.append({"name": file.name, "rule": f"upload-failed: {reason[:80]}"})
+            return None
+        if registered is None:
+            counts.failed += 1
+            skipped.append({"name": file.name, "rule": "no-media-id"})
+            return None
+        media_id, uploaded = registered
+        counts.registered += 1
+        if file.masked:
+            counts.masked += 1
+        if uploaded:
+            counts.uploaded += 1
+        else:
+            counts.deduplicated += 1
+        return AttachedFile(
+            file=file,
+            media_id=media_id,
+            token=f"@@@langfuseMedia:type={file.content_type}|id={media_id}|source=bytes@@@",
+        )
+
+    def _judge_the_trial(self, had_files: bool, counts: AttachCounts) -> None:
+        """The breaker: a trial whose every attempt failed (nothing registered, nothing sent)
+        counts against the receiver; a trial that got anything through resets the count."""
+        if had_files and counts.registered == 0 and counts.manifests_sent == 0:
             self._consecutive_failures += 1
             if self._consecutive_failures >= self._breaker_failures and not self._tripped:
                 self._tripped = True
@@ -523,7 +540,6 @@ class LangfuseAttachments:
                 )
         elif counts.registered or counts.manifests_sent:
             self._consecutive_failures = 0
-        return counts, manifest
 
     def note_trial_outcome(self, *, reached: bool) -> None:
         """Feed the breaker from the trial-end projection when no file step ran (``attach:
