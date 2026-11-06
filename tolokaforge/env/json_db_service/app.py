@@ -59,6 +59,7 @@ try:
         compute_stable_hash,
         filter_unstable_fields,
         resolve_unstable_table_name,
+        table_digest,
     )
 except ImportError:
     logger.warning(
@@ -235,6 +236,27 @@ except ImportError:
                 return data_table
         return None
 
+    def table_digest(rows: Any) -> str:
+        """SHA-256 of one table's canonical JSON, encoded a row at a time."""
+
+        def canonical(value: Any) -> bytes:
+            text = json.dumps(
+                value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
+            )
+            return text.encode("ascii")
+
+        digest = hashlib.sha256()
+        if isinstance(rows, list):
+            digest.update(b"[")
+            for index, row in enumerate(rows):
+                if index:
+                    digest.update(b",")
+                digest.update(canonical(row))
+            digest.update(b"]")
+        else:
+            digest.update(canonical(rows))
+        return digest.hexdigest()
+
 
 app = FastAPI(title="JSON DB Service", version="1.0.0")
 
@@ -284,8 +306,9 @@ class InitRequest(BaseModel):
 class MutationOperation(BaseModel):
     """Single mutation operation"""
 
-    op: str  # "insert", "update", "delete", "upsert"
+    op: str  # "insert", "update", "delete", "upsert", "replace"
     record: dict[str, Any] | None = None  # for insert/upsert
+    records: list[dict[str, Any]] | None = None  # for replace: the table's rows, whole
     filter: dict[str, Any] | None = None  # for update/delete
     set: dict[str, Any] | None = None  # for update
     key: str | list[str] | None = None  # for upsert; a list is an ordered composite key
@@ -384,6 +407,38 @@ class TrialState(BaseModel):
 
         for table_name, table_data in self.data.items():
             self._mirror_table(cursor, table_name, table_data)
+        self._sql_conn.commit()
+
+    def sync_table_to_sql(self, table_name: str) -> None:
+        """Rebuild one table's SQL mirror from ``data``, as :meth:`sync_json_to_sql` would.
+
+        The other tables' mirrors are left as they are: a mutation of one table changes
+        nothing else, so re-mirroring the whole state for it (a large world's every
+        table) would rebuild the same rows.
+
+        Raises:
+            SQLMirrorError: If the table, a key or a value cannot be stored in SQLite.
+        """
+        if not self._sql_conn:
+            self._init_sql_db()
+
+        assert self._sql_conn is not None  # For type checker
+        if any(other != table_name and other.lower() == table_name.lower() for other in self.data):
+            # SQLite folds the case of table names, so dropping this table's mirror would
+            # drop its namesake's; the full rebuild refuses the collision as it always has.
+            self.sync_json_to_sql()
+            return
+        cursor = self._sql_conn.cursor()
+        # The name to drop is the mirror's own, as in the full rebuild, not the request's.
+        # NOCASE folds ASCII only, as SQLite does for a table name.
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name = ? COLLATE NOCASE",
+            (table_name,),
+        )
+        for (existing,) in cursor.fetchall():
+            cursor.execute(f"DROP TABLE IF EXISTS {_sql_identifier(existing)}")
+        if table_name in self.data:
+            self._mirror_table(cursor, table_name, self.data[table_name])
         self._sql_conn.commit()
 
     def _mirror_table(self, cursor: sqlite3.Cursor, table_name: str, rows: Any) -> None:
@@ -1066,9 +1121,15 @@ async def init_trial(trial_id: str, req: InitRequest) -> dict[str, Any]:
 
 @app.get("/trials/{trial_id}/state")
 async def get_state(
-    trial_id: str, tables: str | None = Query(None, description="Comma-separated table names")
+    trial_id: str,
+    tables: str | None = Query(None, description="Comma-separated table names"),
+    hashes: bool = Query(True, description="Hash the whole state into the answer"),
 ) -> dict[str, Any]:
-    """Get the complete current state including all fields."""
+    """Get the complete current state including all fields.
+
+    ``hashes=false`` answers ``""`` for both hashes: a reader that wants a few tables'
+    rows does not pay two hashes of the whole state for them.
+    """
     try:
         trial = db_service.get_trial(trial_id)
     except TrialNotFoundError as e:
@@ -1083,8 +1144,8 @@ async def get_state(
         return {
             "data": data,
             "version": trial.version,
-            "full_hash": trial.compute_full_hash(),
-            "stable_hash": trial.compute_stable_hash(),
+            "full_hash": trial.compute_full_hash() if hashes else "",
+            "stable_hash": trial.compute_stable_hash() if hashes else "",
         }
 
 
@@ -1134,9 +1195,45 @@ async def get_state_hash(
         }
 
 
+@app.get("/trials/{trial_id}/state/digests")
+async def get_state_digests(
+    trial_id: str, tables: str | None = Query(None, description="Comma-separated table names")
+) -> dict[str, Any]:
+    """Each table's :func:`table_digest`, in the state's own table order.
+
+    A state holder's sync compares these with its own tables' digests and reads back
+    only the tables that differ; a reader holding a copy of a table whose digest
+    agrees takes that copy instead of the table's rows.
+    """
+    try:
+        trial = db_service.get_trial(trial_id)
+    except TrialNotFoundError as e:
+        handle_trial_not_found(e)
+
+    with trial._lock:
+        wanted = {t.strip() for t in tables.split(",")} if tables else None
+        return {
+            "digests": {
+                name: table_digest(rows)
+                for name, rows in trial.data.items()
+                if wanted is None or name in wanted
+            },
+            "version": trial.version,
+        }
+
+
 @app.patch("/trials/{trial_id}/state/{table_name}")
-async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> dict[str, Any]:
+async def mutate_state(
+    trial_id: str,
+    table_name: str,
+    req: MutationRequest,
+    hashes: bool = Query(True, description="Hash the whole state into the answer"),
+) -> dict[str, Any]:
     """Apply mutations to a specific table.
+
+    Only the mutated table is re-mirrored into SQL. ``hashes=false`` answers ``""`` for
+    ``new_hash``: a caller that mutates many tables in turn does not pay a hash of the
+    whole state for each.
 
     Every upsert's key is validated before any operation applies, so a batch
     refused over an upsert mutates nothing.
@@ -1161,9 +1258,11 @@ async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> 
 
     with trial._lock:
         # A missing table is auto-created only when the first operation could
-        # seed it (insert/upsert), and only after the batch passed validation.
+        # seed it (insert/upsert/replace), and only after the batch passed validation.
         table_missing = table_name not in trial.data
-        if table_missing and not (req.operations and req.operations[0].op in ("insert", "upsert")):
+        if table_missing and not (
+            req.operations and req.operations[0].op in ("insert", "upsert", "replace")
+        ):
             logger.warning(
                 "Table not found for mutation",
                 extra={"trial_id": trial_id, "table_name": table_name},
@@ -1242,6 +1341,20 @@ async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> 
                 affected_rows += original_len - len(trial.data[table_name])
                 table_data = trial.data[table_name]
 
+            elif op.op == "replace":
+                # The table's rows become exactly these, in this order: what an upsert,
+                # which merges into a row, cannot say when a row lost a key.
+                if op.records is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=error_response(
+                            "InvalidOperation", "Replace requires 'records'", {"op": op.op}
+                        ),
+                    )
+                trial.data[table_name] = copy.deepcopy(op.records)
+                table_data = trial.data[table_name]
+                affected_rows += len(table_data)
+
             elif op.op == "upsert":
                 key_fields = upsert_key_fields_by_op[op_index]
                 found = False
@@ -1268,7 +1381,7 @@ async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> 
                 )
 
         trial.version += 1
-        trial.sync_json_to_sql()
+        trial.sync_table_to_sql(table_name)
 
         logger.debug(
             "Mutation completed",
@@ -1284,7 +1397,7 @@ async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> 
             "status": "ok",
             "version": trial.version,
             "affected_rows": affected_rows,
-            "new_hash": trial.compute_stable_hash(),
+            "new_hash": trial.compute_stable_hash() if hashes else "",
         }
 
 

@@ -194,12 +194,14 @@ class _RecordingRequests:
     def __init__(self, inner: Any) -> None:
         self._inner = inner
         self.sent: list[tuple[str, str, Any]] = []
+        self.params: list[dict[str, Any]] = []
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
     async def _send(self, method: str, url: str, kwargs: dict[str, Any]) -> httpx.Response:
         self.sent.append((method, url, kwargs.get("timeout")))
+        self.params.append(dict(kwargs.get("params") or {}))
         return await getattr(self._inner, method)(url, **kwargs)
 
     async def get(self, url: str, **kwargs: Any) -> httpx.Response:
@@ -688,9 +690,19 @@ class TestMirrorReadFailsAfterASuccessfulSync:
     def test_a_raw_state_read_raises_rather_than_answer_empty(
         self, runner_service, mcp_trial, trial_id, monkeypatch
     ) -> None:
-        """The custom-checks read: a lost DB is not an empty world."""
+        """The custom-checks read: a lost DB is not an empty world.
+
+        The mirror here gives no table digests, as a db-service before them, so the
+        read is the mirror's whole state rather than the holder's copies the sync
+        left trusted.
+        """
         wrapper = mcp_trial(_task())
         _mutate(runner_service, wrapper, 120)
+
+        async def no_digests(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        monkeypatch.setattr(runner_service.db_client, "get_table_digests", no_digests)
 
         substrate = _substrate(runner_service, trial_id, synced=True)
 
@@ -709,14 +721,16 @@ class _LateJudgeReads:
     A judge read (``GET .../state`` naming tables, or ``POST .../query``) answers after
     ``delay_s``. When its budget is shorter, it raises ``httpx.ReadTimeout`` at the budget
     instead. The budget is the request's own ``timeout`` when the client passes one, and the
-    client's default otherwise. Every other request, the sync's own whole-state read among
-    them, passes through on time.
+    client's default otherwise. Every other request passes through on time, and so does
+    every request the sync makes while :attr:`syncing` is set — it reads a changed table by
+    name, as a judge does.
     """
 
     def __init__(self, inner: Any, db_client: Any, delay_s: float) -> None:
         self._inner = inner
         self._db_client = db_client
         self._delay_s = delay_s
+        self.syncing = False
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -731,7 +745,11 @@ class _LateJudgeReads:
         await asyncio.sleep(self._delay_s)
 
     async def get(self, url: str, **kwargs: Any) -> httpx.Response:
-        if (kwargs.get("params") or {}).get("tables"):
+        if (
+            not self.syncing
+            and url.endswith("/state")
+            and (kwargs.get("params") or {}).get("tables")
+        ):
             await self._answer_late(kwargs)
         return await self._inner.get(url, **kwargs)
 
@@ -859,9 +877,9 @@ class TestJudgeReadsOfTheState:
         )
         real_get_state = runner_service.db_client.get_state
 
-        async def stall(trial: str, tables: Any = None, timeout: Any = None) -> Any:  # noqa: ARG001
-            if tables is None:  # the sync's own read
-                return await real_get_state(trial)
+        async def stall(trial: str, tables: Any = None, timeout: Any = None, **kwargs: Any) -> Any:
+            if tables is None or kwargs.get("hashes") is False:  # the sync's own reads
+                return await real_get_state(trial, tables, timeout=timeout, **kwargs)
             await asyncio.sleep(5)
 
         monkeypatch.setattr(runner_service.db_client, "get_state", stall)
@@ -884,9 +902,18 @@ class TestJudgeReadsOfTheState:
         db_client = runner_service.db_client
         # The client's default, far below the deadline, as 30 s sits below a large world's.
         monkeypatch.setattr(db_client, "timeout", 0.05)
-        monkeypatch.setattr(
-            db_client, "_test_client", _LateJudgeReads(db_client._test_client, db_client, delay_s)
-        )
+        late = _LateJudgeReads(db_client._test_client, db_client, delay_s)
+        monkeypatch.setattr(db_client, "_test_client", late)
+        sync = runner_service._sync_mcp_state_to_db
+
+        async def on_time(*args: Any, **kwargs: Any) -> Any:
+            late.syncing = True
+            try:
+                return await sync(*args, **kwargs)
+            finally:
+                late.syncing = False
+
+        monkeypatch.setattr(runner_service, "_sync_mcp_state_to_db", on_time)
 
     @pytest.mark.parametrize("read", _JUDGE_READS)
     def test_a_read_slower_than_the_clients_default_is_judged(
@@ -1086,3 +1113,277 @@ class TestStateAnswerShape:
         monkeypatch.setattr(MCPServerProcess, "send_request", lambda *_a, **_k: answer)
 
         assert MCPServerProcess(script_path="/unused.py").get_state() == {}
+
+
+class TestTheSyncReadsOnlyTheTablesThatDiffer:
+    """The mirror's table digests decide what the sync and the final read fetch."""
+
+    @staticmethod
+    def _rows_read(recorder: _RecordingRequests) -> list[str]:
+        """The table selections of every state read: ``*`` for a whole-state read."""
+        return [
+            params.get("tables") or "*"
+            for (method, url, _), params in zip(recorder.sent, recorder.params, strict=True)
+            if method == "get" and url.endswith("/state")
+        ]
+
+    def test_a_second_sync_of_the_same_state_reads_no_rows(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        first = runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+        assert first is not None and first.trusted == frozenset(first.order or ())
+        db_client = runner_service.db_client
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        second = runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+
+        assert self._rows_read(recorder) == []
+        assert [method for method, _, _ in recorder.sent] == ["get"]  # the digests alone
+        assert second is not None and second.trusted == first.trusted
+
+    def test_a_changed_table_is_the_only_one_read_back(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        task = _task()
+        task["initial_state"]["tables"]["ledger"] = [{"id": "e1", "amount": 5}]
+        wrapper = mcp_trial(task)
+        db_client = runner_service.db_client
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+        _mutate(runner_service, wrapper, 120)
+
+        runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+
+        assert self._rows_read(recorder) == ["users"]
+        assert [
+            url.rsplit("/", 1)[-1] for method, url, _ in recorder.sent if method == "patch"
+        ] == ["users"]
+
+    def test_the_final_state_is_the_held_copy_and_equals_the_mirror(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        substrate = _substrate(runner_service, trial_id, synced=True)
+        db_client = runner_service.db_client
+        mirror = runner_service._run_async(db_client.get_state(trial_id)).data
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        final = substrate.final_state()
+
+        assert self._rows_read(recorder) == []
+        assert final == mirror
+        assert list(final) == list(mirror)
+        assert final["users"][0]["balance"] == 120
+
+    def test_a_table_only_the_mirror_holds_is_read_from_it_in_the_mirrors_order(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        task = _task()
+        task["initial_state"]["tables"] = {
+            "audit": [{"id": "a1", "by": "seed"}],
+            **task["initial_state"]["tables"],
+        }
+        # The child holds every table but the audit, which only the mirror has.
+        held = {k: v for k, v in task["initial_state"]["tables"].items() if k != "audit"}
+        wrapper = mcp_trial(task, child_tables=held)
+        _mutate(runner_service, wrapper, 120)
+        substrate = _substrate(runner_service, trial_id, synced=True)
+        db_client = runner_service.db_client
+        mirror = runner_service._run_async(db_client.get_state(trial_id)).data
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        final = substrate.final_state()
+
+        assert self._rows_read(recorder) == ["audit"]
+        assert final == mirror and list(final) == list(mirror)
+        assert list(final)[0] == "audit"
+
+    def test_a_table_the_mutations_leave_unlike_the_holders_is_replaced_with_it(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """An int the holder keeps as a float is equal in Python, so no op changes it; the
+        digests disagree, and the table is replaced by the holder's rows."""
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+        held = wrapper.get_state()
+        held["users"][0]["balance"] = 120.0
+        monkeypatch.setattr(wrapper, "get_state", lambda: held)
+        substrate = _substrate(runner_service, trial_id, synced=True)
+        db_client = runner_service.db_client
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        final = substrate.final_state()
+
+        assert self._rows_read(recorder) == []
+        assert type(final["users"][0]["balance"]) is float
+        mirror = runner_service._run_async(db_client.get_state(trial_id)).data
+        assert type(mirror["users"][0]["balance"]) is float
+
+    def test_get_state_answers_the_synced_copy_with_the_mirrors_hashes(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+        db_client = runner_service.db_client
+        mirror = runner_service._run_async(db_client.get_state(trial_id))
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        answer = _get_state(runner_service, mock_grpc_context, trial_id)
+
+        assert answer.success, answer.error
+        assert self._rows_read(recorder) == []
+        assert json.loads(answer.state_json) == mirror.data
+        assert (answer.stable_hash, answer.full_hash) == (mirror.stable_hash, mirror.full_hash)
+
+    def test_a_db_service_without_digests_syncs_and_reads_the_whole_state(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        db_client = runner_service.db_client
+
+        async def no_digests(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        monkeypatch.setattr(db_client, "get_table_digests", no_digests)
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        substrate = _substrate(runner_service, trial_id, synced=True)
+        final = substrate.final_state()
+
+        assert self._rows_read(recorder) == ["*", "*"]
+        assert final["users"][0]["balance"] == 120
+
+
+class TestTableNamesTheStateEndpointCannotSelect:
+    """A name with a comma or edge spaces is read with the whole state, never by name."""
+
+    @pytest.mark.parametrize("name", ["a,b", " pad"])
+    def test_such_a_table_syncs_without_duplicating_its_rows(
+        self, runner_service, mcp_trial, trial_id, name
+    ) -> None:
+        task = _task()
+        task["initial_state"]["tables"][name] = [{"id": "r1", "v": 1}]
+        held = dict(task["initial_state"]["tables"])
+        held[name] = [{"id": "r1", "v": 2}]
+        wrapper = mcp_trial(task, child_tables=held)
+        substrate = _substrate(runner_service, trial_id, synced=True)
+
+        mirror = runner_service._run_async(runner_service.db_client.get_state(trial_id)).data
+        assert mirror[name] == [{"id": "r1", "v": 2}]
+        assert substrate.final_state()[name] == [{"id": "r1", "v": 2}]
+        del wrapper
+
+
+class TestPartialReadsSkipTheWholeStateHashes:
+    def test_the_sync_and_the_final_read_ask_for_no_hashes(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        db_client = runner_service.db_client
+        recorder = _RecordingRequests(db_client._test_client)
+        monkeypatch.setattr(db_client, "_test_client", recorder)
+
+        _substrate(runner_service, trial_id, synced=True).final_state()
+
+        reads = [
+            params
+            for (method, url, _), params in zip(recorder.sent, recorder.params, strict=True)
+            if method == "get" and url.endswith("/state")
+        ]
+        assert reads and all(params.get("hashes") == "false" for params in reads)
+
+    def test_a_read_without_hashes_answers_empty_hashes(
+        self, runner_service, mcp_trial, trial_id
+    ) -> None:
+        mcp_trial(_task())
+        db_client = runner_service.db_client
+        plain = runner_service._run_async(db_client.get_state(trial_id, hashes=False))
+        hashed = runner_service._run_async(db_client.get_state(trial_id))
+
+        assert plain.data == hashed.data
+        assert plain.full_hash == plain.stable_hash == ""
+        assert hashed.full_hash and hashed.stable_hash
+
+
+class TestTheMirrorEndsByteForByteTheHolders:
+    """Where the mutations cannot say what the holder holds, the table is replaced whole."""
+
+    def _sync(self, runner_service, trial_id, wrapper, monkeypatch, held):
+        monkeypatch.setattr(wrapper, "get_state", lambda: held)
+        synced = runner_service._run_async(runner_service._refresh_db_mirror(trial_id))
+        mirror = runner_service._run_async(runner_service.db_client.get_state(trial_id)).data
+        return synced, mirror
+
+    def test_a_key_the_holder_dropped_from_a_row_is_gone_from_the_mirror(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        held = wrapper.get_state()
+        for user in held["users"]:
+            user.pop("balance", None)
+
+        synced, mirror = self._sync(runner_service, trial_id, wrapper, monkeypatch, held)
+
+        assert mirror["users"] == held["users"]
+        assert "users" in synced.trusted
+
+    def test_a_row_the_holder_placed_first_is_first_in_the_mirror(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        held = wrapper.get_state()
+        held["users"].insert(0, {"id": "u0", "name": "New", "balance": 1})
+
+        synced, mirror = self._sync(runner_service, trial_id, wrapper, monkeypatch, held)
+
+        assert [u["id"] for u in mirror["users"]] == [u["id"] for u in held["users"]]
+        assert "users" in synced.trusted
+
+    def test_an_empty_table_the_holder_gained_exists_in_the_mirror(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        wrapper = mcp_trial(_task())
+        held = {**wrapper.get_state(), "links": []}
+
+        synced, mirror = self._sync(runner_service, trial_id, wrapper, monkeypatch, held)
+
+        assert mirror["links"] == []
+        assert "links" in synced.trusted
+
+
+class TestTableNamesOfOneCase:
+    def test_a_table_named_like_another_but_for_case_is_refused_as_before(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from tolokaforge.env.json_db_service.app import app
+
+        client = TestClient(app, raise_server_exceptions=False)
+        trial = f"case_{uuid.uuid4().hex[:8]}:0"
+        assert (
+            client.post(
+                f"/trials/{trial}/init", json={"tables": {"users": [{"id": 1}]}}
+            ).status_code
+            == 200
+        )
+
+        answer = client.patch(
+            f"/trials/{trial}/state/Users",
+            json={"operations": [{"op": "insert", "record": {"id": 2}}]},
+        )
+
+        assert answer.status_code >= 400
+        rows = client.post(f"/trials/{trial}/sql", json={"query": "SELECT id FROM users"}).json()
+        assert rows["results"] == [{"id": 1}]

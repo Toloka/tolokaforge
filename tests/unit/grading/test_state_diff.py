@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 import pytest
 
+from tolokaforge.core.grading import state_diff
 from tolokaforge.core.grading.state_diff import render_state_diff
 
 pytestmark = pytest.mark.unit
@@ -217,3 +221,161 @@ def test_truncation_is_flagged_not_silent() -> None:
     assert "truncated" in out
     assert out.rstrip().endswith("===== END STATE CHANGES =====")
     assert len(out) <= 300 + 200  # cap plus the flag/footer allowance
+
+
+def _world(issues: int = 3000) -> dict[str, Any]:
+    """A world kept as one row whose single field nests every app's tables."""
+    return {
+        "world": [
+            {
+                "id": "w",
+                "state": {
+                    "apps": {
+                        "jira": {
+                            "issues": {
+                                str(i): {"key": f"IT-{i}", "assignee": None, "note": "n" * 40}
+                                for i in range(issues)
+                            }
+                        },
+                        "workplace": {
+                            "orders": [{"id": f"PO-{i}", "state": "open"} for i in range(500)]
+                        },
+                    },
+                    "clock": "2026-09-28T12:00:00Z",
+                },
+            }
+        ]
+    }
+
+
+def test_a_field_too_large_to_show_is_diffed_path_by_path() -> None:
+    initial, final = _world(), _world()
+    apps = final["world"][0]["state"]["apps"]
+    apps["jira"]["issues"]["12"]["assignee"] = "analyst"
+    apps["workplace"]["orders"][7]["state"] = "cancelled"
+    apps["workplace"]["orders"].append({"id": "PO-new", "state": "open"})
+    del apps["jira"]["issues"]["30"]
+
+    out = render_state_diff(initial, final, primary_keys={"world": "id"})
+
+    assert "world: 1 modified" in out
+    assert "truncated" not in out
+    assert '  ~ id="w":' in out
+    assert '      state.apps.jira.issues.12.assignee: null → "analyst"' in out
+    assert '      state.apps.jira.issues.30: {"assignee": null' in out and "→ (absent)" in out
+    assert '      state.apps.workplace.orders[id="PO-7"].state: "open" → "cancelled"' in out
+    assert (
+        '      + state.apps.workplace.orders[id="PO-new"]: {"id": "PO-new", "state": "open"}' in out
+    )
+    assert "clock" not in out
+
+
+def test_a_large_field_is_never_serialised_whole(monkeypatch: pytest.MonkeyPatch) -> None:
+    initial, final = _world(), _world()
+    final["world"][0]["state"]["apps"]["jira"]["issues"]["5"]["assignee"] = "analyst"
+    whole = len(json.dumps(initial["world"][0]["state"], ensure_ascii=False))
+    longest = 0
+    encode = state_diff._ENCODER.iterencode
+
+    def recording(value: Any) -> Any:
+        nonlocal longest
+        size = 0
+        for chunk in encode(value):
+            size += len(chunk)
+            longest = max(longest, size)
+            yield chunk
+
+    monkeypatch.setattr(state_diff._ENCODER, "iterencode", recording)
+    fmt = state_diff._fmt_value
+
+    def fmt_recording(value: Any) -> str:
+        nonlocal longest
+        text = fmt(value)
+        longest = max(longest, len(text))
+        return text
+
+    monkeypatch.setattr(state_diff, "_fmt_value", fmt_recording)
+
+    out = render_state_diff(initial, final, primary_keys={"world": "id"})
+
+    assert 'state.apps.jira.issues.5.assignee: null → "analyst"' in out
+    assert whole > 200_000
+    assert longest <= 50_000 + 1_000
+
+
+def test_changed_paths_of_one_field_are_capped_with_a_count() -> None:
+    initial, final = _world(), _world()
+    for i in range(80):
+        final["world"][0]["state"]["apps"]["jira"]["issues"][str(i)]["assignee"] = "a"
+
+    out = render_state_diff(initial, final, primary_keys={"world": "id"})
+
+    assert out.count('.assignee: null → "a"') == 50
+    assert "… (30 more changed paths)" in out
+
+
+def test_a_record_too_large_to_show_is_cut() -> None:
+    initial: dict[str, list[dict[str, Any]]] = {"t": []}
+    final = {"t": [{"id": 1, "blob": "x" * 200_000}]}
+
+    out = render_state_diff(initial, final, primary_keys={"t": "id"})
+
+    assert "t: 1 added" in out
+    assert "… (cut)" in out
+    assert "truncated" not in out
+
+
+def test_a_small_nested_change_keeps_its_one_line_form() -> None:
+    initial = {"orders": [{"id": 1, "address": {"city": "A", "zip": "1"}}]}
+    final = {"orders": [{"id": 1, "address": {"city": "B", "zip": "1"}}]}
+
+    out = render_state_diff(initial, final, primary_keys={"orders": "id"})
+
+    assert '  ~ id=1: address: {"city": "A", "zip": "1"} → {"city": "B", "zip": "1"}' in out
+
+
+def test_keyless_rows_too_large_to_show_still_match_as_a_multiset() -> None:
+    big = {"text": "y" * 100_000}
+    initial = {"notes": [big, big]}
+    final = {"notes": [big]}
+
+    out = render_state_diff(initial, final)
+
+    assert "notes: 1 removed" in out
+    assert "… (cut)" in out
+
+
+def test_a_key_dropped_from_a_large_field_is_shown_absent() -> None:
+    initial, final = _world(), _world()
+    initial["world"][0]["state"]["apps"]["jira"]["issues"]["3"]["resolution"] = None
+
+    out = render_state_diff(initial, final, primary_keys={"world": "id"})
+
+    assert "No changes detected" not in out
+    assert "      state.apps.jira.issues.3.resolution: null → (absent)" in out
+
+
+def test_a_reordered_keyed_list_in_a_large_field_says_so() -> None:
+    initial, final = _world(), _world()
+    orders = final["world"][0]["state"]["apps"]["workplace"]["orders"]
+    orders[0], orders[1] = orders[1], orders[0]
+
+    out = render_state_diff(initial, final, primary_keys={"world": "id"})
+
+    assert "      state.apps.workplace.orders: order changed" in out
+
+
+def test_a_key_that_reads_as_a_path_is_quoted() -> None:
+    initial, final = _world(), _world()
+    initial["world"][0]["state"]["apps"]["a.b"] = {"x": 1}
+    final["world"][0]["state"]["apps"]["a.b"] = {"x": 2}
+
+    out = render_state_diff(initial, final, primary_keys={"world": "id"})
+
+    assert '      state.apps["a.b"].x: 1 → 2' in out
+
+
+def test_a_lone_surrogate_in_a_keyless_table_still_diffs() -> None:
+    out = render_state_diff({"notes": [{"text": "\ud800"}]}, {"notes": []})
+
+    assert "notes: 1 removed" in out

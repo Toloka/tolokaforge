@@ -31,6 +31,7 @@ import time
 import traceback
 from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -96,6 +97,7 @@ from tolokaforge.core.hash import (
     apply_compare_columns_pipeline,
     compute_stable_hash,
     filter_unstable_fields,
+    table_digest,
 )
 from tolokaforge.core.mcp_error_categories import INVALID_ARGUMENTS_CATEGORY, TOOL_ERROR_CATEGORY
 from tolokaforge.core.models import (
@@ -137,6 +139,7 @@ from tolokaforge.runner.capabilities import BUILTIN_ADAPTERS
 from tolokaforge.runner.db_client import (
     DBServiceClient,
     DBServiceError,
+    InvalidOperationError,
     TableNotFoundError,
 )
 from tolokaforge.runner.db_client import (
@@ -260,6 +263,12 @@ _SEARCH_POLICY_TOOL_NAME = "search_policy"
 def _holder_kind(holder: AppWorldClient | MCPServerToolWrapper) -> str:
     """What a state holder is called in an error about it."""
     return "app world" if isinstance(holder, AppWorldClient) else "MCP server"
+
+
+def _selectable(table: str) -> bool:
+    """Whether the db-service's state endpoint can select ``table`` by name: it takes
+    names comma-joined and strips each, so a name with a comma or edge spaces is not."""
+    return bool(table) and "," not in table and table == table.strip()
 
 
 def _holder_call(
@@ -832,6 +841,23 @@ class TrialContextRuntime:
         self.tool_call_history.clear()
 
 
+@dataclass(frozen=True)
+class _HeldStateSync:
+    """What one sync of a state holder into its db-service mirror left behind.
+
+    ``held`` is the holder's state as the sync read it. ``order`` is the mirror's
+    tables after the sync, in the mirror's own order, and ``trusted`` those of them
+    whose mirror digest equals the held table's: the same canonical (sorted-key)
+    JSON, so a reader of the mirror may take such a table from ``held`` instead of
+    reading it back (only the key order inside a row may be the holder's). ``order`` is ``None`` when the mirror gives no digests (a db-service that
+    predates them), and then nothing is trusted.
+    """
+
+    held: dict[str, list[dict]]
+    order: tuple[str, ...] | None = None
+    trusted: frozenset[str] = frozenset()
+
+
 class _LiveStateSync:
     """One MCP-subprocess → DB-mirror sync shared by every read of one grading call.
 
@@ -854,18 +880,19 @@ class _LiveStateSync:
         self._service = service
         self._trial_id = trial_id
         self._wrapper = service._mirrored_state_holder(trial_context)
-        self._sync: asyncio.Future[None] | None = None
+        self._sync: asyncio.Future[_HeldStateSync] | None = None
 
-    async def ensure(self) -> None:
+    async def ensure(self) -> _HeldStateSync | None:
+        """Run the call's one sync, or wait on it; what it left, or ``None`` with no holder."""
         if self._wrapper is None:
-            return
+            return None
         if self._sync is None:
             self._sync = asyncio.ensure_future(
                 self._service._sync_live_state(self._trial_id, self._wrapper)
             )
         # Shielded: a reader that gives up waiting must not cancel the sync the
         # call's other readers share.
-        await asyncio.shield(self._sync)
+        return await asyncio.shield(self._sync)
 
 
 # =============================================================================
@@ -2083,8 +2110,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         def _get_raw_state() -> dict[str, Any]:
             timeout_s = request_s(deadlines.final_state_read_s)
-            read = partial(db_client.get_state, trial_id, timeout=timeout_s)
-            return _bridged_read(read, timeout_s).data
+
+            async def read() -> dict[str, Any]:
+                # ``_read_mirror`` has awaited the sync; this wait returns what it left.
+                synced = await live_state.ensure()
+                return await self._mirror_state_after(trial_id, synced, timeout=timeout_s)
+
+            result: dict[str, Any] = _bridged_read(read, timeout_s)
+            return result
 
         def _get_stable_state() -> dict[str, Any]:
             timeout_s = request_s(deadlines.final_state_read_s)
@@ -3961,7 +3994,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             return None
         return cls._state_holder(trial_context)
 
-    async def _refresh_db_mirror(self, trial_id: str) -> None:
+    async def _refresh_db_mirror(self, trial_id: str) -> _HeldStateSync | None:
         """Sync the mirror of a registered trial whose state lives in a state holder.
 
         The db-service is never updated during such a trial, so every read of
@@ -3978,14 +4011,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         trial_context = self.trials.get(trial_id)
         if trial_context is None:
-            return
+            return None
         holder = self._mirrored_state_holder(trial_context)
-        if holder is not None:
-            await self._sync_live_state(trial_id, holder)
+        if holder is None:
+            return None
+        return await self._sync_live_state(trial_id, holder)
 
     async def _sync_live_state(
         self, trial_id: str, holder: AppWorldClient | MCPServerToolWrapper
-    ) -> None:
+    ) -> _HeldStateSync:
         """Bring the db-service mirror up to the state holder's live state.
 
         Raises :class:`SubstrateUnreachableError` carrying the cause when the
@@ -3996,20 +4030,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         kind = _holder_kind(holder)
         try:
-            await self._sync_held_state_to_db(trial_id, holder)
+            synced = await self._sync_held_state_to_db(trial_id, holder)
         except Exception as exc:
             raise SubstrateUnreachableError(
                 f"Trial {trial_id!r}: the live state of its {kind} could not be "
                 f"synchronised to the DB mirror ({type(exc).__name__}: {exc})"
             ) from exc
         logger.info(f"Synced the {kind} state to the DB mirror for {trial_id}")
+        return synced
 
     async def _sync_held_state_to_db(
         self, trial_id: str, holder: AppWorldClient | MCPServerToolWrapper
-    ) -> None:
+    ) -> _HeldStateSync:
         """Read the holder's state back and write it into the trial's db-service."""
         held_state = await self._read_held_state(holder)
-        await self._sync_mcp_state_to_db(trial_id, held_state)
+        return await self._sync_mcp_state_to_db(trial_id, held_state)
 
     async def _read_held_state(
         self, holder: AppWorldClient | MCPServerToolWrapper
@@ -4036,14 +4071,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self,
         trial_id: str,
         mcp_state: dict[str, list[dict]],
-    ) -> None:
+    ) -> _HeldStateSync:
         """Sync an MCP server's in-memory state to the db-service via diff mutations.
 
-        Computes inserts / updates / deletes for every table and applies them
-        through ``db_client.mutate``. Keys are resolved per table from
+        Computes inserts / updates / deletes for every table that differs and applies
+        them through ``db_client.mutate``. Keys are resolved per table from
         ``state_checks.id_fields`` (default ``"id"``); a record missing its
         resolved key raises fail-loud rather than collapsing every keyless
         record to a single ``None`` bucket.
+
+        The mirror's table digests say which tables differ, so only those are
+        read back, one at a time: a world the agent left alone, or a second sync
+        of the same state, reads no rows. After the sync, the tables whose digests
+        agree are :attr:`_HeldStateSync.trusted`. A db-service that gives no digests
+        is synced from its whole state, as before digests, and nothing is trusted.
 
         Args:
             trial_id:  Trial identifier used by db-service.
@@ -4051,24 +4092,162 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         # Every caller waits on this sync within a state-read deadline; the mirror's
         # requests take the longest of them, so the caller's own wait is what bounds them.
-        current_response = await self.db_client.get_state(
-            trial_id, timeout=self._whole_state_read_s(trial_id)
-        )
-        current_state: dict[str, list[dict]] = current_response.data
+        timeout = self._whole_state_read_s(trial_id)
         id_fields = self._id_fields_for_trial(trial_id)
+        mirror = await self.db_client.get_table_digests(trial_id, timeout=timeout)
+        if mirror is None:
+            current_state = (
+                await self.db_client.get_state(trial_id, timeout=timeout, hashes=False)
+            ).data
+            for table_name, new_records in mcp_state.items():
+                current_records = current_state.get(table_name, [])
+                if current_records != new_records:
+                    await self._mutate_table(
+                        trial_id, table_name, current_records, new_records, id_fields
+                    )
+            return _HeldStateSync(held=mcp_state)
 
-        for table_name, new_records in mcp_state.items():
-            current_records = current_state.get(table_name, [])
-            if current_records == new_records:
-                continue
-            operations = compute_diff_ops(current_records, new_records, table_name, id_fields)
-            if operations:
+        # A digest encodes its table's JSON whole (a one-row world: the whole world), so
+        # it runs off the event loop the runner's other trials share.
+        held_digests = await asyncio.to_thread(
+            lambda: {name: table_digest(rows) for name, rows in mcp_state.items()}
+        )
+        changed = [name for name, digest in held_digests.items() if mirror.get(name) != digest]
+        by_name = all(_selectable(name) for name in changed)
+        whole = (
+            None
+            if by_name or not changed
+            else (await self.db_client.get_state(trial_id, timeout=timeout, hashes=False)).data
+        )
+        for table_name in changed:
+            if whole is None:
+                current = (
+                    await self.db_client.get_state(
+                        trial_id, [table_name], timeout=timeout, hashes=False
+                    )
+                ).data
+            else:
+                current = whole
+            await self._mutate_table(
+                trial_id, table_name, current.get(table_name, []), mcp_state[table_name], id_fields
+            )
+            del current
+        del whole
+        after: dict[str, str] | None
+        if not changed:
+            after = mirror
+        elif by_name:
+            # The mirror appends a table it creates, so the merged order is the mirror's.
+            after = mirror | (
+                await self.db_client.get_table_digests(trial_id, changed, timeout=timeout) or {}
+            )
+        else:
+            after = await self.db_client.get_table_digests(trial_id, timeout=timeout)
+        if after is None:
+            return _HeldStateSync(held=mcp_state)
+        after = await self._replace_unequal_tables(trial_id, mcp_state, held_digests, after)
+        trusted = frozenset(
+            name for name, digest in after.items() if held_digests.get(name) == digest
+        )
+        logger.debug(
+            f"_sync_mcp_state_to_db: {trial_id} — {len(changed)} of {len(held_digests)} held "
+            f"table(s) differed; {len(trusted)} of {len(after)} mirror table(s) match"
+        )
+        return _HeldStateSync(held=mcp_state, order=tuple(after), trusted=trusted)
+
+    async def _replace_unequal_tables(
+        self,
+        trial_id: str,
+        mcp_state: dict[str, list[dict]],
+        held_digests: dict[str, str],
+        after: dict[str, str],
+    ) -> dict[str, str]:
+        """Replace whole every held table the mutations left unlike the holder's.
+
+        An upsert merges into the mirror's row, so a key the holder dropped from a row
+        stays there, and an insert appends, so a row the holder placed mid-table lands
+        last. The digests show either; the holder is the state's source, so such a
+        table is replaced by its rows, which leaves it byte for byte the holder's. A
+        db-service without the ``replace`` op keeps the table as the mutations left it,
+        and readers then read it from the mirror, as before digests.
+        """
+        unequal = [
+            name
+            for name, digest in held_digests.items()
+            if isinstance(mcp_state[name], list) and after.get(name) != digest
+        ]
+        if not unequal:
+            return after
+        timeout = self._whole_state_read_s(trial_id)
+        replaced = []
+        for table_name in unequal:
+            try:
                 await self.db_client.mutate(
-                    trial_id, table_name, operations, timeout=self._whole_state_read_s(trial_id)
+                    trial_id,
+                    table_name,
+                    [{"op": "replace", "records": mcp_state[table_name]}],
+                    timeout=timeout,
+                    hashes=False,
                 )
-                logger.debug(
-                    f"_sync_mcp_state_to_db: {trial_id}/{table_name} — {len(operations)} op(s)"
+            except (InvalidOperationError, TableNotFoundError):
+                logger.info(
+                    f"_sync_mcp_state_to_db: {trial_id} — the DB service cannot replace a "
+                    "table; tables unlike the holder's are read from the mirror"
                 )
+                break
+            replaced.append(table_name)
+        if not replaced:
+            return after
+        if all(_selectable(name) for name in replaced):
+            fresh = await self.db_client.get_table_digests(trial_id, replaced, timeout=timeout)
+            return after | (fresh or {})
+        return await self.db_client.get_table_digests(trial_id, timeout=timeout) or after
+
+    async def _mutate_table(
+        self,
+        trial_id: str,
+        table_name: str,
+        current_records: list[dict],
+        new_records: list[dict],
+        id_fields: dict[str, str | list[str]],
+    ) -> None:
+        """Apply the ops that take the mirror's ``current_records`` to ``new_records``."""
+        operations = compute_diff_ops(current_records, new_records, table_name, id_fields)
+        if operations:
+            await self.db_client.mutate(
+                trial_id,
+                table_name,
+                operations,
+                timeout=self._whole_state_read_s(trial_id),
+                hashes=False,
+            )
+            logger.debug(
+                f"_sync_mcp_state_to_db: {trial_id}/{table_name} — {len(operations)} op(s)"
+            )
+
+    async def _mirror_state_after(
+        self, trial_id: str, synced: _HeldStateSync | None, *, timeout: float
+    ) -> dict[str, Any]:
+        """The trial's whole RAW state as its mirror holds it, after ``synced``.
+
+        The tables the sync left trusted are the holder's own copies; only the
+        others are read from the mirror. Without a sync, or digests, it is one
+        whole-state read, as before.
+        """
+        if synced is None or synced.order is None:
+            return (await self.db_client.get_state(trial_id, timeout=timeout, hashes=False)).data
+        rest = [name for name in synced.order if name not in synced.trusted]
+        if not all(_selectable(name) for name in rest):
+            return (await self.db_client.get_state(trial_id, timeout=timeout, hashes=False)).data
+        read = (
+            (await self.db_client.get_state(trial_id, rest, timeout=timeout, hashes=False)).data
+            if rest
+            else {}
+        )
+        return {
+            name: synced.held[name] if name in synced.trusted else read[name]
+            for name in synced.order
+        }
 
     def _whole_state_read_s(self, trial_id: str) -> float:
         """The db-service budget of one whole-state request on ``trial_id``, which a
@@ -4191,9 +4370,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     ),
                 )
 
-        await self._refresh_db_mirror(trial_id)
+        synced = await self._refresh_db_mirror(trial_id)
 
-        if request.include_unstable:
+        if request.include_unstable and tables is None and synced is not None and synced.order:
+            # The whole state as the mirror holds it, from the sync's own copy wherever the
+            # mirror's digests vouch for it (ADR-0070); the hashes are the mirror's.
+            timeout = self._whole_state_read_s(trial_id)
+            state = await self._mirror_state_after(trial_id, synced, timeout=timeout)
+            hashes = await self.db_client.get_state_hashes(trial_id, timeout=timeout)
+            stable_hash, full_hash = hashes.stable_hash, hashes.full_hash
+        elif request.include_unstable:
             # Get full state
             state_response = await self.db_client.get_state(
                 trial_id, tables, timeout=self._whole_state_read_s(trial_id)

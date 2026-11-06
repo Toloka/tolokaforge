@@ -1,0 +1,209 @@
+# 0070. Grading holds a large world once
+
+- **Status:** Draft (not proposed yet)
+- **Date:** 2026-11-05
+- **Deciders:** — (drafted by @rsmtnn)
+- **Supersedes:** —
+- **Superseded by:** —
+
+## Context and Problem Statement
+
+ADR-0068 moved a task's files off the registration message, and ADR-0069 moved
+the trial's final state off `GetState`. With both, the measured task (a
+native-format task whose world is about 6.5k files and whose database state is
+an initial state of about 490 MB as JSON) runs end to end in a 24 GiB sandbox.
+The trial's memory peak has moved to grading, inside the runner: 8.7 GiB, with
+the sandbox's anonymous memory at 18.8 GiB of 24.
+
+The world's shape matters. Its database state is **one table holding one row**,
+`{id, state}`, whose `state` field nests every application's tables (about
+300 MB of canonical JSON). Any scheme that reads or diffs "a table at a time"
+handles the whole world in its first step.
+
+Sampled once a second, the runner's memory during `GradeTrial` breaks down as:
+
+| When | Runner | What it holds beyond its 3 GiB at rest |
+|---|---|---|
+| The sync before grading | 5.7 GiB | The holder's whole state (stdio) and the mirror's whole state (HTTP), compared table by table |
+| The judge's state diff | **8.7 GiB** | The RAW final state read back from the mirror, and the diff of one field: `json.dumps` of its old and of its new value, each the whole world, joined into one fragment |
+| Custom checks | 4.2 GiB | The RAW final state, memoised |
+
+Three of those copies are redundant:
+
+1. **The sync re-reads a state it just wrote.** `GetState` syncs the mirror,
+   and `GradeTrial` syncs it again a minute later on the same state; each sync
+   reads the mirror's whole state to compare it with the holder's.
+2. **The final state is read back after the sync.** The sync held the holder's
+   state, which the mirror then equals, and dropped it; the grading factories
+   read the same state back from the mirror over HTTP.
+3. **The judge's diff serialises what it cannot show.** `render_state_diff`
+   formats a changed field's old and new values whole before cutting the diff
+   to its 50k-character cap. For a one-row world the judge receives
+   `runtime_evidence: 1 modified … (state diff truncated)`: gigabytes of
+   strings to say nothing.
+
+## Decision Drivers
+
+- The runner's grading peak does not grow with redundant whole-world copies.
+- What every grader sees is unchanged where it was useful, and becomes useful
+  where it was not (the judge's diff of a large field).
+- A db-service that predates the change keeps working.
+- No wire protocol change; each step lands and is measured alone.
+
+## Considered Options
+
+1. **A larger sandbox.** Fits today's peak; removes no copy.
+2. **Faster parsing** (`orjson`, `msgspec`). A constant factor; every copy stays.
+3. **Table-at-a-time grading** (this ADR's first draft): sync by table digests,
+   lazy read-only table mappings, a table-by-table diff, the initial state by
+   reference. Sound for many-table worlds, but the measured world is one table
+   of one row, so it removes none of the measured copies by itself.
+4. **Hold the world once** (this decision): the diff never serialises past what
+   it shows, the sync reads back only tables whose digests differ, and the
+   final state is taken from the synced holder copy wherever the mirror's
+   digest vouches for it.
+
+## Decision
+
+Adopt **Option 4**, in three steps.
+
+1. **The judge's state diff descends into a field too large to show.** A
+   changed field whose JSON would run past the diff's cap is diffed path by
+   path (nested dicts field by field, large lists by a key the rows carry or by
+   position), each value cut to 2k characters, at most 50 paths per field. No
+   value is encoded past the size it is shown at (`JSONEncoder.iterencode`,
+   abandoned at the limit); keyless tables count records by digest rather than
+   by their JSON. A key one side lacks shows as `(absent)`, a keyed list whose
+   rows were reordered says `order changed`, and a key that would read as a
+   path (`a.b`) is quoted. Everything that fits renders exactly as before (a
+   fuzz comparison of 30k random small states against the previous renderer
+   found no divergence). The judge now sees, for the one-row world,
+   `state.apps.jira.issues.12649.assignee: null → "…"`.
+2. **The mirror sync by table digests; the final state from the synced copy.**
+   The db-service answers `GET /trials/{id}/state/digests`: each table's
+   SHA-256 of its canonical JSON (`sort_keys`, compact separators, ASCII),
+   encoded a row at a time, in the state's own table order. The db-service
+   image runs a vendored copy held to core's by a parity test. The sync
+   digests the held tables, reads back from the mirror only the tables whose
+   digests differ, one at a time, mutates them, and re-digests them. The
+   mutations cannot always say what the holder holds: an upsert merges into
+   the mirror's row (a key the holder dropped stays), an insert appends (a row
+   the holder placed mid-table lands last), and a table the holder gained
+   empty is never created. A table whose digest still differs is therefore
+   replaced whole by the holder's rows (a `replace` op, which also creates
+   it), so the mirror ends as the holder's state, keys and order included. A
+   table whose mirror and held digests then agree is the same canonical
+   (sorted-key) JSON, so the grading's RAW final state, and `GetState`'s
+   answer, take it from the held copy and read only the rest, in the mirror's
+   table order; `GetState`'s hashes come from `GET .../state/hash`, without
+   rows. A second sync of the same state reads no rows. A state read that
+   wants rows and not hashes asks the service to skip hashing the whole state
+   (`hashes=false`; an older service ignores it and hashes, as before). A table name the state endpoint cannot select (a
+   comma, edge spaces) is read with the whole state. A db-service without the
+   digests route (FastAPI's bare 404 or 405) is synced and read whole, as
+   before.
+
+3. **A table mutation costs its table.** `PATCH /trials/{id}/state/{table}`
+   re-mirrored every table into SQL and hashed the whole state for its answer;
+   it now re-mirrors only its table, and `?hashes=false` (sent by the sync)
+   answers an empty `new_hash`. The full rebuild also undid writes made through
+   `POST /trials/{id}/sql` and dropped tables it created; a per-table rebuild
+   leaves other tables' SQL as it is. A table named like another but for case
+   (SQLite folds the case of table names) still takes the full rebuild, which
+   refuses the collision as before. For a world laid out as many tables, a sync
+   that mutated K of them paid K whole-world rebuilds: on the measured world,
+   laid out one table per application field, `GetState`'s sync ran out of its
+   budget before this step.
+
+A digest mismatch is always safe: the table is replaced by the holder's rows
+or, on a service without `replace`, read from the mirror instead of trusted.
+
+## Consequences
+
+### Positive
+
+- The judge's diff of the measured world costs 0.5 s and 70 MiB instead of
+  8.8 s and 0.8 GiB (locally), and shows what the agent changed.
+- `GradeTrial`'s sync of an unchanged world reads two digest lists, and its
+  final state is the holder's copy: the second and third whole-world copies go.
+- No protocol change; an older db-service degrades to today's behaviour.
+
+### Negative / Trade-offs
+
+- Each sync digests the held state and asks the mirror to digest its tables:
+  one `json.dumps` per row on both sides (the runner's off its event loop, the
+  service's under the trial's lock), a few seconds for the measured world. A
+  row's JSON is built whole, so a one-row world costs a transient string and
+  bytes of the world's size on each side; a world laid out as tables costs its
+  largest table's.
+- The RAW final state handed to graders is the holder's object graph rather
+  than a fresh parse of the mirror's JSON. A grader that mutated it would have
+  mutated a memoised copy before too; nothing reads the held copy after
+  grading. Inside a row, keys keep the holder's order rather than the
+  mirror's.
+- A mirror lost after a successful sync no longer fails the RAW read of the
+  tables it vouched for: they come from the held copy, which is what the
+  mirror held.
+- The diff's output changes for a field longer than the cap, from a truncation
+  flag to per-path lines.
+
+### Follow-ups
+
+- **The initial state by reference** (this ADR's first draft, step 4): the
+  runner keeps `TaskDescription.initial_state.tables` resident for the trial,
+  about a third of its memory at rest, and the engine host holds it too.
+- **The first sync's mirror read**: the sync after the episode still reads the
+  changed table whole to compute its ops; for a one-row world that is the whole
+  world. Row digests, or a replace-table op, would remove it.
+- **STABLE derived in the runner** (first draft, step 1), for tasks with
+  JSONPath checks; the measured task reads no STABLE view.
+- The 77–86 s before the state server answers each state read: a CPU sample
+  placed it in the server building its state snapshot (every application
+  exported and JSON-copied), at the end of the episode and again at
+  `GradeTrial`, with nothing changed between. A server that keeps the last
+  snapshot while no tool call has run would answer the second read at once.
+
+## Measured result
+
+The large-world trial in the 24 GiB sandbox, same task, model and engine stack
+(ADR-0068, ADR-0069 and the DB init budget), before and after both steps; peak
+resident memory per process in each phase, sampled once a second:
+
+| Phase | Runner before | Runner after | Sandbox before | Sandbox after |
+|---|---|---|---|---|
+| `GetState` (first sync, final state file) | 5.6 GiB | 5.1 GiB | 19.2 GiB | 19.4 GiB |
+| `GradeTrial` sync | 5.5 GiB | 4.1 GiB | 19.2 GiB | 18.1 GiB |
+| Judge | **8.7 GiB** | 3.8 GiB | **22.2 GiB** | 17.8 GiB |
+| Custom checks | 3.9 GiB | 3.4 GiB | 17.2 GiB | 17.6 GiB |
+
+The same task with its world laid out as tables (one per application field,
+249 tables, the largest 65 MB) and its state server keeping the initial state
+as a digest, on all three steps:
+
+| Phase | Runner | State server | Database service | Sandbox, anonymous |
+|---|---|---|---|---|
+| Episode | 2.6 GiB | 2.6 GiB | 1.9 GiB | 10.2 GiB |
+| `GetState` | 4.9 GiB | 3.9 GiB | 2.5 GiB | **13.2 GiB** |
+| `GradeTrial` | 4.1 GiB | 3.9 GiB | 1.9 GiB | 12.4 GiB |
+
+The sandbox's anonymous memory peaked at 13.2 GiB, against 18.8 GiB on the
+engine stack before this ADR.
+
+In the one-row runs, the trial's peak moved from the judge to `GetState`'s first sync, whose
+changed table is still read back whole (see Follow-ups). The judge's diff went
+from a truncation flag to the agent's edits by path: new Jira comments and
+issues, Slack messages, the cancellation of one order line, a grant schedule's
+revision. The `GradeTrial` sync still spends 78 s before the holder starts to
+answer, as it did before the change; that pause is not in the code this ADR
+touches.
+
+## Links
+
+- Related ADRs: [0068](0068-tool-artifacts-by-reference.md) (task files by
+  reference), [0069](0069-final-state-by-reference.md) (final state by
+  reference).
+- Related code: `core/grading/state_diff.py`, `core/hash.py` (`table_digest`),
+  `env/json_db_service/app.py` (`get_state_digests`), `runner/db_client.py`
+  (`get_table_digests`, `get_state_hashes`), `runner/service.py`
+  (`_sync_mcp_state_to_db`, `_replace_unequal_tables`, `_HeldStateSync`,
+  `_mirror_state_after`, `_build_grading_substrate`, `_get_state_async`).

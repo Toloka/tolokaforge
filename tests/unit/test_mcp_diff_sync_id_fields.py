@@ -37,6 +37,11 @@ def _make_servicer(
     return servicer
 
 
+def _diff_ops(servicer: RunnerServiceImpl) -> tuple[str, list[dict]]:
+    """The sync's diff batch, before any whole-table replace that squares the mirror."""
+    return next(m for m in servicer.db_client.mutations if m[1][0]["op"] != "replace")
+
+
 async def test_upsert_uses_configured_key():
     servicer = _make_servicer(
         id_fields={"lots": "lot_id"},
@@ -46,7 +51,7 @@ async def test_upsert_uses_configured_key():
 
     await servicer._sync_mcp_state_to_db("trial:0", new_state)
 
-    _table, ops = servicer.db_client.mutations[-1]
+    _table, ops = _diff_ops(servicer)
     upsert = next(op for op in ops if op["op"] == "upsert")
     assert upsert["key"] == "lot_id"
 
@@ -60,7 +65,7 @@ async def test_delete_filter_uses_configured_key():
 
     await servicer._sync_mcp_state_to_db("trial:0", new_state)
 
-    _table, ops = servicer.db_client.mutations[-1]
+    _table, ops = _diff_ops(servicer)
     delete = next(op for op in ops if op["op"] == "delete")
     assert delete["filter"] == {"lot_id": "L1"}
 
@@ -74,7 +79,7 @@ async def test_defaults_to_id_key_unchanged():
 
     await servicer._sync_mcp_state_to_db("trial:0", new_state)
 
-    _table, ops = servicer.db_client.mutations[-1]
+    _table, ops = _diff_ops(servicer)
     upsert = next(op for op in ops if op["op"] == "upsert")
     assert upsert["key"] == "id"
 

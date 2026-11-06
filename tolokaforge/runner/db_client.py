@@ -153,6 +153,18 @@ class _TestClientContextManager:
 # =============================================================================
 
 
+def _is_unknown_route(response: httpx.Response) -> bool:
+    """Whether the service answered that it has no such route (an older service),
+    rather than an error of the route itself: FastAPI's bare 404 or 405."""
+    if response.status_code not in (404, 405):
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("detail") in ("Not Found", "Method Not Allowed")
+
+
 class DBServiceClient:
     """
     Async HTTP client for the DB Service.
@@ -384,6 +396,8 @@ class DBServiceClient:
         trial_id: str,
         tables: list[str] | None = None,
         timeout: float | None = None,
+        *,
+        hashes: bool = True,
     ) -> StateResponse:
         """
         Get the complete current state including all fields.
@@ -395,6 +409,9 @@ class DBServiceClient:
             tables: Optional list of table names to return (default: all)
             timeout: Budget for this one request, overriding the client's default
                 ``timeout``
+            hashes: ``False`` asks the service not to hash the whole state into the
+                answer (``full_hash`` and ``stable_hash`` come back ``""``); a service
+                that predates the flag ignores it and hashes as before
 
         Returns:
             StateResponse with data, version, full_hash, stable_hash
@@ -402,9 +419,11 @@ class DBServiceClient:
         Raises:
             TrialNotFoundError: If trial not found
         """
-        params = {}
+        params: dict[str, str] = {}
         if tables:
             params["tables"] = ",".join(tables)
+        if not hashes:
+            params["hashes"] = "false"
 
         async with self._create_client() as client:
             try:
@@ -418,6 +437,47 @@ class DBServiceClient:
 
             self._handle_error_response(response)
             return StateResponse.model_validate(response.json())
+
+    async def get_table_digests(
+        self,
+        trial_id: str,
+        tables: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, str] | None:
+        """Each table's digest, in the state's own table order.
+
+        Maps to: GET /trials/{trial_id}/state/digests
+
+        Args:
+            trial_id: Trial identifier
+            tables: Optional list of table names to digest (default: all)
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
+
+        Returns:
+            ``table -> digest`` (:func:`tolokaforge.core.hash.table_digest`), or
+            ``None`` when the service predates the endpoint, so the caller falls
+            back to reading the state.
+
+        Raises:
+            TrialNotFoundError: If trial not found
+        """
+        params = {"tables": ",".join(tables)} if tables else {}
+        async with self._create_client() as client:
+            try:
+                response = await client.get(
+                    f"/trials/{trial_id}/state/digests",
+                    params=params,
+                    timeout=self._request_timeout(timeout),
+                )
+            except httpx.ConnectError as e:
+                raise ConnectionError(f"Failed to connect to DB Service: {e}")
+
+            if _is_unknown_route(response):
+                return None
+            self._handle_error_response(response)
+            digests = response.json().get("digests")
+            return dict(digests) if isinstance(digests, dict) else None
 
     async def get_stable_state(
         self, trial_id: str, timeout: float | None = None
@@ -495,6 +555,25 @@ class DBServiceClient:
             hash_response = HashResponse.model_validate(response.json())
             return hash_response.stable_hash
 
+    async def get_state_hashes(self, trial_id: str, timeout: float | None = None) -> HashResponse:
+        """The stable and full hashes of the whole state, without its rows.
+
+        Maps to: GET /trials/{trial_id}/state/hash
+
+        Raises:
+            TrialNotFoundError: If trial not found
+        """
+        async with self._create_client() as client:
+            try:
+                response = await client.get(
+                    f"/trials/{trial_id}/state/hash", timeout=self._request_timeout(timeout)
+                )
+            except httpx.ConnectError as e:
+                raise ConnectionError(f"Failed to connect to DB Service: {e}")
+
+            self._handle_error_response(response)
+            return HashResponse.model_validate(response.json())
+
     async def mutate(
         self,
         trial_id: str,
@@ -502,6 +581,8 @@ class DBServiceClient:
         operations: list[dict[str, Any]],
         etag: str | None = None,
         timeout: float | None = None,
+        *,
+        hashes: bool = True,
     ) -> MutateResponse:
         """
         Apply mutations to a specific table.
@@ -515,6 +596,8 @@ class DBServiceClient:
             etag: Optional ETag for optimistic locking
             timeout: Budget for this one request, overriding the client's default
                 ``timeout``
+            hashes: ``False`` asks the service not to hash the whole state into the
+                answer (``new_hash`` comes back ``""``); an older service ignores it
 
         Returns:
             MutateResponse with status, version, affected_rows, new_hash
@@ -534,6 +617,7 @@ class DBServiceClient:
                 response = await client.patch(
                     f"/trials/{trial_id}/state/{table_name}",
                     json=payload,
+                    params={} if hashes else {"hashes": "false"},
                     timeout=self._request_timeout(timeout),
                 )
             except httpx.ConnectError as e:
