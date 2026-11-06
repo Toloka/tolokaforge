@@ -580,11 +580,18 @@ class TestLongLines:
         gate.scan_structured(events_saying(("a" * 1997 + "KEY") * 1200))
         assert time.perf_counter() - started < 4 * baseline + 1.0
 
-    def test_masking_a_long_line_is_not_quadratic(self) -> None:
-        line = (dsn("aaa", "aaa", "b/") + " " + "a" * 1997 + "KEY ") * 1000
-        started = time.perf_counter()
-        SafetyGate().screen(line.encode(), policy="mask")
-        assert time.perf_counter() - started < 5.0
+    def test_masking_a_long_line_grows_linearly(self) -> None:
+        """Fixture DSNs (each read to its tail) and long runs ending in a keyword on one line. A
+        ratio, not a wall-clock bound, so a busy runner cannot flake."""
+
+        def seconds(repeats: int) -> float:
+            line = (dsn("aaa", "aaa", "db/") + " " + "a" * 1997 + "KEY ") * repeats
+            started = time.perf_counter()
+            SafetyGate().screen(line.encode(), policy="mask")
+            return time.perf_counter() - started
+
+        small, large = seconds(250), seconds(1000)
+        assert large < 8 * small + 0.05
 
 
 # --- the policies --------------------------------------------------------------------------------
@@ -959,11 +966,17 @@ class TestMask:
         assert screened.findings == ()
         assert yaml.safe_load(screened.value) == {"content": "A=1\nPGPASSWORD=MASKED"}
 
-    def test_masking_a_long_run_of_keywords_is_not_quadratic(self) -> None:
-        started = time.perf_counter()
-        SafetyGate().screen_structured({"output": "KEY" * 20_000}, policy="mask")
-        SafetyGate().screen(("KEY" * 20_000).encode(), policy="mask")
-        assert time.perf_counter() - started < 2.0
+    def test_masking_a_long_run_of_keywords_grows_linearly(self) -> None:
+        """A ratio, not a wall-clock bound, so a busy runner cannot flake."""
+
+        def seconds(n: int) -> float:
+            started = time.perf_counter()
+            SafetyGate().screen_structured({"output": "KEY" * n}, policy="mask")
+            SafetyGate().screen(("KEY" * n).encode(), policy="mask")
+            return time.perf_counter() - started
+
+        small, large = seconds(5_000), seconds(20_000)
+        assert large < 8 * small + 0.05
 
 
 class _MaskerThat(SafetyGate):
