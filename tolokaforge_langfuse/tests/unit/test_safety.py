@@ -47,6 +47,12 @@ AGENT_CODE = {
     "an attribute path": "total_tokens = response.usage.total_tokens",
     "a settings attribute": "api_key = self.api_key",
     "an index": "claim_key = row_keys[3]",
+    "an environment read": "api_key = os.environ.get('X')",
+    "an attribute index": "cache_key = self._keys[index]",
+    "a comprehension": "row_keys = [row.identifier for row in rows]",
+    "a commented call": "txn_key = compute(x)  # one per row, see settle()",
+    "a keyword argument": "cache_key=settings.cache_key,",
+    "a call over two lines": "report_key = build_report_key(table, column,\n    suffix)",
 }
 AGENT_SOURCE = "def settle(rows):\n    for row in rows:\n" + "\n".join(
     "        " + line.strip() for line in AGENT_CODE.values()
@@ -374,6 +380,43 @@ class TestDotenvNames:
     )
     def test_a_secret_line_in_any_case_fires(self, text: str) -> None:
         assert "dotenv-secret" in rules_in(text + "\n")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("db_password=Xk3,Qp9mZt2Lw8Rv", id="a comma"),
+            pytest.param("db_password=p@ss[word]1234", id="brackets inside"),
+            pytest.param("db_password=P@ssw0rd{2026}", id="braces at the end"),
+            pytest.param("api_token=tok(abc)12345678", id="a call shape then more"),
+            pytest.param("client_secret=a,b,c,d,e,f,g,h", id="a list of letters"),
+            pytest.param("pg_password=Tr0ub4dor&3,x9", id="a comma at the end"),
+        ],
+    )
+    def test_a_password_with_punctuation_under_a_lower_case_name_fires(self, text: str) -> None:
+        """Code is judged by the whole value, not by a bracket or a comma somewhere in it."""
+        assert "dotenv-secret" in rules_in(text + "\n")
+        assert "dotenv-secret" in rules_in(escaped("x = 1", text, "y = 2"))
+
+    def test_a_code_line_after_a_secret_does_not_pass_it(self) -> None:
+        assert "dotenv-secret" in rules_in("db_password=Xk3,Qp9mZt2Lw8Rv\nfoo = compute(x)\n")
+        assert "dotenv-secret" in rules_in(escaped("x = 1", "db_password=Xk3,Qp9mZt2Lw8Rv", "f(x)"))
+
+    def test_a_line_longer_than_the_limit_is_not_read_as_code(self) -> None:
+        call = "api_key = compute(" + "argument, " * 120 + "last)"
+        assert len(call) > 1024, "the premise"
+        assert "dotenv-secret" in rules_in(call + "\n")
+
+    def test_reading_code_lines_grows_linearly(self) -> None:
+        """Each value is read to the end of its own line only. A ratio, not a wall-clock bound."""
+
+        def seconds(n: int) -> float:
+            payload = ("api_key = compute(" + " " * 1000 + "x)\n") * n
+            started = time.perf_counter()
+            SafetyGate().scan(payload.encode())
+            return time.perf_counter() - started
+
+        small, large = seconds(200), seconds(800)
+        assert large < 8 * small + 0.05
 
     @pytest.mark.parametrize(
         "text",

@@ -30,7 +30,7 @@ Two shapes have a narrow exemption for committed fixture data that is no credent
 ``postgres``) whose password is its user name, short and of one character class, and the public
 ``GPG_KEY`` fingerprint the ``python`` Docker image sets. A dotenv line passes when its name holds
 no secret (a path, a URL, the shell's working directories), or when its name is not in upper case
-and its value is code (``txn_key = compute(x)``). The scan goes on past an exempt match, so it
+and its value's whole line is code (``txn_key = compute(x)``). The scan goes on past an exempt match, so it
 never hides a reportable one, and the gate counts the exemptions per rule
 (:attr:`SafetyGate.exempted`).
 
@@ -188,11 +188,26 @@ _ENCODED_CHARACTER = re.compile(rb"(?i)\\(?:u[0-9a-f]{4}|x[0-9a-f]{2})")
 _ASSIGNMENT = re.compile(
     rb"\s*(?:export\s+)?(?P<name>[A-Za-z][A-Za-z0-9_]*)\s*=\s*['\"]?(?P<value>.*)", re.S
 )
-# a value that is code, not a secret: it holds a call, an index or a literal, or it is an
-# attribute path (`response.usage.total_tokens`, `settings.SECRET_KEY`)
+# the rest of a value's line, up to a line break or an escaped one (an escaped backslash is none),
+# read for at most _CODE_LINE_LIMIT bytes: a longer line is not read as code, and the bound keeps
+# the read of every line linear
+_CODE_LINE_LIMIT = 1024
+_CODE_LINE = re.compile(rb"(?:(?!(?<!\\)\\[nr])[^\r\n]){0,%d}" % _CODE_LINE_LIMIT)
+_COMMENT = re.compile(rb"\s#")
+_IDENTIFIER_PATH = rb"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+# a value that is code, not a secret, judged by its whole line (a trailing comment, comma or
+# semicolon aside): a call or an index (`compute(x)`, `os.environ.get('X')`), an attribute path
+# (`response.usage.total_tokens`, `settings.SECRET_KEY`), or a list or a mapping literal. A
+# password with a comma or a bracket somewhere in it is none of these
 _CODE_VALUE = re.compile(
-    rb"[^\s'\"#]*[()\[\]{},]|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+(?![^\s'\"#])"
+    rb"(?:" + _IDENTIFIER_PATH + rb"\s*[(\[].*[)\]]"
+    rb"|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+"
+    rb"|[\[{].*[\]}])[,;]?",
+    re.S,
 )
+# a call or an index whose arguments go on in the next line: it ends at a comma or at an opening
+# bracket, with more brackets opened than closed (`build_key(table, column,`)
+_OPEN_CALL = re.compile(_IDENTIFIER_PATH + rb"\s*[(\[](?:.*[,(\[{])?", re.S)
 # a dotenv-secret match that is the public signing-key fingerprint the python image sets
 _GPG_FINGERPRINT = re.compile(rb"\s*(?:export\s+)?GPG_KEY\s*=\s*['\"]?[0-9A-Fa-f]{40}")
 
@@ -470,22 +485,38 @@ def _exempt(rule: str, match: re.Match[bytes], view: bytes) -> bool:
         return _local_fixture_dsn(match.group(0), tail.group(0) if tail else b"")
     if rule == "dotenv-secret":
         return _GPG_FINGERPRINT.fullmatch(match.group(0)) is not None or _names_no_secret(
-            match.group(0)
+            match, view
         )
     return False
 
 
-def _names_no_secret(match: bytes) -> bool:
+def _names_no_secret(match: re.Match[bytes], view: bytes) -> bool:
     """A dotenv-secret match that names no secret: a name the gate knows holds none (a path, a URL,
-    the shell's working directories), or a name not in upper case whose value is code (a call, an
-    index, a literal or an attribute path: ``txn_key = compute(x)``)."""
-    parsed = _ASSIGNMENT.match(match)
+    the shell's working directories), or a name not in upper case whose value, read to the end of
+    its line, is code (``txn_key = compute(x)``)."""
+    parsed = _ASSIGNMENT.match(match.group(0))
     if parsed is None:
         return False
     name = parsed["name"].decode("ascii")
     if _NOT_SECRET_NAMES.search(name):
         return True
-    return name != name.upper() and _CODE_VALUE.match(parsed["value"]) is not None
+    return name != name.upper() and _is_code(view, match.start() + parsed.start("value"))
+
+
+def _is_code(view: bytes, start: int) -> bool:
+    """Whether the value at ``start`` of ``view`` is code: its line, without a trailing comment,
+    is a call, an index, an attribute path or a literal, or a call whose arguments go on in the
+    next line. A line of _CODE_LINE_LIMIT bytes or more is not read as code."""
+    line = _CODE_LINE.match(view, start).group(0)
+    if len(line) >= _CODE_LINE_LIMIT:
+        return False
+    comment = _COMMENT.search(line)
+    value = (line[: comment.start()] if comment else line).rstrip()
+    if _CODE_VALUE.fullmatch(value):
+        return True
+    opened = value.count(b"(") + value.count(b"[")
+    closed = value.count(b")") + value.count(b"]")
+    return opened > closed and _OPEN_CALL.fullmatch(value) is not None
 
 
 def _local_fixture_dsn(match: bytes, tail: bytes) -> bool:
