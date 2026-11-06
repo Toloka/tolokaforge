@@ -417,7 +417,9 @@ a tool that reads files) must not see keeps inline delivery. And a subclass that
 own set of the task's files overrides `_task_artifact_sources(task_dir)`, the one hook both
 deliveries read; a subclass that overrides `_bundle_task_artifacts` alone is refused under
 `mount`, since its references would name the default set and the runner would miss what its
-bundle used to carry.
+bundle used to carry. The RAG corpus has the same pair: `_corpus_artifact_paths` and
+`_bundle_corpus_artifacts`. A file the adapter cannot read fails the description under either
+delivery.
 
 ### Tool schema resolution for Docker
 

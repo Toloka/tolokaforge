@@ -42,7 +42,7 @@ import json
 import math
 import re
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -3480,6 +3480,23 @@ def _check_restricted_services_have_own_networks(
                 "`networks: [task_net]` with a top-level "
                 "`networks: {task_net: {}}` entry)."
             )
+
+
+def runner_outside_trial_scope(stacks: Iterable[StackDecl]) -> str | None:
+    """What owns the runner when no ``trial``-scope stack does; ``None`` when one does.
+
+    The engine hands a per-task directory only to a runner it materialises for
+    the trial: a ``run``-scope runner was started before the trial's task was
+    described and serves every task of the run, and a plan with no
+    runner-owning stack has no service to give it to.
+    """
+    owners = [decl for decl in stacks if decl.runner_service is not None]
+    if owners and all(decl.stack_scope == "trial" for decl in owners):
+        return None
+    return (
+        ", ".join(f"{decl.stack_id!r} (stack_scope={decl.stack_scope})" for decl in owners)
+        or "no stack sets runner_service"
+    )
 
 
 class StackPatch(BaseModel):

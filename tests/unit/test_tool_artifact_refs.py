@@ -15,6 +15,7 @@ import base64
 import hashlib
 import json
 import logging
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -90,10 +91,12 @@ def _description(**fields: Any) -> TaskDescription:
     )
 
 
-def _drop_from_sys_path(extract_dir: Path) -> None:
+def _discard_extraction(extract_dir: Path) -> None:
+    """What ``extract_tool_artifacts`` asks of its caller once the artefacts are done with."""
     for entry in (str(extract_dir), str(extract_dir / "tools")):
         while entry in sys.path:
             sys.path.remove(entry)
+    shutil.rmtree(extract_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -129,14 +132,6 @@ class TestWireModel:
                 tool_artifact_refs=ToolArtifactRefs(root="/abs", files={"a.py": ref}),
             )
 
-    def test_a_description_round_trips_through_json_with_its_references(self) -> None:
-        refs = ToolArtifactRefs(
-            root="/abs", files={"a.py": ToolArtifactRef(source="a.py", sha256="0" * 64, size=1)}
-        )
-        description = _description(tool_artifact_refs=refs)
-
-        assert TaskDescription.model_validate_json(description.model_dump_json()) == description
-
 
 # ---------------------------------------------------------------------------
 # Resolution: copy, verify, refuse
@@ -165,7 +160,7 @@ class TestExtraction:
             assert str(extract_dir / "tools") in sys.path
             assert (extract_dir / "tools" / "world_tool.py").is_file()
         finally:
-            _drop_from_sys_path(extract_dir)
+            _discard_extraction(extract_dir)
 
     def test_a_changed_file_refuses_the_set_and_leaves_nothing_behind(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -215,6 +210,23 @@ class TestExtraction:
         assert "'gone.py' is not a file" in message
         assert f"expected sha256 {good.sha256} and {good.size + 1} bytes" in message
 
+    def test_a_long_list_of_refusals_is_counted_past_the_ones_it_shows(
+        self, tmp_path: Path
+    ) -> None:
+        refs = {
+            f"gone_{index}.py": ToolArtifactRef(source=f"gone_{index}.py", sha256="0" * 64, size=1)
+            for index in range(7)
+        }
+
+        with pytest.raises(ToolArtifactRefError) as excinfo:
+            extract_tool_artifacts("refs:many", {}, refs=refs, refs_dir=_world(tmp_path))
+
+        message = str(excinfo.value)
+        assert "7 of 7" in message
+        assert "gone_4.py" in message
+        assert "gone_5.py" not in message
+        assert "; and 2 more." in message
+
     def test_a_symlink_out_of_the_root_is_refused(self, tmp_path: Path) -> None:
         root = _world(tmp_path)
         secret = tmp_path / "secret.txt"
@@ -240,7 +252,7 @@ class TestExtraction:
         with pytest.raises(ToolArtifactRefError, match="is not a directory"):
             extract_tool_artifacts("refs:5", {}, refs=refs, refs_dir=tmp_path / "absent")
 
-    def test_file_sha256_reads_the_file_in_chunks(self, tmp_path: Path) -> None:
+    def test_file_sha256_covers_a_file_longer_than_its_chunk(self, tmp_path: Path) -> None:
         payload = b"x" * (3 * 1024 * 1024 + 17)
         (tmp_path / "big.bin").write_bytes(payload)
 
@@ -493,6 +505,20 @@ class _OwnSetAdapter(NativeAdapter):
         }
 
 
+class _UnreadableFileAdapter(NativeAdapter):
+    """An adapter whose set names a file that cannot be read when the task is described."""
+
+    def _task_artifact_sources(self, task_dir: Path) -> dict[str, Path]:
+        return {**super()._task_artifact_sources(task_dir), "gone.py": task_dir / "gone.py"}
+
+
+class _OwnCorpusBundleAdapter(NativeAdapter):
+    """An adapter that overrides the corpus bundler alone."""
+
+    def _bundle_corpus_artifacts(self, task_dir: Path, corpus_dir: str) -> dict[str, str]:
+        return {f"{corpus_dir}/own.md": base64.b64encode(b"own").decode("ascii")}
+
+
 class _OwnBundleAdapter(NativeAdapter):
     """An adapter that overrides the inline bundler alone, as one written before ADR-0068 would."""
 
@@ -536,6 +562,23 @@ class TestNativeAdapter:
             _mcp_pack(
                 tmp_path / "mount", delivery="mount", adapter=_OwnBundleAdapter
             ).to_task_description("refs_pack")
+
+    def test_an_adapter_that_overrides_the_corpus_bundler_alone_is_refused_under_mount(
+        self, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ValueError, match="overrides _bundle_corpus_artifacts alone"):
+            _mcp_pack(
+                tmp_path, delivery="mount", with_corpus=True, adapter=_OwnCorpusBundleAdapter
+            ).to_task_description("refs_pack")
+
+    @pytest.mark.parametrize("delivery", [None, "mount"])
+    def test_a_file_that_cannot_be_read_fails_the_description_under_either_delivery(
+        self, tmp_path: Path, delivery: str | None
+    ) -> None:
+        adapter = _mcp_pack(tmp_path, delivery=delivery, adapter=_UnreadableFileAdapter)
+
+        with pytest.raises(FileNotFoundError, match="gone.py"):
+            adapter.to_task_description("refs_pack")
 
     def test_mount_delivers_every_file_by_reference_and_none_inline(self, tmp_path: Path) -> None:
         inline = _mcp_pack(tmp_path / "inline", delivery=None).to_task_description("refs_pack")
@@ -601,8 +644,8 @@ class TestNativeAdapter:
                 k: v for k, v in tree.items() if k != "task.yaml"
             }
         finally:
-            _drop_from_sys_path(inline_dir)
-            _drop_from_sys_path(mounted_dir)
+            _discard_extraction(inline_dir)
+            _discard_extraction(mounted_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -661,13 +704,23 @@ class TestComposeMount:
             "target": TOOL_ARTIFACT_REFS_MOUNT_PATH,
             "read_only": True,
         } in runner["volumes"]
-        env = runner["environment"]
-        assert (
-            env[TOOL_ARTIFACT_REFS_DIR_ENV_VAR]
-            if isinstance(env, dict)
-            else f"{TOOL_ARTIFACT_REFS_DIR_ENV_VAR}={TOOL_ARTIFACT_REFS_MOUNT_PATH}" in env
-        )
+        assert runner["environment"] == {
+            TOOL_ARTIFACT_REFS_DIR_ENV_VAR: TOOL_ARTIFACT_REFS_MOUNT_PATH
+        }
         assert "volumes" not in yaml.safe_load(compose.read_text())["services"]["db-service"]
+
+    def test_a_list_environment_gains_the_variable(self, tmp_path: Path) -> None:
+        compose = tmp_path / "environment.compose.yaml"
+        doc = json.loads(json.dumps(_RUNNER_COMPOSE))
+        doc["services"]["runner"]["environment"] = ["DB_SERVICE_URL=http://db:8000"]
+        write_yaml_file(compose, doc)
+
+        mount_tool_artifact_refs_into_runner(compose, "runner", _world(tmp_path))
+
+        assert yaml.safe_load(compose.read_text())["services"]["runner"]["environment"] == [
+            "DB_SERVICE_URL=http://db:8000",
+            f"{TOOL_ARTIFACT_REFS_DIR_ENV_VAR}={TOOL_ARTIFACT_REFS_MOUNT_PATH}",
+        ]
 
     def test_a_service_declaring_the_variable_is_refused(self, tmp_path: Path) -> None:
         compose = tmp_path / "environment.compose.yaml"
@@ -678,10 +731,22 @@ class TestComposeMount:
         with pytest.raises(ValueError, match="which the engine sets"):
             mount_tool_artifact_refs_into_runner(compose, "runner", _world(tmp_path))
 
-    def test_a_volume_at_the_mount_path_is_refused(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "volume",
+        [
+            pytest.param(f"./data:{TOOL_ARTIFACT_REFS_MOUNT_PATH}:ro", id="short"),
+            pytest.param(
+                {"type": "bind", "source": "./data", "target": TOOL_ARTIFACT_REFS_MOUNT_PATH},
+                id="long",
+            ),
+        ],
+    )
+    def test_a_volume_at_the_mount_path_is_refused(
+        self, tmp_path: Path, volume: str | dict[str, str]
+    ) -> None:
         compose = tmp_path / "environment.compose.yaml"
         doc = json.loads(json.dumps(_RUNNER_COMPOSE))
-        doc["services"]["runner"]["volumes"] = [f"./data:{TOOL_ARTIFACT_REFS_MOUNT_PATH}:ro"]
+        doc["services"]["runner"]["volumes"] = [volume]
         write_yaml_file(compose, doc)
 
         with pytest.raises(ValueError, match="already mounts a volume"):

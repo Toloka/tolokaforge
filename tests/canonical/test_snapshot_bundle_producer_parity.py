@@ -79,6 +79,7 @@ class _StubTaskDescription:
         initial_state: _StubInitialState | None = None,
     ) -> None:
         self.tool_artifacts = tool_artifacts
+        self.tool_artifact_refs = None
         self.grading = _StubGrading(grading_payload)
         # DB-backed default matches the shipped ``synthetic_inputs`` fixture
         # (``initial_state.tables={"users": []}``) so existing parity tests

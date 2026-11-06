@@ -87,7 +87,7 @@ def serialize_bundle_from_substrate(
             f"Cannot build grade bundle for {trial_id}: substrate has no "
             "filesystem root; snapshot mode requires an agent-visible workspace."
         )
-    if getattr(task_description, "tool_artifact_refs", None) is not None:
+    if task_description.tool_artifact_refs is not None:
         raise ValueError(
             f"Cannot build grade bundle for {trial_id}: the task delivers its tool "
             "artefacts by reference (ADR-0068), and bundle format v1.0 carries inline "

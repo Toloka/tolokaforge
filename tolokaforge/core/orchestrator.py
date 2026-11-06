@@ -93,6 +93,7 @@ from tolokaforge.core.models.run_config import (
     REMOTE_RUNTIME_NAME,
     USER_TEMPERATURE_IGNORED,
     DispatchConfig,
+    GraderConfig,
     sets_user_temperature,
 )
 from tolokaforge.core.output.aggregate_models import _engine_version
@@ -407,6 +408,17 @@ _DEFAULT_DB_SERVICE_URL = "http://tolokaforge-db-service:8000"
 container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
 mirrors the value on ``TrialSpec.env_endpoints`` so a future out-of-process
 runner reads its service URLs from the spec instead of its own env."""
+
+_GRADERS_OFF_THE_RUNNER = frozenset({"grader_rpc", "queue"})
+"""Graders that do not run on the trial's own runner."""
+
+
+def _effective_grader_name(grader: GraderConfig | None, adapter: BaseAdapter | None) -> str | None:
+    """The run config's grader name, else the one the adapter names for its trials."""
+    grader_name = grader.name if grader else None
+    if not grader_name and adapter is not None:
+        return adapter.trial_grader_name
+    return grader_name
 
 
 def _normalise_runner_url(runner_address: str) -> str:
@@ -1356,10 +1368,8 @@ class Orchestrator:
                 "stack; it contradicts orchestrator.auto_start_services=true. Set "
                 "auto_start_services: false."
             )
-        grader_name = self.config.grader.name if self.config.grader else None
-        if not grader_name and self.adapter is not None:
-            grader_name = self.adapter.trial_grader_name
-        if grader_name in ("grader_rpc", "queue"):
+        grader_name = _effective_grader_name(self.config.grader, self.adapter)
+        if grader_name in _GRADERS_OFF_THE_RUNNER:
             raise ValueError(
                 f"orchestrator.dispatch cannot use grader {grader_name!r}: it dials a static "
                 "runner address the node does not expose. Use the 'runner_rpc' grader."
@@ -2855,10 +2865,8 @@ class Orchestrator:
         Descriptions are resolved only when the run grades one of those ways.
         """
         grader = self.config.grader
-        grader_name = grader.name if grader else None
-        if not grader_name and self.adapter is not None:
-            grader_name = self.adapter.trial_grader_name
-        remote_grader = grader_name in ("grader_rpc", "queue")
+        grader_name = _effective_grader_name(self.config.grader, self.adapter)
+        remote_grader = grader_name in _GRADERS_OFF_THE_RUNNER
         snapshot = grader is not None and grader.snapshot is not None and grader.snapshot.enabled
         if not (remote_grader or snapshot) or self.adapter is None:
             return

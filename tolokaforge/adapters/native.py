@@ -1213,31 +1213,20 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         # under the declared ``corpus_dir``) so the runner can index them.
         search_config = self._resolve_search_config(task, task_dir, task_id)
 
-        tool_artifacts: dict[str, str] = {}
-        tool_artifact_refs: ToolArtifactRefs | None = None
-        if (
+        by_reference = (
             environment_manifest is not None
             and environment_manifest.tool_artifacts_delivery == "mount"
-        ):
-            _refuse_a_bundler_without_sources(type(self), task_id)
-            sources = self._task_artifact_sources(task_dir) if needs_bundle else {}
-            if state_copy is not None:
-                sources[state_copy[0]] = state_copy[1]
-            if search_config.documents_path:
-                sources.update(self._corpus_artifact_paths(task_dir, search_config.documents_path))
-            if sources:
-                tool_artifact_refs = _reference_artifacts(task_id, task_dir, sources)
+        )
+        tool_artifacts: dict[str, str] = {}
+        tool_artifact_refs: ToolArtifactRefs | None = None
+        if by_reference:
+            tool_artifact_refs = self._referenced_tool_artifacts(
+                task_id, task_dir, needs_bundle, state_copy, search_config.documents_path
+            )
         else:
-            if needs_bundle:
-                tool_artifacts = self._bundle_task_artifacts(task_dir)
-            if state_copy is not None:
-                tool_artifacts[state_copy[0]] = base64.b64encode(state_copy[1].read_bytes()).decode(
-                    "ascii"
-                )
-            if search_config.documents_path:
-                tool_artifacts.update(
-                    self._bundle_corpus_artifacts(task_dir, search_config.documents_path)
-                )
+            tool_artifacts = self._inline_tool_artifacts(
+                task_dir, needs_bundle, state_copy, search_config.documents_path
+            )
 
         # Create TaskDescription
         task_description = TaskDescription(
@@ -1477,6 +1466,45 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             tool_name=tool_name,
         )
 
+    def _inline_tool_artifacts(
+        self,
+        task_dir: Path,
+        needs_bundle: bool,
+        state_copy: tuple[str, Path] | None,
+        corpus_dir: str | None,
+    ) -> dict[str, str]:
+        """The files the runner needs, base64-encoded: ``tool_artifacts_delivery: inline``."""
+        artifacts = self._bundle_task_artifacts(task_dir) if needs_bundle else {}
+        if state_copy is not None:
+            artifacts[state_copy[0]] = base64.b64encode(state_copy[1].read_bytes()).decode("ascii")
+        if corpus_dir:
+            artifacts.update(self._bundle_corpus_artifacts(task_dir, corpus_dir))
+        return artifacts
+
+    def _referenced_tool_artifacts(
+        self,
+        task_id: str,
+        task_dir: Path,
+        needs_bundle: bool,
+        state_copy: tuple[str, Path] | None,
+        corpus_dir: str | None,
+    ) -> "ToolArtifactRefs | None":
+        """The same files as references: ``tool_artifacts_delivery: mount`` (ADR-0068)."""
+        sources: dict[str, Path] = {}
+        if needs_bundle:
+            _refuse_a_bundler_without_sources(
+                type(self), task_id, "_bundle_task_artifacts", "_task_artifact_sources"
+            )
+            sources = self._task_artifact_sources(task_dir)
+        if state_copy is not None:
+            sources[state_copy[0]] = state_copy[1]
+        if corpus_dir:
+            _refuse_a_bundler_without_sources(
+                type(self), task_id, "_bundle_corpus_artifacts", "_corpus_artifact_paths"
+            )
+            sources.update(self._corpus_artifact_paths(task_dir, corpus_dir))
+        return _reference_artifacts(task_id, task_dir, sources) if sources else None
+
     def _bundle_corpus_artifacts(self, task_dir: Path, corpus_dir: str) -> dict[str, str]:
         """Bundle the RAG corpus's ``.md``/``.txt``/``.json`` files as base64 artifacts.
 
@@ -1541,13 +1569,14 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
 
         Returns:
             dict mapping relative path → base64-encoded content.
+
+        Raises:
+            OSError: a file cannot be read, as under ``tool_artifacts_delivery: mount``.
         """
-        artifacts: dict[str, str] = {}
-        for rel_path, file_path in self._task_artifact_sources(task_dir).items():
-            try:
-                artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode("ascii")
-            except Exception as e:
-                logger.warning("Could not bundle artifact", path=rel_path, error=str(e))
+        artifacts = {
+            rel_path: base64.b64encode(file_path.read_bytes()).decode("ascii")
+            for rel_path, file_path in self._task_artifact_sources(task_dir).items()
+        }
 
         logger.info("Bundled task artifacts", count=len(artifacts), task_dir=str(task_dir))
         return artifacts
@@ -1590,21 +1619,27 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         return paths
 
 
-def _refuse_a_bundler_without_sources(adapter: type, task_id: str) -> None:
+def _refuse_a_bundler_without_sources(
+    adapter: type, task_id: str, bundler: str, sources: str
+) -> None:
     """Refuse ``mount`` for an adapter whose inline bundle and references would name different files.
 
-    The references come from :meth:`NativeAdapter._task_artifact_sources`; a
-    subclass that overrides :meth:`NativeAdapter._bundle_task_artifacts` without
-    it ships one set inline and would reference another.
+    Each of the task's two sets has a bundler and the method naming its files
+    (:meth:`NativeAdapter._bundle_task_artifacts` and
+    :meth:`NativeAdapter._task_artifact_sources`;
+    :meth:`NativeAdapter._bundle_corpus_artifacts` and
+    :meth:`NativeAdapter._corpus_artifact_paths`). The references come from the
+    second; a subclass that overrides the first without it ships one set inline
+    and would reference another.
     """
-    own_bundle = adapter._bundle_task_artifacts is not NativeAdapter._bundle_task_artifacts
-    own_sources = adapter._task_artifact_sources is not NativeAdapter._task_artifact_sources
+    own_bundle = getattr(adapter, bundler) is not getattr(NativeAdapter, bundler)
+    own_sources = getattr(adapter, sources) is not getattr(NativeAdapter, sources)
     if own_bundle and not own_sources:
         raise ValueError(
             f"{task_id}: tool_artifacts_delivery: mount references the files "
-            f"{adapter.__name__}._task_artifact_sources names, but {adapter.__name__} overrides "
-            "_bundle_task_artifacts alone, so the runner would miss what its bundle carries; "
-            "override _task_artifact_sources with the same set, or deliver the artefacts inline"
+            f"{adapter.__name__}.{sources} names, but {adapter.__name__} overrides "
+            f"{bundler} alone, so the runner would miss what its bundle carries; "
+            f"override {sources} with the same set, or deliver the artefacts inline"
         )
 
 

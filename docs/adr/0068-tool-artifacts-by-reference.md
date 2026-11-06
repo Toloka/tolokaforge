@@ -111,8 +111,10 @@ the engine materialises per trial from a task-declared stack.
   hashing each in 1 MiB chunks, and puts nothing in `tool_artifacts`. Both
   deliveries take the set from one hook, `_task_artifact_sources`; a subclass
   that overrides the inline bundler alone is refused under `mount`, so its
-  references cannot name a different set than its bundle. A source outside the
-  task directory is refused. Tool libraries (ADR-0060) keep merging
+  references cannot name a different set than its bundle (the RAG corpus's
+  `_corpus_artifact_paths` and `_bundle_corpus_artifacts` pair likewise). A file
+  that cannot be read fails the description under either delivery. A source
+  outside the task directory is refused. Tool libraries (ADR-0060) keep merging
   inline; a library path that collides with a referenced artefact is refused like
   an inline collision.
 - **Engine.** The composer hands the description's `root` to the stack that owns

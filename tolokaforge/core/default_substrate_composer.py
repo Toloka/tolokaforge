@@ -52,7 +52,12 @@ from tolokaforge.core.service_lifecycle_dispatchers import DISPATCHER_REGISTRY
 from tolokaforge.core.service_readiness import DiagnosticPayload, ReadinessResult, ResolvedEndpoint
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
-from tolokaforge.runner.models import ServiceIsolation, ServiceSpec, StackDecl
+from tolokaforge.runner.models import (
+    ServiceIsolation,
+    ServiceSpec,
+    StackDecl,
+    runner_outside_trial_scope,
+)
 
 __all__ = ["DefaultSubstrateComposer"]
 
@@ -611,19 +616,14 @@ def _refuse_refs_no_trial_runner_can_take(plan: CompositionPlan, spec: TrialSpec
     The resolver refuses ``tool_artifacts_delivery: mount`` on such a plan
     already; this holds the composer to the same rule for a description built
     some other way, or a plan whose scopes were coerced after it was resolved,
-    before any stack is started. A run-scope runner was started before the
-    trial's task was described and serves every task of the run, so it has no
-    mount of this task's directory and would refuse the registration.
+    before any stack is started: such a runner has no mount of this task's
+    directory and would refuse the registration.
     """
     if spec.task.tool_artifact_refs is None:
         return
-    owners = [decl for decl in plan if decl.runner_service is not None]
-    if owners and all(decl.stack_scope == "trial" for decl in owners):
+    found = runner_outside_trial_scope(plan)
+    if found is None:
         return
-    found = (
-        ", ".join(f"{decl.stack_id!r} (stack_scope={decl.stack_scope})" for decl in owners)
-        or "no stack sets runner_service"
-    )
     raise ProvisionError(
         trial_id=spec.trial_id,
         stage="provision",

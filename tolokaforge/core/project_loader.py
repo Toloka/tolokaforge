@@ -918,20 +918,15 @@ def _refuse_a_mount_no_trial_runner_can_take(manifest: EnvironmentManifest) -> N
     """Refuse ``tool_artifacts_delivery: mount`` unless a ``trial``-scope stack owns the runner.
 
     The engine mounts the task's directory into the runner it materialises for
-    the trial (ADR-0068). A ``run``-scope runner serves every task of the run
-    and was started before any of them was described, so it cannot be given
-    one task's directory; a plan with no runner-owning stack has no service to
-    give it to.
+    the trial (ADR-0068).
     """
+    from tolokaforge.runner.models import runner_outside_trial_scope
+
     if manifest.tool_artifacts_delivery != "mount":
         return
-    owners = [decl for decl in manifest.stacks if decl.runner_service is not None]
-    if owners and all(decl.stack_scope == "trial" for decl in owners):
+    found = runner_outside_trial_scope(manifest.stacks)
+    if found is None:
         return
-    found = (
-        ", ".join(f"{decl.stack_id!r} (stack_scope={decl.stack_scope})" for decl in owners)
-        or "no stack sets runner_service"
-    )
     raise ValueError(
         "tool_artifacts_delivery: mount needs the runner to be owned by a trial-scope "
         f"stack, which the engine materialises for each trial; the runner here: {found}. "
