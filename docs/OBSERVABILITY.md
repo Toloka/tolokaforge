@@ -317,7 +317,7 @@ keeps the stock retrying exporter. The consequences are visible in the receipt:
   before writing). A root whose batch was still waiting out a refusal when the error roots were
   decided, and had not landed when the run ended, is counted the same way.
 
-The error root itself carries nine of the trace metadata schema's keys, not the full 34: it is
+The error root itself carries nine of the trace metadata schema's keys, not the full 36: it is
 deliberately minimal (identity, status, the reason, the label and the time source), so a reader
 that groups by `model_name` or by a verdict key does not see the failed trials at all. Look for
 `status: error` or the `error_root` marker in the observation's own metadata.
@@ -337,7 +337,7 @@ The decision, the options it was chosen over and its consequences are
 
 ## The trace metadata
 
-A trace's metadata is a fixed, flat schema of 34 keys plus the caller's per-run keys, identical
+A trace's metadata is a fixed, flat schema of 36 keys plus the caller's per-run keys, identical
 from the trial-end pass and from the offline uploader (`tolokaforge_langfuse.projection.schema_keys()`):
 
 | Group | Keys |
@@ -348,7 +348,12 @@ from the trial-end pass and from the offline uploader (`tolokaforge_langfuse.pro
 | verdict | `primary_grading`, `gradings`, `grading_count`, `pass`, `score`, `judge_status` |
 | usage | `cost_usd`, `tokens_input`, `tokens_output`, `turns`, `tool_calls`, `latency_total_s` |
 | models | `model_name`, `user_model`, `judge_model` |
-| bookkeeping | `upload_mode`, `uploader_version`, `trace_time_source` |
+| bookkeeping | `upload_mode`, `uploader_version`, `trace_time_source`, `secrets`, `secrets_masked` |
+
+`secrets` is written only on the traces of a `secrets: mask` run and `secrets_masked` only on a
+masked unit (§ Delivery), but both names are reserved under either policy. `schema_keys()` also
+reserves the keys the live root span adds and the receiver writes (`generations_observed`,
+`tool_calls_observed`, `error`, `attributes`, `resourceAttributes`, `scope`).
 
 Everything else a bundle says lives where a reader looks for it, not in the trace's metadata: the
 task facts, the model configurations, the environment identity and the redaction stamp in the

@@ -46,12 +46,13 @@ them in date order. Read together they leave the decision here:
   the bundle (grading with judge transcript and scores, user turns, tool executions, events,
   media), so the live trace and an offline upload of the same bundle are one trace; a golden
   parity test committed in both repositories guards the two projections.
-- **The trace metadata** is a fixed 34-key schema plus the caller's keys (the receiver's table
+- **The trace metadata** is a fixed 36-key schema plus the caller's keys (the receiver's table
   view renders nothing above 100 keys); everything else lives in the attached files, the
   observations, the scores, the tags and the native `environment` / `release` / `version` fields.
 - **What carries a secret (data-safety amendment):** the gate withholds it under `secrets: reject`
   (the default) or masks it and sends it under `secrets: mask`; every trace of a masking run carries
-  one more metadata key, `secrets: mask`, reserved under both policies.
+  one more metadata key, `secrets: mask`, and a masked unit says what in `secrets_masked`; both
+  names are reserved under both policies.
 - **One vocabulary, one profile (vocabulary amendment):** the tag prefixes, the producer's
   derived tags (model facets, reasoning settings, route) and the default environment rule live
   in the plugin wheel and are imported by the offline uploader; a deployment's values arrive in
@@ -333,8 +334,8 @@ profile's version. A trace carried 122 to 126 top-level keys, and the receiver's
 its metadata table only up to 100 (Langfuse 3.205.1, `PrettyJsonView`, `DEFAULT_MAX_ROWS_IF_ROOT`),
 so the table under "Metadata" showed nothing for either producer, the attachment manifest included.
 
-The trace metadata is now the fixed 34-key schema of `docs/OBSERVABILITY.md` ("The trace
-metadata") plus the caller's per-run keys, the same from the trial-end pass and from the offline
+The trace metadata is now the fixed 34-key schema (36 since the data-safety amendment reserved
+`secrets` and `secrets_masked`) of `docs/OBSERVABILITY.md` ("The trace metadata") plus the caller's per-run keys, the same from the trial-end pass and from the offline
 uploader, with the producer keys reduced to `upload_mode`, `uploader_version`, `trace_time_source`,
 `attach_mode`. What left the metadata is reachable where a reader looks for it: the attached
 files (task facts, model configurations, environment identity, redaction stamp), the generations

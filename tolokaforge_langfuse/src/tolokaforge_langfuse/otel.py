@@ -80,6 +80,7 @@ from tolokaforge_langfuse.otlp_spans import (
 from tolokaforge_langfuse.projection import (
     PROJECTION_FULL,
     PROJECTION_GRADINGS,
+    SECRETS_MASKED_METADATA_KEY,
     SECRETS_METADATA_KEY,
     ProjectionContext,
     build_projection,
@@ -1751,7 +1752,7 @@ class OTelTrialObserver:
             return name, dict(attributes)
         causes = _masked_causes(screened)
         attrs = dict(screened.value["attributes"])
-        attrs[f"{OBSERVATION_METADATA_PREFIX}secrets_masked"] = json.dumps(
+        attrs[f"{OBSERVATION_METADATA_PREFIX}{SECRETS_MASKED_METADATA_KEY}"] = json.dumps(
             dict(sorted(screened.masked.items()))
         )
         with self._states_lock:
@@ -1935,9 +1936,9 @@ def _stamp(event: Any, masked: Mapping[str, int]) -> None:
         return
     metadata = body.get("metadata")
     if metadata is None:
-        body["metadata"] = {"secrets_masked": dict(masked)}
+        body["metadata"] = {SECRETS_MASKED_METADATA_KEY: dict(masked)}
     elif isinstance(metadata, dict):
-        body["metadata"] = {**metadata, "secrets_masked": dict(masked)}
+        body["metadata"] = {**metadata, SECRETS_MASKED_METADATA_KEY: dict(masked)}
 
 
 def _replaced(value: Any, strings: Mapping[str, str]) -> Any:

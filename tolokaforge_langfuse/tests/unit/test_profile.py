@@ -194,6 +194,18 @@ class TestMetadataVariable:
         with pytest.raises(PreflightError, match="score"):
             merge_metadata({"score": 1}, profile, {}, schema_keys())
 
+    @pytest.mark.parametrize("key", ["secrets", "secrets_masked"])
+    def test_the_secrets_keys_are_reserved_under_either_policy(
+        self, tmp_path: Path, key: str
+    ) -> None:
+        """A masked unit writes ``secrets_masked`` over whatever its metadata held: a caller key
+        of that name would be overwritten, so it is refused before the run."""
+        profile = load_tracing_profile(write_profile(tmp_path))
+        from tolokaforge_langfuse.projection import schema_keys
+
+        with pytest.raises(PreflightError, match=key):
+            merge_metadata({key: "mine"}, profile, {}, schema_keys())
+
 
 class TestEnvironmentPrecedence:
     def test_variable_over_config_over_profile_rule(self, tmp_path: Path) -> None:

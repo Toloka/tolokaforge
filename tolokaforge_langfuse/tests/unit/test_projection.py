@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -233,6 +234,20 @@ class TestGoldenParity:
         keys = schema_keys()
         assert {"task_id", "attachments", "pass", "judge_status", "user_model", "error"} <= keys
         assert "model_stem" not in keys and "team" not in keys
+
+    def test_schema_keys_are_the_documented_table_and_the_live_keys(self) -> None:
+        """The trace metadata table of ``docs/OBSERVABILITY.md`` names every schema key, and its
+        sentence says how many: a key added here without its row there is a red build. A caller
+        key that names one of them is a configuration error, so the table must be complete."""
+        doc = (Path(__file__).parents[3] / "docs" / "OBSERVABILITY.md").read_text(encoding="utf-8")
+        section = doc.split("## The trace metadata", 1)[1].split("\n## ", 1)[0]
+        rows = [line for line in section.splitlines() if line.startswith("| ") and "`" in line]
+        documented = {name for row in rows for name in re.findall(r"`([a-z_A-Z]+)`", row)}
+        stated = re.search(r"a fixed, flat schema of (\d+) keys", section)
+        assert stated and int(stated.group(1)) == len(documented)
+        assert schema_keys() - LIVE_ONLY_KEYS == documented
+        assert {"secrets", "secrets_masked"} <= documented
+        assert len(schema_keys()) == 42
 
 
 class TestTheClocks:
