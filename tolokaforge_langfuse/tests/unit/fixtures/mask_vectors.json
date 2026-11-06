@@ -92,6 +92,40 @@
       }
     },
     {
+      "id": "dotenv-lower-case-punctuation",
+      "case": "a password with a comma under a lower-case name is no code: it is masked",
+      "kind": "bytes",
+      "input": "db_password=Xk3,Qp9mZt2Lw8Rv\nNEXT=1\n",
+      "known": [],
+      "also": [],
+      "expected": "db_password=MASKED\nNEXT=1\n",
+      "counts": {
+        "dotenv-secret": 1
+      }
+    },
+    {
+      "id": "dotenv-lower-case-brackets-escaped",
+      "case": "a password with brackets under a lower-case name, between escaped line breaks: masked",
+      "kind": "bytes",
+      "input": "x = 1\\ndb_password=p@ss[word]1234\\nNEXT=1",
+      "known": [],
+      "also": [],
+      "expected": "x = 1\\ndb_password=MASKED\\nNEXT=1",
+      "counts": {
+        "dotenv-secret": 1
+      }
+    },
+    {
+      "id": "dotenv-lower-case-code",
+      "case": "code under a lower-case name, a commented call and a call over two lines, is left as it is",
+      "kind": "bytes",
+      "input": "txn_key = compute(x, y)  # one per row\nreport_key = build_key(table,\n    column)\n",
+      "known": [],
+      "also": [],
+      "expected": "txn_key = compute(x, y)  # one per row\nreport_key = build_key(table,\n    column)\n",
+      "counts": {}
+    },
+    {
       "id": "dotenv-yaml-fold",
       "case": "a quoted dotenv value that YAML folded over two lines is masked whole; still YAML",
       "kind": "bytes",

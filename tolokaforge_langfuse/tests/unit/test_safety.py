@@ -38,7 +38,7 @@ VECTORS = Path(__file__).parent / "fixtures" / "mask_vectors.json"
 # the file is copied byte for byte wherever another gate is held to the same rows, and each copy
 # pins this digest in its own tests; nothing compares the copies across repositories, so a change
 # goes into every copy and its pin by hand
-VECTORS_SHA256 = "28df8c4f6ee92a97e430636b6a1d8ff79e8d1073f28a0f9cb5bfb78af6b832cc"
+VECTORS_SHA256 = "48156c8a226fdc32df7e06791fdc1b13fe7600f648943e700343ffc2a5e98eed"
 
 # the fake secrets behind the vector file's placeholders, assembled so no literal is key-shaped
 TOKENS = {
