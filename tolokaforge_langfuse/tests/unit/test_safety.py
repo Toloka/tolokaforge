@@ -477,6 +477,25 @@ class TestEscapedLineBreaks:
         ``.env`` file's own bytes would be, instead of the line passing the scan."""
         assert "dotenv-secret" in rules_in(escaped("A=1", "DB_PASSWORD=Xk3", "Qp9mZt2Lw8Rv"))
 
+    @pytest.mark.parametrize(
+        "unit",
+        ["\\na_key=f(", "\\nAPI_KEY_FILE=ab"],
+        ids=["code under a lower-case name", "a name that holds no secret"],
+    )
+    def test_reading_through_escaped_breaks_grows_linearly(self, unit: str) -> None:
+        """Every line start of the run is read on through its escape, for eight characters only:
+        reading to the end of the run from each would be quadratic. Each case is exempt, so the
+        scan goes on to the next line start. A ratio, not a wall-clock bound."""
+
+        def seconds(n: int) -> float:
+            payload = (unit * n).encode()
+            started = time.perf_counter()
+            SafetyGate().scan(payload)
+            return time.perf_counter() - started
+
+        small, large = seconds(4_000), seconds(16_000)
+        assert large < 8 * small + 0.05
+
     def test_a_url_password_holding_an_escape_still_fires(self) -> None:
         """An escape inside the password is part of it; only one that ends it ends the URL."""
         assert "url-credentials" in rules_in(dsn("u", "pa\\nss", "evilhost/x"))

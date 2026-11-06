@@ -139,9 +139,11 @@ SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
 
 # the shapes over raw bytes (a file, a media object, a span name): YAML and JSON write a line
 # break inside a double-quoted string as a `\n` or `\r` escape, so there a dotenv line may also
-# start after one and its value ends at one; a value shorter than eight characters before one is
-# read on through it, as a `.env` file's own bytes would be. A structured value keeps SHAPES over
-# its JSON: there every tool output's environment listing would otherwise read as dotenv lines
+# start after one and its value ends at one. A value shorter than eight characters before one is
+# read on through it, as a `.env` file's own bytes would be, for eight characters only: reading to
+# the end of the run from every line start would scan quadratically. A structured value keeps
+# SHAPES over its JSON: there every tool output's environment listing would otherwise read as
+# dotenv lines
 RAW_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = tuple(
     (
         (
@@ -149,7 +151,7 @@ RAW_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = tuple(
             re.compile(
                 rb"(?m)(?:^|(?<=\\n)|(?<=\\r))\s*(?:export\s+)?"
                 + _DOTENV_NAME
-                + rb"\s*=\s*['\"]?(?:(?:(?!(?<!\\)\\[nr])[^\s'\"#]){8,}|[^\s'\"#]{8,})"
+                + rb"\s*=\s*['\"]?(?:(?:(?!(?<!\\)\\[nr])[^\s'\"#]){8,}|[^\s'\"#]{8})"
             ),
         )
         if rule == "dotenv-secret"
