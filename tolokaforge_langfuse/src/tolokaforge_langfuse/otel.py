@@ -8,8 +8,10 @@ rides ambient context, and a full queue drops (counted) rather than blocking the
 Attribute names follow the Langfuse OpenTelemetry conventions so a Langfuse receiver renders the
 same trace the offline uploader produces; any OTLP collector still receives valid spans.
 
-Every live span is scanned by the data-safety gate before it is queued: one that would carry a
-secret is withheld and counted, never rewritten (docs/OBSERVABILITY.md, "Delivery").
+Every live span is scanned by the data-safety gate before it is queued: under ``secrets: reject``
+(the default) one that would carry a secret is withheld and counted, never rewritten; under
+``secrets: mask`` its secrets are replaced by ``MASKED`` and it is sent, stamped and counted
+(docs/OBSERVABILITY.md, "Delivery").
 
 **Two write shapes, chosen by the receiver's family** (detected once per run and passed in as
 ``server_api``):
@@ -30,6 +32,7 @@ secret is withheld and counted, never rewritten (docs/OBSERVABILITY.md, "Deliver
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
@@ -42,6 +45,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+import yaml
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
@@ -51,8 +55,9 @@ from opentelemetry.trace import SpanContext, SpanKind, Status, StatusCode, Trace
 from tolokaforge.core.redaction import SensitiveKeyRedaction
 from tolokaforge.observability import ids as _ids
 from tolokaforge.observability.observer import ExportReceipt, ModelRef, TrialIdentity
-from tolokaforge_langfuse.attachments import AttachCounts
+from tolokaforge_langfuse.attachments import AttachCounts, allowed_attachment, list_trial_files
 from tolokaforge_langfuse.costs import call_cost, call_record
+from tolokaforge_langfuse.gradings import content_fingerprint
 
 # the receiver families this observer writes for: `media` owns the names because the capability
 # probe lives there, and a run resolves its family there once, never from the version a receiver
@@ -75,11 +80,20 @@ from tolokaforge_langfuse.otlp_spans import (
 from tolokaforge_langfuse.projection import (
     PROJECTION_FULL,
     PROJECTION_GRADINGS,
+    SECRETS_MASKED_METADATA_KEY,
+    SECRETS_METADATA_KEY,
     ProjectionContext,
     build_projection,
 )
 from tolokaforge_langfuse.retry import Retrier, RetryStats
-from tolokaforge_langfuse.safety import Finding, SafetyGate, strings_in
+from tolokaforge_langfuse.safety import (
+    RULE_KNOWN,
+    Finding,
+    SafetyGate,
+    Screened,
+    SecretsPolicy,
+    strings_in,
+)
 from tolokaforge_langfuse.vocabulary import (
     ALL_DERIVED_GROUPS,
     NAME_AGENT,
@@ -455,7 +469,11 @@ class OTelTrialObserver:
         gate: SafetyGate | None = None,
         ambient: Sequence[str] = (),
         retry_stats: RetryStats | None = None,
+        secrets: SecretsPolicy | str = SecretsPolicy.REJECT,
     ) -> None:
+        secrets = SecretsPolicy(secrets)  # an unknown policy raises before anything is built
+        # what a unit that would carry a secret becomes: withheld (reject) or masked (mask)
+        self._secrets = secrets
         self._queue = queue
         self._attachments = attachments
         # what the retry policy did on every write route of the run (the plugin shares one)
@@ -469,35 +487,13 @@ class OTelTrialObserver:
         # on v4 the live rows go out only as declared previews, and only when asked for: a
         # preview stays beside its final row, and the receiver counts every row it holds
         self._previews = self._write_once and previews
-        self._write_once_counts = {
-            "previews": 0,
-            "error_roots": 0,
-            "final_observations": 0,
-            "roots_unconfirmed": 0,
-        }
+        self._start_the_counts()
         # the trials whose final root has not been written yet, by trace id: one of them gets an
         # error root at run end unless its bundle pass writes the real one
         self._roots_pending: dict[str, _PersistContext] = {}
-        self._grading_counts = {
-            "sent": 0,
-            "failed": 0,
-            "withheld": 0,
-            "scores": 0,
-            "users": 0,
-        }
-        self._projection_counts = {
-            "sent": 0,
-            "failed": 0,
-            "withheld": 0,
-            "observations": 0,
-            "events": 0,
-            "media_uploaded": 0,
-            "media_failed": 0,
-        }
         self._expect_project = expect_project
         self._project_verified = project_verified
         self._profile_version = profile_version
-        self._attach_counts = AttachCounts()
         # trial start, final status, the judge / user model names and the tags by trace id, kept
         # from trial_finished to trial_persisted: the manifest update re-sends start and status,
         # so the trace keeps its own timestamp and ends with the trial's status even when the
@@ -509,6 +505,9 @@ class OTelTrialObserver:
         self._session_id = session_id
         self._tags = tuple(tags)
         self._metadata = dict(metadata or {})
+        if secrets is SecretsPolicy.MASK:
+            # every trace of a masking run says so (the key is reserved: no caller sets it)
+            self._metadata[SECRETS_METADATA_KEY] = SecretsPolicy.MASK.value
         self._resource = Resource.create({"service.name": service_name})
         self._scope = _scope()
         self._max_chars = max(64, attribute_max_chars)
@@ -518,9 +517,6 @@ class OTelTrialObserver:
         # one gate for the run: its spans, its trial-end passes and (when the plugin wires it so)
         # its file attachments scan with it
         self._gate = gate if gate is not None else SafetyGate.from_environment()
-        self._spans_withheld = 0
-        # what withheld a span or a pass, by rule and variable name, for the run-end summary
-        self._withheld_by: Counter[str] = Counter()
         self._states: dict[str, _TrialState] = {}
         self._states_lock = threading.Lock()
         # the strings every span of the run carries by design: a known value one of them
@@ -528,6 +524,51 @@ class OTelTrialObserver:
         self._ambient = self._ambient_strings(ambient)
         self._left_out: set[str] = set()
         self._calibrate_gate()
+        if secrets is SecretsPolicy.MASK:
+            _log.warning(
+                "secrets=mask: a secret in a span, a trial-end pass or an attached file is "
+                "replaced by MASKED and sent; on a receiver that keeps the first write of a trace "
+                "the masked trace is final"
+            )
+
+    def _start_the_counts(self) -> None:
+        """Every count the receipt and the run-end warnings report, at zero."""
+        self._write_once_counts = {
+            "previews": 0,
+            "error_roots": 0,
+            "final_observations": 0,
+            "roots_unconfirmed": 0,
+        }
+        self._grading_counts = {
+            "sent": 0,
+            "failed": 0,
+            "withheld": 0,
+            "masked": 0,
+            "scores": 0,
+            "users": 0,
+        }
+        self._projection_counts = {
+            "sent": 0,
+            "failed": 0,
+            "withheld": 0,
+            "masked": 0,
+            "observations": 0,
+            "events": 0,
+            "media_uploaded": 0,
+            "media_failed": 0,
+        }
+        self._attach_counts = AttachCounts()
+        self._spans_withheld = 0
+        self._spans_masked = 0
+        # live spans a failing gate kept back under mask (a gate that raised, not a secret)
+        self._spans_failed = 0
+        # what withheld a span or a pass, by rule and variable name, for the run-end summary
+        self._withheld_by: Counter[str] = Counter()
+        # what was masked in a span or a pass, the same way
+        self._masked_by: Counter[str] = Counter()
+        # trial files (or a trial's events built ahead) not read for the values masked across
+        # their trial under mask: that trial's units may each miss a copy the others found
+        self._found_values_failed = 0
 
     # -- TrialObserver ---------------------------------------------------------------------------
 
@@ -601,6 +642,9 @@ class OTelTrialObserver:
             "langfuse.trace.metadata.run_tag": identity.run_tag,
             "langfuse.trace.metadata.status": "running",
             "langfuse.trace.metadata.trace_time_source": TRACE_TIME_SOURCE,
+            f"{TRACE_METADATA_PREFIX}{SECRETS_METADATA_KEY}": self._metadata.get(
+                SECRETS_METADATA_KEY
+            ),
         }
         self._emit(
             name=NAME_TRIAL,
@@ -914,16 +958,20 @@ class OTelTrialObserver:
         step = self._attachments
         budget = getattr(step, "budget", None)
         scope = budget() if callable(budget) else nullcontext()
+        # under mask, what a shape finds anywhere in the trial is masked in every unit of it
+        found = self._found_in_trial(identity, Path(trial_dir), persist)
         with scope:
             manifest: dict[str, Any] | None = None
             if getattr(step, "mode", "all") != "none":
                 with_manifest = getattr(step, "attach_with_manifest", None)
+                trial_values = {"also": found} if self._secrets is SecretsPolicy.MASK else {}
                 if callable(with_manifest):
                     counts, manifest = with_manifest(
                         identity.trace_id,
                         Path(trial_dir),
                         trace_timestamp=persist.started_at,
                         metadata={"status": persist.status} if persist.status else None,
+                        **trial_values,
                     )
                 else:
                     counts = step.attach(
@@ -935,11 +983,81 @@ class OTelTrialObserver:
                 with self._states_lock:
                     self._attach_counts.add(counts)
             if self._projection.mode == PROJECTION_FULL:
-                self._send_projection(identity, Path(trial_dir), persist, manifest)
+                self._send_projection(identity, Path(trial_dir), persist, manifest, found)
             elif self._projection.mode == PROJECTION_GRADINGS and self._gradings:
                 self._send_gradings(
-                    identity, Path(trial_dir), persist.judge_model, persist.user_model
+                    identity, Path(trial_dir), persist.judge_model, persist.user_model, found
                 )
+
+    def _found_in_trial(
+        self, identity: TrialIdentity, trial_dir: Path, persist: _PersistContext
+    ) -> frozenset[bytes]:
+        """Under ``secrets: mask``, the values a shape finds in the trial (see
+        :meth:`SafetyGate.found_values`): every unit of the trial masks them too. They are read
+        from the bundle's files and from the trial's events, built once ahead (without the
+        manifest and the media) when a pass will send them: the files go first, and a value only
+        an event shows (a file the events read but the step does not attach) is masked in them
+        too. What cannot be read is counted (``found_values_failed``): each unit still masks what
+        it holds, but may miss a copy another one found."""
+        if self._secrets is not SecretsPolicy.MASK:
+            return frozenset()
+        found: set[bytes] = set()
+        failed = 0
+        for path in list_trial_files(trial_dir):
+            if not allowed_attachment(path.name):
+                continue
+            try:
+                found |= self._gate.found_values(path.read_bytes())
+            except Exception as exc:  # noqa: BLE001 - each unit still masks what it holds
+                _log.warning("%s not read for the trial's found values: %s", path.name, exc)
+                failed += 1
+        if self._projection.mode in (PROJECTION_FULL, PROJECTION_GRADINGS):
+            try:
+                ahead = build_projection(
+                    identity,
+                    trial_dir,
+                    self._projection_context(identity, persist),
+                    resolver=self._resolver,
+                    manifest=None,
+                    media=None,
+                )
+                found |= self._gate.found_values(ahead.events)
+            except Exception as exc:  # noqa: BLE001 - the pass itself reports a bad bundle
+                _log.warning(
+                    "trace %s: events not built ahead for the trial's found values: %s",
+                    identity.trace_id,
+                    type(exc).__name__,
+                )
+                failed += 1
+        if failed:
+            with self._states_lock:
+                self._found_values_failed += failed
+        return frozenset(found)
+
+    def _masked_digests(self, trial_dir: Path, found: frozenset[bytes]) -> dict[str, str]:
+        """Under ``secrets: mask``, each digest the bundle's events carry of an unmasked file
+        (``env_sha256``, a grading's ``content_fingerprint``), mapped to the same digest of the
+        file as masked: the masked file shows everything around the secret, so the original's
+        hash would let a reader try candidates for it."""
+        digests: dict[str, str] = {}
+        env = trial_dir / "env.yaml"
+        if env.is_file():
+            raw = env.read_bytes()
+            masked = self._gate.screen(raw, policy=SecretsPolicy.MASK, also=found).value
+            digests[hashlib.sha256(raw).hexdigest()] = hashlib.sha256(masked).hexdigest()
+        grade_path = trial_dir / "grade.yaml"
+        if grade_path.is_file():
+            try:
+                grade = yaml.safe_load(grade_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, yaml.YAMLError):
+                # the projection reads it the same way and carries no grading for it
+                grade = None
+            if isinstance(grade, Mapping):
+                masked_grade = self._gate.screen_structured(
+                    grade, policy=SecretsPolicy.MASK, also=found
+                ).value
+                digests[content_fingerprint(grade)] = content_fingerprint(masked_grade)
+        return {before: after for before, after in digests.items() if before != after}
 
     def _trial_tags(self, identity: TrialIdentity, persist: _PersistContext) -> tuple[str, ...]:
         """The trace's tags for the trial-end pass: what the trial started with, else rebuilt
@@ -952,25 +1070,12 @@ class OTelTrialObserver:
                 tags.append(tag)
         return tuple(tags)
 
-    def _send_projection(
-        self,
-        identity: TrialIdentity,
-        trial_dir: Path,
-        persist: _PersistContext,
-        manifest: Mapping[str, Any] | None,
-    ) -> None:
-        """The persisted bundle's default projection (``projection``): the same
-        records the offline connector writes, under the contract ids, through the ingestion
-        API. A bundle that cannot be projected, a data-safety hit over the serialised events
-        or a refused batch is a counted failure, never an exception."""
-        step = self._attachments
-        assert step is not None
-        if getattr(step, "tripped", False):
-            with self._states_lock:
-                self._projection_counts["failed"] += 1
-            return
+    def _projection_context(
+        self, identity: TrialIdentity, persist: _PersistContext
+    ) -> ProjectionContext:
+        """What the run adds to a trial's bundle for its trial-end projection."""
         settings = self._projection
-        context = ProjectionContext(
+        return ProjectionContext(
             label=self._label,
             session_id=self._session_id,
             tags=self._trial_tags(identity, persist),
@@ -979,18 +1084,38 @@ class OTelTrialObserver:
             release=settings.release,
             version=settings.version,
             producer=settings.producer,
-            attach_mode=str(getattr(step, "mode", "all")),
+            attach_mode=str(getattr(self._attachments, "mode", "all")),
             grades=self._gradings,
             derived_groups=settings.derived_groups,
             trace_name=settings.trace_name,
             trace_user=settings.trace_user,
         )
+
+    def _send_projection(
+        self,
+        identity: TrialIdentity,
+        trial_dir: Path,
+        persist: _PersistContext,
+        manifest: Mapping[str, Any] | None,
+        found: frozenset[bytes] = frozenset(),
+    ) -> None:
+        """The persisted bundle's default projection (``projection``): the same
+        records the offline connector writes, under the contract ids, through the ingestion
+        API. A bundle that cannot be projected, a data-safety hit over the serialised events
+        (what masking left behind under ``secrets: mask``) or a refused batch is a counted
+        failure, never an exception."""
+        step = self._attachments
+        assert step is not None
+        if getattr(step, "tripped", False):
+            with self._states_lock:
+                self._projection_counts["failed"] += 1
+            return
         media = getattr(step, "register_media", None)
         try:
             projection = build_projection(
                 identity,
                 trial_dir,
-                context,
+                self._projection_context(identity, persist),
                 resolver=self._resolver,
                 manifest=manifest,
                 media=media if callable(media) else None,
@@ -1004,11 +1129,14 @@ class OTelTrialObserver:
             with self._states_lock:
                 self._projection_counts["failed"] += 1
             return
-        verdict = self._withheld_by_the_gate(projection.events, identity.trace_id, "projection")
+        verdict, events, masked = self._screen_events(
+            projection.events, identity.trace_id, "projection", trial_dir, found
+        )
         if verdict is not None:
             with self._states_lock:
                 self._projection_counts[verdict] += 1
             return
+        projection.events = events
         note = getattr(step, "note_trial_outcome", None)
         scores_sent = True
         if self._write_once:
@@ -1040,6 +1168,7 @@ class OTelTrialObserver:
         stats = projection.stats
         with self._states_lock:
             self._projection_counts["sent"] += 1
+            self._projection_counts["masked"] += int(masked)
             self._projection_counts["observations"] += stats.observations
             self._projection_counts["events"] += stats.events
             self._projection_counts["media_uploaded"] += stats.media_uploaded
@@ -1050,6 +1179,60 @@ class OTelTrialObserver:
             if scores_sent:
                 self._grading_counts["scores"] += stats.scores
             self._grading_counts["users"] += stats.user_generations
+
+    def _screen_events(
+        self,
+        events: list[dict[str, Any]],
+        trace_id: str,
+        what: str,
+        trial_dir: Path,
+        found: frozenset[bytes],
+    ) -> tuple[str | None, list[dict[str, Any]], bool]:
+        """A pass's events under the run's policy: ``(None or the counter that takes a pass that
+        may not go, the events to send, whether anything was masked)``. Under ``mask`` every
+        event is masked on its own (a masked body says what in ``metadata.secrets_masked``), the
+        digests of a masked file are those of its masked form, and what masking left behind, or
+        a gate that failed, keeps the whole pass back."""
+        if self._secrets is SecretsPolicy.REJECT:
+            return self._withheld_by_the_gate(events, trace_id, what), events, False
+        sent: list[dict[str, Any]] = []
+        causes: list[str] = []
+        try:
+            # the digests describe the files as attached: masked with the trial files' values
+            digests = self._masked_digests(trial_dir, found)
+            # a value one event shows in a shape is masked where it stands bare in another
+            found = found | self._gate.found_values(events)
+            for event in events:
+                screened = self._gate.screen_structured(
+                    event, policy=SecretsPolicy.MASK, also=found
+                )
+                if screened.findings:
+                    withheld = _causes(screened.findings)
+                    with self._states_lock:
+                        self._withheld_by.update(withheld)
+                    _log.warning(
+                        "%s: trace %s not sent, masking left a secret in the events: %s",
+                        what,
+                        trace_id,
+                        ", ".join(withheld),
+                    )
+                    return "withheld", events, False
+                value = screened.value
+                if screened.masked:
+                    causes += _masked_causes(screened)
+                    _stamp(value, dict(sorted(screened.masked.items())))
+                sent.append(value)
+            if digests:
+                sent = _replaced(sent, digests)
+        except Exception as exc:  # noqa: BLE001 - a pass the gate could not screen stays here
+            _log.warning("%s: trace %s not screened: %s", what, trace_id, type(exc).__name__)
+            return "failed", events, False
+        if causes:
+            named = list(dict.fromkeys(causes))
+            with self._states_lock:
+                self._masked_by.update(named)
+            _log.warning("%s: trace %s sent masked: %s", what, trace_id, ", ".join(named))
+        return None, sent, bool(causes)
 
     def _withheld_by_the_gate(
         self, events: list[dict[str, Any]], trace_id: str, what: str
@@ -1147,6 +1330,7 @@ class OTelTrialObserver:
         trial_dir: Path,
         judge_name: str | None,
         user_name: str | None,
+        found: frozenset[bytes] = frozenset(),
     ) -> None:
         """The bundle's grading, judge transcript, scores and simulated user turns as ingestion
         events under the shared id contract (``gradings``; the ``gradings`` projection
@@ -1173,13 +1357,15 @@ class OTelTrialObserver:
         if self._projection.environment is not None:
             for event in built.events:
                 event["body"].setdefault("environment", self._projection.environment)
-        verdict = self._withheld_by_the_gate(built.events, identity.trace_id, "gradings")
+        verdict, events, masked = self._screen_events(
+            built.events, identity.trace_id, "gradings", trial_dir, found
+        )
         if verdict is not None:
             with self._states_lock:
                 self._grading_counts[verdict] += 1
             return
         try:
-            self._attachments.ingest(built.events)  # type: ignore[union-attr]
+            self._attachments.ingest(events)  # type: ignore[union-attr]
         except Exception as exc:  # noqa: BLE001 - the observability layer only warns
             reason = str(exc) if type(exc).__name__ == "LangfuseApiError" else type(exc).__name__
             _log.warning("gradings: trace %s not sent: %s", identity.trace_id, reason)
@@ -1189,6 +1375,7 @@ class OTelTrialObserver:
         with self._states_lock:
             if built.grading_id:
                 self._grading_counts["sent"] += 1
+                self._grading_counts["masked"] += int(masked)
             self._grading_counts["scores"] += built.scores
             self._grading_counts["users"] += built.user_generations
 
@@ -1203,6 +1390,8 @@ class OTelTrialObserver:
         if self._write_once:
             self._count_roots_left_unconfirmed(decided)
         self._warn_of_what_was_withheld()
+        self._warn_of_what_was_masked()
+        self._say_what_was_exempted()
         with self._states_lock:
             self._persist.clear()  # trials that were never announced
             self._roots_pending.clear()
@@ -1237,6 +1426,19 @@ class OTelTrialObserver:
                 # live spans the data-safety gate withheld (neither queued nor dropped); a
                 # trial-end pass it withheld is counted as ``*_refused_secret``, not ``*_failed``
                 "langfuse.spans_refused_secret": self._spans_withheld,
+                # live spans kept back because the gate failed on them (``secrets: mask``)
+                "langfuse.spans_failed": self._spans_failed,
+                # what ``secrets: mask`` sent masked; each a part of its sent / registered count
+                "langfuse.spans_masked": self._spans_masked,
+                "langfuse.projections_masked": self._projection_counts["masked"],
+                "langfuse.gradings_masked": self._grading_counts["masked"],
+                "langfuse.attachments_masked": counts.masked,
+                # trial files (or a trial's events built ahead) not read for the values masked
+                # across their trial: those trials may have sent a copy unmasked
+                "langfuse.found_values_failed": self._found_values_failed,
+                # matches the gate exempted as committed fixture data (a fixture DSN, GPG_KEY, a
+                # dotenv name that holds no secret, code under a lower-case name)
+                "langfuse.gate_exempted": sum(self._gate.exempted.values()),
                 # what the retry policy did, over the span export and the trial-end calls
                 **{f"langfuse.{key}": value for key, value in self._retry_stats.counts().items()},
             },
@@ -1247,6 +1449,7 @@ class OTelTrialObserver:
                     "project_verified": self._project_verified,
                     "server_api": self._server_api,
                     "previews": "on" if self._previews else "off",
+                    "secrets": self._secrets.value,
                     # the receiver's native environment and the deployment profile of the run
                     "environment": self._projection.environment,
                     "profile_version": self._profile_version,
@@ -1315,6 +1518,9 @@ class OTelTrialObserver:
                     f"{TRACE_METADATA_PREFIX}error": self._cap(reason),
                     f"{TRACE_METADATA_PREFIX}label": self._label,
                     f"{TRACE_METADATA_PREFIX}trace_time_source": TRACE_TIME_SOURCE,
+                    f"{TRACE_METADATA_PREFIX}{SECRETS_METADATA_KEY}": (
+                        SecretsPolicy.MASK.value if self._secrets is SecretsPolicy.MASK else None
+                    ),
                     f"{OBSERVATION_METADATA_PREFIX}kind": "root",
                     f"{OBSERVATION_METADATA_PREFIX}error_root": True,
                 },
@@ -1474,7 +1680,12 @@ class OTelTrialObserver:
         """Queue one span; False when it was withheld (a secret) or the queue was full. Every live
         span of every kind leaves through here."""
         attrs = {k: v for k, v in attributes.items() if v is not None}
-        if self._carries_secret(name, identity, span_id, attrs):
+        if self._secrets is SecretsPolicy.MASK:
+            masked = self._masked_span(name, identity, span_id, attrs)
+            if masked is None:
+                return False
+            name, attrs = masked
+        elif self._carries_secret(name, identity, span_id, attrs):
             return False
         trace_int = int(identity.trace_id, 16)
         context = SpanContext(
@@ -1541,6 +1752,67 @@ class OTelTrialObserver:
         )
         return True
 
+    def _masked_span(
+        self, name: str, identity: TrialIdentity, span_id: str, attributes: Mapping[str, Any]
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Under ``secrets: mask``: the span's name and attributes masked and stamped with what
+        was masked, or None when the span is withheld (what masking left behind, or a gate that
+        failed). The warnings name the masked name, the rules and the variables, never a value."""
+        try:
+            screened = self._gate.screen_structured(
+                {"name": name, "attributes": attributes}, policy=SecretsPolicy.MASK
+            )
+        except Exception as exc:  # noqa: BLE001 - a span the gate could not screen stays here
+            with self._states_lock:
+                self._spans_failed += 1
+            _log.warning(
+                "span (%s) of trace %s not exported, the data-safety gate failed: %s",
+                span_id,
+                identity.trace_id,
+                type(exc).__name__,
+            )
+            return None
+        masked_name = str(screened.value["name"])
+        if screened.findings:
+            causes = _causes(screened.findings)
+            with self._states_lock:
+                self._spans_withheld += 1
+                self._withheld_by.update(causes)
+            # what masking left may be in the name itself: it is shown only when masking did not
+            # touch it and it is clean
+            shown = (
+                masked_name
+                if masked_name == name
+                and not self._gate.scan(masked_name.encode("utf-8", "replace"))
+                else "(name withheld)"
+            )
+            _log.warning(
+                "span %r (%s) of trace %s not exported, masking left a secret in it: %s",
+                shown,
+                span_id,
+                identity.trace_id,
+                ", ".join(causes),
+            )
+            return None
+        if not screened.masked:
+            return name, dict(attributes)
+        causes = _masked_causes(screened)
+        attrs = dict(screened.value["attributes"])
+        attrs[f"{OBSERVATION_METADATA_PREFIX}{SECRETS_MASKED_METADATA_KEY}"] = json.dumps(
+            dict(sorted(screened.masked.items()))
+        )
+        with self._states_lock:
+            self._spans_masked += 1
+            self._masked_by.update(causes)
+        _log.warning(
+            "span %r (%s) of trace %s exported masked: %s",
+            masked_name,
+            span_id,
+            identity.trace_id,
+            ", ".join(causes),
+        )
+        return masked_name, attrs
+
     def _ambient_strings(self, extra: Sequence[str]) -> tuple[str, ...]:
         """What every span of the run carries by design: its session, label and tags, the
         caller's metadata, the receiver's native fields, and the run's id and tag (``extra``)."""
@@ -1599,14 +1871,59 @@ class OTelTrialObserver:
         """One warning at run end when the gate withheld anything: the per-span lines say which,
         this one says that the run's traces are incomplete and why, by rule and variable."""
         passes = self._projection_counts["withheld"], self._grading_counts["withheld"]
-        if not (self._spans_withheld or any(passes)):
+        if self._spans_withheld or any(passes):
+            _log.warning(
+                "live tracing withheld %d span(s), %d projection pass(es) and %d gradings "
+                "pass(es) that would have carried a secret (%s); the traces of this run are "
+                "incomplete",
+                self._spans_withheld,
+                *passes,
+                ", ".join(f"{c} x{n}" for c, n in self._withheld_by.most_common(5)),
+            )
+        if self._spans_failed:
+            _log.warning(
+                "live tracing withheld %d span(s) the data-safety gate failed on; the traces of "
+                "this run are incomplete",
+                self._spans_failed,
+            )
+
+    def _warn_of_what_was_masked(self) -> None:
+        """One warning at run end when ``secrets: mask`` replaced anything: what was sent masked,
+        by rule and variable (a variable named here masks in every unit that holds its value);
+        and one when a trial's values could not all be read, so its units may have missed a copy."""
+        if self._found_values_failed:
+            _log.warning(
+                "%d trial file(s) or event pass(es) were not read for the values masked across "
+                "their trial; those trials may have sent a copy of a secret unmasked where another "
+                "of their units showed it",
+                self._found_values_failed,
+            )
+        passes = self._projection_counts["masked"], self._grading_counts["masked"]
+        files = self._attach_counts.masked
+        if not (self._spans_masked or any(passes) or files):
             return
         _log.warning(
-            "live tracing withheld %d span(s), %d projection pass(es) and %d gradings pass(es) "
-            "that would have carried a secret (%s); the traces of this run are incomplete",
-            self._spans_withheld,
+            "live tracing sent %d span(s), %d projection pass(es), %d gradings pass(es) and %d "
+            "file(s) masked (%s)",
+            self._spans_masked,
             *passes,
-            ", ".join(f"{cause} x{count}" for cause, count in self._withheld_by.most_common(5)),
+            files,
+            ", ".join(f"{cause} x{count}" for cause, count in self._masked_by.most_common(8)),
+        )
+
+    def _say_what_was_exempted(self) -> None:
+        """One line at run end when the gate passed a credential-shaped match as committed fixture
+        data (a local fixture DSN, the ``python`` image's ``GPG_KEY`` fingerprint, a dotenv name
+        that holds no secret or code under a lower-case name), by rule: an operator can tell what
+        went out unchecked by value."""
+        exempted = dict(self._gate.exempted)
+        if not exempted:
+            return
+        _log.warning(
+            "the data-safety gate passed match(es) it exempts as committed fixture data (%s): "
+            "local fixture DSNs, the GPG_KEY fingerprint, dotenv names that hold no secret, code "
+            "under a lower-case name",
+            ", ".join(f"{rule} x{count}" for rule, count in sorted(exempted.items())),
         )
 
     def _redact(self, mapping: Any) -> Any:
@@ -1664,6 +1981,44 @@ class OTelTrialObserver:
 def _causes(findings: Sequence[Finding]) -> list[str]:
     """What the gate found, by rule and variable name, once each and never a value."""
     return list(dict.fromkeys(finding.describe() for finding in findings))
+
+
+def _stamp(event: Any, masked: Mapping[str, int]) -> None:
+    """Say on a masked event's body what was masked, in its metadata (``secrets_masked``)."""
+    body = event.get("body") if isinstance(event, dict) else None
+    if not isinstance(body, dict):
+        return
+    metadata = body.get("metadata")
+    if metadata is None:
+        body["metadata"] = {SECRETS_MASKED_METADATA_KEY: dict(masked)}
+    elif isinstance(metadata, dict):
+        body["metadata"] = {**metadata, SECRETS_MASKED_METADATA_KEY: dict(masked)}
+
+
+def _replaced(value: Any, strings: Mapping[str, str]) -> Any:
+    """``value`` with every string that is a key of ``strings`` replaced by its value."""
+    if isinstance(value, str):
+        return strings.get(value, value)
+    if isinstance(value, dict):
+        return {key: _replaced(item, strings) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replaced(item, strings) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_replaced(item, strings) for item in value)
+    return value
+
+
+def _masked_causes(screened: Screened) -> list[str]:
+    """What a mask replaced, by rule, a known value with the variables it came from; never a
+    value."""
+    return [
+        (
+            f"{rule} from {', '.join(screened.sources)}"
+            if rule == RULE_KNOWN and screened.sources
+            else rule
+        )
+        for rule in sorted(screened.masked)
+    ]
 
 
 def _content(message: Any) -> str:

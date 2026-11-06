@@ -852,9 +852,11 @@ class TestTheSentinel:
             "api_key = os.environ.get('X')\n"
             "total_tokens = response.usage.total_tokens\n"
             "GPG_KEY=0123456789ABCDEF0123456789ABCDEF01234567\n"
+            "DB_PASSWORD=hunter2hunter\n"
         )
         gate = safety.SafetyGate()
-        assert gate.scan(code.encode())  # a raw line is what the dotenv shape reads
+        # a raw line is what the dotenv shape reads
+        assert [f.rule for f in gate.scan(code.encode())] == ["dotenv-secret"]
         assert gate.scan_structured({"output": code, "messages": [{"content": code}]}) == []
 
     def test_a_shape_in_a_structured_value_is_still_found_in_its_json(self) -> None:
@@ -1260,3 +1262,52 @@ class TestTheFileList:
 
     def test_a_file_is_its_own_list(self) -> None:
         assert tr.transcript_files(CLEAN) == [CLEAN]
+
+
+class TestScrub:
+    """``scrub`` removes every credential shape from the whole text first and cuts at the cap
+    after: a cap that falls inside a key cannot leave a part of it the shapes no longer see."""
+
+    LEAD = "a" * 90 + " "
+    TAIL = " end of the tool output"
+    PREFIX = "sk-" + "ant-"
+
+    def key(self) -> str:
+        """25 characters after the prefix: an ``anthropic-key``, too short for ``openai-key``."""
+        return self.PREFIX + "FakeKeyBody" + "A" * 14
+
+    def test_a_cut_key_leaves_nothing(self) -> None:
+        key = self.key()
+        text = self.LEAD + key + self.TAIL
+        cap = len(self.LEAD) + len(self.PREFIX) + 10
+        # the premise: cut first, the ten characters left after the prefix are no key shape
+        assert safety.SafetyGate().scan(text[:cap].encode()) == []
+        scrubbed, removed = tr.scrub(text, max_chars=cap)
+        assert "anthropic-key" in removed
+        body = key[len(self.PREFIX) :]
+        assert not [body[i : i + 4] for i in range(len(body) - 3) if body[i : i + 4] in scrubbed]
+        assert scrubbed.startswith(self.LEAD)
+        # the marker counts what the masked text holds past the cap: 91 + 24 + 23 - 108
+        assert scrubbed.endswith("... [30 more characters]")
+
+    def test_a_lower_case_secret_line_is_still_removed(self) -> None:
+        """The scrub reads dotenv names in any case, as the gate does, and has none of its
+        exemptions: it removes more, not less."""
+        value = "fakelowercasevalue"
+        scrubbed, removed = tr.scrub(f"db_token={value}\nnext line")
+        assert "dotenv-secret" in removed
+        assert value not in scrubbed and "next line" in scrubbed
+
+    def test_a_long_text_scrubs_in_linear_time(self) -> None:
+        """A ratio, not a wall-clock bound, so a busy runner cannot flake."""
+        import time
+
+        def seconds(repeats: int) -> tuple[float, str]:
+            text = ("a" * 1997 + "KEY ") * repeats
+            started = time.perf_counter()
+            scrubbed, _ = tr.scrub(text)
+            return time.perf_counter() - started, scrubbed
+
+        (small, _), (large, scrubbed) = seconds(125), seconds(500)
+        assert large < 8 * small + 0.05
+        assert scrubbed.endswith("more characters]")

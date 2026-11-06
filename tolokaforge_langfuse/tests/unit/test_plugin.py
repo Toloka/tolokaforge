@@ -1046,3 +1046,162 @@ def test_incompatible_plugin_contract_is_rejected_at_start(monkeypatch, offered)
     monkeypatch.setattr(factory, "PLUGIN_API_VERSION", offered)
     with pytest.raises(TracingConfigError, match="speaks trial-observer API v4"):
         check_engine_api()
+
+
+class TestSecretsOption:
+    """``observability.tracing.options.langfuse.secrets``: ``reject`` (the default) withholds a
+    unit that would carry a secret, ``mask`` masks it and sends it. The plugin hands the policy
+    to every site; the outcomes, not the wiring, show that it arrived."""
+
+    MANAGED = "managed-credential-value"
+    PROVIDER_KEY = "sk-" + "or-" + "v1-" + "0123456789abcdef" * 4
+
+    @pytest.fixture(autouse=True)
+    def managed_credential(self, monkeypatch) -> None:
+        from tolokaforge.secrets import DictProvider, SecretManager
+
+        monkeypatch.setattr(
+            "tolokaforge.secrets.manager._default_manager",
+            SecretManager([DictProvider({"ACME_API_KEY": self.MANAGED})]),
+        )
+
+    @staticmethod
+    def _built(tmp_path: Path, policy: str, **langfuse):
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/v1/traces",
+                options={"langfuse": {"attach": "none", "secrets": policy, **langfuse}},
+            )
+        )
+        return build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
+
+    @staticmethod
+    def _receiver(monkeypatch) -> dict[str, list[bytes]]:
+        """The receiver's REST routes, faked at the attachment step's opener."""
+        from tolokaforge_langfuse import media
+
+        sent: dict[str, list[bytes]] = {"ingestion": [], "uploads": []}
+
+        def opener(method, url, headers, body, timeout):
+            if method == "POST" and url.endswith("/api/public/media"):
+                answer = {"mediaId": "m1", "uploadUrl": "https://store.example/m1?sig=x"}
+                return 201, json.dumps(answer).encode()
+            if method == "PUT":
+                sent["uploads"].append(body)
+                return 201, b""
+            if method == "PATCH":
+                return 200, b"{}"
+            if url.endswith("/api/public/ingestion"):
+                sent["ingestion"].append(body)
+            return 207, b'{"successes": [], "errors": []}'
+
+        monkeypatch.setattr(media, "urllib_opener", opener)
+        return sent
+
+    def test_the_default_is_reject_and_mask_is_accepted(self) -> None:
+        assert LangfuseConfig().secrets == "reject"
+        assert LangfuseConfig(secrets="mask").secrets == "mask"
+
+    def test_any_other_value_is_refused_naming_the_field_and_the_values(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as raised:
+            LangfuseConfig(secrets="drop")
+        text = str(raised.value)
+        assert "secrets" in text and "reject" in text and "mask" in text
+
+    def test_the_plugin_refuses_it_before_anything_starts(self, monkeypatch) -> None:
+        from tolokaforge_langfuse.plugin import build
+
+        monkeypatch.delenv("LANGFUSE_TRACING_ENABLED", raising=False)
+        config = TracingConfig(exporter="otlp", options={"langfuse": {"secrets": "drop"}})
+        with pytest.raises(TracingConfigError) as raised:
+            build(config, RunIdentity("run-1"), engine_run_id="run-1")
+        assert "secrets" in str(raised.value) and "mask" in str(raised.value)
+
+    @pytest.mark.parametrize(("policy", "masked", "withheld"), [("mask", 1, 0), ("reject", 0, 1)])
+    def test_the_policy_reaches_the_live_spans(
+        self, tmp_path: Path, policy: str, masked: int, withheld: int
+    ) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        from datetime import datetime
+
+        from tolokaforge.core.models import ToolCall
+        from tolokaforge.observability.observer import TrialIdentity
+        from tolokaforge.tools.registry import ToolResult
+
+        observer, run = self._built(tmp_path, policy)
+        now = datetime(2026, 10, 1, tzinfo=UTC)
+        trial = TrialIdentity(
+            run_id=run.run_id, task_id="T-1", trial_index=0, attempt_id=0, run_tag=run.run_tag
+        )
+        observer.tool_call(
+            trial,
+            role="agent",
+            index=1,
+            call=ToolCall(id="c1", name="shell", arguments={}),
+            result=ToolResult(success=True, output=f"the config says {self.MANAGED}"),
+            started_at=now,
+            ended_at=now,
+        )
+        receipt = observer.run_finished()
+        assert receipt.extra["langfuse.spans_masked"] == masked
+        assert receipt.extra["langfuse.spans_refused_secret"] == withheld
+        assert receipt.spans_queued == masked
+        assert receipt.details[0]["secrets"] == policy
+
+    def test_the_policy_reaches_the_trial_end_pass(self, monkeypatch, tmp_path: Path) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        import parity_bundle as pb
+        import yaml
+
+        from tolokaforge.observability.observer import TrialIdentity
+
+        sent = self._receiver(monkeypatch)
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        trajectory = pb.trajectory()
+        trajectory["messages"][5]["content"] = f"the password is {self.MANAGED}"
+        (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), encoding="utf-8")
+        observer, run = self._built(tmp_path, "mask")
+        trial = TrialIdentity(
+            run_id=run.run_id, task_id=pb.TASK_ID, trial_index=0, attempt_id=0, run_tag=run.run_tag
+        )
+        observer.trial_persisted(trial, trial_dir=trial_dir)
+        receipt = observer.run_finished()
+        assert receipt.extra["langfuse.projections_masked"] == 1
+        assert receipt.extra["langfuse.projections_sent"] == 1
+        body = b"".join(sent["ingestion"])
+        assert body and self.MANAGED.encode() not in body and b"MASKED" in body
+
+    def test_the_policy_reaches_the_attachment_step(self, monkeypatch, tmp_path: Path) -> None:
+        from tolokaforge_langfuse.plugin import build_attachments
+        from tolokaforge_langfuse.safety import SafetyGate
+
+        sent = self._receiver(monkeypatch)
+        trial = tmp_path / "trial"
+        trial.mkdir()
+        (trial / "task.yaml").write_text(f"note: use {self.PROVIDER_KEY}\n")
+        step = build_attachments(
+            LangfuseConfig(attach="core", secrets="mask"),
+            endpoint="https://lf.example/api/public/otel/v1/traces",
+            gate=SafetyGate(),
+        )
+        counts = step.attach("a" * 32, trial)
+        assert (counts.registered, counts.skipped, counts.masked) == (1, 0, 1)
+        (upload,) = sent["uploads"]
+        assert b"MASKED" in upload and self.PROVIDER_KEY.encode() not in upload
+
+    def test_a_mask_run_says_so_at_its_start(self, tmp_path: Path, caplog) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        with caplog.at_level("INFO", logger="tolokaforge_langfuse"):
+            observer, _ = self._built(tmp_path, "mask")
+        observer.run_finished()
+        assert [r for r in caplog.records if "mask" in r.getMessage().lower()]
+
+    def test_a_reject_run_says_nothing_of_masking(self, tmp_path: Path, caplog) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        with caplog.at_level("INFO", logger="tolokaforge_langfuse"):
+            observer, _ = self._built(tmp_path, "reject")
+            observer.run_finished()
+        assert not [r for r in caplog.records if "mask" in r.getMessage().lower()]

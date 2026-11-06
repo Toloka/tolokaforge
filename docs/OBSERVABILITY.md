@@ -166,12 +166,13 @@ subdirectories (video, `services/`) are not attachments. `attach: all` (default)
 `core` only `task.yaml`, `prompts.yaml`, `tools_schemas.yaml`, `logs.yaml`, `grade.yaml`, `none`
 nothing. The trace metadata then carries **manifest v2**, the same document the offline
 `langfuse-connector` writes, so `langfuse-connector download` rebuilds the directory byte-exact
-from either producer:
+from either producer; under `secrets: mask` a masked file is rebuilt as it was sent, masked:
 
 ```
 attachments_schema: 2
 attachments: {<file name>: {media_id, media, sha256, stored_sha256, bytes, stored_bytes,
-                            content_type, encoding: none | gzip}}
+                            content_type, encoding: none | gzip,
+                            masked: {<rule>: <count>}}}   # masked: only on a masked file
 attachments_complete: true | false
 attachments_skipped: [{name, rule}]
 ```
@@ -179,8 +180,12 @@ attachments_skipped: [{name, rule}]
 Before a file leaves, its bytes are scanned with the run's data-safety gate (§ Delivery): the
 credential values the process holds and the key-shaped patterns of the connector's data-safety
 gate (dotenv secrets, `Authorization` headers, PEM blocks, URL credentials, provider key prefixes,
-JWTs, secret-named fields); a hit skips the file, names it in `attachments_skipped` and leaves
-`attachments_complete: false`. Bytes are never rewritten. The REST base URL derives from the OTLP
+JWTs, secret-named fields). Under `secrets: reject` (the default) a hit skips the file, names it in
+`attachments_skipped` and leaves `attachments_complete: false`; bytes are never rewritten. Under
+`secrets: mask` the file's secrets are replaced, the file is encoded again from the masked bytes
+and its entry gets `masked`; `sha256`, `bytes`, `stored_sha256` and `stored_bytes` describe the
+masked bytes, a masked file counts as attached, and a file masking cannot clean, or that no longer
+parses as the YAML or JSON it was, is skipped as under `reject`. The REST base URL derives from the OTLP
 endpoint (`attach_api_base` overrides it), the headers are `OTEL_EXPORTER_OTLP_HEADERS`, each
 request has `attach_timeout_s`; the step runs in the trial's thread once the trial is over and
 never raises. A request the receiver refused without reading it goes again within the trial's
@@ -312,7 +317,7 @@ keeps the stock retrying exporter. The consequences are visible in the receipt:
   before writing). A root whose batch was still waiting out a refusal when the error roots were
   decided, and had not landed when the run ended, is counted the same way.
 
-The error root itself carries nine of the trace metadata schema's keys, not the full 34: it is
+The error root itself carries nine of the trace metadata schema's keys, not the full 36: it is
 deliberately minimal (identity, status, the reason, the label and the time source), so a reader
 that groups by `model_name` or by a verdict key does not see the failed trials at all. Look for
 `status: error` or the `error_root` marker in the observation's own metadata.
@@ -332,7 +337,7 @@ The decision, the options it was chosen over and its consequences are
 
 ## The trace metadata
 
-A trace's metadata is a fixed, flat schema of 34 keys plus the caller's per-run keys, identical
+A trace's metadata is a fixed, flat schema of 36 keys plus the caller's per-run keys, identical
 from the trial-end pass and from the offline uploader (`tolokaforge_langfuse.projection.schema_keys()`):
 
 | Group | Keys |
@@ -343,7 +348,12 @@ from the trial-end pass and from the offline uploader (`tolokaforge_langfuse.pro
 | verdict | `primary_grading`, `gradings`, `grading_count`, `pass`, `score`, `judge_status` |
 | usage | `cost_usd`, `tokens_input`, `tokens_output`, `turns`, `tool_calls`, `latency_total_s` |
 | models | `model_name`, `user_model`, `judge_model` |
-| bookkeeping | `upload_mode`, `uploader_version`, `trace_time_source` |
+| bookkeeping | `upload_mode`, `uploader_version`, `trace_time_source`, `secrets`, `secrets_masked` |
+
+`secrets` is written only on the traces of a `secrets: mask` run and `secrets_masked` only on a
+masked unit (§ Delivery), but both names are reserved under either policy. `schema_keys()` also
+reserves the keys the live root span adds and the receiver writes (`generations_observed`,
+`tool_calls_observed`, `error`, `attributes`, `resourceAttributes`, `scope`).
 
 Everything else a bundle says lives where a reader looks for it, not in the trace's metadata: the
 task facts, the model configurations, the environment identity and the redaction stamp in the
@@ -634,6 +644,21 @@ sends nothing unscanned.
   label, tags, metadata, environment, release) rides on every span by design: `ACME_TOKEN=tolokaforge`
   against the tag `harness:tolokaforge`. One such variable would withhold the whole run, so the gate
   leaves the value out and logs a warning naming the variable, never the value.
+- **What is exempt.** Two shapes leave committed fixture data alone: a database URL to a loopback
+  address or a compose service the task sets name (`db`, `postgres`) whose password is its user
+  name, at most twelve characters of one class, with nothing after the host that could lead
+  elsewhere (no later `@`, no host list, no `host`, `hostaddr` or `service` parameter); and
+  `GPG_KEY` with exactly 40 hex characters, the public fingerprint the `python` Docker image sets.
+  Any other single label (`prod-db`) is completed by the reader's resolver, so it is not known to be
+  local. The URL alone is read: a `PGHOST` set elsewhere can still send the pair to another server.
+  A dotenv line is read with its name in any case; it passes when the name holds no secret (`*_FILE`,
+  `*_PATH`, `*_URL`, `PWD`, `OLDPWD`, ...), or when the name is not in upper case and the value's
+  whole line, a trailing comment aside, is code: a call, an index, a list or mapping literal or an
+  attribute path (`txn_key = compute(x)`, `total_tokens = response.usage.total_tokens`), or a call
+  whose arguments go on in the next line. A comma or a bracket inside a value does not make it code
+  (`db_password=Xk3,Qp9...` fires), and a line of 1024 bytes or more is not read as code. Over raw
+  bytes (a file) a dotenv line may also start after a `\n` escape. The gate counts what it
+  exempted (`gate_exempted`), and at run end one warning names it, by rule.
 - **What is looked for, and where.** The key-shaped patterns of § Attachments run over the span (or
   the events) serialised as JSON, as they always did over the bundle's events. The credential values
   run over the serialised JSON and over every raw string in it, in the forms JSON gives them: JSON
@@ -643,15 +668,39 @@ sends nothing unscanned.
   line-anchored one would stop ordinary code such as `api_key = os.environ.get(...)`. The
   trade-off: a credential whose value the gate does not know, inside JSON text and with no provider
   shape, can pass; one it knows is matched in every form.
-- **What a hit does.** It withholds what would have carried it, whatever it is (a generation, a tool
-  row, a preview, a root, an error root, a pass, a file): nothing is rewritten, the warning names the
-  span or trace, the rules and the variables, never a value, and the receipt counts it. A withheld
-  span is neither queued nor dropped; a withheld pass is `projections_refused_secret` or
-  `gradings_refused_secret`, not `*_failed` (a scan that could not run, a malformed bundle and a
-  refused batch are); a withheld file is `attachments_skipped`. At run end one warning sums up what
-  was withheld, by rule and variable.
+- **What a hit does: `secrets: reject`** (the default). It withholds what would have carried it,
+  whatever it is (a generation, a tool row, a preview, a root, an error root, a pass, a file):
+  nothing is rewritten, the warning names the span or trace, the rules and the variables, never a
+  value, and the receipt counts it. A withheld span is neither queued nor dropped; a withheld pass
+  is `projections_refused_secret` or `gradings_refused_secret`, not `*_failed` (a scan that could
+  not run, a malformed bundle and a refused batch are); a withheld file is `attachments_skipped`.
+  At run end one warning sums up what was withheld, by rule and variable.
+- **What a hit does: `secrets: mask`.** Every secret is replaced by `MASKED` and the unit is sent:
+  a dotenv or field value up to its closing quote or the end of its line, a PEM block up to its
+  END line, a header's token or a provider key to its end, a URL password up to the last `@` of the
+  authority (and the user name when it is the password), every known value in every form JSON
+  gives it, and every copy of a value of 16 or more characters a shape found anywhere in the same
+  trial (its files and events), so a password an agent read from a `.env` and then typed into a
+  command is masked there too. Mapping keys are
+  never rewritten. The gate then scans the masked unit again, checks that every mask ends where
+  its rule ends, and a file must still parse as the YAML or JSON it was; any of these withholds the
+  unit as `reject` does, and so does a gate that fails. Every trace of the run carries `secrets:
+  mask`; a masked observation says what in `secrets_masked`, a masked file in its manifest entry's
+  `masked`. `env_sha256` and a grading's `content_fingerprint` are those of the masked form of
+  their file, whether that file was attached or not (`attach: core` leaves out `env.yaml`,
+  `attach: none` every file, and a file masking cannot clean is skipped): the masked form shows
+  everything around a secret, so the original's hash would let a reader try candidates for a
+  short one. Such a digest describes no file on the receiver when its file was not attached;
+  it never describes the original. The run starts with a warning that it masks, each masked unit gets a
+  warning line, and the run ends with one that sums up what was masked, by rule and variable.
 - **Limits.** A text longer than `attribute_max_chars` is scanned as capped, so a credential the cap
-  cuts is not recognised. Base64 image blocks never leave through spans.
+  cuts is not recognised. Base64 image blocks never leave through spans. Under `mask`, what no
+  shape and no known value describes goes out where `reject` would have withheld the whole unit:
+  an encoded copy of a secret (base64, hex, split across lines), or a credential with no shape
+  next to one that has a shape (`cat ~/.aws/credentials`: the `AKIA` key id is masked, the secret
+  access key beside it is not). A clean re-scan is no proof, and on a receiver that keeps the first
+  write of a trace a masked trace is final. Inline media (an image block) with a hit is withheld
+  under both policies.
 
 The receiver's headers are read through the `SecretManager` (`OTEL_EXPORTER_OTLP_HEADERS`) so their
 value is redacted from the engine's logs.
@@ -664,7 +713,7 @@ receiver facts live in `details`, for example:
 
 ```json
 {"exporter": "langfuse", "expect_project": "pilot", "project_verified": "verified",
- "server_api": "v4", "previews": "off", "environment": "test",
+ "server_api": "v4", "previews": "off", "secrets": "reject", "environment": "test",
  "profile_version": "pilot-2026.10.01.1"}
 ```
 
@@ -685,7 +734,10 @@ Every counter the Langfuse plugin reports under `extra` (each key has the `langf
 | `gradings_sent`, `gradings_failed`, `gradings_refused_secret` | the grading pass, counted like a projection (a grading whose scores did not reach the receiver is a failure) |
 | `scores_sent`, `user_generations_sent` | the scores and simulated user turns the grading passes sent |
 | `previews_sent`, `final_observations_sent`, `error_roots_sent`, `roots_unconfirmed` | the v4 layout (§ The write-once producer layout) |
-| `spans_refused_secret` | live spans the gate withheld |
+| `spans_refused_secret`, `spans_failed` | live spans the gate withheld, and live spans withheld because the gate failed on them |
+| `spans_masked`, `projections_masked`, `gradings_masked`, `attachments_masked` | under `secrets: mask`, the spans, passes and files sent masked; each a part of its queued, sent or registered count, never added to it |
+| `found_values_failed` | under `secrets: mask`, the trial files (or a trial's events built ahead) that could not be read for the values masked across their trial: those trials' units mask what each holds and may have missed a copy another one shows; a run-end warning names it |
+| `gate_exempted` | matches the gate exempted as committed fixture data (a fixture DSN, `GPG_KEY`, a dotenv name that holds no secret, code under a lower-case name); a run-end warning names them by rule |
 | `retried_requests`, `retry_attempts`, `retries_recovered`, `retries_exhausted`, `retry_wait_s`, `retry_breaker_trips` | the retry policy over every write route (§ Retries): requests posted more than once, the posts after the first, retried requests that landed, requests still refused when the policy, a deadline, the breaker or the run's end stopped them, the seconds waited (rounded up), and how often the breaker stopped the waiting |
 
 A receipt covers one process. `ExportReceipt.merge` applies the same reduction to receipts

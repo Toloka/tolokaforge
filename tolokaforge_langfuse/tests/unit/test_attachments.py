@@ -5,6 +5,7 @@ transport."""
 from __future__ import annotations
 
 import base64
+import dataclasses
 import gzip
 import hashlib
 import json
@@ -12,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 from tolokaforge_langfuse.attachments import (
     ATTACH_ALL,
     ATTACH_CORE,
@@ -29,6 +31,7 @@ from tolokaforge_langfuse.media import (
     LangfuseAttachments,
     api_base_from_endpoint,
 )
+from tolokaforge_langfuse.safety import SafetyGate, SecretsPolicy
 
 pytestmark = pytest.mark.unit
 
@@ -259,6 +262,11 @@ def _attachments(fake: _FakeLangfuse, **kwargs) -> LangfuseAttachments:
 
 
 class TestLangfuseAttachments:
+    def test_an_unknown_secrets_policy_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="SecretsPolicy"):
+            _attachments(_FakeLangfuse(), secrets="drop")
+        assert _attachments(_FakeLangfuse(), secrets="mask").secrets is SecretsPolicy.MASK
+
     def test_every_file_is_registered_uploaded_confirmed_and_the_manifest_sent(
         self, tmp_path: Path
     ) -> None:
@@ -704,3 +712,251 @@ class TestTrialEndRetries:
         with pytest.raises(LangfuseApiError, match="HTTP 403"):
             step.ingest(SCORES)
         assert len(receiver.calls) == 1
+
+
+# -- the false positives of the gate, at the attachment step --------------------------------------
+
+# fake secrets, assembled at run time so no literal is key-shaped
+PROVIDER_KEY = "sk-" + "or-" + "v1-" + "0123456789abcdef" * 4
+TRIAL_PASSWORD = "Fake" + "TrialPassw0rd" + "Copy42"
+GPG_FINGERPRINT = "0123456789ABCDEF" * 2 + "01234567"
+ENV_LISTING = "PATH=/usr/bin\nGPG_KEY=" + GPG_FINGERPRINT + "\nHOME=/root"
+# yaml.safe_dump writes it double-quoted (the tab forces it) and folds it at its width
+FOLDED_LISTING = "\n".join(
+    [
+        "HOSTNAME=c0ffee000001",
+        "PYTHON_VERSION=3.12.7",
+        "LANG=C.UTF-8",
+        "PATH=/usr/local/bin:/usr/sbin:/usr/bin",
+        f"GPG_KEY={GPG_FINGERPRINT}",
+        "HOME=/root",
+        "TERM=xterm",
+        "exit_status:\t0",
+    ]
+)
+AGENT_SOURCE = (
+    "def settle(rows):\n    for row in rows:\n        txn_key = compute_key(row)\n"
+    "        content_key = hashlib.sha256(x)\n        before_keys = sorted(rows)\n"
+)
+WEB_APP = 'BASE = "http://localhost:8000"\n\n@app.post("/run")\ndef run(): ...'
+FIXTURE_DSN = "postgres" + "ql://app:app@postgres:5432/appdb"
+
+
+class _LiteralBlocks(yaml.SafeDumper):
+    """Writes a multi-line string as a literal block, as the engine's trajectory.yaml does: each
+    line of the string is a raw line of the file."""
+
+
+_LiteralBlocks.add_representer(
+    str,
+    lambda dumper, value: dumper.represent_scalar(
+        "tag:yaml.org,2002:str", value, style="|" if "\n" in value else None
+    ),
+)
+
+
+def _trajectory_saying(text: str) -> dict:
+    return {"messages": [{"role": "user", "content": "go"}, {"role": "tool", "content": text}]}
+
+
+def _manifest_of(fake: _FakeLangfuse) -> dict:
+    call = [c for c in fake.calls if c[1].endswith("/api/public/ingestion")][-1]
+    return json.loads(call[3])["batch"][0]["body"]["metadata"]
+
+
+class TestFalsePositives:
+    """Text a coding or terminal trial carries and no credential: the files that hold it are
+    attached under the default policy."""
+
+    @pytest.mark.parametrize(
+        "trajectory",
+        [
+            pytest.param(yaml.safe_dump(_trajectory_saying(ENV_LISTING)), id="an env listing"),
+            pytest.param(
+                yaml.safe_dump(_trajectory_saying(FOLDED_LISTING)), id="a folded env listing"
+            ),
+            pytest.param(
+                yaml.dump(_trajectory_saying(AGENT_SOURCE), Dumper=_LiteralBlocks),
+                id="agent code at raw line starts",
+            ),
+            pytest.param(
+                yaml.safe_dump(_trajectory_saying(f"psql {FIXTURE_DSN} -c 'select 1'")),
+                id="a local fixture DSN",
+            ),
+        ],
+    )
+    def test_a_trajectory_carrying_it_is_attached(self, tmp_path: Path, trajectory: str) -> None:
+        trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
+        (trial / "trajectory.yaml").write_text(trajectory)
+        fake = _FakeLangfuse()
+        counts = _attachments(fake).attach("a" * 32, trial)
+        assert (counts.registered, counts.skipped) == (8, 0)
+        assert _manifest_of(fake)["attachments_skipped"] == []
+
+    def test_a_json_file_holding_a_web_app_is_attached(self, tmp_path: Path) -> None:
+        trial = write_trial(tmp_path / "trials" / "T" / "0", ("task.yaml",))
+        (trial / "notes.json").write_text(json.dumps({"output": WEB_APP}))
+        counts = _attachments(_FakeLangfuse()).attach("a" * 32, trial)
+        assert (counts.registered, counts.skipped) == (2, 0)
+
+
+# -- the mask policy at the attachment step -------------------------------------------------------
+
+
+def _trial_to_mask(trial_dir: Path) -> Path:
+    """A trial whose two gzip-stored files each carry a fake secret: env.yaml a password line,
+    trajectory.yaml a provider key in a tool's output."""
+    trial = write_trial(trial_dir, V1_FILES)
+    (trial / "env.yaml").write_text(
+        "environment:\n  network_policy: isolated\nsetup: |\n  export PATH=/usr/bin\n"
+        f"  PGPASSWORD={TRIAL_PASSWORD}\n"
+    )
+    (trial / "trajectory.yaml").write_text(
+        yaml.safe_dump(_trajectory_saying(f"found {PROVIDER_KEY} in the config"))
+    )
+    return trial
+
+
+def _hashes_of(raw: bytes) -> set[str]:
+    """Every way a hash of ``raw`` could travel: hex and base64, of the bytes and their gzip."""
+    out: set[str] = set()
+    for data in (raw, gzip.compress(raw, compresslevel=6, mtime=0)):
+        digest = hashlib.sha256(data).digest()
+        out |= {digest.hex(), base64.b64encode(digest).decode()}
+    return out
+
+
+def _everything_sent(fake: _FakeLangfuse) -> bytes:
+    """Every byte the step sent: request bodies, headers and URLs."""
+    return b"\n".join(
+        (body or b"") + json.dumps(headers).encode() + url.encode()
+        for _, url, headers, body in fake.calls
+    )
+
+
+class _BreaksTheYaml(SafetyGate):
+    """A gate whose masked output no longer parses: the step must not send it."""
+
+    def screen(self, payload, **kwargs):
+        screened = super().screen(payload, **kwargs)
+        if dict(screened.masked):
+            return dataclasses.replace(screened, value=screened.value + b"\nkey: [unclosed\n")
+        return screened
+
+
+class TestMaskedAttachments:
+    """Under ``secrets: mask`` a file with a secret is masked, encoded again and uploaded, and
+    the manifest says so; every hash and size describes what was sent."""
+
+    def test_a_gzip_file_is_masked_encoded_again_and_marked(self, tmp_path: Path) -> None:
+        trial = _trial_to_mask(tmp_path / "trials" / "T" / "0")
+        fake = _FakeLangfuse()
+        step = _attachments(fake, secrets="mask", scan=SecretScan(gate=SafetyGate()))
+        counts = step.attach("a" * 32, trial)
+        assert (counts.registered, counts.skipped, counts.failed) == (8, 0, 0)
+        assert counts.masked == 2
+        manifest = _manifest_of(fake)
+        assert manifest["attachments_complete"] is True
+        assert manifest["attachments_skipped"] == []
+        for name, secret, rule in (
+            ("env.yaml", TRIAL_PASSWORD, "dotenv-secret"),
+            ("trajectory.yaml", PROVIDER_KEY, "openrouter-key"),
+        ):
+            entry = manifest["attachments"][name]
+            stored = fake.blobs[entry["media_id"]]
+            text = gzip.decompress(stored)
+            assert b"MASKED" in text and secret.encode() not in text, name
+            yaml.safe_load(text)
+            assert rule in entry["masked"] and all(n > 0 for n in entry["masked"].values())
+            assert entry["sha256"] == hashlib.sha256(text).hexdigest()
+            assert entry["bytes"] == len(text)
+            assert entry["stored_sha256"] == hashlib.sha256(stored).hexdigest()
+            assert entry["stored_bytes"] == len(stored)
+        # a file with nothing to mask is described as it is, without the mark
+        assert "masked" not in manifest["attachments"]["task.yaml"]
+
+    def test_no_hash_or_byte_of_an_original_is_sent(self, tmp_path: Path) -> None:
+        trial = _trial_to_mask(tmp_path / "trials" / "T" / "0")
+        originals = {name: (trial / name).read_bytes() for name in ("env.yaml", "trajectory.yaml")}
+        fake = _FakeLangfuse()
+        _attachments(fake, secrets="mask", scan=SecretScan(gate=SafetyGate())).attach(
+            "a" * 32, trial
+        )
+        sent = _everything_sent(fake)
+        assert TRIAL_PASSWORD.encode() not in sent and PROVIDER_KEY.encode() not in sent
+        for name, raw in originals.items():
+            for digest in _hashes_of(raw):
+                assert digest.encode() not in sent, name
+            assert gzip.compress(raw, compresslevel=6, mtime=0) not in fake.blobs.values()
+
+    def test_a_clean_trial_is_attached_exactly_as_under_reject(self, tmp_path: Path) -> None:
+        trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
+        rejecting, masking = _FakeLangfuse(), _FakeLangfuse()
+        _attachments(rejecting).attach("a" * 32, trial)
+        counts = _attachments(masking, secrets="mask").attach("a" * 32, trial)
+        assert counts.masked == 0
+        assert _manifest_of(masking) == _manifest_of(rejecting)
+        assert masking.blobs == rejecting.blobs
+
+    def test_a_masked_multi_document_file_is_sent_when_it_still_parses(
+        self, tmp_path: Path
+    ) -> None:
+        trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
+        (trial / "task.yaml").write_text(f"task_id: T\n---\nnote: use {PROVIDER_KEY}\n")
+        fake = _FakeLangfuse()
+        counts = _attachments(fake, secrets="mask", scan=SecretScan(gate=SafetyGate())).attach(
+            "a" * 32, trial
+        )
+        assert (counts.skipped, counts.masked) == (0, 1)
+        entry = _manifest_of(fake)["attachments"]["task.yaml"]
+        documents = list(yaml.safe_load_all(fake.blobs[entry["media_id"]]))
+        assert documents == [{"task_id": "T"}, {"note": "use MASKED"}]
+
+    def test_a_multi_document_file_whose_second_document_stops_parsing_is_withheld(
+        self, tmp_path: Path
+    ) -> None:
+        trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
+        (trial / "task.yaml").write_text(f"task_id: T\n---\nnote: use {PROVIDER_KEY}\n")
+        fake = _FakeLangfuse()
+        step = _attachments(fake, secrets="mask", scan=SecretScan(gate=_BreaksTheYaml()))
+        counts = step.attach("a" * 32, trial)
+        assert (counts.registered, counts.skipped) == (7, 1)
+        (skipped,) = _manifest_of(fake)["attachments_skipped"]
+        assert skipped["name"] == "task.yaml" and "mask-unparseable" in skipped["rule"]
+        assert PROVIDER_KEY.encode() not in _everything_sent(fake)
+
+    def test_a_file_that_stops_parsing_is_withheld(self, tmp_path: Path) -> None:
+        trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
+        (trial / "task.yaml").write_text(f"task_id: T\nnote: use {PROVIDER_KEY}\n")
+        fake = _FakeLangfuse()
+        step = _attachments(fake, secrets="mask", scan=SecretScan(gate=_BreaksTheYaml()))
+        counts = step.attach("a" * 32, trial)
+        assert (counts.registered, counts.skipped) == (7, 1)
+        assert counts.masked == 0
+        manifest = _manifest_of(fake)
+        assert [s["name"] for s in manifest["attachments_skipped"]] == ["task.yaml"]
+        assert "task.yaml" not in manifest["attachments"]
+        assert not any(b"[unclosed" in blob for blob in fake.blobs.values())
+        assert PROVIDER_KEY.encode() not in _everything_sent(fake)
+
+    def test_what_masking_cannot_remove_withholds_the_file(self, tmp_path: Path) -> None:
+        """The masked file is scanned again: a value the gate knows, left in it, withholds it."""
+        trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
+        (trial / "prompts.yaml").write_text("system_prompt: |\n  API_KEY=FakeValueAbcdef12\n")
+        gate = SafetyGate(known_values=(b"API_KEY=MASKED",))
+        fake = _FakeLangfuse()
+        counts = _attachments(fake, secrets="mask", scan=SecretScan(gate=gate)).attach(
+            "a" * 32, trial
+        )
+        assert (counts.registered, counts.skipped) == (7, 1)
+        skipped = _manifest_of(fake)["attachments_skipped"]
+        assert skipped[0]["name"] == "prompts.yaml"
+        assert "known-secret-value" in skipped[0]["rule"]
+        assert b"FakeValueAbcdef12" not in _everything_sent(fake)
+
+    def test_inline_media_with_a_hit_is_still_withheld(self) -> None:
+        fake = _FakeLangfuse()
+        step = _attachments(fake, secrets="mask")
+        raw = b"\x89PNG " + PROVIDER_KEY.encode()
+        assert step.register_media("a" * 32, "b" * 16, "output", "image/png", raw) is None
+        assert not [c for c in fake.calls if c[1].endswith("/api/public/media")]

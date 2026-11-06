@@ -238,6 +238,7 @@ def build(
         gate=gate,
         ambient=(run_id, identity.run_tag),
         retry_stats=retry_stats,
+        secrets=settings.secrets,
     )
 
 
@@ -499,6 +500,7 @@ def build_attachments(
         retrier=Retrier(
             settings.retry, stats=retry_stats, breaker=retry_breaker, trips_breaker=False
         ),
+        secrets=settings.secrets,
     )
 
 

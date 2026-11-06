@@ -163,7 +163,9 @@ def _scrub_shapes() -> tuple[tuple[str, re.Pattern[str]], ...]:
 
     One source of truth on purpose: a shape :mod:`tolokaforge_langfuse.safety` detects is a shape
     the scrub removes, so the two can never drift into a scrub that leaves behind what the gate
-    then refuses (or worse, the reverse).
+    then refuses (or worse, the reverse). The scrub has none of the gate's exemptions: it also
+    removes a fixture DSN, the ``GPG_KEY`` fingerprint and code under a lower-case dotenv name,
+    and removing more costs a transcript nothing.
     """
     keep = re.IGNORECASE | re.MULTILINE | re.DOTALL
     return tuple(
@@ -658,17 +660,18 @@ def _apply(value: Any, policy: str, max_chars: int, *, key: str = "arguments") -
 
 
 def scrub(text: str, *, max_chars: int = SCRUB_MAX_CHARS) -> tuple[str, tuple[str, ...]]:
-    """Truncate, then remove every credential shape the sentinel knows. Returns the text and the
-    rules that fired."""
-    truncated = text[:max_chars]
-    if len(text) > max_chars:
-        truncated += f"... [{len(text) - max_chars} more characters]"
+    """Remove every credential shape the sentinel knows from the whole text, then cut it at
+    ``max_chars``; the marker counts the characters of the scrubbed text past the cap. In this
+    order a cap that falls inside a key cannot leave a part of it too short for the shapes to see.
+    Returns the text and the rules that fired."""
     removed: list[str] = []
     for rule, pattern in SCRUB_SHAPES:
-        truncated, hits = pattern.subn(f"[redacted:{rule}]", truncated)
+        text, hits = pattern.subn(f"[redacted:{rule}]", text)
         if hits:
             removed.append(rule)
-    return truncated, tuple(removed)
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"... [{len(text) - max_chars} more characters]"
+    return text, tuple(removed)
 
 
 def _serialise(value: Any) -> str:
@@ -1025,9 +1028,10 @@ def _trace_metadata(
 
 def _input(prompt: str | None) -> tuple[str | None, dict[str, Any]]:
     """The caller's prompt as the trace's input, and the trace metadata that says what became of
-    it. Cut with the scrub's own marker, then scrubbed: the prompt is built from templates and
-    run facts rather than tool output, but it is text leaving the runner all the same, and a
-    shape the scrub leaves in is one the sentinel refuses the whole transcript over."""
+    it. Scrubbed, then cut with the scrub's own marker: the prompt is built from templates and
+    run facts rather than tool output, but it is text leaving the runner all the same. The scrub
+    replaces what a shape matches, so the part of a secret past its match (a PEM body, a value
+    after a ``#``) stays; the sentinel then refuses only what it still sees."""
     if prompt is None:
         return None, {}
     kept, removed = scrub(prompt, max_chars=INPUT_MAX_CHARS)
