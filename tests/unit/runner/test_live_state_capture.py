@@ -714,6 +714,45 @@ class TestMirrorReadFailsAfterASuccessfulSync:
         with pytest.raises(SubstrateUnreachableError, match="could not be read for grading"):
             substrate.final_state()
 
+    def test_a_raw_state_read_of_a_table_the_sync_left_untrusted_raises(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """A lost DB is not an empty world when the read needs the mirror's rows either."""
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        real_digests = runner_service.db_client.get_table_digests
+
+        async def never_equal(*args: Any, **kwargs: Any) -> dict[str, str]:
+            return dict.fromkeys(await real_digests(*args, **kwargs), "0" * 64)
+
+        monkeypatch.setattr(runner_service.db_client, "get_table_digests", never_equal)
+
+        substrate = _substrate(runner_service, trial_id, synced=True)
+
+        async def drop(*_args: Any, **_kwargs: Any) -> None:
+            raise ConnectionError("db-service read dropped")
+
+        monkeypatch.setattr(runner_service.db_client, "get_state", drop)
+
+        with pytest.raises(SubstrateUnreachableError, match="could not be read for grading"):
+            substrate.final_state()
+
+    def test_a_raw_state_read_of_trusted_tables_touches_no_db(
+        self, runner_service, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """Every table's digest agrees after the sync, so the holder's copies answer."""
+        wrapper = mcp_trial(_task())
+        _mutate(runner_service, wrapper, 120)
+        substrate = _substrate(runner_service, trial_id, synced=True)
+        mirrored = runner_service._run_async(runner_service.db_client.get_state(trial_id)).data
+
+        async def drop(*_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("the read went to the db-service")
+
+        monkeypatch.setattr(runner_service.db_client, "get_state", drop)
+
+        assert substrate.final_state() == mirrored
+
 
 class _LateJudgeReads:
     """The db-service answering the judge's reads late, cut off the way httpx cuts a request.

@@ -4076,12 +4076,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         # Every caller waits on this sync within a state-read deadline; the mirror's
         # requests take the longest of them, so the caller's own wait is what bounds them.
-        timeout = self._whole_state_read_s(trial_id)
+        # Each request is budgeted when it is sent: a late one of many gets what the
+        # call has left, and fails with its own cause before the call's ceiling.
+        whole_state_read_s = partial(self._whole_state_read_s, trial_id)
         id_fields = self._id_fields_for_trial(trial_id)
-        mirror = await self.db_client.get_table_digests(trial_id, timeout=timeout)
+        mirror = await self.db_client.get_table_digests(trial_id, timeout=whole_state_read_s())
         if mirror is None:
             current_state = (
-                await self.db_client.get_state(trial_id, timeout=timeout, hashes=False)
+                await self.db_client.get_state(trial_id, timeout=whole_state_read_s(), hashes=False)
             ).data
             for table_name, new_records in mcp_state.items():
                 current_records = current_state.get(table_name, [])
@@ -4101,13 +4103,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         whole = (
             None
             if by_name or not changed
-            else (await self.db_client.get_state(trial_id, timeout=timeout, hashes=False)).data
+            else (
+                await self.db_client.get_state(trial_id, timeout=whole_state_read_s(), hashes=False)
+            ).data
         )
         for table_name in changed:
             if whole is None:
                 current = (
                     await self.db_client.get_state(
-                        trial_id, [table_name], timeout=timeout, hashes=False
+                        trial_id, [table_name], timeout=whole_state_read_s(), hashes=False
                     )
                 ).data
             else:
@@ -4123,10 +4127,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         elif by_name:
             # The mirror appends a table it creates, so the merged order is the mirror's.
             after = mirror | (
-                await self.db_client.get_table_digests(trial_id, changed, timeout=timeout) or {}
+                await self.db_client.get_table_digests(
+                    trial_id, changed, timeout=whole_state_read_s()
+                )
+                or {}
             )
         else:
-            after = await self.db_client.get_table_digests(trial_id, timeout=timeout)
+            after = await self.db_client.get_table_digests(trial_id, timeout=whole_state_read_s())
         if after is None:
             return _HeldStateSync(held=mcp_state)
         after = await self._replace_unequal_tables(trial_id, mcp_state, held_digests, after)
@@ -4151,9 +4158,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         An upsert merges into the mirror's row, so a key the holder dropped from a row
         stays there, and an insert appends, so a row the holder placed mid-table lands
         last. The digests show either; the holder is the state's source, so such a
-        table is replaced by its rows, which leaves it byte for byte the holder's. A
-        db-service without the ``replace`` op keeps the table as the mutations left it,
-        and readers then read it from the mirror, as before digests.
+        table is replaced by its rows, which leaves it byte for byte the holder's.
+
+        A db-service older than the ``replace`` op answers it as an unknown operation
+        (a 400: its ``MutationOperation`` ignores ``records``, so the op reaches the
+        dispatch), or as an unknown table (a 404) for a table the mutations never
+        created. It keeps its tables as the mutations left them, and readers then read
+        those from the mirror, as before digests.
         """
         unequal = [
             name
@@ -4162,7 +4173,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         ]
         if not unequal:
             return after
-        timeout = self._whole_state_read_s(trial_id)
         replaced = []
         for table_name in unequal:
             try:
@@ -4170,18 +4180,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     trial_id,
                     table_name,
                     [{"op": "replace", "records": mcp_state[table_name]}],
-                    timeout=timeout,
+                    timeout=self._whole_state_read_s(trial_id),
                     hashes=False,
                 )
-            except (InvalidOperationError, TableNotFoundError):
-                logger.info(
-                    f"_sync_mcp_state_to_db: {trial_id} — the DB service cannot replace a "
-                    "table; tables unlike the holder's are read from the mirror"
+            except (InvalidOperationError, TableNotFoundError) as exc:
+                logger.warning(
+                    f"_sync_mcp_state_to_db: {trial_id} — the DB service refused to replace "
+                    f"table {table_name!r} ({type(exc).__name__}: {exc}); "
+                    f"{unequal[len(replaced) :]} stay unlike the holder's and are read from "
+                    "the mirror"
                 )
                 break
             replaced.append(table_name)
         if not replaced:
             return after
+        timeout = self._whole_state_read_s(trial_id)
         if all(_selectable(name) for name in replaced):
             fresh = await self.db_client.get_table_digests(trial_id, replaced, timeout=timeout)
             return after | (fresh or {})

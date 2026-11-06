@@ -3,14 +3,91 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from tolokaforge.core.grading import state_diff
 from tolokaforge.core.grading.state_diff import render_state_diff
 
 pytestmark = pytest.mark.unit
+
+_FIELDS = st.sampled_from(["id", "order_id", "a", "b", "ключ"])
+_SMALL_VALUES = st.recursive(
+    st.none()
+    | st.booleans()
+    | st.integers(-3, 3)
+    | st.floats(allow_nan=False, width=16)
+    | st.text(max_size=3)
+    | st.just(datetime(2026, 1, 1, tzinfo=UTC)),
+    lambda children: st.lists(children, max_size=3)
+    | st.dictionaries(_FIELDS, children, max_size=3),
+    max_leaves=6,
+)
+_SMALL_ROWS = st.lists(st.dictionaries(_FIELDS, _SMALL_VALUES, max_size=4), max_size=5)
+_DECLARED_PK = st.none() | st.just("order_id") | st.just(["id", "order_id"])
+_UNSTABLE = st.sets(st.tuples(st.just("t"), _FIELDS), max_size=2)
+
+
+def _whole_value_table_diff(
+    initial: list[dict[str, Any]],
+    final: list[dict[str, Any]],
+    declared_pk: str | list[str] | None,
+    unstable: set[tuple[str, str]],
+) -> tuple[list[str], list[str], list[tuple[str, list[str]]]]:
+    """The table diff by whole JSON values alone: what fits renders by these rules."""
+
+    def strip(row: dict[str, Any]) -> dict[str, Any]:
+        return state_diff._strip_unstable(row, "t", unstable)
+
+    def record(row: dict[str, Any]) -> str:
+        return state_diff._fmt_record(strip(row))
+
+    pk = state_diff._resolve_pk(initial, final, declared_pk)
+    if pk is None:
+        before, after = Counter(map(record, initial)), Counter(map(record, final))
+        return sorted((after - before).elements()), sorted((before - after).elements()), []
+    before_by_pk = {state_diff._row_key(r, pk): r for r in initial}
+    after_by_pk = {state_diff._row_key(r, pk): r for r in final}
+    modified = []
+    for key in before_by_pk.keys() & after_by_pk.keys():
+        old, new = strip(before_by_pk[key]), strip(after_by_pk[key])
+        frags = [
+            f"{f}: {state_diff._fmt_value(old.get(f))} → {state_diff._fmt_value(new.get(f))}"
+            for f in sorted(set(old) | set(new))
+            if old.get(f) != new.get(f)
+        ]
+        if frags:
+            label = ", ".join(f"{f}={state_diff._fmt_value(after_by_pk[key][f])}" for f in pk)
+            modified.append((label, frags))
+    return (
+        sorted(record(r) for k, r in after_by_pk.items() if k not in before_by_pk),
+        sorted(record(r) for k, r in before_by_pk.items() if k not in after_by_pk),
+        sorted(modified, key=lambda m: m[0]),
+    )
+
+
+@given(_SMALL_ROWS, _SMALL_ROWS, _DECLARED_PK, _UNSTABLE)
+@settings(max_examples=500, deadline=None)
+def test_what_fits_renders_by_whole_values(
+    initial: list[dict[str, Any]],
+    final: list[dict[str, Any]],
+    declared_pk: str | list[str] | None,
+    unstable: set[tuple[str, str]],
+) -> None:
+    """The path diff and the bounded encoder change nothing the judge sees for a small state."""
+    added, removed, modified = state_diff._diff_table(
+        initial, final, table="t", declared_pk=declared_pk, unstable=unstable
+    )
+
+    assert not any(nested for _, _, nested in modified)
+    assert (added, removed, [(label, frags) for label, frags, _ in modified]) == (
+        _whole_value_table_diff(initial, final, declared_pk, unstable)
+    )
 
 
 def test_no_changes_reports_untouched_explicitly() -> None:

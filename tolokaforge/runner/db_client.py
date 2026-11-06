@@ -476,8 +476,7 @@ class DBServiceClient:
             if _is_unknown_route(response):
                 return None
             self._handle_error_response(response)
-            digests = response.json().get("digests")
-            return dict(digests) if isinstance(digests, dict) else None
+            return dict(response.json()["digests"])
 
     async def get_stable_state(
         self, trial_id: str, timeout: float | None = None

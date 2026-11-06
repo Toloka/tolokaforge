@@ -304,7 +304,13 @@ class InitRequest(BaseModel):
 
 
 class MutationOperation(BaseModel):
-    """Single mutation operation"""
+    """Single mutation operation.
+
+    Fields it does not name are ignored, not forbidden: an op from an engine newer
+    than this image reaches the dispatch and is refused as an unknown operation (a
+    400), the one answer the runner's sync reads as "this service has no such op" and
+    goes on from. A 422 here would fail the sync, and the trial, instead.
+    """
 
     op: str  # "insert", "update", "delete", "upsert", "replace"
     record: dict[str, Any] | None = None  # for insert/upsert
@@ -1222,6 +1228,63 @@ async def get_state_digests(
         }
 
 
+def _apply_mutation_op(
+    trial: TrialState, table_name: str, op: MutationOperation, upsert_key_fields: list[str]
+) -> int:
+    """Apply one operation to ``trial``'s table; the rows it affected.
+
+    ``upsert_key_fields`` is the key :func:`validate_upsert_operations` resolved for an
+    upsert; no other op reads it.
+    """
+    table_data = trial.data[table_name]
+    if op.op == "insert":
+        if op.record is None:
+            raise _invalid_operation("Insert requires 'record'", op)
+        table_data.append(copy.deepcopy(op.record))
+        return 1
+    if op.op == "update":
+        if op.filter is None or op.set is None:
+            raise _invalid_operation("Update requires 'filter' and 'set'", op)
+        affected_rows = 0
+        for record in table_data:
+            if all(record.get(k) == v for k, v in op.filter.items()):
+                record.update(op.set)
+                affected_rows += 1
+        return affected_rows
+    if op.op == "delete":
+        if op.filter is None:
+            raise _invalid_operation("Delete requires 'filter'", op)
+        kept = [r for r in table_data if not all(r.get(k) == v for k, v in op.filter.items())]
+        trial.data[table_name] = kept
+        return len(table_data) - len(kept)
+    if op.op == "replace":
+        # The table's rows become exactly these, in this order: what an upsert,
+        # which merges into a row, cannot say when a row lost a key.
+        if op.records is None:
+            raise _invalid_operation("Replace requires 'records'", op)
+        trial.data[table_name] = copy.deepcopy(op.records)
+        return len(op.records)
+    if op.op == "upsert":
+        for record in table_data:
+            if all(f in record and record[f] == op.record[f] for f in upsert_key_fields):
+                record.update(op.record)
+                return 1
+        table_data.append(copy.deepcopy(op.record))
+        return 1
+    logger.error(
+        "Unknown mutation operation",
+        extra={"trial_id": trial.trial_id, "op": op.op},
+    )
+    raise _invalid_operation(f"Unknown operation: {op.op}", op)
+
+
+def _invalid_operation(message: str, op: MutationOperation) -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail=error_response("InvalidOperation", message, {"op": op.op}),
+    )
+
+
 @app.patch("/trials/{trial_id}/state/{table_name}")
 async def mutate_state(
     trial_id: str,
@@ -1298,87 +1361,10 @@ async def mutate_state(
             )
             trial.data[table_name] = []
 
-        affected_rows = 0
-        table_data = trial.data[table_name]
-
-        for op_index, op in enumerate(req.operations):
-            if op.op == "insert":
-                if op.record is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=error_response(
-                            "InvalidOperation", "Insert requires 'record'", {"op": op.op}
-                        ),
-                    )
-                table_data.append(copy.deepcopy(op.record))
-                affected_rows += 1
-
-            elif op.op == "update":
-                if op.filter is None or op.set is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=error_response(
-                            "InvalidOperation", "Update requires 'filter' and 'set'", {"op": op.op}
-                        ),
-                    )
-                for record in table_data:
-                    if all(record.get(k) == v for k, v in op.filter.items()):
-                        record.update(op.set)
-                        affected_rows += 1
-
-            elif op.op == "delete":
-                if op.filter is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=error_response(
-                            "InvalidOperation", "Delete requires 'filter'", {"op": op.op}
-                        ),
-                    )
-                original_len = len(table_data)
-                trial.data[table_name] = [
-                    r for r in table_data if not all(r.get(k) == v for k, v in op.filter.items())
-                ]
-                affected_rows += original_len - len(trial.data[table_name])
-                table_data = trial.data[table_name]
-
-            elif op.op == "replace":
-                # The table's rows become exactly these, in this order: what an upsert,
-                # which merges into a row, cannot say when a row lost a key.
-                if op.records is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=error_response(
-                            "InvalidOperation", "Replace requires 'records'", {"op": op.op}
-                        ),
-                    )
-                trial.data[table_name] = copy.deepcopy(op.records)
-                table_data = trial.data[table_name]
-                affected_rows += len(table_data)
-
-            elif op.op == "upsert":
-                key_fields = upsert_key_fields_by_op[op_index]
-                found = False
-                for record in table_data:
-                    if all(f in record and record[f] == op.record[f] for f in key_fields):
-                        record.update(op.record)
-                        found = True
-                        affected_rows += 1
-                        break
-                if not found:
-                    table_data.append(copy.deepcopy(op.record))
-                    affected_rows += 1
-
-            else:
-                logger.error(
-                    "Unknown mutation operation",
-                    extra={"trial_id": trial_id, "op": op.op},
-                )
-                raise HTTPException(
-                    status_code=400,
-                    detail=error_response(
-                        "InvalidOperation", f"Unknown operation: {op.op}", {"op": op.op}
-                    ),
-                )
+        affected_rows = sum(
+            _apply_mutation_op(trial, table_name, op, upsert_key_fields_by_op.get(op_index, []))
+            for op_index, op in enumerate(req.operations)
+        )
 
         trial.version += 1
         trial.sync_table_to_sql(table_name)

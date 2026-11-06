@@ -1,6 +1,6 @@
 # 0070. Grading holds a large world once
 
-- **Status:** Draft (not proposed yet)
+- **Status:** Accepted
 - **Date:** 2026-11-05
 - **Deciders:** — (drafted by @rsmtnn)
 - **Supersedes:** —
@@ -75,9 +75,9 @@ Adopt **Option 4**, in three steps.
    abandoned at the limit); keyless tables count records by digest rather than
    by their JSON. A key one side lacks shows as `(absent)`, a keyed list whose
    rows were reordered says `order changed`, and a key that would read as a
-   path (`a.b`) is quoted. Everything that fits renders exactly as before (a
-   fuzz comparison of 30k random small states against the previous renderer
-   found no divergence). The judge now sees, for the one-row world,
+   path (`a.b`) is quoted. Everything that fits renders exactly as before: a
+   property test in `tests/unit/grading/test_state_diff.py` holds the fitting
+   path to the previous renderer's rules. The judge now sees, for the one-row world,
    `state.apps.jira.issues.12649.assignee: null → "…"`.
 2. **The mirror sync by table digests; the final state from the synced copy.**
    The db-service answers `GET /trials/{id}/state/digests`: each table's

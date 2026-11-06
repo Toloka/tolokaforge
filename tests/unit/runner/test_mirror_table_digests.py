@@ -21,14 +21,11 @@ from fastapi.testclient import TestClient
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tests.utils.db_service_fallback import load_standalone_fallback
 from tolokaforge.core.hash import table_digest
 from tolokaforge.env.json_db_service.app import app
 from tolokaforge.runner.db_client import DBServiceClient, TrialNotFoundError
 
 pytestmark = pytest.mark.unit
-
-_VENDORED = load_standalone_fallback("table_digest")
 
 _JSON = st.recursive(
     st.none() | st.booleans() | st.integers() | st.floats(allow_nan=False) | st.text(max_size=8),
@@ -40,11 +37,6 @@ _TABLES = st.lists(st.dictionaries(st.text(max_size=6), _JSON, max_size=5), max_
 
 
 class TestTheEncoding:
-    @settings(max_examples=200, deadline=None)
-    @given(rows=_TABLES)
-    def test_the_db_services_copy_digests_as_core_does(self, rows: list[dict[str, Any]]) -> None:
-        assert _VENDORED(rows) == table_digest(rows)
-
     @settings(max_examples=100, deadline=None)
     @given(rows=_TABLES)
     def test_it_is_the_hash_of_the_tables_canonical_json(self, rows: list[dict[str, Any]]) -> None:
@@ -215,6 +207,25 @@ class TestReplace:
         assert sql["results"] == [{"id": 0}, {"id": 1}]
         digests = client.get(f"/trials/{trial_id}/state/digests").json()["digests"]
         assert digests["a"] == table_digest(rows)
+
+    def test_an_op_this_service_does_not_know_is_refused_as_an_unknown_operation(
+        self, client: TestClient
+    ) -> None:
+        """The answer an older image gives a newer runner, with fields it does not know.
+
+        The runner's sync reads this 400 as "no such op" and goes on from the mirror.
+        Forbidding unknown fields would answer 422 and fail every trial on that image.
+        """
+        trial_id = _init(client, {"a": [{"id": 1}]})
+
+        response = client.patch(
+            f"/trials/{trial_id}/state/a",
+            json={"operations": [{"op": "a_later_op", "a_later_field": [{"id": 1}]}]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["error"] == "InvalidOperation"
+        assert client.get(f"/trials/{trial_id}/state").json()["data"] == {"a": [{"id": 1}]}
 
     def test_a_replace_creates_a_missing_table_even_empty(self, client: TestClient) -> None:
         trial_id = _init(client, {"a": [{"id": 1}]})
