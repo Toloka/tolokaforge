@@ -213,6 +213,30 @@ class TestGetStateByReference:
         assert by_ref.state_file.sha256 == hashlib.sha256(data).hexdigest()
         assert not inline.HasField("state_file")
 
+    def test_the_stable_state_by_reference_is_the_inline_stable_answer(
+        self,
+        runner_service: Any,
+        mock_grpc_context: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(FINAL_STATE_DIR_ENV_VAR, str(tmp_path))
+        trial_id = "by_ref:stable"
+        self._register(runner_service, mock_grpc_context, trial_id)
+
+        inline = runner_service.GetState(
+            pb2.GetStateRequest(trial_id=trial_id, include_unstable=False), mock_grpc_context
+        )
+        by_ref = runner_service.GetState(
+            pb2.GetStateRequest(trial_id=trial_id, include_unstable=False, state_by_reference=True),
+            mock_grpc_context,
+        )
+
+        assert by_ref.success is True, by_ref.error
+        assert (tmp_path / FINAL_STATE_FILENAME).read_bytes() == inline.state_json.encode()
+        assert by_ref.stable_hash == inline.stable_hash
+        assert by_ref.full_hash == inline.full_hash == ""
+
     def test_a_runner_without_the_mount_refuses_the_read(
         self,
         runner_service: Any,
@@ -510,6 +534,25 @@ class TestComposer:
             )
 
         assert made and not made[0].parent.exists()
+
+    def test_a_directory_that_cannot_be_removed_is_named_in_the_log(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import tolokaforge.core.default_substrate_composer as composer_module
+
+        directory = tmp_path / "parent" / "trial"
+        monkeypatch.setattr(
+            composer_module.shutil, "rmtree", MagicMock(side_effect=PermissionError("in use"))
+        )
+
+        with caplog.at_level(logging.ERROR, logger=composer_module.__name__):
+            composer_module._remove_final_state_dir(directory)
+
+        assert str(directory) in caplog.text
+        assert "in use" in caplog.text
 
     def test_a_run_scope_runner_is_refused_before_any_stack_starts(self, tmp_path: Path) -> None:
         from tests.unit.test_default_substrate_composer import (

@@ -431,7 +431,7 @@ class OutputWriter:
             # A retried trial reuses this writer; an earlier attempt's file or
             # withholding must not outlive the attempt that produced it.
             if sidecar.exists() or FINAL_STATE_FILENAME in self._omitted:
-                self._discard_grade_sidecars(FINAL_STATE_FILENAME)
+                self._discard_sidecars(FINAL_STATE_FILENAME)
         elif self._redacting:
             sidecar.unlink(missing_ok=True)
             self._note_withheld(FINAL_STATE_FILENAME)
@@ -549,18 +549,18 @@ class OutputWriter:
         Regrading the same directory must not leave evidence from an older grade.
         """
         if snapshots is None:
-            self._discard_grade_sidecars(GRADING_STATE_SNAPSHOTS_FILENAME)
+            self._discard_sidecars(GRADING_STATE_SNAPSHOTS_FILENAME)
             return
         payload = self.redaction.redact_mapping(snapshots.model_dump(mode="json"))
         with open(self.output_dir / GRADING_STATE_SNAPSHOTS_FILENAME, "w") as f:
             yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
         self._note_rewritten(GRADING_STATE_SNAPSHOTS_FILENAME)
 
-    def _discard_grade_sidecars(self, *names: str) -> None:
-        """Remove grade artifacts an earlier write left here, from disk and from the stamp.
+    def _discard_sidecars(self, *names: str) -> None:
+        """Remove files an earlier write left here, from disk and from the stamp.
 
         Writers are cached per trial directory for the whole run, so a retried
-        trial reuses the writer that recorded the earlier attempt's grade files;
+        trial reuses the writer that recorded the earlier attempt's files;
         a stamp still naming a file the bundle no longer holds is one a reader
         cannot check.
         """
@@ -650,9 +650,7 @@ class OutputWriter:
         if trajectory.grade:
             self.write_grade(trajectory.grade)
         else:
-            self._discard_grade_sidecars(
-                GRADE_FILENAME, JUDGE_TRAJECTORY_FILENAME, JUDGE_INPUTS_FILENAME
-            )
+            self._discard_sidecars(GRADE_FILENAME, JUDGE_TRAJECTORY_FILENAME, JUDGE_INPUTS_FILENAME)
             self._write_grading_state_snapshots(trajectory.grading_state_snapshots)
 
         self.write_logs(logger)

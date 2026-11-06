@@ -616,12 +616,9 @@ class InProcessConductor:
             )
             raise
         safely(self.trial_observer.trial_finished, identity, trajectory=trajectory)
-        if final_state_file is None:
-            self._write_artifacts(spec, task_config, setup, trajectory, runner)
-        else:
-            self._write_artifacts(
-                spec, task_config, setup, trajectory, runner, final_state_file=final_state_file
-            )
+        self._write_artifacts(
+            spec, task_config, setup, trajectory, runner, final_state_file=final_state_file
+        )
         return TrialResult.from_trajectory(
             trial_id=setup.trial_id, trajectory=trajectory, worker_id=spec.worker_id
         )
@@ -1651,23 +1648,14 @@ class InProcessConductor:
             ),
         }
 
-        if final_state_file is None:
-            writer.write_trial_bundle(
-                setup.trial_dir,
-                trajectory,
-                task_config_dict,
-                trajectory.final_env_state,
-                runner.logger,
-            )
-        else:
-            writer.write_trial_bundle(
-                setup.trial_dir,
-                trajectory,
-                task_config_dict,
-                trajectory.final_env_state,
-                runner.logger,
-                final_state_file=final_state_file,
-            )
+        writer.write_trial_bundle(
+            setup.trial_dir,
+            trajectory,
+            task_config_dict,
+            trajectory.final_env_state,
+            runner.logger,
+            final_state_file=final_state_file,
+        )
 
         self.logger.info(
             "Trial output saved",

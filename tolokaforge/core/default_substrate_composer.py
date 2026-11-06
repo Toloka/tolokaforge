@@ -699,13 +699,9 @@ def _refuse_final_state_mount_no_trial_runner_can_take(
     """
     if manifest.final_state_delivery != "mount":
         return
-    owners = [decl for decl in plan if decl.runner_service is not None]
-    if owners and all(decl.stack_scope == "trial" for decl in owners):
+    found = runner_outside_trial_scope(plan)
+    if found is None:
         return
-    found = (
-        ", ".join(f"{decl.stack_id!r} (stack_scope={decl.stack_scope})" for decl in owners)
-        or "no stack sets runner_service"
-    )
     raise ProvisionError(
         trial_id=spec.trial_id,
         stage="provision",
@@ -733,9 +729,18 @@ def _make_final_state_dir(trial_id: str) -> Path:
 
 
 def _remove_final_state_dir(directory: Path | None) -> None:
+    """Remove a trial's final-state directory; a failure is logged, not raised.
+
+    Teardown goes on to the trial's other stacks, but what stays behind is the
+    trial's whole final state, which a large world repeated across a run can
+    fill a disk with.
+    """
     if directory is None:
         return
-    shutil.rmtree(directory.parent, ignore_errors=True)
+    try:
+        shutil.rmtree(directory.parent)
+    except OSError:
+        logger.exception("DefaultSubstrateComposer: left final-state directory %s", directory)
 
 
 def _validate_plan(plan: CompositionPlan) -> None:

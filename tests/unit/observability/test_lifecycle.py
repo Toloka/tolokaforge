@@ -111,7 +111,7 @@ class TestConductorLifecycle:
         def snapshot(spec, setup, value):
             (tmp_path / "snapshot.json").write_text(value.model_dump_json())
 
-        def primary(spec, task_config, setup, value, runner):
+        def primary(spec, task_config, setup, value, runner, final_state_file=None):
             (tmp_path / "trajectory.yaml").write_text(yaml.safe_dump(value.model_dump(mode="json")))
 
         conductor._produce_grade_bundle = snapshot

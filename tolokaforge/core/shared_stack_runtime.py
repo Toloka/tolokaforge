@@ -1662,7 +1662,7 @@ class SharedStackRuntimeBackend:
                 tables=tables,
             )
         env_handle = self._env_handles.get(trial_id)
-        final_state_dir = getattr(env_handle, "final_state_dir", None)
+        final_state_dir = None if env_handle is None else env_handle.final_state_dir
         if final_state_dir is None:
             return _failed_state_read(
                 f"trial {trial_id!r} was provisioned without a final-state directory, so its "
