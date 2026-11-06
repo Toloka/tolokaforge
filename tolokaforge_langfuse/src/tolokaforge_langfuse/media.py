@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,9 +41,16 @@ from tolokaforge_langfuse.attachments import (
     TrialFile,
     allowed_attachment,
     build_manifest,
+    encode,
     plan_attachments,
+    syntax_of,
 )
 from tolokaforge_langfuse.retry import Answer, Retrier
+from tolokaforge_langfuse.safety import (
+    RULE_UNPARSEABLE,
+    SecretsPolicy,
+    parses,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -244,11 +251,15 @@ class LangfuseAttachments:
         environment: str | None = None,
         send_manifest_event: bool = True,
         retrier: Retrier | None = None,
+        secrets: SecretsPolicy | str = SecretsPolicy.REJECT,
     ) -> None:
+        secrets = SecretsPolicy(secrets)  # an unknown policy raises before anything is built
         self._api_base = api_base.rstrip("/")
         self._headers = dict(headers or {})
         self._mode = mode
         self._scan = scan or SecretScan()
+        # what a file with a secret becomes: withheld (reject) or masked and sent (mask)
+        self._secrets = secrets
         self._timeout_s = max(1.0, timeout_s)
         self._budget_s = max(1.0, budget_s)
         self._breaker_failures = max(1, breaker_failures)
@@ -285,6 +296,11 @@ class LangfuseAttachments:
         """The ``attach`` mode this step was built with (``all`` / ``core`` / ``none``)."""
         return self._mode
 
+    @property
+    def secrets(self) -> SecretsPolicy:
+        """The ``secrets`` policy this step was built with (``reject`` / ``mask``)."""
+        return self._secrets
+
     def ingest(
         self,
         events: list[dict[str, Any]],
@@ -310,6 +326,23 @@ class LangfuseAttachments:
                 raise LangfuseApiError(
                     f"ingestion rejected an event: {first.get('status')} {first.get('message')}"
                 )
+
+    def _screen(self, file: TrialFile, also: Iterable[bytes]) -> tuple[TrialFile, list[str]]:
+        """``file`` under the step's policy: the file to send (encoded again from the masked
+        bytes when something was masked) and what withholds it. A masked file that parsed before
+        and no longer does is withheld too."""
+        if self._secrets is SecretsPolicy.REJECT:
+            return file, self._scan.scan(file.original)
+        screened = self._scan.screen(file.original, policy=SecretsPolicy.MASK, also=also)
+        if screened.findings:
+            return file, [str(finding) for finding in screened.findings]
+        if not screened.masked:
+            return file, []
+        syntax = syntax_of(file.name)
+        if syntax is not None and parses(file.original, syntax):
+            if not parses(screened.value, syntax):
+                return file, [f"{RULE_UNPARSEABLE} (no longer {syntax})"]
+        return encode(file.name, screened.value, screened.masked), []
 
     def register_media(
         self, trace_id: str, observation_id: str | None, field: str, content_type: str, raw: bytes
@@ -380,10 +413,13 @@ class LangfuseAttachments:
         *,
         trace_timestamp: datetime | None = None,
         metadata: Mapping[str, Any] | None = None,
+        also: Iterable[bytes] | None = None,
     ) -> tuple[AttachCounts, dict[str, Any]]:
         """:meth:`attach`, also returning manifest v2 as sent (for the trial-end projection,
         whose trace metadata carries the same complete manifest). Runs under the budget the
-        caller opened, else under one of its own."""
+        caller opened, else under one of its own. Under ``secrets: mask``, ``also`` holds the
+        values found anywhere in the trial (by default, in the files this step attaches): each
+        file masks them too."""
         counts = AttachCounts()
         manifest = build_manifest(trial_dir, [], [])
         attached: list[AttachedFile] = []
@@ -402,11 +438,17 @@ class LangfuseAttachments:
         if own_budget:
             self._deadline = self._clock() + self._budget_s
         budget_spent = False
+        if self._secrets is SecretsPolicy.MASK and also is None:
+            found: set[bytes] = set()
+            for file in files:
+                if allowed_attachment(file.name):
+                    found |= self._scan.found_values(file.original)
+            also = found
         for file in files:
             if not allowed_attachment(file.name):
                 skipped.append({"name": file.name, "rule": "file-type"})
                 continue
-            findings = self._scan.scan(file.original)
+            file, findings = self._screen(file, also or ())
             if findings:
                 skipped.append({"name": file.name, "rule": ", ".join(findings)})
                 continue
@@ -415,40 +457,12 @@ class LangfuseAttachments:
                 skipped.append({"name": file.name, "rule": "upload-failed: budget spent"})
                 continue
             try:
-                registered = self._register_and_upload(trace_id, file)
+                done = self._attach_one(trace_id, file, counts, skipped)
             except AttachBudgetExceeded:
                 budget_spent = True
-                counts.failed += 1
-                skipped.append({"name": file.name, "rule": "upload-failed: budget spent"})
-                _log.warning(
-                    "attachments: budget of %.0fs spent on trace %s", self._budget_s, trace_id
-                )
                 continue
-            except Exception as exc:  # noqa: BLE001 - the observability layer only warns
-                # only the class of a foreign exception is logged: a malformed presigned URL
-                # would otherwise print its signature
-                reason = str(exc) if isinstance(exc, LangfuseApiError) else type(exc).__name__
-                _log.warning("attachments: %s of trace %s failed: %s", file.name, trace_id, reason)
-                counts.failed += 1
-                skipped.append({"name": file.name, "rule": f"upload-failed: {reason[:80]}"})
-                continue
-            if registered is None:
-                counts.failed += 1
-                skipped.append({"name": file.name, "rule": "no-media-id"})
-                continue
-            media_id, uploaded = registered
-            counts.registered += 1
-            if uploaded:
-                counts.uploaded += 1
-            else:
-                counts.deduplicated += 1
-            attached.append(
-                AttachedFile(
-                    file=file,
-                    media_id=media_id,
-                    token=f"@@@langfuseMedia:type={file.content_type}|id={media_id}|source=bytes@@@",
-                )
-            )
+            if done is not None:
+                attached.append(done)
         counts.skipped = len(skipped) - counts.failed  # failures are listed by name, not skips
         manifest = build_manifest(trial_dir, attached, skipped)
         if counts.failed:
@@ -465,9 +479,56 @@ class LangfuseAttachments:
                 counts.manifests_failed += 1
         if own_budget:
             self._deadline = None
-        # the breaker: a trial whose every attempt failed (nothing registered, nothing sent)
-        # counts against the receiver; a trial that got anything through resets the count
-        if files and counts.registered == 0 and counts.manifests_sent == 0:
+        self._judge_the_trial(bool(files), counts)
+        return counts, manifest
+
+    def _attach_one(
+        self,
+        trace_id: str,
+        file: TrialFile,
+        counts: AttachCounts,
+        skipped: list[dict[str, str]],
+    ) -> AttachedFile | None:
+        """Register and upload one screened file and count it; a file that did not get through
+        is counted, listed in ``skipped`` and gives None. A spent budget is counted and listed
+        too, then raised (:class:`AttachBudgetExceeded`) so the caller stops trying."""
+        try:
+            registered = self._register_and_upload(trace_id, file)
+        except AttachBudgetExceeded:
+            counts.failed += 1
+            skipped.append({"name": file.name, "rule": "upload-failed: budget spent"})
+            _log.warning("attachments: budget of %.0fs spent on trace %s", self._budget_s, trace_id)
+            raise
+        except Exception as exc:  # noqa: BLE001 - the observability layer only warns
+            # only the class of a foreign exception is logged: a malformed presigned URL
+            # would otherwise print its signature
+            reason = str(exc) if isinstance(exc, LangfuseApiError) else type(exc).__name__
+            _log.warning("attachments: %s of trace %s failed: %s", file.name, trace_id, reason)
+            counts.failed += 1
+            skipped.append({"name": file.name, "rule": f"upload-failed: {reason[:80]}"})
+            return None
+        if registered is None:
+            counts.failed += 1
+            skipped.append({"name": file.name, "rule": "no-media-id"})
+            return None
+        media_id, uploaded = registered
+        counts.registered += 1
+        if file.masked:
+            counts.masked += 1
+        if uploaded:
+            counts.uploaded += 1
+        else:
+            counts.deduplicated += 1
+        return AttachedFile(
+            file=file,
+            media_id=media_id,
+            token=f"@@@langfuseMedia:type={file.content_type}|id={media_id}|source=bytes@@@",
+        )
+
+    def _judge_the_trial(self, had_files: bool, counts: AttachCounts) -> None:
+        """The breaker: a trial whose every attempt failed (nothing registered, nothing sent)
+        counts against the receiver; a trial that got anything through resets the count."""
+        if had_files and counts.registered == 0 and counts.manifests_sent == 0:
             self._consecutive_failures += 1
             if self._consecutive_failures >= self._breaker_failures and not self._tripped:
                 self._tripped = True
@@ -479,7 +540,6 @@ class LangfuseAttachments:
                 )
         elif counts.registered or counts.manifests_sent:
             self._consecutive_failures = 0
-        return counts, manifest
 
     def note_trial_outcome(self, *, reached: bool) -> None:
         """Feed the breaker from the trial-end projection when no file step ran (``attach:

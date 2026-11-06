@@ -6,7 +6,7 @@
 - **Supersedes:** —
 - **Superseded by:** —
 
-## Where the decision stands (2026-09-23)
+## Where the decision stands (2026-11-05)
 
 The Decision and Consequences sections record the first cut of 2026-09-15; the amendments follow
 them in date order. Read together they leave the decision here:
@@ -46,9 +46,13 @@ them in date order. Read together they leave the decision here:
   the bundle (grading with judge transcript and scores, user turns, tool executions, events,
   media), so the live trace and an offline upload of the same bundle are one trace; a golden
   parity test committed in both repositories guards the two projections.
-- **The trace metadata** is a fixed 34-key schema plus the caller's keys (the receiver's table
+- **The trace metadata** is a fixed 36-key schema plus the caller's keys (the receiver's table
   view renders nothing above 100 keys); everything else lives in the attached files, the
   observations, the scores, the tags and the native `environment` / `release` / `version` fields.
+- **What carries a secret (data-safety amendment):** the gate withholds it under `secrets: reject`
+  (the default) or masks it and sends it under `secrets: mask`; every trace of a masking run carries
+  one more metadata key, `secrets: mask`, and a masked unit says what in `secrets_masked`; both
+  names are reserved under both policies.
 - **One vocabulary, one profile (vocabulary amendment):** the tag prefixes, the producer's
   derived tags (model facets, reasoning settings, route) and the default environment rule live
   in the plugin wheel and are imported by the offline uploader; a deployment's values arrive in
@@ -330,8 +334,8 @@ profile's version. A trace carried 122 to 126 top-level keys, and the receiver's
 its metadata table only up to 100 (Langfuse 3.205.1, `PrettyJsonView`, `DEFAULT_MAX_ROWS_IF_ROOT`),
 so the table under "Metadata" showed nothing for either producer, the attachment manifest included.
 
-The trace metadata is now the fixed 34-key schema of `docs/OBSERVABILITY.md` ("The trace
-metadata") plus the caller's per-run keys, the same from the trial-end pass and from the offline
+The trace metadata is now the fixed 34-key schema (36 since the data-safety amendment reserved
+`secrets` and `secrets_masked`) of `docs/OBSERVABILITY.md` ("The trace metadata") plus the caller's per-run keys, the same from the trial-end pass and from the offline
 uploader, with the producer keys reduced to `upload_mode`, `uploader_version`, `trace_time_source`,
 `attach_mode`. What left the metadata is reachable where a reader looks for it: the attached
 files (task facts, model configurations, environment identity, redaction stamp), the generations
@@ -549,6 +553,44 @@ that does not keeps its names. Traces written before the change keep their shape
 writes once never rewrites them, so a backfill that should look like the new traces runs after the
 change. A profile with `[trace]` needs a wheel that knows it (the profile reader refuses an unknown
 block), so a deployment adopts it together with the wheel. The plugin API version does not change.
+
+## Amendment 2026-11-05: the data-safety gate may mask instead of withhold
+
+Context. The data-safety gate withheld every unit that would carry a secret, and it read committed
+fixture data as secrets: a local database URL whose password is its user name, the `GPG_KEY`
+fingerprint of the `python` image, an agent's lower-case `*_key = ...` code, an env listing written
+inside a YAML string. Terminal-style benchmarks print such data all the time, so whole trials lost
+their attachments, and on a receiver that keeps the first write of a trace that loss is final.
+
+Decision.
+
+- **The false positives are exempt**, narrowly: the fixture DSN (a loopback address, `db` or
+  `postgres`, a password equal to the user name of at most twelve characters of one class, and
+  nothing after the host that may lead elsewhere), `GPG_KEY` with exactly 40 hex characters, dotenv
+  names that hold no secret, code under a dotenv name not in upper case, and the escaped line
+  breaks of a YAML or JSON string read as line breaks over raw bytes. The gate counts its
+  exemptions (`gate_exempted`) and the run end names them.
+- **A deployment chooses the policy** with `options.langfuse.secrets`: `reject` (the default, the
+  behaviour this ADR always had) or `mask`. Under `mask` each secret is replaced by `MASKED` up to
+  the end of its value, every known value in every JSON form, and every copy of a 16-character or
+  longer value a shape found in the same trial; the unit is then scanned again and checked, and
+  what masking cannot remove is withheld as under `reject`. "Nothing is rewritten" now holds for
+  `reject` only. The trace says `secrets: mask`, a masked observation `secrets_masked`, a masked
+  file `masked` in its manifest entry, and every hash and size describes what was sent (no hash of
+  an unmasked file leaves: it would let a reader try candidates for a short secret). The bundle's
+  own digests (`env_sha256`, a grading's `content_fingerprint`) are those of the masked form of
+  their file whether or not the file was attached, so under `attach: core` or `none`, or for a
+  skipped file, they describe no file on the receiver, and never the original.
+- **The transcript scrub masks before it cuts**, so a cut inside a key no longer leaves a head the
+  shapes cannot see; it keeps its own markers and its own `tool_io` policy.
+
+Consequences. Under `reject` a trace looks as before; the receipt gains additive counters and
+`details.secrets`. Under `mask` more of a trial reaches the receiver, at a known cost: an encoded
+copy of a secret, or a credential with no shape next to one that has one, goes out where `reject`
+withheld the whole unit; a masked attachment is no longer byte-exact with the bundle; and a masked
+trace on a write-once receiver cannot be replaced by an unmasked one. `docs/OBSERVABILITY.md`,
+"Delivery", lists what masking reaches and what it does not. The plugin API version does not
+change; a configuration that names `secrets` needs a wheel that knows it.
 
 ## Links
 

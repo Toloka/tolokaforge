@@ -16,12 +16,15 @@ wrote it:
 - the **outbound data-safety scan**: a file whose bytes contain a value the ``SecretManager``
   knows, or match a key-shaped pattern (dotenv secrets, ``Authorization`` headers, PEM blocks,
   URL credentials, well-known key prefixes, JWTs, secret-named fields), is skipped and named in
-  the manifest; bytes are never rewritten, an attachment stays byte-exact or is not sent;
+  the manifest under the ``reject`` policy (the default), so an attachment stays byte-exact or is
+  not sent; under ``mask`` its matches are replaced, the file is encoded again from the masked
+  bytes and marked ``masked`` in the manifest, and every hash and size describes those bytes;
 - **manifest v2**, the trace-metadata document a download rebuilds the trial directory from::
 
       attachments_schema: 2
       attachments: {<file name on disk>: {media_id, media, sha256, stored_sha256, bytes,
-                    stored_bytes, content_type, encoding: none | gzip}}
+                    stored_bytes, content_type, encoding: none | gzip,
+                    masked: {<rule>: <count>} (only on a masked file)}}
       attachments_complete: true | false
       attachments_skipped: [{name, rule}]
 """
@@ -31,8 +34,9 @@ from __future__ import annotations
 import gzip
 import hashlib
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from tolokaforge_langfuse import safety
@@ -70,6 +74,8 @@ class AttachCounts:
     failed: int = 0
     manifests_sent: int = 0
     manifests_failed: int = 0
+    # files sent masked (``secrets: mask``), a part of the registered ones
+    masked: int = 0
 
     def add(self, other: AttachCounts) -> None:
         self.registered += other.registered
@@ -79,6 +85,7 @@ class AttachCounts:
         self.failed += other.failed
         self.manifests_sent += other.manifests_sent
         self.manifests_failed += other.manifests_failed
+        self.masked += other.masked
 
 
 @dataclass(frozen=True)
@@ -86,10 +93,12 @@ class TrialFile:
     """One top-level file of the trial directory as it will be stored."""
 
     name: str  # the file name on disk (never a derived name)
-    original: bytes
+    original: bytes  # under ``secrets: mask``, the masked bytes
     payload: bytes  # gzipped for GZIP_FILES, the original bytes otherwise
     content_type: str
     encoding: str  # none | gzip
+    # the masks by rule when ``original`` is a masked copy; empty otherwise
+    masked: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
 
     @property
     def sha256(self) -> str:
@@ -109,7 +118,7 @@ class AttachedFile:
     token: str
 
     def manifest_entry(self) -> dict[str, Any]:
-        return {
+        entry: dict[str, Any] = {
             "media_id": self.media_id,
             "media": self.token,
             "sha256": self.file.sha256,
@@ -119,6 +128,9 @@ class AttachedFile:
             "content_type": self.file.content_type,
             "encoding": self.file.encoding,
         }
+        if self.file.masked:
+            entry["masked"] = dict(self.file.masked)
+        return entry
 
 
 def content_type_of(name: str) -> str:
@@ -127,8 +139,10 @@ def content_type_of(name: str) -> str:
     return CONTENT_TYPES.get(Path(name).suffix.lower(), "text/plain")
 
 
-def encode(name: str, raw: bytes) -> TrialFile:
-    """The compression rule applied to one file."""
+def encode(name: str, raw: bytes, masked: Mapping[str, int] | None = None) -> TrialFile:
+    """The compression rule applied to one file; ``masked``: ``raw`` is a masked copy, these
+    are its masks by rule."""
+    marks: Mapping[str, int] = MappingProxyType(dict(masked or {}))
     if name in GZIP_FILES:
         return TrialFile(
             name=name,
@@ -136,6 +150,7 @@ def encode(name: str, raw: bytes) -> TrialFile:
             payload=gzip.compress(raw, compresslevel=6, mtime=0),
             content_type=GZIP_CONTENT_TYPE,
             encoding=ENCODING_GZIP,
+            masked=marks,
         )
     return TrialFile(
         name=name,
@@ -143,7 +158,16 @@ def encode(name: str, raw: bytes) -> TrialFile:
         payload=raw,
         content_type=content_type_of(name),
         encoding=ENCODING_NONE,
+        masked=marks,
     )
+
+
+def syntax_of(name: str) -> str | None:
+    """What a file's name says it parses as, for the check that masking left it parseable."""
+    suffix = Path(name).suffix.lower()
+    if suffix in (".yaml", ".yml"):
+        return "yaml"
+    return "json" if suffix == ".json" else None
 
 
 def list_trial_files(trial_dir: Path) -> list[Path]:
@@ -203,6 +227,14 @@ class SecretScan:
         """:meth:`safety.SafetyGate.scan_structured`: the JSON-like ``value`` as the receiver is
         sent it, and its raw strings for the known values."""
         return [str(finding) for finding in self._gate.scan_structured(value)]
+
+    def screen(self, payload: bytes, *, policy: str, also: Iterable[bytes] = ()) -> safety.Screened:
+        """:meth:`safety.SafetyGate.screen`, the gate's result as it is."""
+        return self._gate.screen(payload, policy=policy, also=also)
+
+    def found_values(self, payload: Any) -> frozenset[bytes]:
+        """:meth:`safety.SafetyGate.found_values`."""
+        return self._gate.found_values(payload)
 
 
 def build_manifest(

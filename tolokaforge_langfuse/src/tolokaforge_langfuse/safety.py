@@ -34,10 +34,24 @@ and its value's whole line is code (``txn_key = compute(x)``). The scan goes on 
 never hides a reportable one, and the gate counts the exemptions per rule
 (:attr:`SafetyGate.exempted`).
 
-On a hit the bytes are **never rewritten** (an attachment must stay byte-exact): the caller skips
-the file and names it in its receipt, or stops; a hit in the structured events blocks the send
-outright. Findings name the rule and a masked excerpt (first four characters, never the tail),
-never the value.
+**What a hit does is the caller's policy** (:meth:`SafetyGate.screen`, the ``secrets`` option):
+
+- ``reject`` (the default): nothing is rewritten. The caller withholds what would have carried the
+  hit (a span, a pass, a file) and names it in its receipt, or stops.
+- ``mask``: every match is replaced by :data:`PLACEHOLDER` up to the end of its value (a dotenv or
+  field value to its closing quote or the end of its line, a PEM block to its END line, a token
+  to its end, a URL password to the last ``@`` of the authority, and the user name when it is the
+  password), every known value in every form JSON gives it, and every copy of a value of :data:`PROMOTE_MIN` or more characters a shape found
+  in the same unit (or, passed as ``also``, elsewhere in the same trial). The gate then runs again
+  over the result, the byte after each mask must be one its rule ends at, and a file that parsed
+  before must still parse; any of these withholds the unit as ``reject`` does. Masking reads more
+  than the ``reject`` view of a structured value (a dotenv line inside a string), and it does not
+  see what no shape and no known value describes: an encoded copy (base64, hex) of a secret, or a
+  credential with no shape next to a masked one, goes out where ``reject`` would have withheld the
+  whole unit. A clean re-scan is not proof.
+
+Findings name the rule and a masked excerpt (first four characters, never the tail), never the
+value.
 
 What an ATTACHMENT may be is a different question and lives with the attachments:
 :func:`tolokaforge_langfuse.attachments.allowed_attachment`. Two allowlists under one name in
@@ -55,12 +69,17 @@ import json
 import os
 import re
 import threading
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from functools import cached_property
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import unquote_to_bytes
+
+import yaml
 
 SECRET_NAME = re.compile(
     r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|PRIVATE|SIGNING|COOKIE|SESSION)", re.I
@@ -79,6 +98,16 @@ MIN_SECRET_VALUE = 8
 # whose strings hold JSON text)
 JSON_NESTING = 3
 
+# what a mask writes: valid wherever it lands in YAML or JSON, and too short for any shape
+PLACEHOLDER = b"MASKED"
+# a value a shape found that is masked wherever else it stands in the unit or the trial: shorter
+# ones are mostly fixtures (``postgres``) that would be masked in every sentence
+PROMOTE_MIN = 16
+RULE_KNOWN = "known-secret-value"
+RULE_COPY = "found-value-copy"
+RULE_RESIDUE = "mask-residue"
+RULE_UNPARSEABLE = "mask-unparseable"
+
 # an environment variable's name in any case (an agent's `txn_key = compute(x)` is told apart by
 # its value, see _exempt); each part is bounded, since a long run of keywords in one word would
 # otherwise backtrack quadratically
@@ -96,7 +125,8 @@ SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
         re.compile(rb"(?i)authorization\W{0,3}\s*(?:bearer|basic)\s+[A-Za-z0-9+/=_\-.]{16,}"),
     ),
     ("pem-private-key", re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-    # user:password@host with a real password (a redacted *** is the engine's own DSN masking)
+    # user:password@host with a real password (a redacted *** is the engine's own DSN masking,
+    # MASKED this gate's own placeholder)
     (
         # the scheme is anchored and bounded (a free `[a-z][a-z0-9+.-]*` before `://` scans a long
         # lowercase run quadratically); the password and the host end at a `\n`, `\r` or `\t`
@@ -104,7 +134,7 @@ SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
         # no URL runs on over one. The user part does not, so `CORP\tom` stays a user name
         "url-credentials",
         re.compile(
-            rb"(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,15}://[^/\s:@]+:(?![*]+@)"
+            rb"(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,15}://[^/\s:@]+:(?!(?:[*]+|MASKED)@)"
             rb"(?:(?<!\\)\\[nrt](?=[^@\s/])|(?!(?<!\\)\\[nrt])[^\s/]){3,}"
             rb"@(?:(?!(?<!\\)\\[nrt])[^\s/])+"
         ),
@@ -141,9 +171,9 @@ SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
 # break inside a double-quoted string as a `\n` or `\r` escape, so there a dotenv line may also
 # start after one and its value ends at one. A value shorter than eight characters before one is
 # read on through it, as a `.env` file's own bytes would be, for eight characters only: reading to
-# the end of the run from every line start would scan quadratically. A structured value keeps
-# SHAPES over its JSON: there every tool output's environment listing would otherwise read as
-# dotenv lines
+# the end of the run from every line start would scan quadratically; this gate's own placeholder
+# before one is no value to read on into. A structured value keeps SHAPES over its JSON: there
+# every tool output's environment listing would otherwise read as dotenv lines
 RAW_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = tuple(
     (
         (
@@ -151,7 +181,8 @@ RAW_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = tuple(
             re.compile(
                 rb"(?m)(?:^|(?<=\\n)|(?<=\\r))\s*(?:export\s+)?"
                 + _DOTENV_NAME
-                + rb"\s*=\s*['\"]?(?:(?:(?!(?<!\\)\\[nr])[^\s'\"#]){8,}|[^\s'\"#]{8})"
+                + rb"\s*=\s*['\"]?(?!MASKED(?:\\[nr]|['\"\s#]|$))"
+                + rb"(?:(?:(?!(?<!\\)\\[nr])[^\s'\"#]){8,}|[^\s'\"#]{8})"
             ),
         )
         if rule == "dotenv-secret"
@@ -181,6 +212,8 @@ _SERVER_PARAMETER = re.compile(rb"(?i)(?:host|hostaddr|service)=")
 # fixture, and the bound keeps a long line of repeated fixture DSNs from a quadratic scan
 _URL_TAIL_LIMIT = 1024
 _URL_TAIL = re.compile(rb"(?:(?!(?<!\\)\\[nrt\"'])[^\s\"'`<>]){0,%d}" % _URL_TAIL_LIMIT)
+# the same in a string of a structured value, whose backslashes are text
+_URL_TAIL_TEXT = re.compile(rb"[^\s\"'`<>]{0,%d}" % _URL_TAIL_LIMIT)
 # a character a writer encoded as a backslash-u or backslash-x escape: what it stands for cannot
 # be read from the bytes
 _ENCODED_CHARACTER = re.compile(rb"(?i)\\(?:u[0-9a-f]{4}|x[0-9a-f]{2})")
@@ -211,6 +244,43 @@ _OPEN_CALL = re.compile(_IDENTIFIER_PATH + rb"\s*[(\[](?:.*[,(\[{])?", re.S)
 # a dotenv-secret match that is the public signing-key fingerprint the python image sets
 _GPG_FINGERPRINT = re.compile(rb"\s*(?:export\s+)?GPG_KEY\s*=\s*['\"]?[0-9A-Fa-f]{40}")
 
+# what bounds a mask (see _extent)
+_SPACE = frozenset(b" \t\r\n\f\v")
+_TOKEN_STOP = _SPACE | frozenset(b"\"'`<>\\")
+_AUTHORITY_STOP = _SPACE | frozenset(b"/?#\"'`<>")
+_PEM_END = re.compile(rb"-----END [A-Z ]*PRIVATE KEY-----")
+_DOTENV_EQUALS = re.compile(rb"=[ \t]*")
+_FIELD_SEPARATOR = re.compile(rb"[:=][ \t]*")
+_AUTH_SCHEME = re.compile(rb"(?i)(?:bearer|basic)\s+")
+_FIRST_WORD = re.compile(rb"\S+")
+# a string of a structured value holds its backslashes as text, and its JSON writes each one
+# escaped: there `\n` in a password is two characters of it, so the mask reads URLs with no
+# escape stop too, as the serialised view does
+_TEXT_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
+    (
+        "url-credentials",
+        re.compile(
+            rb"(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,15}://[^/\s:@]+:(?!(?:[*]+|MASKED)@)"
+            rb"[^\s/]{3,}@[^\s/]+"
+        ),
+    ),
+)
+# a PEM block is multi-line and never stands bare elsewhere without the BEGIN line its shape finds
+_NOT_PROMOTED = frozenset({"pem-private-key"})
+# the shapes a string value is also read for with its mapping key in front of it
+_KEYED_RULES = frozenset({"secret-field", "authorization-header"})
+_EMPTY: Mapping[str, int] = MappingProxyType({})
+
+
+class SecretsPolicy(str, Enum):
+    """What a unit that would carry a secret becomes (:meth:`SafetyGate.screen`, the ``secrets``
+    option): ``reject`` withholds it, ``mask`` replaces each secret by :data:`PLACEHOLDER` and
+    withholds only what masking cannot remove. The one spelling of the policies: the plugin's
+    configuration, the attachment step and the observer all take this type."""
+
+    REJECT = "reject"
+    MASK = "mask"
+
 
 class SafetyError(RuntimeError):
     """A payload would carry a secret; nothing was sent."""
@@ -233,6 +303,32 @@ class Finding:
 
 
 @dataclass(frozen=True)
+class Screened:
+    """What :meth:`SafetyGate.screen` decided about one unit (a span, a pass, a file).
+
+    ``value`` is what may be sent: the input itself under ``reject``, the masked copy under
+    ``mask``. ``masked`` counts the masks by rule (read-only; empty under ``reject``). Non-empty
+    ``findings`` withhold the unit, whatever the policy."""
+
+    value: Any = field(repr=False)
+    masked: Mapping[str, int] = _EMPTY
+    findings: tuple[Finding, ...] = ()
+    # the variables whose known values were masked (names only, for a warning)
+    sources: tuple[str, ...] = ()
+
+    @property
+    def withheld(self) -> bool:
+        return bool(self.findings)
+
+
+@dataclass(frozen=True)
+class _Span:
+    start: int
+    end: int
+    rule: str
+
+
+@dataclass(frozen=True)
 class _Known:
     """The known values as one object, so a gate swaps them in a single assignment while other
     threads scan."""
@@ -244,21 +340,7 @@ class _Known:
     def forms(self) -> tuple[tuple[bytes, tuple[bytes, ...]], ...]:
         """Each value with the forms JSON gives it: escaped up to ``JSON_NESTING`` times, with
         non-ASCII characters raw and as ``\\uXXXX``."""
-        pairs = []
-        for known in self.values:
-            if not known:
-                continue
-            base = known.decode("utf-8", "surrogateescape")
-            forms = [known]
-            for ascii_only in (False, True):
-                text = base
-                for _ in range(JSON_NESTING):
-                    text = json.dumps(text, ensure_ascii=ascii_only)[1:-1]
-                    form = text.encode("utf-8", "surrogateescape")
-                    if form not in forms:
-                        forms.append(form)
-            pairs.append((known, tuple(forms)))
-        return tuple(pairs)
+        return tuple((known, json_forms(known)) for known in self.values if known)
 
 
 @dataclass
@@ -402,6 +484,192 @@ class SafetyGate:
         self._count(extra)
         return found + extra
 
+    # -- the policy ------------------------------------------------------------------------------
+
+    def screen(
+        self,
+        payload: bytes,
+        *,
+        policy: SecretsPolicy | str,
+        also: Iterable[bytes] = (),
+    ) -> Screened:
+        """Raw ``payload`` under ``policy``: under ``reject`` what :meth:`scan` finds; under
+        ``mask`` the masked copy and what the backstop finds (the gate over the copy, and the
+        check of what follows each mask). ``also``: values found elsewhere in the same trial,
+        masked here too."""
+        if SecretsPolicy(policy) is SecretsPolicy.REJECT:
+            return Screened(payload, _EMPTY, tuple(self.scan(payload)))
+        promoted = self.found_values(payload) | frozenset(also)
+        exempted: set[str] = set()
+        masked, counts, broken = self._mask_view(payload, promoted, exempted, context=None)
+        self._count((), exempted)
+        findings = self._scan_bytes(masked, RAW_SHAPES, count_exempted=False)
+        findings += self._broken(broken)
+        return Screened(
+            masked,
+            MappingProxyType(dict(counts)),
+            tuple(findings),
+            self._sources_in(payload) if RULE_KNOWN in counts else (),
+        )
+
+    def screen_structured(
+        self, value: Any, *, policy: SecretsPolicy | str, also: Iterable[bytes] = ()
+    ) -> Screened:
+        """A JSON-like ``value`` under ``policy``: under ``reject`` what :meth:`scan_structured`
+        finds; under ``mask`` a copy whose string values (never the keys) are masked, each also
+        read with its mapping key in front of it (``{"password": "..."}``), and what the backstop
+        finds over that copy."""
+        if SecretsPolicy(policy) is SecretsPolicy.REJECT:
+            return Screened(value, _EMPTY, tuple(self.scan_structured(value)))
+        promoted = self.found_values(value) | frozenset(also)
+        exempted: set[str] = set()
+        counts: Counter[str] = Counter()
+        broken: list[str] = []
+        masked = self._mask_tree(value, promoted, exempted, counts, broken)
+        self._count((), exempted)
+        findings = self._scan_structured(masked, count_exempted=False) + self._broken(broken)
+        sources = ()
+        if RULE_KNOWN in counts:
+            sources = self._sources_in("\x00".join(strings_in(value)).encode("utf-8", "replace"))
+        return Screened(masked, MappingProxyType(dict(counts)), tuple(findings), sources)
+
+    def _sources_in(self, view: bytes) -> tuple[str, ...]:
+        """The variables whose known values stand in ``view``, in any JSON form (names only)."""
+        known = self._known
+        return tuple(
+            dict.fromkeys(
+                known.sources.get(value) or "an unnamed value"
+                for value, forms in known.forms
+                if any(form in view for form in forms)
+            )
+        )
+
+    def found_values(self, payload: Any) -> frozenset[bytes]:
+        """The values of :data:`PROMOTE_MIN` or more characters a shape finds in ``payload`` (raw
+        bytes, or a JSON-like value), not exempt ones and no PEM block: what a trial masks
+        wherever else it stands."""
+        found: set[bytes] = set()
+        if isinstance(payload, (bytes, bytearray)):
+            view = bytes(payload)
+            for span in self._shape_spans(view, set()):
+                found |= _promotable(view, span)
+            return frozenset(found)
+        for context, text in _entries(payload):
+            view = text.encode("utf-8", "surrogateescape")
+            for span in self._shape_spans(view, set()) + self._shape_spans(
+                view, set(), shapes=_TEXT_SHAPES
+            ):
+                found |= _promotable(view, span)
+            if context is not None:
+                keyed = _keyed_view(context, view)
+                for span in self._shape_spans(keyed, set(), rules=_KEYED_RULES):
+                    found |= _promotable(keyed, span)
+        return frozenset(found)
+
+    def _mask_tree(
+        self,
+        value: Any,
+        promoted: frozenset[bytes],
+        exempted: set[str],
+        counts: Counter[str],
+        broken: list[str],
+        context: str | None = None,
+    ) -> Any:
+        if isinstance(value, Mapping):
+            return {
+                key: self._mask_tree(item, promoted, exempted, counts, broken, str(key))
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._mask_tree(item, promoted, exempted, counts, broken) for item in value]
+        if isinstance(value, tuple):
+            return tuple(
+                self._mask_tree(item, promoted, exempted, counts, broken) for item in value
+            )
+        if isinstance(value, str):
+            view = value.encode("utf-8", "surrogateescape")
+            masked, found, bad = self._mask_view(
+                view, promoted, exempted, context=context, text=True
+            )
+            if not found and not bad:
+                return value
+            counts.update(found)
+            broken.extend(bad)
+            return masked.decode("utf-8", "surrogateescape")
+        return value
+
+    def _mask_view(
+        self,
+        view: bytes,
+        promoted: frozenset[bytes],
+        exempted: set[str],
+        *,
+        context: str | None,
+        text: bool = False,
+    ) -> tuple[bytes, Counter[str], list[str]]:
+        return _replace(
+            view, self._mask_spans(view, promoted, exempted, context=context, text=text)
+        )
+
+    def _mask_spans(
+        self,
+        view: bytes,
+        promoted: frozenset[bytes],
+        exempted: set[str],
+        *,
+        context: str | None,
+        text: bool = False,
+    ) -> list[tuple[int, int, frozenset[str], str]]:
+        """Every byte range of ``view`` a mask replaces, overlaps merged: ``(start, end, the rules
+        that fired on it, the rule its end comes from)``. ``text``: ``view`` is a string of a
+        structured value, whose backslashes are text."""
+        spans = self._shape_spans(view, exempted)
+        if text:
+            spans += self._shape_spans(view, exempted, shapes=_TEXT_SHAPES)
+        if context is not None:
+            keyed = _keyed_view(context, view)
+            shift = len(keyed) - len(view)
+            for span in self._shape_spans(keyed, exempted, rules=_KEYED_RULES):
+                if span.end > shift:
+                    spans.append(_Span(max(span.start - shift, 0), span.end - shift, span.rule))
+        for _, forms in self._known.forms:
+            spans += _occurrences(view, forms, RULE_KNOWN)
+        for value in promoted:
+            spans += _occurrences(view, json_forms(value), RULE_COPY)
+        return _merge(spans)
+
+    def _shape_spans(
+        self,
+        view: bytes,
+        exempted: set[str],
+        *,
+        rules: frozenset[str] | None = None,
+        shapes: Iterable[tuple[str, re.Pattern[bytes]]] = RAW_SHAPES,
+    ) -> list[_Span]:
+        spans: list[_Span] = []
+        for rule, pattern in shapes:
+            if rules is not None and rule not in rules:
+                continue
+            position = 0
+            while (match := pattern.search(view, position)) is not None:
+                if _exempt(rule, match, view, text=shapes is _TEXT_SHAPES):
+                    exempted.add(rule)
+                    position = match.start() + 1
+                    continue
+                start, end = _extent(rule, match, view)
+                spans.append(_Span(start, end, rule))
+                if rule == "url-credentials":
+                    spans += _shared_user(view, start, end)
+                # the greedy host of a URL can hold the start of the next one
+                resume = end if rule == "url-credentials" else match.end()
+                position = max(resume, match.start() + 1)
+        return spans
+
+    def _broken(self, rules: Iterable[str]) -> list[Finding]:
+        findings = [Finding(RULE_RESIDUE, f"after a {rule} mask") for rule in dict.fromkeys(rules)]
+        self._count(findings)
+        return findings
+
     def drop_ambient(self, ambient: Iterable[str]) -> list[str]:
         """Leave out, in place, every known value one of the ``ambient`` strings contains, and
         name the variables they came from (names only). A value the run's own tracing values
@@ -478,10 +746,11 @@ def _first_reportable(
     return None, passed
 
 
-def _exempt(rule: str, match: re.Match[bytes], view: bytes) -> bool:
-    """A match of ``rule`` in ``view`` known to be committed fixture data, not a credential."""
+def _exempt(rule: str, match: re.Match[bytes], view: bytes, *, text: bool = False) -> bool:
+    """A match of ``rule`` in ``view`` known to be committed fixture data, not a credential.
+    ``text``: ``view`` is a string of a structured value, whose backslashes are text."""
     if rule == "url-credentials":
-        tail = _URL_TAIL.match(view, match.end())
+        tail = (_URL_TAIL_TEXT if text else _URL_TAIL).match(view, match.end())
         return _local_fixture_dsn(match.group(0), tail.group(0) if tail else b"")
     if rule == "dotenv-secret":
         return _GPG_FINGERPRINT.fullmatch(match.group(0)) is not None or _names_no_secret(
@@ -559,3 +828,338 @@ def strings_in(value: Any) -> Iterator[str]:
             yield from strings_in(item)
     elif value is not None:
         yield str(value)
+
+
+def json_forms(value: bytes) -> tuple[bytes, ...]:
+    """``value`` and the forms JSON gives it: escaped up to ``JSON_NESTING`` times, with
+    non-ASCII characters raw and as ``\\uXXXX``."""
+    base = value.decode("utf-8", "surrogateescape")
+    forms = [value]
+    for ascii_only in (False, True):
+        text = base
+        for _ in range(JSON_NESTING):
+            text = json.dumps(text, ensure_ascii=ascii_only)[1:-1]
+            form = text.encode("utf-8", "surrogateescape")
+            if form not in forms:
+                forms.append(form)
+    return tuple(forms)
+
+
+# -- what a mask covers ----------------------------------------------------------------------------
+
+
+def _extent(rule: str, match: re.Match[bytes], view: bytes) -> tuple[int, int]:
+    """The bytes a mask of ``match`` replaces: a dotenv or field value to its closing quote or the
+    end of its line, a PEM block to its END line, a header's token or a key to its end, a URL
+    password to the last ``@`` of the authority (its user name, when it is the password, is masked
+    as a copy: :func:`_shared_user`)."""
+    if rule == "dotenv-secret":
+        equals = _DOTENV_EQUALS.search(view, match.start(), match.end())
+        return _value_extent(view, equals.end() if equals else match.end())
+    if rule == "secret-field":
+        separator = _FIELD_SEPARATOR.search(view, match.start(), match.end())
+        return _value_extent(view, separator.end() if separator else match.end())
+    if rule == "pem-private-key":
+        limit = _string_end(view, match.end())
+        end = _PEM_END.search(view, match.end(), limit)
+        return match.start(), end.end() if end else limit
+    if rule == "url-credentials":
+        colon = view.index(b":", view.index(b"://", match.start()) + 3)
+        last_at = view.rfind(b"@", colon + 1, _authority_end(view, colon + 1))
+        # the match's own `@` when an escape ends the authority before it
+        return colon + 1, last_at if last_at > colon else view.index(b"@", colon + 1)
+    if rule == "authorization-header":
+        scheme = _AUTH_SCHEME.search(view, match.start(), match.end())
+        return (scheme.end() if scheme else match.start()), _token_end(view, match.end())
+    return match.start(), _token_end(view, match.end())
+
+
+def _shared_user(view: bytes, start: int, end: int) -> list[_Span]:
+    """The user name of a URL whose masked password ``view[start:end]`` it equals, as a copy of
+    that password: left as it is, it would show the value the mask removed."""
+    user = view.rfind(b"://", 0, start) + 3
+    colon = start - 1
+    if user < colon and view[user:colon] == view[start:end]:
+        return [_Span(user, colon, RULE_COPY)]
+    return []
+
+
+def _value_extent(view: bytes, start: int) -> tuple[int, int]:
+    """A dotenv or field value: inside its quotes when it is quoted and the quote closes in the
+    same string, else to the end of its line."""
+    for quote in (b'\\"', b"\\'", b'"', b"'"):
+        if view.startswith(quote, start):
+            body = start + len(quote)
+            close = _closing_quote(view, body, quote)
+            return (body, close) if close != -1 else (body, _line_end(view, body))
+    return start, _line_end(view, start)
+
+
+def _closing_quote(view: bytes, i: int, quote: bytes) -> int:
+    """The next quote of the kind that opened a value just before ``i`` (``"``, ``'``, or an
+    escaped ``\\"`` / ``\\'``; YAML's ``''`` is no closing quote); -1 when there is none, or,
+    for an escaped opener, when the enclosing string ends first."""
+    escaped_opener = len(quote) == 2
+    target = quote[-1]
+    while i < len(view):
+        byte = view[i]
+        if byte == 0x5C:  # a backslash and what it escapes
+            if escaped_opener and view[i + 1 : i + 2] == bytes([target]):
+                return i
+            i += 2
+            continue
+        if escaped_opener and byte == 0x22:
+            return -1
+        if not escaped_opener and byte == target:
+            if target == 0x27 and view[i + 1 : i + 2] == b"'":
+                i += 2  # YAML's '' inside a single-quoted scalar
+                continue
+            return i
+        i += 1
+    return -1
+
+
+def _line_end(view: bytes, i: int) -> int:
+    """Where an unquoted value starting at ``i`` ends: a real line break (a backslash right
+    before it continues the line, the way YAML folds a double-quoted string), an escaped
+    ``\\n`` / ``\\r`` / ``\\"`` / ``\\'``, a quote of either kind, or the end of ``view``. An
+    escaped backslash belongs to the value."""
+    n = len(view)
+    while i < n:
+        byte = view[i]
+        if byte == 0x5C:
+            after = view[i + 1] if i + 1 < n else None
+            if after == 0x5C:
+                i += 2
+                continue
+            if after in (0x6E, 0x72, 0x22, 0x27):  # n r " '
+                return i
+            if after in (0x0A, 0x0D):  # a fold: the logical line goes on
+                i = _after_a_fold(view, i + 2)
+                continue
+            i += 1
+            continue
+        if byte in (0x0A, 0x0D, 0x22, 0x27):
+            return i
+        i += 1
+    return n
+
+
+def _after_a_fold(view: bytes, i: int) -> int:
+    """Where a YAML double-quoted string goes on after a fold (a backslash and a line break,
+    then ``i``): past the next line's indentation and blank lines, and past the backslash that
+    escapes a leading space."""
+    n = len(view)
+    while i < n and view[i] in b" \t\r\n":
+        i += 1
+    if view[i : i + 2] == b"\\ ":
+        i += 1
+    return i
+
+
+def _string_end(view: bytes, i: int) -> int:
+    """The first unescaped double quote at or after ``i`` (where an enclosing JSON or YAML
+    double-quoted string ends), else the end of ``view``."""
+    while i < len(view):
+        if view[i] == 0x5C:
+            i += 2
+            continue
+        if view[i] == 0x22:
+            return i
+        i += 1
+    return len(view)
+
+
+def _token_end(view: bytes, i: int) -> int:
+    while i < len(view):
+        if view[i : i + 2] == b"\\/":  # JSON may write a / as \/
+            i += 2
+            continue
+        if view[i] in _TOKEN_STOP:
+            return i
+        i += 1
+    return i
+
+
+def _authority_end(view: bytes, i: int) -> int:
+    while i < len(view):
+        if view[i] in _AUTHORITY_STOP:
+            return i
+        if view[i] == 0x5C and view[i + 1 : i + 2] in (b"n", b"r", b"t", b'"', b"'"):
+            return i
+        i += 1
+    return len(view)
+
+
+# what starts the next line of an env listing: an assignment to an upper-case name
+_NEW_LINE_START = re.compile(rb"(?:export\s+)?[A-Z_][A-Z0-9_]*=")
+
+
+def _ends_cleanly(rule: str, view: bytes, start: int, end: int) -> bool:
+    """The check of one mask over ``view[start:end]``: what follows it is where its rule's
+    extent may end. A value that stopped at a quote, with a value character right after the
+    quote, held the quote (``pass'word``): what follows is the rest of it, so the check
+    fails and the unit is withheld."""
+    if rule in (RULE_KNOWN, RULE_COPY) or end >= len(view):
+        return True
+    byte = view[end]
+    if rule == "url-credentials":
+        return byte == 0x40
+    if rule == "pem-private-key":
+        return view[:end].endswith(b"KEY-----") or byte == 0x22
+    if rule in ("dotenv-secret", "secret-field"):
+        opener = _opener_before(view, start)
+        if opener is not None:  # a quoted value ends at its own closing quote
+            return view.startswith(opener, end) and _after_a_closing_quote(view, end + len(opener))
+        if byte in b"\r\n":
+            return True
+        if view[end : end + 2] in (b"\\n", b"\\r"):
+            return _reads_as_a_new_line(view, end + 2)
+    elif byte in _SPACE or byte in b"`<>":
+        return True
+    elif byte == 0x5C:
+        return view[end + 1 : end + 2] in (b"n", b"r", b"t", b'"', b"'") and (
+            view[end + 1] not in b"\"'" or _after_a_value(view, end + 2)
+        )
+    if view[end : end + 2] in (b'\\"', b"\\'"):
+        return _after_a_value(view, end + 2)
+    if byte in b"\"'":
+        return _after_a_value(view, end + 1)
+    return False
+
+
+def _reads_as_a_new_line(view: bytes, i: int) -> bool:
+    """Whether what follows an escaped line break at ``i`` reads as the next line of an env
+    listing: after more line breaks and spaces, the end of the string or of ``view``, a comment,
+    or an assignment to an upper-case name. Anything else may be the rest of the value (in a
+    ``.env`` file's own bytes the two characters are part of it), so the mask is residue."""
+    n = len(view)
+    while i < n:
+        if view[i : i + 2] in (b"\\n", b"\\r", b"\\t"):
+            i += 2
+        elif view[i] in b" \t\r\n":
+            i += 1
+        else:
+            break
+    if i >= n or view[i] in b"\"'#" or view[i : i + 2] in (b'\\"', b"\\'"):
+        return True
+    return _NEW_LINE_START.match(view, i) is not None
+
+
+def _opener_before(view: bytes, start: int) -> bytes | None:
+    """The quote that opened the value at ``start``, if one did."""
+    for quote in (b'\\"', b"\\'", b'"', b"'"):
+        if start >= len(quote) and view[start - len(quote) : start] == quote:
+            return quote
+    return None
+
+
+def _after_a_closing_quote(view: bytes, i: int) -> bool:
+    """Whether ``i`` (just past a quoted value's closing quote) is outside the value: what
+    :func:`_outside` accepts, or the quote of an enclosing string followed by that. A value
+    character (``"pass"word``) or a quote that opens the next part of a concatenated value
+    (``'pass'"'"'word'``) is more of the value."""
+    if _outside(view, i):
+        return True
+    if view[i : i + 2] in (b'\\"', b"\\'"):
+        return _outside(view, i + 2)
+    if view[i : i + 1] in (b'"', b"'"):
+        return _outside(view, i + 1)
+    return False
+
+
+def _outside(view: bytes, i: int) -> bool:
+    """Whether ``i`` is past any value: the end, whitespace, a separator or a closing bracket,
+    or an escaped line break or tab."""
+    if i >= len(view):
+        return True
+    return view[i] in b" \t\r\n,;:)]}" or view[i : i + 2] in (b"\\n", b"\\r", b"\\t")
+
+
+def _after_a_value(view: bytes, i: int) -> bool:
+    """Whether ``i`` (just past a quote a value stopped at) is outside the value: the end,
+    whitespace, a separator or a closing bracket, or an escaped line break or quote."""
+    return _outside(view, i) or view[i : i + 2] == b'\\"'
+
+
+def _promotable(view: bytes, span: _Span) -> set[bytes]:
+    if span.rule in _NOT_PROMOTED:
+        return set()
+    value = view[span.start : span.end]
+    out = {value} if len(value) >= PROMOTE_MIN else set()
+    word = _FIRST_WORD.match(value)
+    if word and len(word.group(0)) >= PROMOTE_MIN:
+        out.add(word.group(0))
+    return out
+
+
+def _occurrences(view: bytes, forms: Iterable[bytes], rule: str) -> list[_Span]:
+    spans = []
+    for form in forms:
+        position = view.find(form)
+        while position != -1:
+            spans.append(_Span(position, position + len(form), rule))
+            position = view.find(form, position + 1)
+    return spans
+
+
+def _merge(spans: Iterable[_Span]) -> list[tuple[int, int, frozenset[str], str]]:
+    """Overlapping spans as one: ``(start, end, every rule that fired, the rule of the end)``."""
+    merged: list[list[Any]] = []
+    for span in sorted(spans, key=lambda s: (s.start, -s.end)):
+        if span.end <= span.start:
+            continue
+        if merged and span.start < merged[-1][1]:
+            last = merged[-1]
+            last[2].add(span.rule)
+            if span.end > last[1]:
+                last[1], last[3] = span.end, span.rule
+            continue
+        merged.append([span.start, span.end, {span.rule}, span.rule])
+    return [(start, end, frozenset(rules), last) for start, end, rules, last in merged]
+
+
+def _replace(
+    view: bytes, merged: Iterable[tuple[Any, ...]]
+) -> tuple[bytes, Counter[str], list[str]]:
+    out = bytearray()
+    counts: Counter[str] = Counter()
+    broken: list[str] = []
+    cursor = 0
+    for start, end, rules, last, *_ in merged:
+        out += view[cursor:start] + PLACEHOLDER
+        cursor = end
+        # a found value at the place a shape found it is that shape's mask, not a copy
+        counts.update(rules - {RULE_COPY} if rules - {RULE_COPY, RULE_KNOWN} else rules)
+        if not _ends_cleanly(last, view, start, end):
+            broken.append(last)
+    out += view[cursor:]
+    return bytes(out), counts, broken
+
+
+def _keyed_view(key: str, view: bytes) -> bytes:
+    return key.encode("utf-8", "surrogateescape") + b": " + view
+
+
+def _entries(value: Any, key: str | None = None) -> Iterator[tuple[str | None, str]]:
+    """Every string value in ``value`` with the mapping key it stands under (None in a list)."""
+    if isinstance(value, Mapping):
+        for item_key, item in value.items():
+            yield from _entries(item, str(item_key))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _entries(item)
+    elif isinstance(value, str):
+        yield key, value
+
+
+def parses(payload: bytes, syntax: str) -> bool:
+    """Whether ``payload`` parses as ``syntax`` (``"yaml"`` or ``"json"``)."""
+    try:
+        if syntax == "json":
+            json.loads(payload)
+        else:
+            list(yaml.safe_load_all(payload))
+    except Exception:  # noqa: BLE001 - any parser failure means it does not parse
+        return False
+    return True
