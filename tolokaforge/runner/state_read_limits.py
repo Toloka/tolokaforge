@@ -7,6 +7,8 @@ final-state capture among its callers), the grader's ``SubstrateService``
 final-state reads, ``GradeTrial`` and the judge's DB tools. One such read may
 take at most ``compute.state_read_timeout_s``; a holder that has not answered
 by then fails the read like a dead one, with an error naming the setting.
+``RegisterTrial``'s DB init sends the same world the other way and shares the
+whole-state budget.
 
 Every runner-side deadline that waits on such a read is derived from the same
 value (:class:`StateReadDeadlines`), so raising it lets a slow read through end
@@ -136,7 +138,7 @@ class StateReadDeadlines:
 
     @property
     def final_state_read_s(self) -> float:
-        """One whole-state read: ``GetState``, a substrate final-state read, a grading factory."""
+        """One whole-state request: ``GetState``, a substrate read, a grading factory, the DB init."""
         return self.holder_read_s + _FINAL_STATE_READ_AFTER_SYNC_S
 
     @property

@@ -379,16 +379,20 @@ it always outlasts the read and reports the read's own cause:
 | A judge DB tool read (`get_db_state` / `query_db`) | `T + 10 s` | 30 s |
 | A whole-state read (`GetState`, `SubstrateService` final reads, grading's final-state reads) | `T + 280 s` | 300 s |
 | One `ResetTrial` call (its holder reset may be the holder's first contact) | `T + 280 s` | 300 s |
+| `RegisterTrial`'s DB init (the whole initial state in one request) | `T + 280 s` | 300 s |
 | One `GradeTrial` call (at most three bounded holder calls, see below) | `3T + 540 s` | 600 s |
 | An app world's `GET /_admin/tables` HTTP read | `T + 5 s` | 25 s |
 
 The deadline bounds the db-service request itself, not only the wait around it. A
-mirror read or write, a judge query, and every request hash grading makes on the
-whole state (the server-side hash, the snapshots, the reset and the restores among
-them) wait for the db-service's answer as long as their deadline, so a large world
-that takes more than the DB client's default 30 s to answer is still read.
-Connecting to the db-service keeps that default, so one that is not there still
-fails fast.
+mirror read or write, a judge query, `RegisterTrial`'s DB init, and every request
+hash grading makes on the whole state (the server-side hash, the snapshots, the
+reset and the restores among them) wait for the db-service's answer as long as
+their deadline, so a large world that takes more than the DB client's default 30 s
+to answer is still read. Connecting to the db-service keeps that default, so one
+that is not there still fails fast.
+
+`RegisterTrial` holds one of the runner's gRPC worker threads (`MAX_WORKERS`, default
+10) while its DB init runs, so a world slow to load holds one for up to that deadline.
 
 One call may make more such requests than its own budget holds at their full
 deadlines: a `GradeTrial` syncs the mirror, then reads the state for each grader and
@@ -420,8 +424,8 @@ ones that apply. The one engine-side wait on them is the `queue` trial grader's
 wait for a whole grade, judge included: the `GradeTrial` budget plus 60 s
 (660 s by default), so it grows with the setting too.
 
-The bound covers state reads only. A tool call keeps its own budget (its
-`timeout_s`). The MCP server subprocess is started on the trial's first contact
+The bound covers state reads and `RegisterTrial`'s DB init, which sends the same
+world the other way. A tool call keeps its own budget (its `timeout_s`). The MCP server subprocess is started on the trial's first contact
 with it — a tool call or a state read, whichever comes first — off the runner's
 event loop, so a server that loads its world before answering `initialize`
 spends that time inside that first contact (and any contact waiting for the same
