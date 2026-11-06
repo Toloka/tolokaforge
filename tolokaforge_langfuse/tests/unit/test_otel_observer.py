@@ -2523,14 +2523,14 @@ class TestSecretsPolicy:
 
     # -- a whole trial through a real attachment step
 
-    def _real_step(self, receiver, server_api, gate, policy):
+    def _real_step(self, receiver, server_api, gate, policy, mode="all"):
         from tolokaforge_langfuse.attachments import SecretScan
         from tolokaforge_langfuse.media import LangfuseAttachments
 
         return LangfuseAttachments(
             api_base="https://langfuse.example",
             opener=receiver,
-            mode="all",
+            mode=mode,
             scan=SecretScan(gate=gate),
             send_manifest_event=server_api == "v3",
             secrets=policy,
@@ -2626,6 +2626,36 @@ class TestSecretsPolicy:
             unreadable.chmod(0o600)
         assert receipt.extra["langfuse.found_values_failed"] == 1
         assert [r for r in caplog.records if "not read for the values masked" in r.getMessage()]
+
+    @pytest.mark.parametrize("mode", ["core", "none"])
+    def test_the_env_digest_is_the_masked_forms_whether_or_not_env_yaml_is_attached(
+        self, tmp_path, mode
+    ) -> None:
+        """``attach: core`` leaves out env.yaml, ``none`` every file: the bundle's env_sha256 is
+        still that of env.yaml's masked form, which no file on the receiver has, and never the
+        original's."""
+        import hashlib
+        import re
+
+        originals: dict[str, bytes] = {}
+
+        def edit(trial_dir) -> None:
+            self._password_in_env(trial_dir)
+            originals["env"] = (trial_dir / "env.yaml").read_bytes()
+
+        receiver = _MediaReceiver()
+        gate = SafetyGate()
+        step = self._real_step(receiver, "v3", gate, "mask", mode=mode)
+        _, spans, receipt = self._persisted(
+            tmp_path, "v3", "mask", edit=edit, gate=gate, attachments=step
+        )
+        assert receipt.extra["langfuse.projections_sent"] == 1
+        assert not [raw for raw, _ in receiver.documents() if b"network_policy" in raw]
+        sent = self._everything_sent(receiver, spans)
+        masked = gate.screen(originals["env"], policy="mask").value
+        assert hashlib.sha256(originals["env"]).hexdigest() not in sent
+        env_hashes = set(re.findall(r'env_sha256": "([0-9a-f]{64})"', sent))
+        assert env_hashes == {hashlib.sha256(masked).hexdigest()}
 
     @FAMILIES
     def test_no_hash_of_an_original_is_sent(self, tmp_path, server_api) -> None:
