@@ -1418,6 +1418,21 @@ class TestEverySpanIsScannedBeforeItLeaves:
             self._run("v3", gate=SafetyGate())
         assert not [w for w in self._warnings(caplog) if w.startswith("live tracing withheld")]
 
+    def test_a_run_whose_gate_exempted_a_match_says_so_at_run_end(self, caplog) -> None:
+        """A credential-shaped fixture DSN goes out as it is; the run says the gate passed it."""
+        fixture = "postgres" + "ql://app:app@db:5432/appdb"
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run("v3", gate=SafetyGate(), tool_output=f"psql {fixture}")
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+        lines = [w for w in self._warnings(caplog) if "exempts as committed fixture data" in w]
+        assert len(lines) == 1
+        assert "url-credentials x" in lines[0] and "app:app" not in lines[0]
+
+    def test_a_run_whose_gate_exempted_nothing_says_nothing_of_it(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            self._run("v3", gate=SafetyGate())
+        assert not [w for w in self._warnings(caplog) if "exempts as committed fixture" in w]
+
     def test_a_secret_registered_after_the_gate_was_built_is_known_at_the_next_trial(
         self, caplog
     ) -> None:

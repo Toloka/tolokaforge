@@ -1203,6 +1203,7 @@ class OTelTrialObserver:
         if self._write_once:
             self._count_roots_left_unconfirmed(decided)
         self._warn_of_what_was_withheld()
+        self._say_what_was_exempted()
         with self._states_lock:
             self._persist.clear()  # trials that were never announced
             self._roots_pending.clear()
@@ -1607,6 +1608,21 @@ class OTelTrialObserver:
             self._spans_withheld,
             *passes,
             ", ".join(f"{cause} x{count}" for cause, count in self._withheld_by.most_common(5)),
+        )
+
+    def _say_what_was_exempted(self) -> None:
+        """One line at run end when the gate passed a credential-shaped match as committed fixture
+        data (a local fixture DSN, the ``python`` image's ``GPG_KEY`` fingerprint, a dotenv name
+        that holds no secret or code under a lower-case name), by rule: an operator can tell what
+        went out unchecked by value."""
+        exempted = dict(self._gate.exempted)
+        if not exempted:
+            return
+        _log.warning(
+            "the data-safety gate passed match(es) it exempts as committed fixture data (%s): "
+            "local fixture DSNs, the GPG_KEY fingerprint, dotenv names that hold no secret, code "
+            "under a lower-case name",
+            ", ".join(f"{rule} x{count}" for rule, count in sorted(exempted.items())),
         )
 
     def _redact(self, mapping: Any) -> Any:
