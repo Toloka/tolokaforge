@@ -40,8 +40,8 @@ never hides a reportable one, and the gate counts the exemptions per rule
   hit (a span, a pass, a file) and names it in its receipt, or stops.
 - ``mask``: every match is replaced by :data:`PLACEHOLDER` up to the end of its value (a dotenv or
   field value to its closing quote or the end of its line, a PEM block to its END line, a token
-  to its end, a URL password to the last ``@`` of the authority), every known value in every form
-  JSON gives it, and every copy of a value of :data:`PROMOTE_MIN` or more characters a shape found
+  to its end, a URL password to the last ``@`` of the authority, and the user name when it is the
+  password), every known value in every form JSON gives it, and every copy of a value of :data:`PROMOTE_MIN` or more characters a shape found
   in the same unit (or, passed as ``also``, elsewhere in the same trial). The gate then runs again
   over the result, the byte after each mask must be one its rule ends at, and a file that parsed
   before must still parse; any of these withholds the unit as ``reject`` does. Masking reads more
@@ -636,6 +636,8 @@ class SafetyGate:
                     continue
                 start, end = _extent(rule, match, view)
                 spans.append(_Span(start, end, rule))
+                if rule == "url-credentials":
+                    spans += _shared_user(view, start, end)
                 # the greedy host of a URL can hold the start of the next one
                 resume = end if rule == "url-credentials" else match.end()
                 position = max(resume, match.start() + 1)
@@ -816,7 +818,8 @@ def _check_policy(policy: str) -> None:
 def _extent(rule: str, match: re.Match[bytes], view: bytes) -> tuple[int, int]:
     """The bytes a mask of ``match`` replaces: a dotenv or field value to its closing quote or the
     end of its line, a PEM block to its END line, a header's token or a key to its end, a URL
-    password to the last ``@`` of the authority."""
+    password to the last ``@`` of the authority (its user name, when it is the password, is masked
+    as a copy: :func:`_shared_user`)."""
     if rule == "dotenv-secret":
         equals = _DOTENV_EQUALS.search(view, match.start(), match.end())
         return _value_extent(view, equals.end() if equals else match.end())
@@ -836,6 +839,16 @@ def _extent(rule: str, match: re.Match[bytes], view: bytes) -> tuple[int, int]:
         scheme = _AUTH_SCHEME.search(view, match.start(), match.end())
         return (scheme.end() if scheme else match.start()), _token_end(view, match.end())
     return match.start(), _token_end(view, match.end())
+
+
+def _shared_user(view: bytes, start: int, end: int) -> list[_Span]:
+    """The user name of a URL whose masked password ``view[start:end]`` it equals, as a copy of
+    that password: left as it is, it would show the value the mask removed."""
+    user = view.rfind(b"://", 0, start) + 3
+    colon = start - 1
+    if user < colon and view[user:colon] == view[start:end]:
+        return [_Span(user, colon, RULE_COPY)]
+    return []
 
 
 def _value_extent(view: bytes, start: int) -> tuple[int, int]:

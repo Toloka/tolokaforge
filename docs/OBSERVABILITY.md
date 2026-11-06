@@ -670,9 +670,10 @@ sends nothing unscanned.
 - **What a hit does: `secrets: mask`.** Every secret is replaced by `MASKED` and the unit is sent:
   a dotenv or field value up to its closing quote or the end of its line, a PEM block up to its
   END line, a header's token or a provider key to its end, a URL password up to the last `@` of the
-  authority, every known value in every form JSON gives it, and every copy of a value of 16 or
-  more characters a shape found anywhere in the same trial (its files and events), so a password
-  an agent read from a `.env` and then typed into a command is masked there too. Mapping keys are
+  authority (and the user name when it is the password), every known value in every form JSON
+  gives it, and every copy of a value of 16 or more characters a shape found anywhere in the same
+  trial (its files and events), so a password an agent read from a `.env` and then typed into a
+  command is masked there too. Mapping keys are
   never rewritten. The gate then scans the masked unit again, checks that every mask ends where
   its rule ends, and a file must still parse as the YAML or JSON it was; any of these withholds the
   unit as `reject` does, and so does a gate that fails. Every trace of the run carries `secrets:

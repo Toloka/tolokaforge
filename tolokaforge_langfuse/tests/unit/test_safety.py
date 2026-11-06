@@ -782,6 +782,29 @@ class TestMask:
             masked = as_text(screen_row(gate_for(row), row, expand(row["input"]), "mask").value)
             assert json.loads(masked) == json.loads(expand(row["expected"])), name
 
+    # -- a URL's user name that is its password
+
+    @pytest.mark.parametrize("where", ["raw bytes", "a structured value"])
+    def test_a_user_name_that_is_the_password_is_masked_with_it(self, where: str) -> None:
+        """A shared value too short to be masked as a copy elsewhere (fewer than sixteen
+        characters) would still show in the user name the mask leaves."""
+        text = dsn("airflowadmin1", "airflowadmin1", "db:5432/x")
+        if where == "raw bytes":
+            screened = SafetyGate().screen(text.encode(), policy="mask")
+            sent = screened.value.decode()
+        else:
+            screened = SafetyGate().screen_structured({"output": text}, policy="mask")
+            sent = screened.value["output"]
+        assert sent == TOKENS["PG"] + "://MASKED:MASKED@db:5432/x"
+        assert dict(screened.masked) == {"url-credentials": 1, "found-value-copy": 1}
+        assert screened.findings == ()
+
+    def test_a_user_name_other_than_the_password_is_left(self) -> None:
+        screened = SafetyGate().screen(
+            dsn("app", "other-pw-1", "db:5432/x").encode(), policy="mask"
+        )
+        assert screened.value.decode() == TOKENS["PG"] + "://app:MASKED@db:5432/x"
+
     # -- an escaped line break ends a value only before what reads as the next line
 
     @pytest.mark.parametrize(
