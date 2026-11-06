@@ -13,6 +13,7 @@ import hashlib
 import json
 import uuid
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -152,6 +153,37 @@ class TestAMutationTouchesItsTable:
         assert rows["results"] == [{"id": 1, "v": 9}]
         rows = client.post(f"/trials/{trial_id}/sql", json={"query": "SELECT id, v FROM b"}).json()
         assert rows["results"] == [{"id": 2, "v": 2}]
+
+    def test_an_injection_shaped_table_name_stays_a_name(self, client: TestClient) -> None:
+        table = 't"; DROP TABLE b; --'
+        quoted = '"' + table.replace('"', '""') + '"'
+        trial_id = _init(client, {table: [{"id": 1, "v": 1}], "b": [{"id": 2}]})
+        ops = {"operations": [{"op": "upsert", "key": "id", "record": {"id": 1, "v": 9}}]}
+
+        response = client.patch(f"/trials/{trial_id}/state/{quote(table, safe='')}", json=ops)
+
+        assert response.status_code == 200, response.text
+        rows = client.post(f"/trials/{trial_id}/sql", json={"query": f"SELECT v FROM {quoted}"})
+        assert rows.json()["results"] == [{"v": 9}]
+        rows = client.post(f"/trials/{trial_id}/sql", json={"query": "SELECT id FROM b"})
+        assert rows.json()["results"] == [{"id": 2}]
+
+    def test_a_mirror_under_another_case_gives_way_to_the_table(self) -> None:
+        """SQLite folds a table name's case, so the old mirror must go before the new one."""
+        from tolokaforge.env.json_db_service import app as service
+
+        trial = service.TrialState(trial_id="t:0", data={"Foo": [{"id": 1}]})
+        trial.sync_json_to_sql()
+        trial.data = {"foo": [{"id": 2}]}
+
+        trial.sync_table_to_sql("foo")
+
+        assert trial._sql_conn is not None
+        names = trial._sql_conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        assert [row[0] for row in names] == ["foo"]
+        assert trial._sql_conn.execute("SELECT id FROM foo").fetchone()[0] == 2
 
     def test_a_mutation_without_hashes_answers_an_empty_hash(self, client: TestClient) -> None:
         trial_id = _init(client, {"a": [{"id": 1}]})

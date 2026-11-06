@@ -429,7 +429,14 @@ class TrialState(BaseModel):
             self.sync_json_to_sql()
             return
         cursor = self._sql_conn.cursor()
-        cursor.execute(f"DROP TABLE IF EXISTS {_sql_identifier(table_name)}")
+        # The name to drop is the mirror's own, as in the full rebuild, not the request's.
+        # NOCASE folds ASCII only, as SQLite does for a table name.
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name = ? COLLATE NOCASE",
+            (table_name,),
+        )
+        for (existing,) in cursor.fetchall():
+            cursor.execute(f"DROP TABLE IF EXISTS {_sql_identifier(existing)}")
         if table_name in self.data:
             self._mirror_table(cursor, table_name, self.data[table_name])
         self._sql_conn.commit()
