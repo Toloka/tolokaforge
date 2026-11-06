@@ -594,10 +594,16 @@ class TestScreen:
     """``screen`` / ``screen_structured``: the policy-free gate applied under a policy, returning
     the value to send, the counts of what was masked and the findings that withhold it."""
 
-    def test_the_policies_are_named(self) -> None:
-        assert safety.SECRETS_REJECT == "reject"
-        assert safety.SECRETS_MASK == "mask"
-        assert set(safety.SECRETS_POLICIES) == {"reject", "mask"}
+    def test_the_policies_are_one_enumeration(self) -> None:
+        assert [policy.value for policy in safety.SecretsPolicy] == ["reject", "mask"]
+        assert safety.SecretsPolicy("mask") is safety.SecretsPolicy.MASK
+
+    @pytest.mark.parametrize("policy", ["drop", "", "REJECT"])
+    def test_an_unknown_policy_is_refused(self, policy: str) -> None:
+        with pytest.raises(ValueError, match="SecretsPolicy"):
+            SafetyGate().screen(b"x\n", policy=policy)
+        with pytest.raises(ValueError, match="SecretsPolicy"):
+            SafetyGate().screen_structured({"x": 1}, policy=policy)
 
     def test_reject_returns_the_input_and_the_scans_findings(self) -> None:
         payload = f"use {PROVIDER_KEY} for the call\n".encode()

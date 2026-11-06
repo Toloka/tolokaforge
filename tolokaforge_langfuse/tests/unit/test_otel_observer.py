@@ -2156,6 +2156,12 @@ class TestSecretsPolicy:
 
     # -- the live spans
 
+    def test_an_unknown_policy_is_refused_and_the_receipt_names_the_policy(self) -> None:
+        with pytest.raises(ValueError, match="SecretsPolicy"):
+            _observer(InMemorySpanExporter(), secrets="drop")
+        observer, _ = _observer(InMemorySpanExporter(), secrets="mask")
+        assert observer.run_finished().details[0]["secrets"] == "mask"
+
     @FAMILIES
     def test_a_live_span_is_masked_and_queued(self, server_api) -> None:
         spans, receipt = self._live(

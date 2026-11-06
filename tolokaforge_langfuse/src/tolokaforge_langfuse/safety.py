@@ -72,6 +72,7 @@ import threading
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from functools import cached_property
 from pathlib import Path
 from types import MappingProxyType
@@ -97,10 +98,6 @@ MIN_SECRET_VALUE = 8
 # whose strings hold JSON text)
 JSON_NESTING = 3
 
-# the policies a caller passes to SafetyGate.screen
-SECRETS_REJECT = "reject"
-SECRETS_MASK = "mask"
-SECRETS_POLICIES = (SECRETS_REJECT, SECRETS_MASK)
 # what a mask writes: valid wherever it lands in YAML or JSON, and too short for any shape
 PLACEHOLDER = b"MASKED"
 # a value a shape found that is masked wherever else it stands in the unit or the trial: shorter
@@ -258,6 +255,16 @@ _NOT_PROMOTED = frozenset({"pem-private-key"})
 # the shapes a string value is also read for with its mapping key in front of it
 _KEYED_RULES = frozenset({"secret-field", "authorization-header"})
 _EMPTY: Mapping[str, int] = MappingProxyType({})
+
+
+class SecretsPolicy(str, Enum):
+    """What a unit that would carry a secret becomes (:meth:`SafetyGate.screen`, the ``secrets``
+    option): ``reject`` withholds it, ``mask`` replaces each secret by :data:`PLACEHOLDER` and
+    withholds only what masking cannot remove. The one spelling of the policies: the plugin's
+    configuration, the attachment step and the observer all take this type."""
+
+    REJECT = "reject"
+    MASK = "mask"
 
 
 class SafetyError(RuntimeError):
@@ -468,15 +475,14 @@ class SafetyGate:
         self,
         payload: bytes,
         *,
-        policy: str,
+        policy: SecretsPolicy | str,
         also: Iterable[bytes] = (),
     ) -> Screened:
         """Raw ``payload`` under ``policy``: under ``reject`` what :meth:`scan` finds; under
         ``mask`` the masked copy and what the backstop finds (the gate over the copy, and the
         check of what follows each mask). ``also``: values found elsewhere in the same trial,
         masked here too."""
-        _check_policy(policy)
-        if policy == SECRETS_REJECT:
+        if SecretsPolicy(policy) is SecretsPolicy.REJECT:
             return Screened(payload, _EMPTY, tuple(self.scan(payload)))
         promoted = self.found_values(payload) | frozenset(also)
         exempted: set[str] = set()
@@ -491,13 +497,14 @@ class SafetyGate:
             self._sources_in(payload) if RULE_KNOWN in counts else (),
         )
 
-    def screen_structured(self, value: Any, *, policy: str, also: Iterable[bytes] = ()) -> Screened:
+    def screen_structured(
+        self, value: Any, *, policy: SecretsPolicy | str, also: Iterable[bytes] = ()
+    ) -> Screened:
         """A JSON-like ``value`` under ``policy``: under ``reject`` what :meth:`scan_structured`
         finds; under ``mask`` a copy whose string values (never the keys) are masked, each also
         read with its mapping key in front of it (``{"password": "..."}``), and what the backstop
         finds over that copy."""
-        _check_policy(policy)
-        if policy == SECRETS_REJECT:
+        if SecretsPolicy(policy) is SecretsPolicy.REJECT:
             return Screened(value, _EMPTY, tuple(self.scan_structured(value)))
         promoted = self.found_values(value) | frozenset(also)
         exempted: set[str] = set()
@@ -805,11 +812,6 @@ def json_forms(value: bytes) -> tuple[bytes, ...]:
             if form not in forms:
                 forms.append(form)
     return tuple(forms)
-
-
-def _check_policy(policy: str) -> None:
-    if policy not in SECRETS_POLICIES:
-        raise ValueError(f"secrets must be one of {', '.join(SECRETS_POLICIES)}, got {policy!r}")
 
 
 # -- what a mask covers ----------------------------------------------------------------------------

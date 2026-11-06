@@ -31,7 +31,7 @@ from tolokaforge_langfuse.media import (
     LangfuseAttachments,
     api_base_from_endpoint,
 )
-from tolokaforge_langfuse.safety import SafetyGate
+from tolokaforge_langfuse.safety import SafetyGate, SecretsPolicy
 
 pytestmark = pytest.mark.unit
 
@@ -262,6 +262,11 @@ def _attachments(fake: _FakeLangfuse, **kwargs) -> LangfuseAttachments:
 
 
 class TestLangfuseAttachments:
+    def test_an_unknown_secrets_policy_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="SecretsPolicy"):
+            _attachments(_FakeLangfuse(), secrets="drop")
+        assert _attachments(_FakeLangfuse(), secrets="mask").secrets is SecretsPolicy.MASK
+
     def test_every_file_is_registered_uploaded_confirmed_and_the_manifest_sent(
         self, tmp_path: Path
     ) -> None:

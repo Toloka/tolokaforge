@@ -17,6 +17,7 @@ from tolokaforge_langfuse.profile import (
     profile_from_mapping,
 )
 from tolokaforge_langfuse.retry import RetryPolicy
+from tolokaforge_langfuse.safety import SecretsPolicy
 
 ACCEPTS_TRIAL = "trial"
 ACCEPTS_TRANSCRIPT = "transcript"
@@ -54,7 +55,7 @@ class LangfuseConfig(BaseModel):
     whose ``accepts`` admits the trace's source."""
     attach: Literal["all", "core", "none"] = "all"
     """Files uploaded through the media API after the trial bundle is persisted."""
-    secrets: Literal["reject", "mask"] = "reject"
+    secrets: SecretsPolicy = SecretsPolicy.REJECT
     """What a span, a trial-end pass or an attached file that would carry a secret becomes:
     ``reject`` withholds it; ``mask`` replaces each secret by ``MASKED`` and sends it, stamped
     ``secrets: mask``, and withholds only what masking cannot remove (``tolokaforge_langfuse.safety``

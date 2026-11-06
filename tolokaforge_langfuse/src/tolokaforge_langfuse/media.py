@@ -48,9 +48,7 @@ from tolokaforge_langfuse.attachments import (
 from tolokaforge_langfuse.retry import Answer, Retrier
 from tolokaforge_langfuse.safety import (
     RULE_UNPARSEABLE,
-    SECRETS_MASK,
-    SECRETS_POLICIES,
-    SECRETS_REJECT,
+    SecretsPolicy,
     parses,
 )
 
@@ -253,10 +251,9 @@ class LangfuseAttachments:
         environment: str | None = None,
         send_manifest_event: bool = True,
         retrier: Retrier | None = None,
-        secrets: str = SECRETS_REJECT,
+        secrets: SecretsPolicy | str = SecretsPolicy.REJECT,
     ) -> None:
-        if secrets not in SECRETS_POLICIES:
-            raise ValueError(f"secrets must be one of {SECRETS_POLICIES}, got {secrets!r}")
+        secrets = SecretsPolicy(secrets)  # an unknown policy raises before anything is built
         self._api_base = api_base.rstrip("/")
         self._headers = dict(headers or {})
         self._mode = mode
@@ -300,7 +297,7 @@ class LangfuseAttachments:
         return self._mode
 
     @property
-    def secrets(self) -> str:
+    def secrets(self) -> SecretsPolicy:
         """The ``secrets`` policy this step was built with (``reject`` / ``mask``)."""
         return self._secrets
 
@@ -334,9 +331,9 @@ class LangfuseAttachments:
         """``file`` under the step's policy: the file to send (encoded again from the masked
         bytes when something was masked) and what withholds it. A masked file that parsed before
         and no longer does is withheld too."""
-        if self._secrets == SECRETS_REJECT:
+        if self._secrets is SecretsPolicy.REJECT:
             return file, self._scan.scan(file.original)
-        screened = self._scan.screen(file.original, policy=SECRETS_MASK, also=also)
+        screened = self._scan.screen(file.original, policy=SecretsPolicy.MASK, also=also)
         if screened.findings:
             return file, [str(finding) for finding in screened.findings]
         if not screened.masked:
@@ -441,7 +438,7 @@ class LangfuseAttachments:
         if own_budget:
             self._deadline = self._clock() + self._budget_s
         budget_spent = False
-        if self._secrets == SECRETS_MASK and also is None:
+        if self._secrets is SecretsPolicy.MASK and also is None:
             found: set[bytes] = set()
             for file in files:
                 if allowed_attachment(file.name):

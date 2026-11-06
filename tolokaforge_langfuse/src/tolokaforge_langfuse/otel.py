@@ -87,12 +87,10 @@ from tolokaforge_langfuse.projection import (
 from tolokaforge_langfuse.retry import Retrier, RetryStats
 from tolokaforge_langfuse.safety import (
     RULE_KNOWN,
-    SECRETS_MASK,
-    SECRETS_POLICIES,
-    SECRETS_REJECT,
     Finding,
     SafetyGate,
     Screened,
+    SecretsPolicy,
     strings_in,
 )
 from tolokaforge_langfuse.vocabulary import (
@@ -470,10 +468,9 @@ class OTelTrialObserver:
         gate: SafetyGate | None = None,
         ambient: Sequence[str] = (),
         retry_stats: RetryStats | None = None,
-        secrets: str = SECRETS_REJECT,
+        secrets: SecretsPolicy | str = SecretsPolicy.REJECT,
     ) -> None:
-        if secrets not in SECRETS_POLICIES:
-            raise ValueError(f"secrets must be one of {SECRETS_POLICIES}, got {secrets!r}")
+        secrets = SecretsPolicy(secrets)  # an unknown policy raises before anything is built
         # what a unit that would carry a secret becomes: withheld (reject) or masked (mask)
         self._secrets = secrets
         self._queue = queue
@@ -531,9 +528,9 @@ class OTelTrialObserver:
         self._session_id = session_id
         self._tags = tuple(tags)
         self._metadata = dict(metadata or {})
-        if secrets == SECRETS_MASK:
+        if secrets is SecretsPolicy.MASK:
             # every trace of a masking run says so (the key is reserved: no caller sets it)
-            self._metadata[SECRETS_METADATA_KEY] = SECRETS_MASK
+            self._metadata[SECRETS_METADATA_KEY] = SecretsPolicy.MASK.value
         self._resource = Resource.create({"service.name": service_name})
         self._scope = _scope()
         self._max_chars = max(64, attribute_max_chars)
@@ -558,7 +555,7 @@ class OTelTrialObserver:
         self._ambient = self._ambient_strings(ambient)
         self._left_out: set[str] = set()
         self._calibrate_gate()
-        if secrets == SECRETS_MASK:
+        if secrets is SecretsPolicy.MASK:
             _log.warning(
                 "secrets=mask: a secret in a span, a trial-end pass or an attached file is "
                 "replaced by MASKED and sent; on a receiver that keeps the first write of a trace "
@@ -959,7 +956,7 @@ class OTelTrialObserver:
             manifest: dict[str, Any] | None = None
             if getattr(step, "mode", "all") != "none":
                 with_manifest = getattr(step, "attach_with_manifest", None)
-                trial_values = {"also": found} if self._secrets == SECRETS_MASK else {}
+                trial_values = {"also": found} if self._secrets is SecretsPolicy.MASK else {}
                 if callable(with_manifest):
                     counts, manifest = with_manifest(
                         identity.trace_id,
@@ -987,7 +984,7 @@ class OTelTrialObserver:
     def _found_in_trial(self, trial_dir: Path) -> frozenset[bytes]:
         """Under ``secrets: mask``, the values a shape finds in the bundle's files (see
         :meth:`SafetyGate.found_values`): every unit of the trial masks them too."""
-        if self._secrets != SECRETS_MASK:
+        if self._secrets is not SecretsPolicy.MASK:
             return frozenset()
         found: set[bytes] = set()
         for path in list_trial_files(trial_dir):
@@ -1008,7 +1005,7 @@ class OTelTrialObserver:
         env = trial_dir / "env.yaml"
         if env.is_file():
             raw = env.read_bytes()
-            masked = self._gate.screen(raw, policy=SECRETS_MASK, also=found).value
+            masked = self._gate.screen(raw, policy=SecretsPolicy.MASK, also=found).value
             digests[hashlib.sha256(raw).hexdigest()] = hashlib.sha256(masked).hexdigest()
         grade_path = trial_dir / "grade.yaml"
         if grade_path.is_file():
@@ -1019,7 +1016,7 @@ class OTelTrialObserver:
                 grade = None
             if isinstance(grade, Mapping):
                 masked_grade = self._gate.screen_structured(
-                    grade, policy=SECRETS_MASK, also=found
+                    grade, policy=SecretsPolicy.MASK, also=found
                 ).value
                 digests[content_fingerprint(grade)] = content_fingerprint(masked_grade)
         return {before: after for before, after in digests.items() if before != after}
@@ -1153,7 +1150,7 @@ class OTelTrialObserver:
         event is masked on its own (a masked body says what in ``metadata.secrets_masked``), the
         digests of a masked file are those of its masked form, and what masking left behind, or
         a gate that failed, keeps the whole pass back."""
-        if self._secrets == SECRETS_REJECT:
+        if self._secrets is SecretsPolicy.REJECT:
             return self._withheld_by_the_gate(events, trace_id, what), events, False
         sent: list[dict[str, Any]] = []
         causes: list[str] = []
@@ -1163,7 +1160,9 @@ class OTelTrialObserver:
             # a value one event shows in a shape is masked where it stands bare in another
             found = found | self._gate.found_values(events)
             for event in events:
-                screened = self._gate.screen_structured(event, policy=SECRETS_MASK, also=found)
+                screened = self._gate.screen_structured(
+                    event, policy=SecretsPolicy.MASK, also=found
+                )
                 if screened.findings:
                     withheld = _causes(screened.findings)
                     with self._states_lock:
@@ -1403,7 +1402,7 @@ class OTelTrialObserver:
                     "project_verified": self._project_verified,
                     "server_api": self._server_api,
                     "previews": "on" if self._previews else "off",
-                    "secrets": self._secrets,
+                    "secrets": self._secrets.value,
                     # the receiver's native environment and the deployment profile of the run
                     "environment": self._projection.environment,
                     "profile_version": self._profile_version,
@@ -1473,7 +1472,7 @@ class OTelTrialObserver:
                     f"{TRACE_METADATA_PREFIX}label": self._label,
                     f"{TRACE_METADATA_PREFIX}trace_time_source": TRACE_TIME_SOURCE,
                     f"{TRACE_METADATA_PREFIX}{SECRETS_METADATA_KEY}": (
-                        SECRETS_MASK if self._secrets == SECRETS_MASK else None
+                        SecretsPolicy.MASK.value if self._secrets is SecretsPolicy.MASK else None
                     ),
                     f"{OBSERVATION_METADATA_PREFIX}kind": "root",
                     f"{OBSERVATION_METADATA_PREFIX}error_root": True,
@@ -1634,7 +1633,7 @@ class OTelTrialObserver:
         """Queue one span; False when it was withheld (a secret) or the queue was full. Every live
         span of every kind leaves through here."""
         attrs = {k: v for k, v in attributes.items() if v is not None}
-        if self._secrets == SECRETS_MASK:
+        if self._secrets is SecretsPolicy.MASK:
             masked = self._masked_span(name, identity, span_id, attrs)
             if masked is None:
                 return False
@@ -1714,7 +1713,7 @@ class OTelTrialObserver:
         failed). The warnings name the masked name, the rules and the variables, never a value."""
         try:
             screened = self._gate.screen_structured(
-                {"name": name, "attributes": attributes}, policy=SECRETS_MASK
+                {"name": name, "attributes": attributes}, policy=SecretsPolicy.MASK
             )
         except Exception as exc:  # noqa: BLE001 - a span the gate could not screen stays here
             with self._states_lock:
