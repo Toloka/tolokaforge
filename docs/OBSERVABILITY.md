@@ -166,7 +166,7 @@ subdirectories (video, `services/`) are not attachments. `attach: all` (default)
 `core` only `task.yaml`, `prompts.yaml`, `tools_schemas.yaml`, `logs.yaml`, `grade.yaml`, `none`
 nothing. The trace metadata then carries **manifest v2**, the same document the offline
 `langfuse-connector` writes, so `langfuse-connector download` rebuilds the directory byte-exact
-from either producer:
+from either producer; under `secrets: mask` a masked file is rebuilt as it was sent, masked:
 
 ```
 attachments_schema: 2
@@ -683,9 +683,12 @@ sends nothing unscanned.
   its rule ends, and a file must still parse as the YAML or JSON it was; any of these withholds the
   unit as `reject` does, and so does a gate that fails. Every trace of the run carries `secrets:
   mask`; a masked observation says what in `secrets_masked`, a masked file in its manifest entry's
-  `masked`. `env_sha256` and a grading's `content_fingerprint` are those of the masked files: the
-  masked file shows everything around a secret, so the original's hash would let a reader try
-  candidates for a short one. The run starts with a warning that it masks, each masked unit gets a
+  `masked`. `env_sha256` and a grading's `content_fingerprint` are those of the masked form of
+  their file, whether that file was attached or not (`attach: core` leaves out `env.yaml`,
+  `attach: none` every file, and a file masking cannot clean is skipped): the masked form shows
+  everything around a secret, so the original's hash would let a reader try candidates for a
+  short one. Such a digest describes no file on the receiver when its file was not attached;
+  it never describes the original. The run starts with a warning that it masks, each masked unit gets a
   warning line, and the run ends with one that sums up what was masked, by rule and variable.
 - **Limits.** A text longer than `attribute_max_chars` is scanned as capped, so a credential the cap
   cuts is not recognised. Base64 image blocks never leave through spans. Under `mask`, what no
@@ -730,7 +733,8 @@ Every counter the Langfuse plugin reports under `extra` (each key has the `langf
 | `previews_sent`, `final_observations_sent`, `error_roots_sent`, `roots_unconfirmed` | the v4 layout (§ The write-once producer layout) |
 | `spans_refused_secret`, `spans_failed` | live spans the gate withheld, and live spans withheld because the gate failed on them |
 | `spans_masked`, `projections_masked`, `gradings_masked`, `attachments_masked` | under `secrets: mask`, the spans, passes and files sent masked; each a part of its queued, sent or registered count, never added to it |
-| `gate_exempted` | matches the gate exempted as committed fixture data (a local DSN, `GPG_KEY`) |
+| `found_values_failed` | under `secrets: mask`, the trial files (or a trial's events built ahead) that could not be read for the values masked across their trial: those trials' units mask what each holds and may have missed a copy another one shows; a run-end warning names it |
+| `gate_exempted` | matches the gate exempted as committed fixture data (a fixture DSN, `GPG_KEY`, a dotenv name that holds no secret, code under a lower-case name); a run-end warning names them by rule |
 | `retried_requests`, `retry_attempts`, `retries_recovered`, `retries_exhausted`, `retry_wait_s`, `retry_breaker_trips` | the retry policy over every write route (§ Retries): requests posted more than once, the posts after the first, retried requests that landed, requests still refused when the policy, a deadline, the breaker or the run's end stopped them, the seconds waited (rounded up), and how often the breaker stopped the waiting |
 
 A receipt covers one process. `ExportReceipt.merge` applies the same reduction to receipts

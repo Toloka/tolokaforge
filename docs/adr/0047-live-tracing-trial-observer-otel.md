@@ -564,10 +564,12 @@ their attachments, and on a receiver that keeps the first write of a trace that 
 
 Decision.
 
-- **The false positives are exempt**, narrowly: the local fixture DSN (nothing after the host may
-  lead elsewhere), `GPG_KEY` with exactly 40 hex characters, upper-case dotenv names only, and the
-  escaped line breaks of a YAML or JSON string read as line breaks over raw bytes. The gate counts
-  its exemptions (`gate_exempted`).
+- **The false positives are exempt**, narrowly: the fixture DSN (a loopback address, `db` or
+  `postgres`, a password equal to the user name of at most twelve characters of one class, and
+  nothing after the host that may lead elsewhere), `GPG_KEY` with exactly 40 hex characters, dotenv
+  names that hold no secret, code under a dotenv name not in upper case, and the escaped line
+  breaks of a YAML or JSON string read as line breaks over raw bytes. The gate counts its
+  exemptions (`gate_exempted`) and the run end names them.
 - **A deployment chooses the policy** with `options.langfuse.secrets`: `reject` (the default, the
   behaviour this ADR always had) or `mask`. Under `mask` each secret is replaced by `MASKED` up to
   the end of its value, every known value in every JSON form, and every copy of a 16-character or
@@ -575,7 +577,10 @@ Decision.
   what masking cannot remove is withheld as under `reject`. "Nothing is rewritten" now holds for
   `reject` only. The trace says `secrets: mask`, a masked observation `secrets_masked`, a masked
   file `masked` in its manifest entry, and every hash and size describes what was sent (no hash of
-  an unmasked file leaves: it would let a reader try candidates for a short secret).
+  an unmasked file leaves: it would let a reader try candidates for a short secret). The bundle's
+  own digests (`env_sha256`, a grading's `content_fingerprint`) are those of the masked form of
+  their file whether or not the file was attached, so under `attach: core` or `none`, or for a
+  skipped file, they describe no file on the receiver, and never the original.
 - **The transcript scrub masks before it cuts**, so a cut inside a key no longer leaves a head the
   shapes cannot see; it keeps its own markers and its own `tool_io` policy.
 

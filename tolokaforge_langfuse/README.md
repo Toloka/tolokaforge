@@ -53,13 +53,14 @@ observability:
 ```
 
 `secrets` says what a span, a trial-end pass or an attached file that would carry a secret
-becomes. `reject` (the default) withholds it, as the data-safety gate always did. `mask` replaces
-each secret by `MASKED` and sends it: the trace carries `secrets: mask`, a masked observation
-`secrets_masked` and a masked file `masked` in its manifest entry, with every hash describing the
-masked bytes. Masking withholds what it cannot remove, but it does not see an encoded copy of a
-secret or a credential with no known shape next to one it masked, which `reject` would have
-withheld with the whole unit; on a receiver that keeps the first write of a trace, a masked trace
-is final (`docs/OBSERVABILITY.md`, "Delivery").
+becomes. `reject` (the default) withholds it. `mask` replaces each secret by `MASKED` and sends
+it: the trace carries `secrets: mask`, a masked observation `secrets_masked` and a masked file
+`masked` in its manifest entry, with every hash describing the masked bytes (a digest the bundle
+carries, `env_sha256` or a grading's `content_fingerprint`, describes the masked form of its file
+even when that file is not attached). Masking withholds what it cannot remove, but it does not
+see an encoded copy of a secret or a credential with no known shape next to one it masked, which
+`reject` would have withheld with the whole unit; on a receiver that keeps the first write of a
+trace, a masked trace is final (`docs/OBSERVABILITY.md`, "Delivery").
 
 A deployment usually puts the block once under `run_defaults` of its `project.yaml`, with its one
 `project` and that project's `environments` (what each accepts); `LANGFUSE_ENVIRONMENT` then
