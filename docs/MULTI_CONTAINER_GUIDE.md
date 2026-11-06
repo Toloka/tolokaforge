@@ -255,6 +255,16 @@ The pieces that matter:
   daemon from inside a container needs `TMPDIR` on a path the daemon can
   bind from (the same applies to the task directory under
   `tool_artifacts_delivery: mount`).
+- **`initial_state_delivery`** — `inline` (default) or `mount`. Under
+  `mount` the engine never parses the task's `initial_state.json_db`
+  file: the native adapter delivers it as one of the task's referenced
+  tool artefacts and names it in `initial_state.tables_ref`, the runner
+  seeds the database service from the file's bytes, streamed, and reads
+  the tables from it again only when a grader asks (ADR-0071). It rides
+  the task-directory mount, so it needs `tool_artifacts_delivery: mount`
+  too, and with it the same scope and grader rules. Use it for a task
+  whose initial database state is too large for the engine and the runner
+  to hold for the whole trial.
 
 A task can declare its own `environment_manifest` with the same shape; it
 deep-merges on top of `default_environment` per service. A task that

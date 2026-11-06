@@ -106,9 +106,14 @@ class EnvironmentState:
 
         self.rag_corpus_dir: Path | None = None
 
-    def hydrate(self) -> None:
-        """Load initial state from configuration"""
-        self.initial_db_state = self._read_json_db_seed()
+    def hydrate(self, *, seed_db: bool = True) -> None:
+        """Load initial state from configuration.
+
+        ``seed_db=False`` leaves the DB state empty instead of reading ``json_db``:
+        a task whose state file reaches the runner by reference (ADR-0071) is
+        never parsed on the engine host, and its final DB state is the runner's.
+        """
+        self.initial_db_state = self._read_json_db_seed() if seed_db else {}
         self.db_state = deepcopy(self.initial_db_state)
 
         # Ensure db_state has consistent structure (device + surroundings mirrors user_db)

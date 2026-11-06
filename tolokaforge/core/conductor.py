@@ -373,6 +373,11 @@ def _final_state_by_reference(spec: TrialSpec) -> bool:
     return manifest is not None and manifest.final_state_delivery == "mount"
 
 
+def _initial_state_by_reference(spec: TrialSpec) -> bool:
+    """Whether the trial's initial tables reach the runner by reference (ADR-0071)."""
+    return spec.task.initial_state.tables_ref is not None
+
+
 class FinalStateUnavailableError(Exception):
     """The Runner could not report the final state of a trial that provisions a database."""
 
@@ -677,10 +682,23 @@ class InProcessConductor:
 
         task_dir = self.adapter.get_task_dir(task.task_id)
 
+        # A state file delivered by reference (ADR-0071) stays unparsed here: the
+        # runner seeds the trial from it, and the trial's final DB state is the
+        # runner's, so the host keeps no copy of the world for the trial.
+        initial_by_reference = _initial_state_by_reference(spec)
         env_state = EnvironmentState(task_dir, task.initial_state)
-        env_state.hydrate()
+        env_state.hydrate(seed_db=not initial_by_reference)
 
-        if task.initial_state.initialization_actions:
+        if task.initial_state.initialization_actions and initial_by_reference:
+            # The host-side replay below only shapes the host's copy of the DB state,
+            # which a task delivering its state by reference does not keep: such a
+            # task provisions a database, and its final DB state is the runner's.
+            self.logger.debug(
+                "Initialization actions are not replayed on the host: the initial state "
+                "is delivered by reference",
+                count=len(task.initial_state.initialization_actions),
+            )
+        elif task.initial_state.initialization_actions:
             init_actions = [
                 action.model_dump() for action in task.initial_state.initialization_actions
             ]

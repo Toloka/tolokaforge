@@ -371,7 +371,8 @@ called to serialize the task for transfer to the Runner container.
 |-------|--------|
 | `agent_tools` | `tools.agent.enabled` list + schemas from `resolve_tool_schemas` (see [Tool Schemas](#tool-schemas-fixturestoolsjson)) |
 | `user_tools` | `tools.user.enabled` list + schemas from `resolve_tool_schemas`, built identically — a builtin carries no `ToolSource`, a block naming an `mcp_server` carries that script |
-| `initial_state.tables` | `initial_state.json` (collection → list of records) |
+| `initial_state.tables` | `initial_state.json` (collection → list of records) — or nothing under `initial_state_delivery: mount` |
+| `initial_state.tables_ref` | Under `initial_state_delivery: mount`, the state file by artefact path, SHA-256 and size (ADR-0071) |
 | `initialization_actions` | `initial_state.initialization_actions` |
 | `grading` | `grading.yaml`, translated into the runner's grading config |
 | `system_prompt` | system prompt file content |
@@ -418,6 +419,17 @@ own set of the task's files overrides `_task_artifact_sources(task_dir)`, the on
 deliveries read; a subclass that overrides `_bundle_task_artifacts` alone is refused under
 `mount`, since its references would name the default set and the runner would miss what its
 bundle used to carry.
+
+**The initial state by reference.** With `tool_artifacts_delivery: mount`, a task whose
+database state is large also sets `environment_manifest.initial_state_delivery: mount`
+(ADR-0071). The adapter then does not parse the `initial_state.json_db` file: it delivers
+the file as one of the referenced artefacts (the entry that already carries it, such as the
+case state beside a shared MCP server, or a new entry under its path in the task directory)
+and records `initial_state.tables_ref` — that artefact's path, SHA-256 and size — with
+`initial_state.tables` empty. The checks that read the seeded rows (`state_checks.id_fields`,
+a comparison view) move from the description build to `RegisterTrial`, where the runner reads
+the file; `create_environment` and the conductor leave the engine's copy of the state empty.
+A `json_db` written inline in `task.yaml`, or none, travels inline whatever the field says.
 
 ### Tool schema resolution for Docker
 

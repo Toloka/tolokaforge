@@ -14,6 +14,7 @@
   "environment_manifest": {
     "final_state_delivery": null,
     "initial_state": null,
+    "initial_state_delivery": null,
     "limited_internet_allowlist": null,
     "network_policy": "full_internet",
     "security_context_defaults": null,

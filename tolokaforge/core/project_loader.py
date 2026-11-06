@@ -797,6 +797,7 @@ _POLICY_REQUEST_FIELDS = (
     "security_context_defaults",
     "tool_artifacts_delivery",
     "final_state_delivery",
+    "initial_state_delivery",
 )
 """Fields that survive atomic ``stack`` replacement — policy requests
 that are substrate-neutral (they describe the trial regardless of

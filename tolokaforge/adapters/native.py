@@ -3,11 +3,11 @@
 import base64
 import glob as glob_module
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 import yaml
 
@@ -15,6 +15,7 @@ from tolokaforge.adapters._task_loader import (
     GradingSource,
     GradingSourceKind,
     ToolActor,
+    _declared_json_db,
     _detect_task_root,
     actor_tool_block,
     author_mutates_state,
@@ -78,6 +79,8 @@ from tolokaforge.core.project_loader import (
 )
 from tolokaforge.core.project_loader import resolve as resolve_environment
 from tolokaforge.runner.id_resolution import check_id_fields_against_seeded_tables
+from tolokaforge.runner.initial_state_file import seeded_table_shapes as seeded_json_db_table_shapes
+from tolokaforge.runner.initial_state_file import seeded_tables as seeded_json_db_tables
 from tolokaforge_coding_harnesses import (
     ENGINE_LOOP,
     HARNESS_USAGE_LOG_METADATA_KEY,
@@ -559,7 +562,10 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         task_dir = self.get_task_dir(task_id)
 
         data: dict[str, Any] = {}
-        if task.initial_state.json_db:
+        # A state file delivered by reference (ADR-0071) is never parsed on the
+        # engine host: such a task provisions a database, so the trial's final
+        # state is the runner's and this snapshot is never read.
+        if task.initial_state.json_db and not self._initial_state_by_reference(task):
             json_db = task.initial_state.json_db
             if isinstance(json_db, str):
                 json_db_path = task_dir / json_db
@@ -673,7 +679,13 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 source=grading_path,
                 section="grading",
             )
-            if config.state_checks is not None and config.state_checks.comparison_view:
+            if (
+                config.state_checks is not None
+                and config.state_checks.comparison_view
+                and not self._initial_state_by_reference(task)
+            ):
+                # Under initial_state_delivery: mount the runner checks the view
+                # against the state file at RegisterTrial (ADR-0071).
                 err = check_authored_comparison_view(
                     config.state_checks,
                     tables=seeded_tables_from_task(task, task_dir),
@@ -739,6 +751,14 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         run path reads them, for the rule holding a comparison view to the masks, and so
         does the shape of every table not seeded as a list of records.
         """
+        if _task_declares_initial_state_mount(task):
+            # The state file is read only if a rule asks for the tables (ADR-0071).
+            lazy = _LazySeededState(task, task_dir)
+            return SeededTablesLayer(
+                tables=lazy.tables_view(),
+                unstable_fields=partial(_declared_unstable_paths, task_dir),
+                table_shapes=lazy.shapes_view(),
+            )
         return SeededTablesLayer(
             tables=seeded_tables_from_task(task, task_dir),
             unstable_fields=partial(_declared_unstable_paths, task_dir),
@@ -883,6 +903,24 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         self._harness_environments[task_id] = env
         return env
 
+    def _initial_state_by_reference(self, task: TaskConfig) -> bool:
+        """Whether *task*'s state file is delivered by reference (ADR-0071).
+
+        Read off the two environment patches as the resolver merges a policy field
+        (the task's value wins, else the project's), so a task that declares
+        nothing is answered without resolving its environment. Only a
+        ``json_db`` that names a file is delivered by reference; an inline mapping
+        is already parsed with the task.
+        """
+        if not isinstance(task.initial_state.json_db, str):
+            return False
+        return (
+            _effective_initial_state_delivery(
+                self._project_default_environment, task.environment_manifest
+            )
+            == "mount"
+        )
+
     def to_task_description(self, task_id: str) -> "TaskDescription":
         """
         Convert Native task to serializable TaskDescription for Docker Runner.
@@ -929,6 +967,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             AdapterType,
             DbProbe,
             GoldenAction,
+            InitialStateTablesRef,
             RunnerGradingConfig,
             RunnerInitializationAction,
             RunnerInitialStateConfig,
@@ -968,7 +1007,11 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         warn_tool_cache_predating_mutates_state(task, task_dir)
         mcp_server_ref: str | None = actor_tool_block(task, ToolActor.AGENT).get("mcp_server")
 
-        initial_tables = seeded_tables_from_task(task, task_dir)
+        # Under initial_state_delivery: mount the state file is referenced, not
+        # parsed here (ADR-0071); the runner reads it and runs the checks below
+        # that need its rows at RegisterTrial.
+        initial_by_reference = self._initial_state_by_reference(task)
+        initial_tables = {} if initial_by_reference else seeded_tables_from_task(task, task_dir)
 
         # Build initialization actions. The core-side ``InitializationAction``
         # names the invoked tool ``func_name`` (author-facing); the runner-side
@@ -1034,14 +1077,15 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
 
                 id_fields_declared = dict(state_checks_data.get("id_fields", {}))
                 relaxed_validation = bool(state_checks_data.get("relaxed_validation", False))
-                err = check_id_fields_against_seeded_tables(
-                    id_fields_declared,
-                    initial_tables,
-                    context=task_id,
-                    relaxed=relaxed_validation,
-                )
-                if err:
-                    raise ValueError(err)
+                if not initial_by_reference:
+                    err = check_id_fields_against_seeded_tables(
+                        id_fields_declared,
+                        initial_tables,
+                        context=task_id,
+                        relaxed=relaxed_validation,
+                    )
+                    if err:
+                        raise ValueError(err)
 
                 state_checks = RunnerStateChecksConfig(
                     hash_enabled=hash_config.enabled,
@@ -1150,7 +1194,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             filesystem=initial_filesystem,
             app_world=task.initial_state.app_world,
         )
-        if state_checks is not None:
+        if state_checks is not None and not initial_by_reference:
             err = check_wire_comparison_view(
                 state_checks,
                 initial_state,
@@ -1183,6 +1227,17 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             refusal = task.initial_state.app_world.isolation_refusal(environment_manifest)
             if refusal is not None:
                 raise ValueError(f"{task_id}: {refusal}")
+        resolved_by_reference = (
+            environment_manifest is not None
+            and environment_manifest.initial_state_delivery == "mount"
+            and isinstance(task.initial_state.json_db, str)
+        )
+        if resolved_by_reference != initial_by_reference:
+            raise RuntimeError(
+                f"{task_id}: the resolved environment delivers the initial state "
+                f"{'by reference' if resolved_by_reference else 'inline'}, but the task's "
+                "patches were read the other way; this is a bug in the native adapter"
+            )
 
         # Bundle task directory files for the Docker Runner. The Runner runs in
         # a separate container without access to the host filesystem, so the
@@ -1225,8 +1280,23 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 sources[state_copy[0]] = state_copy[1]
             if search_config.documents_path:
                 sources.update(self._corpus_artifact_paths(task_dir, search_config.documents_path))
+            initial_artifact = (
+                _add_initial_state_source(task_id, task_dir, task.initial_state.json_db, sources)
+                if initial_by_reference
+                else None
+            )
             if sources:
                 tool_artifact_refs = _reference_artifacts(task_id, task_dir, sources)
+            if initial_artifact is not None:
+                assert tool_artifact_refs is not None  # the state file is one of the sources
+                entry = tool_artifact_refs.files[initial_artifact]
+                initial_state = initial_state.model_copy(
+                    update={
+                        "tables_ref": InitialStateTablesRef(
+                            artifact=initial_artifact, sha256=entry.sha256, size=entry.size
+                        )
+                    }
+                )
         else:
             if needs_bundle:
                 tool_artifacts = self._bundle_task_artifacts(task_dir)
@@ -1275,6 +1345,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             tool_artifact_refs_count=(
                 len(tool_artifact_refs.files) if tool_artifact_refs is not None else 0
             ),
+            initial_state_by_reference=initial_state.tables_ref is not None,
         )
 
         return task_description
@@ -1637,3 +1708,121 @@ def _reference_artifacts(
         )
     logger.info("Referenced task artifacts", count=len(files), task_dir=str(root))
     return ToolArtifactRefs(root=str(root), files=files)
+
+
+def _effective_initial_state_delivery(
+    project_env: EnvironmentPatch | None, task_env: EnvironmentPatch | None
+) -> str:
+    """``initial_state_delivery`` as :func:`resolve_environment` merges it: task, else project."""
+    for patch in (task_env, project_env):
+        if patch is not None and patch.initial_state_delivery is not None:
+            return patch.initial_state_delivery
+    return "inline"
+
+
+def _task_declares_initial_state_mount(task: TaskConfig) -> bool:
+    """Whether *task*'s own patch delivers its state file by reference (ADR-0071).
+
+    The answer for a caller that holds no project defaults (the grading gate's
+    classmethods): a project-wide opt-in is not seen there, and the gate then reads
+    the file as it does for an inline task.
+    """
+    return isinstance(task.initial_state.json_db, str) and (
+        _effective_initial_state_delivery(None, task.environment_manifest) == "mount"
+    )
+
+
+def _add_initial_state_source(
+    task_id: str, task_dir: Path, json_db: Any, sources: dict[str, Path]
+) -> str:
+    """The artefact path the state file is referenced under, adding it to *sources* if absent.
+
+    A state file the task's artefact set already carries (the task directory's
+    data files, or the case state copied beside a shared MCP server) is named by
+    that entry, so the runner copies it once. Otherwise the file is added under
+    its path in the task directory.
+
+    Raises:
+        ValueError: the file is not under the task directory, or its path is taken
+            by another artefact.
+    """
+    assert isinstance(json_db, str)
+    root = task_dir.resolve()
+    path = (task_dir / json_db).resolve()
+    if not path.is_file():
+        raise RuntimeError(f"JSON DB file not found: {task_dir / json_db}")
+    if not path.is_relative_to(root):
+        raise ValueError(
+            f"{task_id}: initial_state_delivery: mount reads the state file from the task "
+            f"directory {root}, but initial_state.json_db names {path}; move the file under "
+            "the task directory or deliver the initial state inline"
+        )
+    rel = path.relative_to(root).as_posix()
+    if rel in sources and sources[rel].resolve() == path:
+        return rel
+    for target, source in sources.items():
+        if source.resolve() == path:
+            return target
+    if rel in sources:
+        raise ValueError(
+            f"{task_id}: initial_state_delivery: mount references the state file as {rel!r}, "
+            f"which another artefact already names ({sources[rel]})"
+        )
+    sources[rel] = path
+    return rel
+
+
+class _LazySeededState:
+    """A by-reference task's seeded tables and shapes, parsed on first read (ADR-0071).
+
+    The grading gate asks for the tables only when a rule reads them (``id_fields``,
+    a comparison view, a check that the task seeds anything); a pack declaring
+    none of those runs without the state file ever being parsed on the host.
+    """
+
+    def __init__(self, task: TaskConfig, task_dir: Path) -> None:
+        self._task = task
+        self._task_dir = task_dir
+        self._tables: dict[str, list[dict[str, Any]]] | None = None
+        self._shapes: dict[str, str] | None = None
+
+    def _load(self) -> None:
+        if self._tables is None:
+            json_db = _declared_json_db(self._task, self._task_dir)
+            self._tables = seeded_json_db_tables(json_db)
+            self._shapes = seeded_json_db_table_shapes(json_db)
+
+    def tables(self) -> dict[str, list[dict[str, Any]]]:
+        self._load()
+        assert self._tables is not None
+        return self._tables
+
+    def shapes(self) -> dict[str, str]:
+        self._load()
+        assert self._shapes is not None
+        return self._shapes
+
+    def tables_view(self) -> Mapping[str, list[dict[str, Any]]]:
+        return _LazyMapping(self.tables)
+
+    def shapes_view(self) -> Mapping[str, str]:
+        return _LazyMapping(self.shapes)
+
+
+_V = TypeVar("_V")
+
+
+class _LazyMapping(Mapping[str, _V]):
+    """A read-only mapping whose contents are produced by *load* on first access."""
+
+    def __init__(self, load: Callable[[], Mapping[str, _V]]) -> None:
+        self._load = load
+
+    def __getitem__(self, key: str) -> _V:
+        return self._load()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._load())
+
+    def __len__(self) -> int:
+        return len(self._load())

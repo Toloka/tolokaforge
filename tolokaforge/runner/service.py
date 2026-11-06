@@ -180,8 +180,10 @@ from tolokaforge.runner.id_resolution import (
     check_id_fields_against_seeded_tables,
     compute_diff_ops,
 )
+from tolokaforge.runner.initial_state_file import InitialStateFile, InitialStateFileError
 from tolokaforge.runner.models import (
     EvidencePartName,
+    InitTrialResponse,
     KeyAccountingRecord,
     RecordedToolCall,
     RunnerInitialStateConfig,
@@ -427,7 +429,9 @@ def _no_plane_refusal(
     )
 
 
-def _unseeded_json_db_tools_refusal(task: TaskDescription) -> str | None:
+def _unseeded_json_db_tools_refusal(
+    task: TaskDescription, *, seeded_tables: Collection[str] | None = None
+) -> str | None:
     """Why this task's source-less JSON-DB builtins would have no store to serve, if so.
 
     ``db_query`` / ``db_update`` read and write the trial's own store, which
@@ -453,12 +457,51 @@ def _unseeded_json_db_tools_refusal(task: TaskDescription) -> str | None:
     )
     if not json_db_tools or task.initial_state.tables:
         return None
+    if task.initial_state.tables_ref is not None and seeded_tables is None:
+        # The tables are in a file this check does not read; RegisterTrial asks
+        # again with the tables the database was seeded with (ADR-0071).
+        return None
+    if seeded_tables:
+        return None
     return (
         f"task '{task.task_id}' enables the JSON-DB tools {json_db_tools}, but its "
         f"initial_state seeds no table, so they would read and write an empty store. "
         f"Seed the store under initial_state.json_db, or declare an intentionally empty "
         f'one as json_db: {{"<table>": []}}.'
     )
+
+
+def _initial_rows_read_at_registration(task: TaskDescription) -> bool:
+    """Whether ``RegisterTrial`` reads the initial tables' rows, not only their names.
+
+    The registration checks of ``state_checks.id_fields`` and of a comparison view
+    read rows; so does loading an app world (ADR-0062), and matching a toolset's
+    models to seeded tables for ``mcp_async`` tools. Every other registration needs
+    the seeded tables' names at most, which the database service answers.
+    """
+    state_checks = task.grading.state_checks
+    if state_checks is not None and (state_checks.id_fields or state_checks.comparison_view):
+        return True
+    if task.initial_state.app_world is not None:
+        return True
+    from tolokaforge.runner.models import InvocationStyle
+
+    return any(
+        tool.source is not None and tool.source.invocation_style == InvocationStyle.MCP_ASYNC
+        for tool in (*task.agent_tools, *task.user_tools)
+    )
+
+
+def _initial_state_source(trial_context: "TrialContextRuntime") -> dict[str, Any]:
+    """The substrate's ``initial_state`` argument for this trial.
+
+    Inline, the description's tables, as before. By reference (ADR-0071), a
+    factory the substrate calls on the first read, so the file is parsed only
+    when a grader asks, and within the grade's hold.
+    """
+    if trial_context.initial_state_file is None:
+        return {"initial_state": trial_context.task_description.initial_state.tables or {}}
+    return {"initial_state_factory": trial_context.initial_tables}
 
 
 def _registry_search_backend_name(search_config: SearchConfig) -> str | None:
@@ -703,6 +746,57 @@ class TrialContextRuntime:
         # ``initial_state.app_world`` (ADR-0062); None otherwise.
         self.app_world: AppWorldClient | None = None
         self._unusable_tools: dict[tuple[ToolExecutorIdentity, str], str] = {}
+        # The trial's verified copy of its state file when the task delivers its
+        # initial tables by reference (ADR-0071); None when they ride the wire.
+        self.initial_state_file: InitialStateFile | None = None
+        # The tables read from that file, kept only while a grade holds them
+        # (:meth:`holding_initial_tables`), never during the episode.
+        self._initial_tables_held: dict[str, list[dict[str, Any]]] | None = None
+        self._initial_tables_holds = 0
+        self._initial_tables_lock = threading.Lock()
+
+    def initial_tables(self) -> dict[str, list[dict[str, Any]]]:
+        """The trial's initial tables, as every grader reads them.
+
+        Inline, the description's ``initial_state.tables``. By reference
+        (ADR-0071), read from :attr:`initial_state_file` — its bytes checked
+        against the digest the task was described with — and normalised as the
+        inline delivery normalises them, so both deliveries give the same tables.
+        Outside a :meth:`holding_initial_tables` scope each call reads the file
+        afresh and the caller's copy is the only one; inside it the first read is
+        kept for the rest of the scope.
+
+        Raises:
+            InitialStateFileError: the file changed since the trial was registered,
+                or holds no tables.
+        """
+        if self.initial_state_file is None:
+            return self.task_description.initial_state.tables
+        with self._initial_tables_lock:
+            if self._initial_tables_held is not None:
+                return self._initial_tables_held
+            tables = self.initial_state_file.read_tables()
+            if self._initial_tables_holds:
+                self._initial_tables_held = tables
+            return tables
+
+    @contextmanager
+    def holding_initial_tables(self) -> Iterator[None]:
+        """Keep the initial tables read inside this scope until it closes (one grade).
+
+        A grade reads them from several places (the judge's diff, custom checks, a
+        golden replay's reset, a comparison view); the file is parsed at most once
+        per grade, and the tables are dropped when the grade returns.
+        """
+        with self._initial_tables_lock:
+            self._initial_tables_holds += 1
+        try:
+            yield
+        finally:
+            with self._initial_tables_lock:
+                self._initial_tables_holds -= 1
+                if not self._initial_tables_holds:
+                    self._initial_tables_held = None
 
     def mark_tool_unusable(
         self, tool_name: str, executor: ToolExecutorIdentity, reason: str
@@ -1033,6 +1127,110 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     # Tool artifact extraction
     # =========================================================================
 
+    def _prepare_initial_state_file(
+        self,
+        trial_id: str,
+        task_description: TaskDescription,
+        artifacts_dir: Path | None,
+    ) -> tuple[InitialStateFile, dict[str, list[dict[str, Any]]] | None] | str:
+        """The trial's initial-state file and, where registration reads rows, its tables.
+
+        The file is the artefact ``initial_state.tables_ref`` names, which the
+        extraction above copied and verified (ADR-0071). Its tables are read here
+        only when a registration check or tool reads rows
+        (:func:`_initial_rows_read_at_registration`); then the comparison view
+        is checked against them, with the shapes the file was written in, and the
+        ``id_fields`` declaration, as the native adapter checks an inline
+        description. Answers the refusal instead when the file cannot be read or a
+        check refuses.
+        """
+        ref = task_description.initial_state.tables_ref
+        assert ref is not None
+        if artifacts_dir is None:
+            return (
+                f"initial_state.tables_ref names the artefact {ref.artifact!r}, but no "
+                "tool artefacts were extracted for the trial"
+            )
+        state_file = InitialStateFile(
+            path=artifacts_dir / ref.artifact, sha256=ref.sha256, size=ref.size
+        )
+        if not _initial_rows_read_at_registration(task_description):
+            return state_file, None
+        try:
+            tables, shapes = state_file.read_tables_and_shapes()
+        except InitialStateFileError as exc:
+            return f"Initial state unreadable: {exc}"
+        state_checks = task_description.grading.state_checks
+        if state_checks is not None:
+            view_error = check_wire_comparison_view(
+                state_checks,
+                task_description.initial_state.model_copy(update={"tables": tables}),
+                context=f"RegisterTrial: {trial_id}",
+                table_shapes=shapes,
+            )
+            if view_error:
+                return view_error
+            # Checked here too, before the database is seeded, so a refusal leaves
+            # nothing behind; the check below the seeding then passes on the same rows.
+            id_fields_error = check_id_fields_against_seeded_tables(
+                dict(state_checks.id_fields),
+                tables,
+                context=f"RegisterTrial: {trial_id}",
+                relaxed=bool(state_checks.relaxed_validation),
+            )
+            if id_fields_error:
+                return id_fields_error
+        return state_file, tables
+
+    async def _init_trial_db(
+        self,
+        trial_id: str,
+        initial_state: RunnerInitialStateConfig,
+        initial_state_file: InitialStateFile | None,
+        registration_tables: dict[str, list[dict[str, Any]]] | None,
+    ) -> tuple[InitTrialResponse, dict[str, list[dict[str, Any]]] | None]:
+        """Seed the trial's database; its answer, and the tables registration holds.
+
+        The whole initial state goes in one request: a large world's takes as long
+        to send and load as a whole-state read takes to answer, which the client's
+        default does not cover, so the request gets the whole-state budget.
+
+        By reference (ADR-0071), tables registration already read are sent as the
+        inline delivery sends them; otherwise the file's bytes are streamed as the
+        request body, unparsed. A database service that predates that route is
+        seeded from the file read here, and those tables are handed back for
+        registration to hold as if it had read them.
+        """
+        schemas = [s.model_dump() for s in initial_state.schemas]
+        unstable_fields = [u.model_dump() for u in initial_state.unstable_fields]
+        timeout = self._whole_state_read_s(trial_id)
+        tables = initial_state.tables
+        if initial_state_file is not None and registration_tables is None:
+            streamed = await self.db_client.init_trial_from_json_db(
+                trial_id,
+                initial_state_file.aiter_chunks(),
+                schemas=schemas,
+                unstable_fields=unstable_fields,
+                timeout=timeout,
+            )
+            if streamed is not None:
+                return streamed, None
+            logger.info(
+                f"RegisterTrial: {trial_id} - the DB Service predates seeding from a "
+                "state file; reading the file to seed it inline"
+            )
+            registration_tables = await asyncio.to_thread(initial_state_file.read_tables)
+        if registration_tables is not None:
+            tables = registration_tables
+        response = await self.db_client.init_trial(
+            trial_id=trial_id,
+            tables=tables,
+            schemas=schemas,
+            unstable_fields=unstable_fields,
+            timeout=timeout,
+        )
+        return response, registration_tables
+
     def _extract_tool_artifacts(
         self,
         trial_id: str,
@@ -1262,8 +1460,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # state — the belt-and-suspenders for an adapter other than the native one, which
         # checks at description build. It reads the description alone, so it runs before
         # anything lands on disk or in the db-service: a refusal has nothing to undo.
+        # Tables delivered by reference (ADR-0071) are checked once the file is
+        # copied and verified below.
         view_state_checks = task_description.grading.state_checks
-        if view_state_checks is not None:
+        if view_state_checks is not None and task_description.initial_state.tables_ref is None:
             view_error = check_wire_comparison_view(
                 view_state_checks,
                 task_description.initial_state,
@@ -1293,6 +1493,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # relative filename (e.g. "mcp_server.py") so the TaskDescription
             # stays portable across machines; the Runner fixes up the path here.
             self._resolve_mcp_server_scripts(task_description, artifacts_dir)
+
+        # Tables delivered by reference (ADR-0071): the state file is one of the
+        # artefacts just copied and verified. It is parsed here only when a check
+        # or a tool below reads rows at registration, and those tables are dropped
+        # when registration returns; otherwise the database service is seeded from
+        # the file's bytes, streamed, and nothing is parsed.
+        initial_state_file: InitialStateFile | None = None
+        registration_tables: dict[str, list[dict[str, Any]]] | None = None
+        if task_description.initial_state.tables_ref is not None:
+            prepared = self._prepare_initial_state_file(trial_id, task_description, artifacts_dir)
+            if isinstance(prepared, str):
+                logger.error(f"RegisterTrial: {trial_id} - {prepared}")
+                self._cleanup_trial_artifacts(trial_id)
+                return pb2.RegisterTrialResponse(success=False, error=prepared)
+            initial_state_file, registration_tables = prepared
 
         # Reject an unsupported ``interface_version`` or a broken ``checks.py``
         # BEFORE DB init, tool reconstruction, and the agent loop — the load
@@ -1329,6 +1544,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             judge_model_config=trial_spec.judge_model_config,
             run_id=trial_spec.run_id,
         )
+        trial_context.initial_state_file = initial_state_file
 
         # A task that provisions no database (e.g. an adapter grading via
         # `custom_checks` + an HTTP endpoint on a sidecar, driving no
@@ -1336,6 +1552,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # provisions cleanly even when no `db-service` sits in the trial's
         # compose stack. FAIL FAST is preserved for trials that DO declare DB state.
         initial_state = task_description.initial_state
+        init_response: InitTrialResponse | None = None
         if provisions_database(initial_state):
             try:
                 # Run async operation on dedicated event loop thread. The whole
@@ -1346,13 +1563,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 # init fails with its own cause before the wait for it gives up.
                 budget_s = self.state_read_deadlines.final_state_read_s
                 with self._call_budget(trial_id, budget_s):
-                    self._run_async(
-                        self.db_client.init_trial(
-                            trial_id=trial_id,
-                            tables=initial_state.tables,
-                            schemas=[s.model_dump() for s in initial_state.schemas],
-                            unstable_fields=[u.model_dump() for u in initial_state.unstable_fields],
-                            timeout=self._whole_state_read_s(trial_id),
+                    init_response, registration_tables = self._run_async(
+                        self._init_trial_db(
+                            trial_id, initial_state, initial_state_file, registration_tables
                         ),
                         timeout=budget_s,
                     )
@@ -1422,8 +1635,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # Reconstruct tools from ToolSource definitions (FAIL FAST)
         # Pass actual table names and data from initial_state so model registration uses correct names
-        db_table_names = list(initial_state.tables.keys()) if initial_state.tables else []
-        initial_state_data = initial_state.tables if initial_state.tables else {}
+        if initial_state_file is None:
+            db_table_names = list(initial_state.tables.keys()) if initial_state.tables else []
+            initial_state_data = initial_state.tables if initial_state.tables else {}
+        else:
+            # By reference (ADR-0071): the tables the database was seeded with, and of
+            # their rows only what registration reads (the full tables for the checks
+            # below when they were parsed, else none), held until registration returns.
+            if registration_tables is not None:
+                db_table_names = list(registration_tables)
+            else:
+                db_table_names = list(init_response.tables_initialized) if init_response else []
+            initial_state_data = registration_tables or {}
+            json_db_error = _unseeded_json_db_tools_refusal(
+                task_description, seeded_tables=db_table_names
+            )
+            if json_db_error is not None:
+                logger.error(f"RegisterTrial: {trial_id} - {json_db_error}")
+                self._abandon_registration(trial_id, "initial-state check")
+                return pb2.RegisterTrialResponse(success=False, error=json_db_error)
         # Per-table primary-key overrides from grading config (default "id"). Passed to
         # the DB proxy so upsert/delete/lookup key resolution is data-driven rather than
         # introspecting model source (which fails when the domain source is not on disk).
@@ -1443,7 +1673,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 self.db_client,
                 trial_id,
                 db_table_names,
-                initial_state_data,
+                (
+                    initial_state_data
+                    if initial_state_file is None
+                    else {table: rows[:1] for table, rows in initial_state_data.items()}
+                ),
                 id_fields=id_fields,
                 search_tool_name=search_config.tool_name,
                 search_index=search_index,
@@ -1514,9 +1748,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                         error=f"Tool lifecycle start failed: {e}",
                     )
 
-        app_world_error = self._open_app_world(trial_context)
+        app_world_error = self._open_app_world(
+            trial_context,
+            initial_state.tables if initial_state_file is None else (registration_tables or {}),
+        )
         if app_world_error is not None:
             return pb2.RegisterTrialResponse(success=False, error=app_world_error)
+        del registration_tables, initial_state_data
 
         # Agent slice first, then the user's: the engine partitions at num_agent_tools.
         tool_schemas = [
@@ -1998,7 +2236,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # own cause rather than this ceiling.
         try:
             budget_s = self.state_read_deadlines.grade_trial_s
-            with self._call_budget(trial_id, budget_s):
+            with (
+                self._call_budget(trial_id, budget_s),
+                self.trials[trial_id].holding_initial_tables(),
+            ):
                 return self._run_async(self._grade_trial_async(request), timeout=budget_s)
         except GradingFailedError as e:
             logger.error(f"GradeTrial: Grader could not produce a verdict: {e}")
@@ -2131,7 +2372,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             db_reader=_LoopBridgeDBReader(),
             knowledge_search=trial_context.resolve_kb_search(),
             filesystem_root=self._judge_workspace_dir(trial_context),
-            initial_state=trial_context.task_description.initial_state.tables or {},
+            **_initial_state_source(trial_context),
             final_state_factory=_get_raw_state,
             final_state_stable_factory=_get_stable_state,
             filesystem_state_factory=_get_filesystem_state,
@@ -3548,7 +3789,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # initial state (not from the agent's final state).
             if state_holder is not None:
                 initial_tables = (
-                    trial_context.task_description.initial_state.tables
+                    trial_context.initial_tables()
                     if trial_context.task_description
                     and trial_context.task_description.initial_state
                     else {}
@@ -3881,7 +4122,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         outcome = view_the_pair(
             trial_state,
             golden_state,
-            initial=copy.deepcopy(initial_state.tables) if initial_state else None,
+            initial=(
+                copy.deepcopy(
+                    initial_state.tables
+                    if initial_state.tables_ref is None
+                    else trial_context.initial_tables()
+                )
+                if initial_state
+                else None
+            ),
             declaration=declaration,
         )
         if isinstance(outcome, TrialViewError):
@@ -3923,8 +4172,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     # MCP-server grading helpers
     # =========================================================================
 
-    def _open_app_world(self, trial_context: TrialContextRuntime) -> str | None:
-        """Claim and load the trial's app world (ADR-0062); the refusal, or ``None``.
+    def _open_app_world(
+        self,
+        trial_context: TrialContextRuntime,
+        tables: dict[str, list[dict[str, Any]]],
+    ) -> str | None:
+        """Claim and load the trial's app world (ADR-0062) with *tables*; the refusal, or ``None``.
 
         A refusal cleans the trial up: the world is not this trial's to grade.
         """
@@ -3935,7 +4188,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         try:
             trial_context.app_world = open_app_world(
                 initial_state.app_world,
-                initial_state.tables,
+                tables,
                 {"agent": trial_context.agent_tools, "user": trial_context.user_tools},
                 state_read_timeout_s=self.state_read_deadlines.holder_read_s,
             )
@@ -3946,7 +4199,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             return error
         logger.info(
             f"RegisterTrial: {trial_id} - loaded the app world at "
-            f"{initial_state.app_world.url} ({len(initial_state.tables)} tables)"
+            f"{initial_state.app_world.url} ({len(tables)} tables)"
         )
         return None
 
@@ -4480,8 +4733,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_context = self.trials.get(trial_id)
         holder = self._state_holder(trial_context) if trial_context is not None else None
         if holder is not None:
-            initial_tables = trial_context.task_description.initial_state.tables
+            assert trial_context is not None  # a holder is a registered trial's
+            initial_tables = trial_context.initial_tables()
             await _holder_call(holder, partial(holder.reset_state, initial_tables))
+            del initial_tables
 
         # Clear tool call history in trial context
         if trial_id in self.trials:
