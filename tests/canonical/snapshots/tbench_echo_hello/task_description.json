@@ -40,6 +40,7 @@
     "compose_file": "<STAGING>/engine/docker-compose.engine.yaml",
     "db_port": null,
     "db_service": null,
+    "final_state_delivery": "inline",
     "initial_state": {},
     "limited_internet_allowlist": [],
     "network_policy": "full_internet",

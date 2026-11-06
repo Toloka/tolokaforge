@@ -18,9 +18,19 @@ from tolokaforge.core.redaction import (
     RedactionPolicyName,
     RedactionStamp,
 )
+from tolokaforge.core.streaming_yaml import dump_mapping_streaming
+from tolokaforge.runner.final_state_file import FINAL_STATE_FILENAME as RUNNER_FINAL_STATE_FILENAME
+from tolokaforge.runner.final_state_file import StateFile, copy_state_file
 
-TRIAL_BUNDLE_SCHEMA_VERSION = 8
+TRIAL_BUNDLE_SCHEMA_VERSION = 9
 """The per-trial bundle generation stamped into ``metrics.yaml``.
+
+Version 9 bundles of a task that declares ``final_state_delivery: mount``
+(ADR-0069) carry the final database state as ``final_state.json`` beside
+``env.yaml``, which references it under ``final_state`` (``file``, ``sha256``,
+``size``) instead of recording ``agent``, ``user`` and ``db``; under a
+redacting policy the file is withheld and named in the stamp's ``omitted``.
+Every other bundle is shaped as in version 8.
 
 Version 8 bundles record each tool's ``mutates_state`` declaration (ADR-0061) as a
 top-level ``mutates_state`` on its ``tools_schemas.yaml`` entry, left out where the
@@ -88,6 +98,17 @@ TRAJECTORY_FILENAME = "trajectory.yaml"
 ENV_FILENAME = "env.yaml"
 """The trial's final environment state."""
 
+FINAL_STATE_FILENAME = RUNNER_FINAL_STATE_FILENAME
+"""The trial's final database state as a JSON object, beside ``env.yaml``, for a
+task that declares ``final_state_delivery: mount`` (ADR-0069). Withheld under a
+redacting policy: the engine copies the Runner's bytes and never parses them, so
+a key-name rule cannot reach inside."""
+
+FINAL_STATE_REF_KEY = "final_state"
+"""The ``env.yaml`` key that references :data:`FINAL_STATE_FILENAME` —
+``{file, sha256, size}`` — in place of the ``agent``, ``user`` and ``db`` keys
+an inline capture records."""
+
 TASK_FILENAME = "task.yaml"
 """The trial's task snapshot. Not the task pack's own ``task.yaml`` — that one is
 a task definition an adapter reads, and shares nothing but the name."""
@@ -135,6 +156,7 @@ class OutputWriter:
     - trajectory.yaml: Conversation messages only
     - tool_log.yaml: The trial's ordered tool-call record
     - env.yaml: Final environment state
+    - final_state.json: The final DB state, when it was delivered by reference
     - metrics.yaml: Performance metrics with tool usage breakdown
     - grade.yaml: Grading results with detailed diff
     - logs.yaml: Structured trial logs
@@ -370,25 +392,51 @@ class OutputWriter:
             yaml.dump(record, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         self._note_rewritten(TOOL_LOG_FILENAME)
 
-    def write_env_state(self, env_state: dict[str, Any]):
+    def write_env_state(self, env_state: dict[str, Any], final_state_file: StateFile | None = None):
         """Write env.yaml with final environment state, through the policy
 
         The snapshot is a plain mapping the adapter composed, so the same
         key-name rule reaches it — an environment that ends holding the
         credential the agent was issued names it under a key the rule reads.
 
+        The state can be the whole world a task's database holds, written
+        twice (``agent`` and the legacy ``db``), so it is streamed to disk
+        (:func:`~tolokaforge.core.streaming_yaml.dump_mapping_streaming`)
+        rather than handed to ``yaml.dump``, which builds a node object per
+        scalar before it writes anything. Without a redacting policy the
+        mapping is written as given, not copied first.
+
+        A state delivered by reference (ADR-0069) arrives as *final_state_file*,
+        the Runner's JSON file on this machine: it is copied beside
+        ``env.yaml`` as :data:`FINAL_STATE_FILENAME`, checked against its
+        SHA-256 and size as it is copied, and never parsed. A redacting policy
+        withholds it instead — declared in the bundle's stamp, like the judge
+        sidecars — because a key-name rule cannot be applied to bytes the
+        engine does not read; ``env.yaml`` keeps the reference either way.
+
         Args:
             env_state: Final environment state dictionary
+            final_state_file: The DB state as a file, for a task that declares
+                ``final_state_delivery: mount``; ``None`` otherwise.
+
+        Raises:
+            FinalStateFileError: the file changed after it was captured.
         """
+        payload = self.redaction.redact_mapping(env_state) if self._redacting else env_state
         with open(self.output_dir / ENV_FILENAME, "w") as f:
-            yaml.dump(
-                self.redaction.redact_mapping(env_state),
-                f,
-                default_flow_style=False,
-                allow_unicode=True,
-                sort_keys=False,
-            )
+            dump_mapping_streaming(payload, f)
         self._note_rewritten(ENV_FILENAME)
+        sidecar = self.output_dir / FINAL_STATE_FILENAME
+        if final_state_file is None:
+            # A retried trial reuses this writer; an earlier attempt's file or
+            # withholding must not outlive the attempt that produced it.
+            if sidecar.exists() or FINAL_STATE_FILENAME in self._omitted:
+                self._discard_grade_sidecars(FINAL_STATE_FILENAME)
+        elif self._redacting:
+            sidecar.unlink(missing_ok=True)
+            self._note_withheld(FINAL_STATE_FILENAME)
+        else:
+            copy_state_file(final_state_file, sidecar)
 
     def write_metrics(self, trajectory: Trajectory):
         """Write metrics.yaml with performance metrics and tool usage
@@ -579,6 +627,7 @@ class OutputWriter:
         task_config: dict[str, Any],
         env_state: dict[str, Any],
         logger: StructuredLogger,
+        final_state_file: StateFile | None = None,
     ):
         """Write all output files at once
 
@@ -589,11 +638,13 @@ class OutputWriter:
             task_config: Task configuration dictionary
             env_state: Final environment state
             logger: StructuredLogger instance
+            final_state_file: The DB state as a file (ADR-0069), see
+                :meth:`write_env_state`
         """
         self.write_task_info(task_config)
         self.write_trajectory(trajectory)
         self.write_tool_log(trajectory)
-        self.write_env_state(env_state)
+        self.write_env_state(env_state, final_state_file)
         self.write_metrics(trajectory)
 
         if trajectory.grade:

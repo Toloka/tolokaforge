@@ -25,6 +25,7 @@ bumped and this document is updated in the same commit.
             ├── trajectory.yaml             ← message trace + status + metrics
             ├── tool_log.yaml               ← the trial's ordered tool-call record
             ├── env.yaml                    ← final env state (through the redaction policy)
+            ├── final_state.json            ← final DB state, only under final_state_delivery: mount (withheld under a redacting policy)
             ├── metrics.yaml
             ├── grade.yaml                  ← only when the trial produced a grade (through the redaction policy)
             ├── judge_trajectory.yaml       ← rubric-judge transcript (when an LLM judge ran; withheld under a redacting policy)
@@ -668,6 +669,36 @@ named in `metrics.yaml`'s [`redaction`
 stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote). Under the
 default policy the snapshot is written exactly as the adapter composed it.
 
+### A final state delivered by reference (ADR-0069)
+
+A task that declares `final_state_delivery: mount` has its runner write the
+final database state to a file, which the engine checks and copies into the
+bundle as `final_state.json` without parsing it. `env.yaml` then stays small:
+it carries the entries that do not come from the database and a reference in
+place of `agent`, `user` and `db`.
+
+```yaml
+final_state:
+  file: final_state.json
+  sha256: 3f1c…        # lowercase hex SHA-256 of final_state.json
+  size: 1433600000     # its size in bytes
+filesystem: {...}
+agent_visible_dir: /work
+environment: {...}
+```
+
+`final_state.json` is the JSON object `GetState` would have returned inline
+(`{"table_name": [records...], ...}`) — the `db` view. A reader that wants the
+inline shape calls `tolokaforge.core.output.artifacts.read_final_env_state`,
+which checks the file against the reference and rebuilds `agent`, `user` and
+`db` from it. When the capture fails, `final_state_error` is recorded and there
+is no `final_state` reference, as for an inline capture.
+
+The engine never parses the file, so a redacting artifact-write policy cannot
+reach inside it: under such a policy `final_state.json` is withheld, named in the
+stamp's `omitted`, and `env.yaml` keeps the reference. Deliver the state inline
+when the bundle must carry a redacted copy of it.
+
 ### `environment` — resolved environment identity
 
 Manifest-driven trials (a task carrying an `environment_manifest`, i.e.
@@ -873,11 +904,15 @@ the client slug the calls were served by, `null` only for a call built without a
 serving client.
 
 To help analytics consumers detect schema evolution, a trial-level metrics file
-written by `write_metrics` includes a root-level `schema_version: 8` marker. The
+written by `write_metrics` includes a root-level `schema_version: 9` marker. The
 one shape that carries no marker is a `metrics.yaml` the writer created for the
 redaction stamp alone, where the caller wrote no metrics of its own (see
 [`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)) —
-such a bundle is refused offline anyway. Generation 8 bundles record each tool's
+such a bundle is refused offline anyway. Generation 9 bundles of a task that
+declares `final_state_delivery: mount` carry the final database state as
+[`final_state.json`](#a-final-state-delivered-by-reference-adr-0069) beside an
+`env.yaml` that references it; every other generation-9 bundle is shaped as in
+generation 8. Generation 8 bundles record each tool's
 `mutates_state` declaration on its
 [`tools_schemas.yaml`](#trialstask_idtrial_indextools_schemasyaml) entry, and the
 judge customization a trial was graded under as
@@ -1352,7 +1387,7 @@ contains — on this path it is stamped and most of them are absent.
   `provision_stage` set to the lifecycle step that raised (see below),
   `grading_error: null` (grading never ran), empty `messages`.
 * `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
-  `schema_version: 8`, empty `tool_usage`) plus three top-level failure-signal
+  `schema_version: 9`, empty `tool_usage`) plus three top-level failure-signal
   keys:
 
   ```yaml
@@ -2068,7 +2103,7 @@ evidence about us, and our own defects stay counted. See
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator's built-in prompt body or the conversation context it sees. The context `actors.user.tool_turns: isolated` builds is identified by `user_actor.tool_turns`, not by this stamp; a non-built-in simulator (`actors.user.simulator`) writes its own prompt, recorded in `prompts.yaml` |
-| `metrics.yaml` | `schema_version` | `8` | The per-trial bundle's file set or field semantics change |
+| `metrics.yaml` | `schema_version` | `9` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `5` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, or the per-role spend plane. Also whenever the `infrastructure_aborts` key set changes, because those keys are part of the generation: the stamp is how a reader knows which excluded reasons a file could have reported. A termination reason that is *not* excluded only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |

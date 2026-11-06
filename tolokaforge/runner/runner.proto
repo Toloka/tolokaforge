@@ -523,6 +523,23 @@ message GetStateRequest {
 
   // Specific tables to return (empty = all)
   repeated string tables = 3;
+
+  // Write the state to a file in the final-state directory the engine mounted
+  // into this runner, and answer with state_file instead of state_json
+  // (ADR-0069). A runner with no such mount answers success=false.
+  bool state_by_reference = 4;
+}
+
+// A state the runner wrote to its final-state directory instead of the wire.
+message StateFileRef {
+  // The file's path relative to the final-state directory
+  string path = 1;
+
+  // Lowercase hex SHA-256 of the file's bytes
+  string sha256 = 2;
+
+  // The file's size in bytes
+  int64 size = 3;
 }
 
 message GetStateResponse {
@@ -541,6 +558,10 @@ message GetStateResponse {
 
   // Full state hash (including unstable fields)
   string full_hash = 5;
+
+  // Set instead of state_json when the request asked for state_by_reference:
+  // the state as a JSON object, written to the final-state directory
+  StateFileRef state_file = 6;
 }
 
 // =============================================================================
