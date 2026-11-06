@@ -35,9 +35,10 @@ pytestmark = pytest.mark.unit
 
 PLACEHOLDER = "MASKED"
 VECTORS = Path(__file__).parent / "fixtures" / "mask_vectors.json"
-# the file is copied byte for byte wherever another gate is held to the same rows: a change to
-# one copy fails here until both carry it
-VECTORS_SHA256 = "93628b78ed11ebbca5371c6d681046586ad88a8ec33ffa5afe7b11a7ed7f0b0d"
+# the file is copied byte for byte wherever another gate is held to the same rows, and each copy
+# pins this digest in its own tests; nothing compares the copies across repositories, so a change
+# goes into every copy and its pin by hand
+VECTORS_SHA256 = "28df8c4f6ee92a97e430636b6a1d8ff79e8d1073f28a0f9cb5bfb78af6b832cc"
 
 # the fake secrets behind the vector file's placeholders, assembled so no literal is key-shaped
 TOKENS = {
@@ -743,13 +744,19 @@ class TestMask:
 
     @EACH_ROW
     def test_a_vector(self, row: dict) -> None:
+        """What masking makes of the row; a row with ``withheld`` is withheld with that rule."""
         screened = screen_row(gate_for(row), row, expand(row["input"]), "mask")
         assert as_text(screened.value) == expand(row["expected"])
         assert dict(screened.masked) == row["counts"]
-        assert screened.findings == ()
+        if "withheld" in row:
+            assert row["withheld"] in {f.rule for f in screened.findings}
+        else:
+            assert screened.findings == ()
 
     @EACH_ROW
     def test_a_vector_masked_again_is_unchanged(self, row: dict) -> None:
+        if "withheld" in row:
+            pytest.skip("a withheld unit is never sent, so never masked again")
         gate = gate_for(row)
         once = as_text(screen_row(gate, row, expand(row["input"]), "mask").value)
         again = screen_row(gate, row, once, "mask")
@@ -774,6 +781,44 @@ class TestMask:
             row = ROWS[name]
             masked = as_text(screen_row(gate_for(row), row, expand(row["input"]), "mask").value)
             assert json.loads(masked) == json.loads(expand(row["expected"])), name
+
+    # -- an escaped line break ends a value only before what reads as the next line
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b'content: "A=1\\nAPI_KEY=abcdefghij\\nNEXT=1"\n',
+            b'content: "A=1\\nAPI_KEY=abcdefghij\\n# a comment"\n',
+            b'content: "A=1\\nAPI_KEY=abcdefghij\\n"\n',
+            b'{"out": "A=1\\nAPI_KEY=abcdefghij\\n\\nexport NEXT=1"}\n',
+        ],
+        ids=["an assignment", "a comment", "the end of the string", "a blank line and an export"],
+    )
+    def test_an_escaped_break_before_the_next_line_ends_the_value(self, payload: bytes) -> None:
+        screened = SafetyGate().screen(payload, policy="mask")
+        assert screened.findings == () and screened.masked
+        assert b"abcdefghij" not in screened.value
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b"API_KEY=abcdefgh\\nS3cr3tV4lue9bX7qZ2mNpQ\n",
+            b"API_KEY=abcdefgh\\nlower_case_rest=1\n",
+        ],
+        ids=["more of the value", "no upper-case assignment"],
+    )
+    def test_residue_an_escaped_break_before_more_of_the_value_withholds_the_unit(
+        self, payload: bytes
+    ) -> None:
+        """In a ``.env`` file's own bytes a backslash and an ``n`` are two characters of the
+        value: unless what follows reads as the next line, the mask may have stopped inside it."""
+        screened = SafetyGate().screen(payload, policy="mask")
+        assert "mask-residue" in {f.rule for f in screened.findings}
+
+    def test_a_closing_quote_search_ending_in_a_lone_backslash_finds_none(self) -> None:
+        """An escaped opener's search reads the byte after a backslash: at the end of the view
+        there is none."""
+        assert safety._closing_quote(b"abc\\", 0, b'\\"') == -1
 
     # -- residue: what masking cannot remove withholds the unit, as reject does
 

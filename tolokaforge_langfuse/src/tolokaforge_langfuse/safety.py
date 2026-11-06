@@ -858,7 +858,7 @@ def _closing_quote(view: bytes, i: int, quote: bytes) -> int:
     while i < len(view):
         byte = view[i]
         if byte == 0x5C:  # a backslash and what it escapes
-            if escaped_opener and view[i + 1] == target:
+            if escaped_opener and view[i + 1 : i + 2] == bytes([target]):
                 return i
             i += 2
             continue
@@ -937,6 +937,10 @@ def _authority_end(view: bytes, i: int) -> int:
     return len(view)
 
 
+# what starts the next line of an env listing: an assignment to an upper-case name
+_NEW_LINE_START = re.compile(rb"(?:export\s+)?[A-Z_][A-Z0-9_]*=")
+
+
 def _ends_cleanly(rule: str, view: bytes, start: int, end: int) -> bool:
     """The check of one mask over ``view[start:end]``: what follows it is where its rule's
     extent may end. A value that stopped at a quote, with a value character right after the
@@ -953,8 +957,10 @@ def _ends_cleanly(rule: str, view: bytes, start: int, end: int) -> bool:
         opener = _opener_before(view, start)
         if opener is not None:  # a quoted value ends at its own closing quote
             return view.startswith(opener, end) and _after_a_closing_quote(view, end + len(opener))
-        if byte in b"\r\n" or view[end : end + 2] in (b"\\n", b"\\r"):
+        if byte in b"\r\n":
             return True
+        if view[end : end + 2] in (b"\\n", b"\\r"):
+            return _reads_as_a_new_line(view, end + 2)
     elif byte in _SPACE or byte in b"`<>":
         return True
     elif byte == 0x5C:
@@ -966,6 +972,24 @@ def _ends_cleanly(rule: str, view: bytes, start: int, end: int) -> bool:
     if byte in b"\"'":
         return _after_a_value(view, end + 1)
     return False
+
+
+def _reads_as_a_new_line(view: bytes, i: int) -> bool:
+    """Whether what follows an escaped line break at ``i`` reads as the next line of an env
+    listing: after more line breaks and spaces, the end of the string or of ``view``, a comment,
+    or an assignment to an upper-case name. Anything else may be the rest of the value (in a
+    ``.env`` file's own bytes the two characters are part of it), so the mask is residue."""
+    n = len(view)
+    while i < n:
+        if view[i : i + 2] in (b"\\n", b"\\r", b"\\t"):
+            i += 2
+        elif view[i] in b" \t\r\n":
+            i += 1
+        else:
+            break
+    if i >= n or view[i] in b"\"'#" or view[i : i + 2] in (b'\\"', b"\\'"):
+        return True
+    return _NEW_LINE_START.match(view, i) is not None
 
 
 def _opener_before(view: bytes, start: int) -> bytes | None:

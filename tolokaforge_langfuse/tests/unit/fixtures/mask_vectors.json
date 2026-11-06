@@ -1,5 +1,5 @@
 {
-  "about": "Shared masking vectors: one row per case, fake secrets as {TOKEN} placeholders that each test expands at run time. Kept byte-identical wherever it is copied.",
+  "about": "Shared masking vectors: one row per case, fake secrets as {TOKEN} placeholders that each test expands at run time; a row with withheld names the rule its unit is withheld with. Kept byte-identical wherever it is copied.",
   "placeholder": "MASKED",
   "tokens": [
     "AT_PW",
@@ -65,6 +65,19 @@
       "counts": {
         "dotenv-secret": 1
       }
+    },
+    {
+      "id": "dotenv-escaped-break-ambiguous",
+      "case": "an escaped line break followed by more of the value, not a new line: withheld",
+      "kind": "bytes",
+      "input": "API_KEY=aaaaaaaa\\nS3cr3tV4lue9bX7qZ2mNpQrTuVwXy\\n",
+      "known": [],
+      "also": [],
+      "expected": "API_KEY=MASKED\\nS3cr3tV4lue9bX7qZ2mNpQrTuVwXy\\n",
+      "counts": {
+        "dotenv-secret": 1
+      },
+      "withheld": "mask-residue"
     },
     {
       "id": "dotenv-last-in-json-string",
@@ -376,9 +389,9 @@
       "id": "known-in-fixture-dsn",
       "case": "a known value is masked even inside a DSN the shapes exempt",
       "kind": "bytes",
-      "input": "{PG}://postgres-fake-pw:postgres-fake-pw@db:5432/x",
+      "input": "{PG}://pgfakevalue:pgfakevalue@db:5432/x",
       "known": [
-        "postgres-fake-pw"
+        "pgfakevalue"
       ],
       "also": [],
       "expected": "{PG}://MASKED:MASKED@db:5432/x",
