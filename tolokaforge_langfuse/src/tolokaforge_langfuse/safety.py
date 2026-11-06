@@ -904,11 +904,7 @@ def _line_end(view: bytes, i: int) -> int:
             if after in (0x6E, 0x72, 0x22, 0x27):  # n r " '
                 return i
             if after in (0x0A, 0x0D):  # a fold: the logical line goes on
-                i += 2
-                while i < n and view[i] in b" \t\r\n":
-                    i += 1
-                if view[i : i + 2] == b"\\ ":
-                    i += 1
+                i = _after_a_fold(view, i + 2)
                 continue
             i += 1
             continue
@@ -916,6 +912,18 @@ def _line_end(view: bytes, i: int) -> int:
             return i
         i += 1
     return n
+
+
+def _after_a_fold(view: bytes, i: int) -> int:
+    """Where a YAML double-quoted string goes on after a fold (a backslash and a line break,
+    then ``i``): past the next line's indentation and blank lines, and past the backslash that
+    escapes a leading space."""
+    n = len(view)
+    while i < n and view[i] in b" \t\r\n":
+        i += 1
+    if view[i : i + 2] == b"\\ ":
+        i += 1
+    return i
 
 
 def _string_end(view: bytes, i: int) -> int:
