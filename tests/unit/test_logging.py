@@ -229,3 +229,40 @@ def test_no_printf_style_structured_logger_calls():
     assert (
         not violations
     ), f"Found {len(violations)} printf-style StructuredLogger call(s):\n" + "\n".join(violations)
+
+
+def test_error_with_free_form_detail_keyword_does_not_collide_with_message():
+    """The pull-failure handler logs an ImagePullError as a headline message plus
+    structured context (kind/image/error/retry_after). ``message`` is the reserved
+    first positional parameter, so the exception text must ride in ``**kwargs`` under
+    a distinct key; passing it as ``message=`` would raise ``TypeError: got multiple
+    values for argument 'message'`` and mask the actionable pull error.
+    """
+    from tolokaforge.docker.image import ImagePullError
+
+    logger = StructuredLogger("auto_start")
+    exc = ImagePullError(
+        kind="tag_missing",
+        full_tag="repo/image:missing",
+        message="manifest unknown",
+        response_headers={"Retry-After": "120"},
+    )
+    retry_after = exc.response_headers.get("Retry-After")
+
+    logger.error(
+        "Failed to auto-start services: pull failed",
+        kind=exc.kind,
+        image=exc.full_tag,
+        error=str(exc),
+        retry_after=retry_after,
+    )
+
+    assert len(logger.logs) == 1
+    entry = logger.logs[0]
+    assert entry["level"] == "ERROR"
+    assert entry["message"] == "Failed to auto-start services: pull failed"
+    context = entry["context"]
+    assert context["kind"] == "tag_missing"
+    assert context["image"] == "repo/image:missing"
+    assert context["retry_after"] == "120"
+    assert str(exc) in context["error"]
