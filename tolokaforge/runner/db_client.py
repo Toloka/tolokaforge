@@ -338,6 +338,7 @@ class DBServiceClient:
         tables: dict[str, list[dict[str, Any]]],
         schemas: list[dict[str, Any]] | None = None,
         unstable_fields: list[dict[str, Any]] | None = None,
+        timeout: float | None = None,
     ) -> InitTrialResponse:
         """
         Initialize a trial with initial state, schemas, and unstable field specifications.
@@ -349,6 +350,9 @@ class DBServiceClient:
             tables: Initial data as table_name -> list of records
             schemas: Optional list of TableSchema definitions
             unstable_fields: Optional list of UnstableFieldSpec definitions
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``: the request carries the trial's whole initial state,
+                which a large world may take long to send and load
 
         Returns:
             InitTrialResponse with status, trial_id, tables_initialized, etc.
@@ -366,7 +370,9 @@ class DBServiceClient:
 
         async with self._create_client() as client:
             try:
-                response = await client.post(f"/trials/{trial_id}/init", json=payload)
+                response = await client.post(
+                    f"/trials/{trial_id}/init", json=payload, timeout=self._request_timeout(timeout)
+                )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
 

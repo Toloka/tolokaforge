@@ -1311,22 +1311,33 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         initial_state = task_description.initial_state
         if provisions_database(initial_state):
             try:
-                # Run async operation on dedicated event loop thread
-                self._run_async(
-                    self.db_client.init_trial(
-                        trial_id=trial_id,
-                        tables=initial_state.tables,
-                        schemas=[s.model_dump() for s in initial_state.schemas],
-                        unstable_fields=[u.model_dump() for u in initial_state.unstable_fields],
+                # Run async operation on dedicated event loop thread. The whole
+                # initial state goes in one request: a large world's takes as long
+                # to send and load as a whole-state read takes to answer, which the
+                # client's default does not cover. The call is bounded as GetState
+                # is, and the request is cut to what the call has left, so a slow
+                # init fails with its own cause before the wait for it gives up.
+                budget_s = self.state_read_deadlines.final_state_read_s
+                with self._call_budget(trial_id, budget_s):
+                    self._run_async(
+                        self.db_client.init_trial(
+                            trial_id=trial_id,
+                            tables=initial_state.tables,
+                            schemas=[s.model_dump() for s in initial_state.schemas],
+                            unstable_fields=[u.model_dump() for u in initial_state.unstable_fields],
+                            timeout=self._whole_state_read_s(trial_id),
+                        ),
+                        timeout=budget_s,
                     )
-                )
                 logger.info(f"RegisterTrial: {trial_id} - DB Service initialized")
             except Exception as e:
-                # FAIL FAST: DB init failure is a critical error
-                logger.error(f"RegisterTrial: Failed to initialize DB Service: {e}")
+                # FAIL FAST: DB init failure is a critical error. The type is named:
+                # an httpx timeout's message is empty.
+                cause = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                logger.error(f"RegisterTrial: Failed to initialize DB Service: {cause}")
                 return pb2.RegisterTrialResponse(
                     success=False,
-                    error=f"DB Service initialization failed: {e}",
+                    error=f"DB Service initialization failed: {cause}",
                 )
         else:
             logger.info(
