@@ -163,18 +163,13 @@ def _scrub_shapes() -> tuple[tuple[str, re.Pattern[str]], ...]:
 
     One source of truth on purpose: a shape :mod:`tolokaforge_langfuse.safety` detects is a shape
     the scrub removes, so the two can never drift into a scrub that leaves behind what the gate
-    then refuses (or worse, the reverse). The scrub reads dotenv names in any case, where the gate
-    reads the upper-case convention only: removing more costs a transcript nothing.
+    then refuses (or worse, the reverse). The scrub has none of the gate's exemptions: it also
+    removes a fixture DSN, the ``GPG_KEY`` fingerprint and code under a lower-case dotenv name,
+    and removing more costs a transcript nothing.
     """
     keep = re.IGNORECASE | re.MULTILINE | re.DOTALL
     return tuple(
-        (
-            rule,
-            re.compile(
-                pattern.pattern.decode("utf-8"),
-                (pattern.flags & keep) | (re.IGNORECASE if rule == "dotenv-secret" else 0),
-            ),
-        )
+        (rule, re.compile(pattern.pattern.decode("utf-8"), pattern.flags & keep))
         for rule, pattern in safety.SHAPES
     )
 
