@@ -84,7 +84,7 @@ flowchart TB
 | Decision | Rationale | Detail |
 |---|---|---|
 | **Adapter plugin architecture for benchmark formats** | Lets external task formats (`native` built-in, `terminal_bench` and other plugins) plug in without forking the core. | [`docs/ADAPTER_ARCHITECTURE.md`](ADAPTER_ARCHITECTURE.md) |
-| **In-process agent–user loop, Docker-delegated tools/state/grading** | The trial control flow (agent prompt assembly, LLM calls, user simulator, message accumulation) stays in the orchestrator process so it can be debugged and instrumented with normal Python tooling. Everything that touches task state — tool execution, env services, grading — runs inside a Docker stack reached over gRPC, giving sandbox isolation and the same code path on every host. | [`docs/RUNNER.md`](RUNNER.md) · [`docs/GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md) |
+| **In-process agent–user loop, Docker-delegated tools/state/grading** | The trial control flow (agent prompt assembly, LLM calls, user simulator, message accumulation) stays in one Python process alongside the conductor — the orchestrator process in a single-box run, the trial node when a trial is dispatched or driven through the library route — so it can be debugged and instrumented with normal Python tooling. Everything that touches task state — tool execution, env services, grading — runs inside a Docker stack reached over gRPC, giving sandbox isolation and the same code path on every host. | [`docs/RUNNER.md`](RUNNER.md) · [`docs/GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md) |
 | **Provider-agnostic LLM layer with per-preset capability policies** | LiteLLM normalises envelopes, but providers diverge on schema dialects, reasoning encodings, caching, and tool naming. A preset registry keeps the quirks out of the orchestrator. | [`docs/LLM_LAYER.md`](LLM_LAYER.md) |
 | **Single secret abstraction** | One audited code path for every credential read; CI-enforced via static grep. | [AGENTS.md § Secrets](../AGENTS.md#secrets--single-abstraction) |
 | **Deterministic grading by default; LLM judges opt-in** | Deterministic verdicts are reproducible and cheap; judge calls are reserved for cases that genuinely need them. | [`docs/GRADING.md`](GRADING.md) |
@@ -196,6 +196,12 @@ The agent loop, the user-simulator loop, and the LLM calls all happen inside the
 
 ## 7. Deployment View
 
+Tolokaforge runs in three **integration shapes**. They differ in one thing — who
+owns the run loop — and that choice decides where every other component runs. The
+Runner Service is identical in all three: tool execution, per-trial state, grading.
+
+### Shape 1 — engine-owned, single box (`tolokaforge run`)
+
 ```mermaid
 flowchart TB
     Orch["Orchestrator process<br/>(TrialRunner + LLM client)"]
@@ -206,7 +212,93 @@ flowchart TB
     Orch <-->|gRPC + HTTP| Stack
 ```
 
-The orchestrator process and the Docker stack live on the same host. There is no in-process tool path — Docker is always required. **Distributed runs** share the attempt queue across hosts: one host runs `tolokaforge prepare` to populate a Postgres queue; one or more hosts run `tolokaforge worker`, each instantiating a full orchestrator + Docker stack. There is no central scheduler — coordination is entirely through the queue. See [`docs/RUNNER.md`](RUNNER.md) for the distributed contract.
+The orchestrator process and the Docker stack live on the same host. There is no
+in-process tool path — Docker is always required.
+
+**Queue-distributed runs** are a variant of this shape, not a separate one: one
+host runs `tolokaforge prepare` to populate a Postgres queue, and one or more
+hosts run `tolokaforge worker`, each instantiating a *full* orchestrator plus its
+own Docker stack. There is no central scheduler — coordination is entirely through
+the queue. See [`docs/RUNNER.md`](RUNNER.md) for the distributed contract.
+
+### Shape 2 — engine-owned, dispatched (`orchestrator.dispatch`)
+
+The orchestrator keeps scheduling, retries and aggregation and ships each whole
+trial elsewhere. The trial node runs the conductor, the agent's LLM loop, the
+grader and the trial's substrate itself. When `orchestrator.dispatch` is set the
+orchestrator builds **no** substrate backend — the node builds its own.
+
+Adapters: `local` (threads or spawned local processes) and `grpc_node` (a leased
+node on another machine). `DispatchAdapter` is `connect` / `close` /
+`run_trial_node(inputs) -> TrialResult`; `ControllableDispatchAdapter` adds
+`cancel` / `status` / `fetch_result` for a backend the orchestrator operates after
+submission. The contract is open — an external distributed backend fits the same
+seam without changing the orchestrator.
+
+See [`DETACHED_EXECUTION.md`](DETACHED_EXECUTION.md),
+[`TRIAL_NODE_SERVICE.md`](TRIAL_NODE_SERVICE.md),
+[ADR-0063](adr/0063-whole-trial-node-service-and-dispatch-seam.md) and
+[ADR-0064](adr/0064-dispatch-adapter-seam.md).
+
+### Shape 3 — library route (an external orchestrator owns the loop)
+
+The direction inverts: an external orchestrator drives the batch and calls
+tolokaforge as a library, three steps per run — `plan_trials(run_config)` to expand
+it into one serializable `TrialNodeInputs` per trial, `run_trial_from_inputs(inputs)`
+to run one anywhere, and `aggregate_results(...)` to fold the results into the four
+aggregate artifacts a full run writes. **No tolokaforge `Orchestrator` is
+constructed**, and no `DispatchAdapter` is involved — there is no orchestrator above
+the seam to hold it.
+
+`tolokaforge run-trial --inputs <file>` is the out-of-process form of step 2, for a
+sandbox-per-trial backend that cannot open a connection into the sandbox: it writes
+the inputs in, runs the command, and reads the result and exit code back out.
+
+See [`API.md`](API.md) and the 2026-10-21 amendment to
+[ADR-0064](adr/0064-dispatch-adapter-seam.md).
+
+### Where each component runs
+
+| Component | Shape 1 | Shape 2 | Shape 3 |
+|---|---|---|---|
+| Orchestrator (scheduling, retries, aggregation) | orchestrator process | control plane | **the external orchestrator** |
+| Conductor (one trial end to end) | orchestrator process | trial node | wherever step 2 is called |
+| TrialRunner + agent–user loop | orchestrator process | trial node | wherever step 2 is called |
+| LLM calls | orchestrator process | trial node | wherever step 2 is called |
+| Substrate (Docker stack) | same host | trial node | wherever step 2 is called |
+| Runner Service (tools, state, grading) | runner container | runner container | runner container |
+
+The conductor and the agent loop are never separated: the conductor's job is to run
+one trial end to end, so it travels with the trial. In shapes 2 and 3 the node
+rebuilds it from the name carried on `TrialNodeInputs`.
+
+### What each shape enforces
+
+Run-start validation — ungradeable task packs, snapshot-mode compatibility, the
+settings no dispatch node carries, and grader/task combinations — is implemented as
+methods on `Orchestrator`. Shape 1 and the control plane of shape 2 run them. Shape 3
+constructs no `Orchestrator`, so a trial taken through `run_trial_from_inputs`
+enforces what the trial contract and the runner enforce: the task pack is verified
+against `inputs.task_pack_hash`, the runner's protocol gate refuses a mismatched
+image, and the adapter must be node-runnable. A rule that exists only as an
+`Orchestrator` method does not apply to it.
+
+### Where a trial's data comes from
+
+A trial's bulk data reaches its consumers five ways, addressed differently in each:
+
+| Data | Addressed by | Resolved by the consumer how |
+|---|---|---|
+| Task pack | node-local directory + `task_pack_hash` | pre-staged; hash-verified on arrival (`--task-pack-root`) |
+| Compose files | absolute path, **rebased** onto the node's pack root | `_ComposePathRebase`, before the manifest validates |
+| Tool artefacts | base64 inline on `TaskDescription.tool_artifacts` | decoded into the trial's artefact directory |
+| Initial state | parsed tables inline on `TaskDescription.initial_state` | streamed to db-service at registration |
+| Final state | one JSON string on `GetStateResponse` | parsed on the host to write `env.yaml` |
+| Grade bundles | `bundle://<store-name>/<content-hash>` | a registered `BundleStore` — `LocalDiskBundleStore` or `S3BundleStore` |
+
+The first two and the last are content-addressed or hash-verified and so survive
+being shipped to another machine. The middle three travel as bytes in a message,
+which bounds them by the gRPC message limit and by the memory of both ends.
 
 ---
 
@@ -252,6 +344,12 @@ For the phase ladder and which release delivers which phase, see [`ROADMAP.md`](
 | Term | Meaning |
 |---|---|
 | **Adapter** | Plugin that maps a benchmark format to the harness contract (`BaseAdapter`). |
+| **Integration shape** | Which side owns the run loop, and therefore where every component runs: engine-owned single box, engine-owned dispatched, or the library route. See [§7](#7-deployment-view). |
+| **Orchestrator process** | The OS process that runs the CLI, the Orchestrator, the Conductor, the TrialRunner and the LLM layer. In a single-box run it is the whole non-container half of a trial. |
+| **"engine"** | Not one thing. In [`RUNNER.md`](RUNNER.md) and the ADRs, "the engine" is the orchestrator process — the host side, as opposed to the runner and the other service containers. "Engine services" means those containers (runner, db-service, rag-service, mock-web), which are *not* part of "the engine". "engine-loop" is the registered agent-loop implementation in `tolokaforge/core/loop.py`. Prefer the precise term for the sense you mean. |
+| **Trial node** | A process that runs one whole trial from a serialized `TrialNodeInputs` — conductor, agent loop, grader and substrate — and returns a `TrialResult`. Reached over gRPC by the `grpc_node` dispatch adapter, or invoked directly as `tolokaforge run-trial --inputs`. |
+| **Dispatch adapter** | Answers "where is the whole trial sent to run?" (`local`, `grpc_node`, or a third-party adapter). Independent of the substrate backend. |
+| **Substrate backend** | Answers "how is the trial's sandbox built?" (`shared`, `per_trial`, `in_memory`). Independent of the dispatch adapter. |
 | **Task pack** | A directory tree of tasks resolved by an adapter (`task.yaml` for native; format varies per adapter). |
 | **Trial** | One attempt at one task with one model configuration. A run produces `N_tasks × repeats` trials. |
 | **Trajectory** | One trial's in-process record: its message trace plus `tool_log`, the ordered `RecordedToolCall` list. The two halves are persisted side by side — the message trace as `trajectory.yaml`, the record as the `tool_log.yaml` sidecar — so a bundle carries the per-call `status` / `executor` / `latency_seconds` nothing conversational could express. A bundle written before that sidecar existed carries the message trace alone; each call's output still survives on its `role: tool` message, which is what such a bundle's timeline reads (`docs/GRADING.md` G6b). |
