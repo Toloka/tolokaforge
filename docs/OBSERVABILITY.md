@@ -634,6 +634,18 @@ sends nothing unscanned.
   label, tags, metadata, environment, release) rides on every span by design: `ACME_TOKEN=tolokaforge`
   against the tag `harness:tolokaforge`. One such variable would withhold the whole run, so the gate
   leaves the value out and logs a warning naming the variable, never the value.
+- **What is exempt.** Two shapes leave committed fixture data alone: a database URL to a loopback
+  address or a compose service the task sets name (`db`, `postgres`) whose password is its user
+  name, at most twelve characters of one class, with nothing after the host that could lead
+  elsewhere (no later `@`, no host list, no `host`, `hostaddr` or `service` parameter); and
+  `GPG_KEY` with exactly 40 hex characters, the public fingerprint the `python` Docker image sets.
+  Any other single label (`prod-db`) is completed by the reader's resolver, so it is not known to be
+  local. The URL alone is read: a `PGHOST` set elsewhere can still send the pair to another server.
+  A dotenv line is read with its name in any case; it passes when the name holds no secret (`*_FILE`,
+  `*_PATH`, `*_URL`, `PWD`, `OLDPWD`, ...), or when the name is not in upper case and the value is
+  code (`txn_key = compute(x)`, `total_tokens = response.usage.total_tokens`). Over raw bytes (a
+  file) a dotenv line may also start after a `\n` escape. At run end one warning names what the
+  gate exempted, by rule.
 - **What is looked for, and where.** The key-shaped patterns of § Attachments run over the span (or
   the events) serialised as JSON, as they always did over the bundle's events. The credential values
   run over the serialised JSON and over every raw string in it, in the forms JSON gives them: JSON
