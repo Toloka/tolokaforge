@@ -31,6 +31,8 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 
 Note: number 0043 is intentionally skipped — reserved for a draft that never landed on `main` (`HybridRuntimeBackend` as a distinct class). Superseded before merge by ADR-0044. See closed Milestone 40 (#1363) for the draft's history.
 
+Note: numbers 0068-0071 are held by four ADRs still open on the branches of #1970, #1972, #1977 and #1978 (tool artefacts, final state, grading copies and initial state by reference). They are not on `main` yet, so the index jumps from 0067 to 0072. ADR-0072 proposes a different shape for three of the four; ADR-0070 (#1977) is independent of it.
+
 
 | # | Title | Status |
 |---|---|---|
@@ -101,3 +103,4 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0065](0065-engine-services-per-run.md) | Start only the engine services a run needs: rag-service and mock-web resolved one by one from the tasks and the adapter, with a `docker.services` override (`auto`, `always`, `never`) | Accepted |
 | [0066](0066-judge-evidence-parts.md) | Judge evidence made of named parts — `customization.evidence` composes the judge's view from seven independent parts (agent policy, knowledge search, state diff, DB, workspace, numbered tool results, state-changing calls by ADR-0061 `mutates_state` with `read_when` rules), each `false` / `true` / options, defaults the judge over the final state | Accepted |
 | [0067](0067-tool-error-is-its-own-status.md) | A tool's declared refusal is its own tool-call status — `DomainToolRegistry` answers a `ToolError` with `isError` and the `tool_error` category, recorded as `tool_error`: a completed call, apart from one that never ran and one that crashed; protocol v7 | Accepted |
+| [0072](0072-bulk-trial-data-through-an-artifact-store.md) | A trial's bulk data moves through an artifact store — one content-addressed `ArtifactRef {uri, sha256, size}` for the task's files, initial state and final state, behind an `ArtifactStore` seam modelled on `BundleStore` (`MountArtifactStore` first, `S3ArtifactStore` reserved); delivery chosen by the run rather than four `inline \| mount` task-manifest fields, gated by a capability probe rather than stack scope, with `grader_rpc` / `queue` / snapshot bundles resolving the same URI | Proposed |
