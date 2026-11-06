@@ -9,8 +9,8 @@ keys. So every payload a producer sends, ingestion events and media alike, is sc
 - **known secret values**: every credential the process itself holds (environment variables whose
   name looks like a secret; the caller may add the values it resolved another way) and, when the
   caller names one, the values of a ``.env`` file under secret-like keys;
-- **shape patterns**: upper-case dotenv lines with secret-like names, ``Authorization`` headers,
-  PEM blocks, URL credentials (a redacted ``***`` password is not a hit), well-known key
+- **shape patterns**: dotenv lines with secret-like names in any case, ``Authorization``
+  headers, PEM blocks, URL credentials (a redacted ``***`` password is not a hit), well-known key
   prefixes (``pk-lf-``, ``sk-lf-``, ``sk-or-``, ``sk-ant-``, ``ghp_``, ``github_pat_``,
   ``xox?-``, ``AKIA``, ``AIza``, ``glpat-``), JWTs, and secret-named JSON / YAML fields holding a
   long opaque value;
@@ -26,10 +26,13 @@ the name of the variable it came from, so a warning can say which one withheld a
 (:attr:`SafetyGate.reload`).
 
 Two shapes have a narrow exemption for committed fixture data that is no credential
-(:func:`_exempt`): a database URL whose password is its user name and whose host can only be
-local, and the public ``GPG_KEY`` fingerprint the ``python`` Docker image sets. The scan goes on
-past an exempt match, so it never hides a reportable one, and the gate counts the exemptions per
-rule (:attr:`SafetyGate.exempted`).
+(:func:`_exempt`): a database URL to a loopback address or a known compose service (``db``,
+``postgres``) whose password is its user name, short and of one character class, and the public
+``GPG_KEY`` fingerprint the ``python`` Docker image sets. A dotenv line passes when its name holds
+no secret (a path, a URL, the shell's working directories), or when its name is not in upper case
+and its value is code (``txn_key = compute(x)``). The scan goes on past an exempt match, so it
+never hides a reportable one, and the gate counts the exemptions per rule
+(:attr:`SafetyGate.exempted`).
 
 **What a hit does is the caller's policy** (:meth:`SafetyGate.screen`, the ``secrets`` option):
 
@@ -82,8 +85,8 @@ SECRET_NAME = re.compile(
 )
 # names that look secret-like but never hold a secret value; PWD and OLDPWD are the shell's
 # working directories, which an agent's own text names all the time, and the tracing launcher's
-# session id rides on every span by design. The one filter for every list of credentials: the
-# process environment here and the SecretManager's keys in the plugin
+# session id rides on every span by design. The one filter for every list of credentials (the
+# process environment here, the SecretManager's keys in the plugin) and for the dotenv shape's names
 _NOT_SECRET_NAMES = re.compile(
     r"(PUBLIC_KEY_ID|_FILE$|_PATH$|_DIR$|_URL$|_BASE$|_NAME$|_HEADER$|^(?:OLD)?PWD$"
     r"|^TOLOKAFORGE_TRACING_SESSION_ID$)",
@@ -108,11 +111,12 @@ RULE_COPY = "found-value-copy"
 RULE_RESIDUE = "mask-residue"
 RULE_UNPARSEABLE = "mask-unparseable"
 
-# an environment variable's name, upper case by convention: an agent's `txn_key = compute(x)` is
-# code, not a dotenv line
-# (each part bounded: a long run of keywords in one word would otherwise backtrack
-# quadratically)
-_DOTENV_NAME = rb"[A-Z][A-Z0-9_]{0,63}(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)[A-Z0-9_]{0,63}"
+# an environment variable's name in any case (an agent's `txn_key = compute(x)` is told apart by
+# its value, see _exempt); each part is bounded, since a long run of keywords in one word would
+# otherwise backtrack quadratically
+_DOTENV_NAME = (
+    rb"[A-Za-z][A-Za-z0-9_]{0,63}(?i:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)[A-Za-z0-9_]{0,63}"
+)
 
 SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     (
@@ -134,7 +138,8 @@ SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
         "url-credentials",
         re.compile(
             rb"(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,15}://[^/\s:@]+:(?!(?:[*]+|MASKED)@)"
-            rb"(?:(?!(?<!\\)\\[nrt])[^\s/]){3,}@(?:(?!(?<!\\)\\[nrt])[^\s/])+"
+            rb"(?:(?<!\\)\\[nrt](?=[^@\s/])|(?!(?<!\\)\\[nrt])[^\s/]){3,}"
+            rb"@(?:(?!(?<!\\)\\[nrt])[^\s/])+"
         ),
     ),
     (
@@ -167,7 +172,10 @@ SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
 
 # the shapes over raw bytes (a file, a media object, a span name): YAML and JSON write a line
 # break inside a double-quoted string as a `\n` or `\r` escape, so there a dotenv line may also
-# start after one and its value ends at one. A structured value keeps SHAPES over its JSON: there
+# start after one and its value ends at one. A value shorter than eight characters before one is
+# read on through it, as a `.env` file's own bytes would be, for eight characters only: reading to
+# the end of the run from every line start would scan quadratically; this gate's own placeholder
+# before one is no value to read on into. A structured value keeps SHAPES over its JSON: there
 # every tool output's environment listing would otherwise read as dotenv lines
 RAW_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = tuple(
     (
@@ -176,7 +184,8 @@ RAW_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = tuple(
             re.compile(
                 rb"(?m)(?:^|(?<=\\n)|(?<=\\r))\s*(?:export\s+)?"
                 + _DOTENV_NAME
-                + rb"\s*=\s*['\"]?(?:(?!(?<!\\)\\[nr])[^\s'\"#]){8,}"
+                + rb"\s*=\s*['\"]?(?!MASKED(?:\\[nr]|['\"\s#]|$))"
+                + rb"(?:(?:(?!(?<!\\)\\[nr])[^\s'\"#]){8,}|[^\s'\"#]{8})"
             ),
         )
         if rule == "dotenv-secret"
@@ -185,13 +194,15 @@ RAW_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = tuple(
     for rule, pattern in SHAPES
 )
 
-# a url-credentials match that is a committed fixture DSN: the user name as the password and a
-# host that can only be local (one letter-first label such as a compose service or `localhost`, or
-# a loopback address); a numeric label such as 134744072 is an IPv4 address, so it is not local
+# a url-credentials match that is a committed fixture DSN: the user name as the password, a host
+# that is a loopback address or a compose service the task sets name (a single label is completed
+# by the reader's resolver, so no other label is known to be local), and a password of at most
+# twelve characters of one class (a long or mixed shared value may be a real credential)
 _LOCAL_DSN = re.compile(
     rb"[a-z][a-z0-9+.\-]*://(?P<user>[^:]+):(?P<password>[^@]+)@"
-    rb"(?:[A-Za-z][A-Za-z0-9_\-]*|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?"
+    rb"(?:localhost|db|postgres|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?"
 )
+_FIXTURE_PASSWORD = re.compile(rb"[a-z]{1,12}|[A-Z]{1,12}|[0-9]{1,12}")
 # a byte after the host that would make it a longer host, a port or another userinfo
 _HOST_CONTINUES = frozenset(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:%[]-@"
@@ -209,6 +220,15 @@ _URL_TAIL_TEXT = re.compile(rb"[^\s\"'`<>]{0,%d}" % _URL_TAIL_LIMIT)
 # a character a writer encoded as a backslash-u or backslash-x escape: what it stands for cannot
 # be read from the bytes
 _ENCODED_CHARACTER = re.compile(rb"(?i)\\(?:u[0-9a-f]{4}|x[0-9a-f]{2})")
+# a dotenv-secret match split into its name and its value
+_ASSIGNMENT = re.compile(
+    rb"\s*(?:export\s+)?(?P<name>[A-Za-z][A-Za-z0-9_]*)\s*=\s*['\"]?(?P<value>.*)", re.S
+)
+# a value that is code, not a secret: it holds a call, an index or a literal, or it is an
+# attribute path (`response.usage.total_tokens`, `settings.SECRET_KEY`)
+_CODE_VALUE = re.compile(
+    rb"[^\s'\"#]*[()\[\]{},]|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+(?![^\s'\"#])"
+)
 # a dotenv-secret match that is the public signing-key fingerprint the python image sets
 _GPG_FINGERPRINT = re.compile(rb"\s*(?:export\s+)?GPG_KEY\s*=\s*['\"]?[0-9A-Fa-f]{40}")
 
@@ -709,12 +729,28 @@ def _exempt(rule: str, match: re.Match[bytes], view: bytes, *, text: bool = Fals
         tail = (_URL_TAIL_TEXT if text else _URL_TAIL).match(view, match.end())
         return _local_fixture_dsn(match.group(0), tail.group(0) if tail else b"")
     if rule == "dotenv-secret":
-        return _GPG_FINGERPRINT.fullmatch(match.group(0)) is not None
+        return _GPG_FINGERPRINT.fullmatch(match.group(0)) is not None or _names_no_secret(
+            match.group(0)
+        )
     return False
 
 
+def _names_no_secret(match: bytes) -> bool:
+    """A dotenv-secret match that names no secret: a name the gate knows holds none (a path, a URL,
+    the shell's working directories), or a name not in upper case whose value is code (a call, an
+    index, a literal or an attribute path: ``txn_key = compute(x)``)."""
+    parsed = _ASSIGNMENT.match(match)
+    if parsed is None:
+        return False
+    name = parsed["name"].decode("ascii")
+    if _NOT_SECRET_NAMES.search(name):
+        return True
+    return name != name.upper() and _CODE_VALUE.match(parsed["value"]) is not None
+
+
 def _local_fixture_dsn(match: bytes, tail: bytes) -> bool:
-    """A DSN whose password is its user name and whose URL can reach no host but a local one.
+    """A DSN to a loopback address or a known compose service whose password is its user name,
+    short and of one character class, and whose URL can reach no other host.
 
     ``match`` ends at the first ``/``; ``tail`` is the rest of the URL (its path and query). What
     follows the host and port must not lead anywhere else: no ``@`` before the path (a URL parser
@@ -727,6 +763,8 @@ def _local_fixture_dsn(match: bytes, tail: bytes) -> bool:
     ``PGSERVICE`` set elsewhere can still send the pair to another server."""
     parsed = _LOCAL_DSN.match(match)
     if parsed is None or parsed["user"] != parsed["password"]:
+        return False
+    if not _FIXTURE_PASSWORD.fullmatch(parsed["password"]):
         return False
     rest = match[parsed.end() :]
     if rest and rest[0] in _HOST_CONTINUES:

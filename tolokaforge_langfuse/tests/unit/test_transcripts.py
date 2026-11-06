@@ -1291,7 +1291,8 @@ class TestScrub:
         assert scrubbed.endswith("... [30 more characters]")
 
     def test_a_lower_case_secret_line_is_still_removed(self) -> None:
-        """The gate reads upper-case dotenv names only; the scrub removes more, not less."""
+        """The scrub reads dotenv names in any case, as the gate does, and has none of its
+        exemptions: it removes more, not less."""
         value = "fakelowercasevalue"
         scrubbed, removed = tr.scrub(f"db_token={value}\nnext line")
         assert "dotenv-secret" in removed

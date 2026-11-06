@@ -3,10 +3,13 @@ the two secrets policies.
 
 ``SafetyGate.scan`` reads raw bytes (an attachment, inline media), ``SafetyGate.scan_structured``
 a JSON-like value as it is serialised for the receiver. Two shapes exempt fixture data that is no
-credential: a database URL whose password is its user name and whose host can only be local, and
-the public ``GPG_KEY`` fingerprint the ``python`` image sets. ``SafetyGate.screen`` and
-``SafetyGate.screen_structured`` apply a policy: ``reject`` reports what the scan reports,
-``mask`` replaces every match with ``MASKED`` and withholds only what is left over.
+credential: a database URL to a loopback address, ``db`` or ``postgres`` whose password is its
+user name, short and of one character class, and the public ``GPG_KEY`` fingerprint the
+``python`` image sets. A dotenv line passes when its name holds no secret (a path, a URL, the
+shell's working directories), or when its name is not in upper case and its value is code.
+``SafetyGate.screen`` and ``SafetyGate.screen_structured`` apply a policy: ``reject`` reports what
+the scan reports, ``mask`` replaces every match with ``MASKED`` and withholds only what is left
+over.
 
 Every fake secret is assembled at run time, here or from the ``{TOKEN}`` placeholders of the
 shared vector file: nothing key-shaped is written in this repository.
@@ -72,6 +75,9 @@ AGENT_CODE = {
     "an indented key": "    txn_key = compute_key(row)",
     "a hash key": "content_key = hashlib.sha256(x)",
     "a plural": "before_keys = sorted(rows)",
+    "an attribute path": "total_tokens = response.usage.total_tokens",
+    "a settings attribute": "api_key = self.api_key",
+    "an index": "claim_key = row_keys[3]",
 }
 AGENT_SOURCE = "def settle(rows):\n    for row in rows:\n" + "\n".join(
     "        " + line.strip() for line in AGENT_CODE.values()
@@ -175,6 +181,24 @@ STILL_FIRES = {
         dsn("CORP\\tom", "not-the-user", "prod.example.com/db", scheme="mssql"),
         "not-the-user",
     ),
+    # a single label is completed by the reader's resolver: only db and postgres are known local
+    "an unknown label": (dsn("replica", "replica", "prod-db:5432/main"), "replica"),
+    "another label": (dsn("svcacct", "svcacct", "vaultdb:5432/x"), "svcacct"),
+    "a dashed label": (dsn("admin", "admin", "db-prod-01:5432/x"), "admin"),
+    # a shared value that is long or mixed may be a real credential
+    "a high-entropy shared value": (
+        dsn("A7f93kd2Lm0qZxTT", "A7f93kd2Lm0qZxTT", "db/v1", scheme="https"),
+        "A7f93kd2Lm0qZxTT",
+    ),
+    "a high-entropy value on a vault host": (
+        dsn("A7f93kd2Lm0qZxTT", "A7f93kd2Lm0qZxTT", "vault/v1/secret/data/prod", scheme="https"),
+        "A7f93kd2Lm0qZxTT",
+    ),
+    "letters and a digit": (dsn("airflowadmin1", "airflowadmin1", "db:5432/x"), "airflowadmin1"),
+    "thirteen letters": (dsn("airflowadminx", "airflowadminx", "db:5432/x"), "airflowadminx"),
+    # an at sign anywhere in the password
+    "an early at sign": (dsn("admin", "P@ssw0rd", "db.example.com:5432/app"), "P@ssw0rd"),
+    "a leading at sign": (dsn("admin", "@secret123", "db.example.com:5432/app"), "@secret123"),
 }
 # a backslash and an n in a URL: in serialised events the backslash is doubled, so no line break
 ESCAPED_BACKSLASH_URLS = {
@@ -190,8 +214,8 @@ ESCAPED_BACKSLASH_URLS = {
 
 
 class TestLocalFixtureDsn:
-    """``url-credentials`` passes a DSN whose password is its user name and whose host can only
-    be local, and nothing else."""
+    """``url-credentials`` passes a DSN to a loopback address, ``db`` or ``postgres`` whose
+    password is its user name, short and of one character class, and nothing else."""
 
     @pytest.mark.parametrize("where", ["raw bytes", "a structured value"])
     @pytest.mark.parametrize("ending", ENDINGS.values(), ids=ENDINGS.keys())
@@ -228,16 +252,30 @@ class TestLocalFixtureDsn:
         ends there, as they do at an escaped line break."""
         assert "url-credentials" in structured_rules_in(text)
 
+    @pytest.mark.parametrize(
+        "value", ["abcdefghijkl", "ABCDEFGHIJKL", "123456789012"], ids=["lower", "upper", "digits"]
+    )
+    def test_a_shared_value_of_twelve_characters_of_one_class_is_a_fixture(
+        self, value: str
+    ) -> None:
+        assert rules_in(dsn(value, value, "db:5432/x")) == set()
+
     def test_a_url_past_the_tail_limit_is_no_fixture(self) -> None:
         assert "url-credentials" in rules_in(dsn("app", "app", "db/" + "a" * 2000))
 
-    def test_a_long_line_of_fixture_dsns_scans_fast(self) -> None:
+    def test_a_long_line_of_fixture_dsns_scans_in_linear_time(self) -> None:
         """Every exempt match reads the URL's tail: without a bound a long line without spaces
-        that repeats a fixture DSN would be read again from every one of them."""
-        line = dsn("aaa", "aaa", "b/") * 20_000
-        started = time.perf_counter()
-        rules = rules_in(line)
-        assert time.perf_counter() - started < 5.0
+        that repeats a fixture DSN would be read again from every one of them. A ratio, not a
+        wall-clock bound, so a busy runner cannot flake."""
+
+        def seconds(repeats: int) -> tuple[float, set[str]]:
+            line = dsn("aaa", "aaa", "db/") * repeats
+            started = time.perf_counter()
+            rules = rules_in(line)
+            return time.perf_counter() - started, rules
+
+        (small, _), (large, rules) = seconds(5_000), seconds(20_000)
+        assert large < 8 * small + 0.05
         assert "url-credentials" in rules
 
 
@@ -343,15 +381,78 @@ class TestExemptionsAreCounted:
         assert gate.exempted == {"url-credentials": 1, "dotenv-secret": 1}
 
 
-class TestUpperCaseDotenv:
-    """``dotenv-secret`` reads the environment-variable convention, upper-case names only."""
+class TestDotenvNames:
+    """``dotenv-secret`` reads a secret-like name in any case. Under a name not in upper case a
+    value that is code (a call, an index, a literal, an attribute path) is no secret; a name that
+    holds none (a path, a URL, the shell's working directories) is passed whatever its case."""
 
     @pytest.mark.parametrize("text", AGENT_CODE.values(), ids=AGENT_CODE.keys())
-    def test_a_lower_case_assignment_is_not_a_dotenv_line(self, text: str) -> None:
+    def test_a_lower_case_assignment_of_code_is_not_a_dotenv_line(self, text: str) -> None:
         assert rules_in(text + "\n") == set()
 
     def test_agent_source_at_raw_line_starts_is_clean(self) -> None:
         assert rules_in(AGENT_SOURCE + "\n") == set()
+
+    @pytest.mark.parametrize("text", ORDINARY_TEXT.values(), ids=ORDINARY_TEXT.keys())
+    def test_ordinary_text_is_clean(self, text: str) -> None:
+        assert rules_in(text + "\n") == set()
+        assert structured_rules_in(text) == set()
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param(f"vault_token={SECRET_VALUE}", id="lower case"),
+            pytest.param(f"gh_token={SECRET_VALUE}", id="a short name"),
+            pytest.param(f"npm_token={SECRET_VALUE}", id="another short name"),
+            pytest.param(f"signing_key={SECRET_VALUE}", id="a key"),
+            pytest.param(f"AWS_secret_access_key={SECRET_VALUE}", id="mixed case"),
+            pytest.param("my_password=8charval", id="eight characters"),
+            pytest.param("registry_password=Ab3dEf9h", id="eight mixed characters"),
+            pytest.param("Api_Key=8charval", id="title case"),
+        ],
+    )
+    def test_a_secret_line_in_any_case_fires(self, text: str) -> None:
+        assert "dotenv-secret" in rules_in(text + "\n")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("API_KEY = compute_key(row)", id="a call"),
+            pytest.param("DB_TOKEN=settings.DB_TOKEN", id="an attribute path"),
+        ],
+    )
+    def test_code_under_an_upper_case_name_still_fires(self, text: str) -> None:
+        """Only a name not in upper case reads its value as code: an environment variable's value
+        can be anything."""
+        assert "dotenv-secret" in rules_in(text + "\n")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "OLDPWD=/root/project-dir",
+            "SECRET_KEY_FILE=/run/secrets/app_key",
+            "API_KEY_PATH=/etc/app/api-key.txt",
+            "SERVICE_TOKEN_URL=https://auth.example.com/token",
+            "AUTH_TOKEN_BASE=https://auth.example.com/v1",
+            "API_KEY_HEADER=X-Api-Key-Header",
+            "api_key_path=/etc/app/api-key.txt",
+        ],
+    )
+    def test_a_name_that_holds_no_secret_is_passed(self, text: str) -> None:
+        assert rules_in(text + "\n") == set()
+
+    def test_scanning_a_long_run_of_keywords_grows_linearly(self) -> None:
+        """Each part of the name is bounded: a long run of keywords in one word would otherwise
+        backtrack quadratically. A ratio, not a wall-clock bound, so a busy runner cannot flake."""
+
+        def seconds(n: int) -> float:
+            payload = ("KEY" * n).encode()
+            started = time.perf_counter()
+            SafetyGate().scan(payload)
+            return time.perf_counter() - started
+
+        small, large = seconds(4_000), seconds(16_000)
+        assert large < 8 * small + 0.05
 
     @pytest.mark.parametrize(
         "text",
@@ -406,9 +507,37 @@ class TestEscapedLineBreaks:
         """The structured scan keeps its dotenv shape on purpose: over a serialised value every
         tool output's env listing would otherwise be withheld. The same text as a JSON file is a
         hit, because there the escaped line break starts a line."""
-        listing = "PATH=/usr/bin\nOLDPWD=/root/project-dir"
+        listing = "PATH=/usr/bin\nDB_PASS" + "WORD=not-a-real-password-1"
         assert "dotenv-secret" not in structured_rules_in(listing)
         assert "dotenv-secret" in rules_in(json.dumps({"output": listing}))
+
+    def test_a_short_value_cut_by_an_escaped_break_is_read_through_it(self) -> None:
+        """Fewer than eight characters before the escape: the value is read on through it, as a
+        ``.env`` file's own bytes would be, instead of the line passing the scan."""
+        assert "dotenv-secret" in rules_in(escaped("A=1", "DB_PASSWORD=Xk3", "Qp9mZt2Lw8Rv"))
+
+    @pytest.mark.parametrize(
+        "unit",
+        ["\\na_key=f(", "\\nAPI_KEY_FILE=ab"],
+        ids=["code under a lower-case name", "a name that holds no secret"],
+    )
+    def test_reading_through_escaped_breaks_grows_linearly(self, unit: str) -> None:
+        """Every line start of the run is read on through its escape, for eight characters only:
+        reading to the end of the run from each would be quadratic. Each case is exempt, so the
+        scan goes on to the next line start. A ratio, not a wall-clock bound."""
+
+        def seconds(n: int) -> float:
+            payload = (unit * n).encode()
+            started = time.perf_counter()
+            SafetyGate().scan(payload)
+            return time.perf_counter() - started
+
+        small, large = seconds(4_000), seconds(16_000)
+        assert large < 8 * small + 0.05
+
+    def test_a_url_password_holding_an_escape_still_fires(self) -> None:
+        """An escape inside the password is part of it; only one that ends it ends the URL."""
+        assert "url-credentials" in rules_in(dsn("u", "pa\\nss", "evilhost/x"))
 
     @pytest.mark.parametrize("separator", ["\n\n", "\r\n", "\t"], ids=["LF", "CRLF", "tab"])
     @pytest.mark.parametrize("where", ["a structured value", "a JSON file"])
