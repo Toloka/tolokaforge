@@ -21,6 +21,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import re
 import reprlib
 import sqlite3
@@ -1117,6 +1118,12 @@ def _non_finite_as_null(_constant: str) -> None:
     return None
 
 
+def _finite_float_or_null(text: str) -> float | None:
+    """A number too large for a float (``1e999``) reads as ``null`` too: it would parse to ``inf``."""
+    value = float(text)
+    return value if math.isfinite(value) else None
+
+
 def _refuse_init_body(reason: str) -> NoReturn:
     raise HTTPException(
         status_code=422, detail=[{"loc": ["body"], "msg": reason, "type": "value_error"}]
@@ -1143,7 +1150,9 @@ async def init_trial_from_json_db(trial_id: str, request: Request) -> dict[str, 
     head_end = text.find("\n")
     if head_end < 0:
         _refuse_init_body("expected a line of init fields, then the state file")
-    decoder = json.JSONDecoder(parse_constant=_non_finite_as_null)
+    decoder = json.JSONDecoder(
+        parse_constant=_non_finite_as_null, parse_float=_finite_float_or_null
+    )
     try:
         head = json.loads(text[:head_end])
         start = _JSON_WHITESPACE.match(text, head_end + 1).end()  # type: ignore[union-attr]

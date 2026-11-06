@@ -511,12 +511,16 @@ class TestInitialStateFile:
         self, tmp_path: Path
     ) -> None:
         path = tmp_path / "initial_state.json"
-        path.write_text('{"m": [{"id": 1, "a": NaN, "b": Infinity, "c": -Infinity}]}')
+        path.write_text(
+            '{"m": [{"id": 1, "a": NaN, "b": Infinity, "c": -Infinity, "d": 1e999, "e": -1e999, "f": 1.5}]}'
+        )
         sha256, size = file_sha256(path)
 
         tables = InitialStateFile(path=path, sha256=sha256, size=size).read_tables()
 
-        assert tables == {"m": [{"id": 1, "a": None, "b": None, "c": None}]}
+        assert tables == {
+            "m": [{"id": 1, "a": None, "b": None, "c": None, "d": None, "e": None, "f": 1.5}]
+        }
 
 
 def test_the_db_services_vendored_normaliser_is_the_engines() -> None:
@@ -593,7 +597,7 @@ class TestSeedingFromTheFile:
         self, db_client: DBServiceClient, tmp_path: Path
     ) -> None:
         path = tmp_path / "initial_state.json"
-        path.write_text('{"m": [{"id": 1, "a": NaN}]}')
+        path.write_text('{"m": [{"id": 1, "a": NaN, "b": 1e999, "c": -1e999, "d": 1.5}]}')
         sha256, size = file_sha256(path)
         state_file = InitialStateFile(path=path, sha256=sha256, size=size)
         trial_id = "initial_ref_nan:0"
@@ -605,7 +609,9 @@ class TestSeedingFromTheFile:
             finally:
                 await db_client.delete_trial(trial_id)
 
-        assert asyncio.run(seed_and_read()).data == {"m": [{"id": 1, "a": None}]}
+        assert asyncio.run(seed_and_read()).data == {
+            "m": [{"id": 1, "a": None, "b": None, "c": None, "d": 1.5}]
+        }
 
     def test_a_service_without_the_route_answers_none(self, db_test_client: Any) -> None:
         client = DBServiceClient("http://testserver")

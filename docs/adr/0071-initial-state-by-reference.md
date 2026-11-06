@@ -100,7 +100,8 @@ Adopt **Option 3**, opt-in through the task's environment.
   never has its state file parsed by the engine host. The
   normalisation from `json_db` to tables is one function,
   `runner/initial_state_file.seeded_tables`, which both deliveries apply; both
-  read `NaN` and `Infinity` as `null`, as the inline serialiser writes them.
+  read `NaN`, `Infinity` and a number too large for a float (`1e999`) as `null`,
+  as the inline serialiser writes them.
 - **Engine host.** The conductor hydrates the trial's `EnvironmentState` without
   the DB seed for such a trial, and does not replay `initialization_actions` on
   the host: that replay only shaped the host's copy of the DB state, which a task
