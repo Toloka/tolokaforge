@@ -2457,15 +2457,20 @@ class TestSecretsPolicy:
         observer.run_finished()
 
     def test_the_env_digest_describes_env_yaml_as_attached(self, tmp_path) -> None:
-        """env.yaml holds a value bare that only an event shows in a shape: the file is
-        attached as it is (its own shapes find nothing), so the digest stays the file's."""
+        """env.yaml holds a value bare that an event shows in a shape, and the trial's found
+        values do not hold it (no pass builds the events ahead): the file is attached as it is
+        (its own shapes find nothing), so the digest stays the file's."""
+        from tolokaforge_langfuse.otel import ProjectionSettings, _PersistContext
+
         value = "Zx9vQ2mL7pR4tK8w" + "Yb3n"
         raw = f"notes: {value}\n".encode()
         (tmp_path / "env.yaml").write_bytes(raw)
         digest = hashlib.sha256(raw).hexdigest()
         exporter = InMemorySpanExporter()
-        observer, _ = _observer(exporter, secrets="mask")
-        found = observer._found_in_trial(tmp_path)
+        observer, _ = _observer(
+            exporter, secrets="mask", projection=ProjectionSettings(mode="none")
+        )
+        found = observer._found_in_trial(IDENTITY, tmp_path, _PersistContext())
         assert found == frozenset()
         events = [
             {"id": "e1", "type": "span-create", "body": {"input": {"password": value}}},
@@ -2569,6 +2574,58 @@ class TestSecretsPolicy:
         sent = self._everything_sent(receiver, spans)
         assert self.TRIAL_PASSWORD not in sent
         assert "I logged in with MASKED." in sent
+
+    @FAMILIES
+    def test_a_value_only_an_event_shows_is_masked_in_the_files_too(
+        self, tmp_path, server_api
+    ) -> None:
+        """The service capture is read into the events, not attached: a password it shows is
+        found in the events, built once ahead of the attachments, so env.yaml masks it too."""
+        import yaml
+
+        value = "Fake" + "EventOnly-00001"
+
+        def edit(trial_dir) -> None:
+            (trial_dir / "services").mkdir(exist_ok=True)
+            capture = {"tail": 5, "capture_reason": f"DB_PASSWORD={value}", "services": {"db": {}}}
+            (trial_dir / "services" / "_capture.yaml").write_text(
+                yaml.safe_dump(capture), encoding="utf-8"
+            )
+            env = trial_dir / "env.yaml"
+            env.write_text(env.read_text(encoding="utf-8") + f"notes: {value}\n", "utf-8")
+
+        receiver = _MediaReceiver()
+        gate = SafetyGate()
+        step = self._real_step(receiver, server_api, gate, "mask")
+        _, spans, receipt = self._persisted(
+            tmp_path, server_api, "mask", edit=edit, gate=gate, attachments=step
+        )
+        assert receipt.extra["langfuse.projections_sent"] == 1
+        assert receipt.extra["langfuse.attachments_masked"] >= 1
+        assert receipt.extra["langfuse.found_values_failed"] == 0
+        assert value not in self._everything_sent(receiver, spans)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file it may not read")
+    def test_a_file_not_read_for_the_trials_values_is_counted_and_named(
+        self, tmp_path, caplog
+    ) -> None:
+        """Each unit still masks what it holds; the run says its trials may have missed a copy."""
+        from tolokaforge_langfuse.otel import ProjectionSettings, _PersistContext
+
+        unreadable = tmp_path / "env.yaml"
+        unreadable.write_text("notes: none\n", encoding="utf-8")
+        unreadable.chmod(0)
+        try:
+            observer, _ = _observer(
+                InMemorySpanExporter(), secrets="mask", projection=ProjectionSettings(mode="none")
+            )
+            with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+                assert observer._found_in_trial(IDENTITY, tmp_path, _PersistContext()) == set()
+                receipt = observer.run_finished()
+        finally:
+            unreadable.chmod(0o600)
+        assert receipt.extra["langfuse.found_values_failed"] == 1
+        assert [r for r in caplog.records if "not read for the values masked" in r.getMessage()]
 
     @FAMILIES
     def test_no_hash_of_an_original_is_sent(self, tmp_path, server_api) -> None:
