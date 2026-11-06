@@ -67,6 +67,7 @@ from tolokaforge.core.grading.golden_replay import (
     require_replayable_golden_actions,
 )
 from tolokaforge.core.grading.state_composition import StateHashConfig, refuse_retired_hash_keys
+from tolokaforge.core.grading.tool_artifacts import file_sha256
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
@@ -93,6 +94,7 @@ if TYPE_CHECKING:
         MutatesStateRule,
         SearchConfig,
         TaskDescription,
+        ToolArtifactRefs,
         ToolSchema,
     )
 
@@ -933,6 +935,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             RunnerStateChecksConfig,
             RunnerUserSimulatorConfig,
             TaskDescription,
+            ToolArtifactRefs,
             TraceChecksConfig,
             TranscriptRulesConfig,
             read_unstable_field_specs,
@@ -1166,55 +1169,12 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         if task.system_prompt:
             source_files["system_prompt"] = str(task_dir / task.system_prompt)
 
-        # Bundle task directory files as base64 artifacts for Docker Runner.
-        # The Runner runs in a separate container without access to the host
-        # filesystem, so we transfer all necessary files via gRPC/TaskDescription.
-        # Custom checks packs (with or without an MCP server) also need the
-        # bundle so the runner can resolve ``custom_checks.file`` and every
-        # ``relative_imports`` path under the trial's ``artifacts_dir``. Either
-        # actor's server counts: a user tool is reconstructed from the same
-        # script path the agent's is.
-        needs_bundle = (
-            mcp_server_ref
-            or actor_tool_block(task, ToolActor.USER).get("mcp_server")
-            or custom_checks_enabled(custom_checks_data)
-        )
-        tool_artifacts = self._bundle_task_artifacts(task_dir) if needs_bundle else {}
-
-        # mcp_server.py loads its initial state from ``initial_state.json``
-        # next to itself (see ``create_server`` in tools_interface.py). For the
-        # shared-domain layout the mcp_server lives under ``_shared/`` while
-        # each testcase ships its own per-case state file — copy that
-        # per-case JSON to ``<mcp_dir>/initial_state.json`` so the per-trial
-        # subprocess loads the right state.
-        if mcp_server_ref and task.initial_state and isinstance(task.initial_state.json_db, str):
-            json_db_rel = task.initial_state.json_db
-            json_db_abs = task_dir / json_db_rel
-            mcp_dir_rel = Path(mcp_server_ref).parent
-            target_rel = (
-                f"{mcp_dir_rel.as_posix()}/initial_state.json"
-                if mcp_dir_rel != Path(".")
-                else "initial_state.json"
-            )
-            if json_db_abs.exists() and target_rel != json_db_rel:
-                tool_artifacts[target_rel] = base64.b64encode(json_db_abs.read_bytes()).decode(
-                    "ascii"
-                )
-
-        # Resolve per-trial RAG search from ``initial_state.rag``. When a
-        # corpus is declared, its files travel in ``tool_artifacts`` (keyed
-        # under the declared ``corpus_dir``) so the runner can index them.
-        search_config = self._resolve_search_config(task, task_dir, task_id)
-        if search_config.documents_path:
-            tool_artifacts.update(
-                self._bundle_corpus_artifacts(task_dir, search_config.documents_path)
-            )
-
         # Bind the project's default_environment patch to the task's own
         # patch via :func:`resolve_environment`; the resolver merges them
         # (with the atomic-``stack`` rule) and constructs the
         # ``EnvironmentManifest`` — the point where the compose file's
-        # existence and safety validators run.
+        # existence and safety validators run. It is resolved before the
+        # artefacts because it decides how they travel (ADR-0068).
         environment_manifest = resolve_environment(
             self._project_default_environment,
             task.environment_manifest,
@@ -1223,6 +1183,61 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             refusal = task.initial_state.app_world.isolation_refusal(environment_manifest)
             if refusal is not None:
                 raise ValueError(f"{task_id}: {refusal}")
+
+        # Bundle task directory files for the Docker Runner. The Runner runs in
+        # a separate container without access to the host filesystem, so the
+        # files travel inline (base64 in the TaskDescription) or, under
+        # ``tool_artifacts_delivery: mount``, by reference to the task
+        # directory the engine mounts into the runner (ADR-0068).
+        # Custom checks packs (with or without an MCP server) also need the
+        # bundle so the runner can resolve ``custom_checks.file`` and every
+        # ``relative_imports`` path under the trial's ``artifacts_dir``. Either
+        # actor's server counts: a user tool is reconstructed from the same
+        # script path the agent's is.
+        needs_bundle = bool(
+            mcp_server_ref
+            or actor_tool_block(task, ToolActor.USER).get("mcp_server")
+            or custom_checks_enabled(custom_checks_data)
+        )
+
+        # mcp_server.py loads its initial state from ``initial_state.json``
+        # next to itself (see ``create_server`` in tools_interface.py). For the
+        # shared-domain layout the mcp_server lives under ``_shared/`` while
+        # each testcase ships its own per-case state file — copy that
+        # per-case JSON to ``<mcp_dir>/initial_state.json`` so the per-trial
+        # subprocess loads the right state.
+        state_copy = self._mcp_state_copy(task, task_dir, mcp_server_ref)
+
+        # Resolve per-trial RAG search from ``initial_state.rag``. When a
+        # corpus is declared, its files travel with the artefacts (keyed
+        # under the declared ``corpus_dir``) so the runner can index them.
+        search_config = self._resolve_search_config(task, task_dir, task_id)
+
+        tool_artifacts: dict[str, str] = {}
+        tool_artifact_refs: ToolArtifactRefs | None = None
+        if (
+            environment_manifest is not None
+            and environment_manifest.tool_artifacts_delivery == "mount"
+        ):
+            _refuse_a_bundler_without_sources(type(self), task_id)
+            sources = self._task_artifact_sources(task_dir) if needs_bundle else {}
+            if state_copy is not None:
+                sources[state_copy[0]] = state_copy[1]
+            if search_config.documents_path:
+                sources.update(self._corpus_artifact_paths(task_dir, search_config.documents_path))
+            if sources:
+                tool_artifact_refs = _reference_artifacts(task_id, task_dir, sources)
+        else:
+            if needs_bundle:
+                tool_artifacts = self._bundle_task_artifacts(task_dir)
+            if state_copy is not None:
+                tool_artifacts[state_copy[0]] = base64.b64encode(state_copy[1].read_bytes()).decode(
+                    "ascii"
+                )
+            if search_config.documents_path:
+                tool_artifacts.update(
+                    self._bundle_corpus_artifacts(task_dir, search_config.documents_path)
+                )
 
         # Create TaskDescription
         task_description = TaskDescription(
@@ -1245,6 +1260,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 "mcp_server_ref": mcp_server_ref,
             },
             tool_artifacts=tool_artifacts,
+            tool_artifact_refs=tool_artifact_refs,
             environment_manifest=environment_manifest,
         )
 
@@ -1256,9 +1272,37 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             tables_count=len(initial_tables),
             initialization_actions_count=len(initialization_actions),
             tool_artifacts_count=len(tool_artifacts),
+            tool_artifact_refs_count=(
+                len(tool_artifact_refs.files) if tool_artifact_refs is not None else 0
+            ),
         )
 
         return task_description
+
+    @staticmethod
+    def _mcp_state_copy(
+        task: TaskConfig, task_dir: Path, mcp_server_ref: str | None
+    ) -> tuple[str, Path] | None:
+        """``(artefact path, source file)`` of the case's state file beside its MCP server.
+
+        ``None`` when the task has no MCP server, no ``initial_state.json_db``
+        file, or the file already sits where the server reads it.
+        """
+        if not (
+            mcp_server_ref and task.initial_state and isinstance(task.initial_state.json_db, str)
+        ):
+            return None
+        json_db_rel = task.initial_state.json_db
+        json_db_abs = task_dir / json_db_rel
+        mcp_dir_rel = Path(mcp_server_ref).parent
+        target_rel = (
+            f"{mcp_dir_rel.as_posix()}/initial_state.json"
+            if mcp_dir_rel != Path(".")
+            else "initial_state.json"
+        )
+        if not json_db_abs.exists() or target_rel == json_db_rel:
+            return None
+        return target_rel, json_db_abs
 
     def _to_harness_task_description(self, task_id: str) -> "TaskDescription":
         """Build a coding-harness-mode :class:`TaskDescription`.
@@ -1450,19 +1494,31 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             ValueError: if the corpus directory holds no ``.md``/``.txt``/``.json``
                 files.
         """
+        return {
+            rel_path: base64.b64encode(file_path.read_bytes()).decode("ascii")
+            for rel_path, file_path in self._corpus_artifact_paths(task_dir, corpus_dir).items()
+        }
+
+    @staticmethod
+    def _corpus_artifact_paths(task_dir: Path, corpus_dir: str) -> dict[str, Path]:
+        """The files :meth:`_bundle_corpus_artifacts` bundles, keyed by artefact path.
+
+        Raises:
+            ValueError: if the corpus directory holds no ``.md``/``.txt``/``.json``
+                files.
+        """
         corpus_path = task_dir / corpus_dir
-        artifacts: dict[str, str] = {}
+        paths: dict[str, Path] = {}
         for pattern in ("*.md", "*.txt", "*.json"):
             for file_path in sorted(corpus_path.glob(pattern)):
                 if not file_path.is_file():
                     continue
-                rel_path = f"{corpus_dir}/{file_path.name}"
-                artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode("ascii")
-        if not artifacts:
+                paths[f"{corpus_dir}/{file_path.name}"] = file_path
+        if not paths:
             raise ValueError(
                 f"RAG corpus at {corpus_path} contains no .md, .txt or .json files to index."
             )
-        return artifacts
+        return paths
 
     def _bundle_task_artifacts(self, task_dir: Path) -> dict[str, str]:
         """Bundle task directory files as base64-encoded artifacts.
@@ -1487,7 +1543,32 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             dict mapping relative path → base64-encoded content.
         """
         artifacts: dict[str, str] = {}
+        for rel_path, file_path in self._task_artifact_sources(task_dir).items():
+            try:
+                artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode("ascii")
+            except Exception as e:
+                logger.warning("Could not bundle artifact", path=rel_path, error=str(e))
 
+        logger.info("Bundled task artifacts", count=len(artifacts), task_dir=str(task_dir))
+        return artifacts
+
+    def _task_artifact_sources(self, task_dir: Path) -> dict[str, Path]:
+        """The task directory's files the runner needs, keyed by artefact path: one set for both deliveries.
+
+        Inline delivery base64-encodes each of them (:meth:`_bundle_task_artifacts`);
+        ``tool_artifacts_delivery: mount`` references each by path, SHA-256 and size
+        (ADR-0068). An adapter that ships another set of the task's files overrides
+        this method, and both deliveries follow. One that overrides
+        :meth:`_bundle_task_artifacts` alone is refused under ``mount``: its
+        references would name this default set, and the runner would miss what its
+        bundle used to carry.
+        """
+        return self._task_artifact_paths(task_dir)
+
+    @staticmethod
+    def _task_artifact_paths(task_dir: Path) -> dict[str, Path]:
+        """The default of :meth:`_task_artifact_sources`: the task directory's code and data files."""
+        paths: dict[str, Path] = {}
         for pattern in (
             "*.py",
             "**/*.py",
@@ -1505,13 +1586,54 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             for file_path in task_dir.glob(pattern):
                 if not file_path.is_file():
                     continue
-                rel_path = file_path.relative_to(task_dir).as_posix()
-                if rel_path in artifacts:
-                    continue
-                try:
-                    artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode("ascii")
-                except Exception as e:
-                    logger.warning("Could not bundle artifact", path=rel_path, error=str(e))
+                paths.setdefault(file_path.relative_to(task_dir).as_posix(), file_path)
+        return paths
 
-        logger.info("Bundled task artifacts", count=len(artifacts), task_dir=str(task_dir))
-        return artifacts
+
+def _refuse_a_bundler_without_sources(adapter: type, task_id: str) -> None:
+    """Refuse ``mount`` for an adapter whose inline bundle and references would name different files.
+
+    The references come from :meth:`NativeAdapter._task_artifact_sources`; a
+    subclass that overrides :meth:`NativeAdapter._bundle_task_artifacts` without
+    it ships one set inline and would reference another.
+    """
+    own_bundle = adapter._bundle_task_artifacts is not NativeAdapter._bundle_task_artifacts
+    own_sources = adapter._task_artifact_sources is not NativeAdapter._task_artifact_sources
+    if own_bundle and not own_sources:
+        raise ValueError(
+            f"{task_id}: tool_artifacts_delivery: mount references the files "
+            f"{adapter.__name__}._task_artifact_sources names, but {adapter.__name__} overrides "
+            "_bundle_task_artifacts alone, so the runner would miss what its bundle carries; "
+            "override _task_artifact_sources with the same set, or deliver the artefacts inline"
+        )
+
+
+def _reference_artifacts(
+    task_id: str, task_dir: Path, sources: Mapping[str, Path]
+) -> "ToolArtifactRefs":
+    """``sources`` as references under ``task_dir``: each file's path, SHA-256 and size (ADR-0068).
+
+    Each file is hashed in chunks and never held whole. A source outside
+    ``task_dir`` is refused: only the task directory is mounted into the runner.
+
+    Raises:
+        ValueError: a source lies outside ``task_dir``.
+    """
+    from tolokaforge.runner.models import ToolArtifactRef, ToolArtifactRefs
+
+    root = task_dir.resolve()
+    files: dict[str, ToolArtifactRef] = {}
+    for target, path in sources.items():
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError(
+                f"{task_id}: tool_artifacts_delivery: mount mounts only the task directory "
+                f"{root}, but artefact {target!r} is read from {resolved}; move the file "
+                "under the task directory or deliver the artefacts inline"
+            )
+        sha256, size = file_sha256(resolved)
+        files[target] = ToolArtifactRef(
+            source=resolved.relative_to(root).as_posix(), sha256=sha256, size=size
+        )
+    logger.info("Referenced task artifacts", count=len(files), task_dir=str(root))
+    return ToolArtifactRefs(root=str(root), files=files)

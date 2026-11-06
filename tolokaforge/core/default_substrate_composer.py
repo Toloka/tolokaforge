@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from tolokaforge.core.compose_materialisation import (
     DB_SERVICE_DEFAULT,
@@ -199,6 +200,7 @@ class DefaultSubstrateComposer:
     ) -> ComposedEnvHandle:
         manifest = _require_manifest(spec)
         _refuse_reserved_prefix(manifest, spec.trial_id)
+        _refuse_refs_no_trial_runner_can_take(plan, spec)
 
         newly: list[tuple[StackDecl, StackHandle]] = []
         try:
@@ -284,6 +286,7 @@ class DefaultSubstrateComposer:
                 ),
                 events=run_sub.events,
                 component_id_prefix=f"trial/{spec.trial_id}",
+                tool_artifact_refs_root=_tool_artifact_refs_root(decl, spec),
             )
             handle = self.materialiser.materialise(decl, ctx)
             trial_handles.append(handle)
@@ -588,6 +591,48 @@ def _refuse_reserved_prefix(
                 "variables); rename or remove it from the manifest"
             ),
         )
+
+
+def _tool_artifact_refs_root(decl: StackDecl, spec: TrialSpec) -> Path | None:
+    """The reference root to mount into ``decl``'s runner, or ``None`` (ADR-0068).
+
+    Only the stack that owns the trial's runner gets it, and only when the
+    trial's description delivers artefacts by reference.
+    """
+    refs = spec.task.tool_artifact_refs
+    if refs is None or decl.runner_service is None:
+        return None
+    return Path(refs.root)
+
+
+def _refuse_refs_no_trial_runner_can_take(plan: CompositionPlan, spec: TrialSpec) -> None:
+    """Refuse a description with references when no trial-scope stack owns the runner.
+
+    The resolver refuses ``tool_artifacts_delivery: mount`` on such a plan
+    already; this holds the composer to the same rule for a description built
+    some other way, or a plan whose scopes were coerced after it was resolved,
+    before any stack is started. A run-scope runner was started before the
+    trial's task was described and serves every task of the run, so it has no
+    mount of this task's directory and would refuse the registration.
+    """
+    if spec.task.tool_artifact_refs is None:
+        return
+    owners = [decl for decl in plan if decl.runner_service is not None]
+    if owners and all(decl.stack_scope == "trial" for decl in owners):
+        return
+    found = (
+        ", ".join(f"{decl.stack_id!r} (stack_scope={decl.stack_scope})" for decl in owners)
+        or "no stack sets runner_service"
+    )
+    raise ProvisionError(
+        trial_id=spec.trial_id,
+        stage="provision",
+        reason=(
+            "the task delivers its tool artefacts by reference (tool_artifacts_delivery: "
+            "mount), which needs a trial-scope stack to own the runner so the engine can "
+            f"mount the task's directory into it; the runner here: {found}"
+        ),
+    )
 
 
 def _validate_plan(plan: CompositionPlan) -> None:

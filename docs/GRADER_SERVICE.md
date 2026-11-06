@@ -314,6 +314,11 @@ its dispatch consumes and leaves the rest empty.
 | `bundle_manifest_json`        | 13 | Wire v3 additive. `GradeBundleManifest` JSON — the parsed manifest (see [`GRADE_BUNDLE.md`](GRADE_BUNDLE.md)). Empty when the caller has no bundle. Not populated by `wire_snapshot.build_grade_request_fields`; no in-tree caller populates it yet. |
 | `bundle_parts_uri`            | 14 | Wire v3 additive. Bundle-store URI — `bundle://<store-name>/<content-hash>`. Empty when the caller has no bundle. Not populated by `wire_snapshot.build_grade_request_fields`; no in-tree caller populates it yet. |
 
+A description that delivers its artefacts by reference (`tool_artifact_refs`,
+ADR-0068) is refused with `GradeResponse(success=false)`: the files live on the
+trial's runner mount, which the grader does not have. The orchestrator refuses such a
+task under `grader_rpc` or `queue` before any trial; this is the second line.
+
 Field numbers are stable and additive. The bundle-URI pair lands on 13
 and 14 so numbers 8–12 stay free as a reserved window for future
 growth (per-trial substrate override, grader-kind hint, credentials

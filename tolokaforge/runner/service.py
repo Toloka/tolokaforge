@@ -85,7 +85,7 @@ from tolokaforge.core.grading.substrate import (
     RunTestSuiteResult,
     SubstrateUnreachableError,
 )
-from tolokaforge.core.grading.tool_artifacts import purge_modules_under
+from tolokaforge.core.grading.tool_artifacts import ToolArtifactRefError, purge_modules_under
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
@@ -182,6 +182,7 @@ from tolokaforge.runner.models import (
     SearchPlane,
     StateDiff,
     TaskDescription,
+    ToolArtifactRefs,
     ToolExecutorIdentity,
     ToolSchema,
     TraceChecksConfig,
@@ -1000,19 +1001,38 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     # Tool artifact extraction
     # =========================================================================
 
-    def _extract_tool_artifacts(self, trial_id: str, artifacts: dict[str, str]) -> Path:
-        """Extract base64-encoded tool artifacts to a temp directory.
+    def _extract_tool_artifacts(
+        self,
+        trial_id: str,
+        artifacts: dict[str, str],
+        refs: ToolArtifactRefs | None = None,
+    ) -> Path:
+        """Extract the trial's tool artifacts to a temp directory.
 
         Delegates the extraction body to the shared
         :func:`tolokaforge.core.grading.tool_artifacts.extract_tool_artifacts`
-        helper, then records the returned directory on
+        helper — the inline base64 entries, plus every reference (ADR-0068)
+        copied and verified from the root the engine mounted into this
+        runner — then records the returned directory on
         :attr:`_artifact_dirs` so :meth:`_cleanup_trial_artifacts` /
         :meth:`shutdown` can remove it from ``sys.path`` and delete the
         tree when the trial ends.
-        """
-        from tolokaforge.core.grading.tool_artifacts import extract_tool_artifacts
 
-        extract_dir = extract_tool_artifacts(trial_id, artifacts)
+        Raises:
+            ToolArtifactRefError: a reference cannot be resolved here or does
+                not match; nothing is left on disk or on ``sys.path``.
+        """
+        from tolokaforge.core.grading.tool_artifacts import (
+            extract_tool_artifacts,
+            tool_artifact_refs_dir_from_env,
+        )
+
+        extract_dir = extract_tool_artifacts(
+            trial_id,
+            artifacts,
+            refs=refs.files if refs is not None else None,
+            refs_dir=tool_artifact_refs_dir_from_env() if refs is not None else None,
+        )
         self._artifact_dirs[trial_id] = extract_dir
         return extract_dir
 
@@ -1221,14 +1241,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 logger.error(view_error)
                 return pb2.RegisterTrialResponse(success=False, error=view_error)
 
-        # Extract tool artifacts to temp directory if present
+        # Extract tool artifacts to temp directory if present: inline ones
+        # decoded, referenced ones (ADR-0068) copied from the mounted root and
+        # verified against their hashes.
         artifacts_dir = None
-        if task_description.tool_artifacts:
-            artifacts_dir = self._extract_tool_artifacts(trial_id, task_description.tool_artifacts)
-            logger.info(
-                f"Extracted {len(task_description.tool_artifacts)} tool artifacts "
-                f"to {artifacts_dir}"
-            )
+        if task_description.tool_artifacts or task_description.tool_artifact_refs:
+            try:
+                artifacts_dir = self._extract_tool_artifacts(
+                    trial_id,
+                    task_description.tool_artifacts,
+                    refs=task_description.tool_artifact_refs,
+                )
+            except ToolArtifactRefError as exc:
+                logger.error(f"RegisterTrial: {trial_id} - {exc}")
+                return pb2.RegisterTrialResponse(success=False, error=str(exc))
+            logger.info(f"Extracted the trial's tool artifacts to {artifacts_dir}")
             # Resolve relative mcp_server_script paths to absolute paths inside
             # the extracted artifacts directory.  NativeAdapter stores only the
             # relative filename (e.g. "mcp_server.py") so the TaskDescription

@@ -135,6 +135,11 @@ class MaterialiseContext:
     state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
     """Injected as ``TOLOKAFORGE_STATE_READ_TIMEOUT_S`` into the stack's runner
     service unless the compose file declares the variable itself."""
+    tool_artifact_refs_root: Path | None = None
+    """The trial's tool-artefact reference root (ADR-0068), bind-mounted
+    read-only into the stack's runner service. ``None`` — every stack but the
+    trial-scope runner owner of a description with references — mounts
+    nothing."""
 
 
 @dataclass(frozen=True)

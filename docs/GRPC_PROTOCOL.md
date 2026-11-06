@@ -690,6 +690,8 @@ Version 6 is the first that carries `RunTestSuiteRequest.user` and `RunTestSuite
 
 Version 7 is the first that records a call an MCP tool refused — an `isError: true` reply whose `_meta` carries `tolokaforge/error_category: tool_error`, which `DomainToolRegistry` answers a `ToolError` with — as `EXECUTION_STATUS_TOOL_ERROR`. An older image ships its own `DomainToolRegistry`, which still answers a `ToolError` as a success, and would record a third-party server's declared refusal as `EXECUTION_STATUS_ENVIRONMENT_ERROR`; an older host could not record the new status at all. Both pairings are refused before a trial starts.
 
+Version 8 is the first whose trial spec carries `TaskDescription.tool_artifact_refs` (ADR-0068): tool artefacts delivered by reference — each file's path, SHA-256 and size — which the runner copies from the task directory the engine mounted into it, verifying every hash. An image below it declares no such field and refuses every trial spec this engine sends at `Invalid trial_spec_json` (the description forbids unknown keys), so the pairing fails at registration rather than running a trial whose artefacts never arrived; an engine below it is refused by this runner's gate.
+
 The runner's request gate is a lower bound, not an equality: a newer engine still sends `call_id`. From version 3 onward the host also checks `runner_protocol_version` in the successful registration response, so an older image cannot silently omit a newer outcome or grading field.
 
 #### Trial spec payload
