@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.7 (2026-11-08)
+
+### Fix
+
+- **loop**: resample a content-filter refusal that billed reasoning (#1988)
+- **langfuse**: narrow the data-safety gate's false positives without passing real secrets (#1980)
+
 ## v0.34.6 (2026-11-05)
 
 ### Fix
