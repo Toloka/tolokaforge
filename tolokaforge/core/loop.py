@@ -11,12 +11,13 @@ optional user turn, error classification, max-turns), and delegates every
 *policy* decision to pluggable seams. The engine consumes five wire-shape
 observations directly: the *provider content filter* — the same actionless
 shape, but with ``result.finish_reason`` (or the provider's own
-``native_finish_reason``) naming a content filter — terminates the trial
-immediately with :attr:`TerminationReason.PROVIDER_CONTENT_FILTER` and spends
-no resample on it, because the provider's verdict is on the content of the
-request and a redraw re-sends that content unchanged; checked ahead of the two
-actionless shapes below because a refusal is a refusal whether or not the
-provider happened to bill reasoning for it; the provider-shaped *empty completion* —
+``native_finish_reason``) naming a content filter — terminates with
+:attr:`TerminationReason.PROVIDER_CONTENT_FILTER`, immediately where the
+provider declined the REQUEST (nothing billed: a redraw re-sends that content
+unchanged), and after one pass down the reasoning-stall resample where it
+declined mid-generation having billed reasoning, which is the recoverable
+shape; either way the reason stays its own and the trial stays in the measured
+denominator, so a refusal never leaves it by being recorded as a stall; the provider-shaped *empty completion* —
 ``result.text == "" and not result.tool_calls``, with no reasoning billed —
 resamples up to ``LoopConfig.empty_retry_count`` times
 without appending the empty assistant message, and on the ``(N + 1)``-th empty
@@ -1537,6 +1538,46 @@ class ToolCallingLoop:
                         replaying_reasoning=False,
                     )
                     continue
+
+                if _is_content_filter_refusal(result):
+                    # The resample was spent and the provider is still refusing.
+                    # It goes back to its own reason rather than ending as a
+                    # stall, because the two are not interchangeable in the
+                    # DENOMINATOR: ``REASONING_WITHOUT_ACTION`` is in
+                    # ``EXCLUDED_TYPED_REASONS`` and would take the trial out of
+                    # the measured set, while ``PROVIDER_CONTENT_FILTER`` is
+                    # deliberately kept out of it -- see
+                    # ``failure_attribution``, which spells out that excluding a
+                    # refusal "would quietly shrink the denominator by exactly
+                    # the trials one provider's safety classifier declined,
+                    # flattering whichever model it declines for most".
+                    #
+                    # So the resample above is all this path buys a refusal:
+                    # the chance to recover, which the pre-#1967 engine gave it.
+                    # Not recovering is still a measured non-pass, graded a
+                    # synthesised failure exactly as before.
+                    self._append_both(
+                        messages,
+                        self._system_message(
+                            "Provider declined the request (content filter) and the "
+                            "resample did not recover; no text and no tool calls "
+                            "returned. Dialogue terminated."
+                        ),
+                    )
+                    self.logger.info(
+                        "Provider declined the request after a resample",
+                        turn=turn,
+                        attempts=reasoning_stall_attempts,
+                        finish_reason=result.finish_reason,
+                        native_finish_reason=getattr(result, "native_finish_reason", None),
+                    )
+                    # No ``_excluding_reason_evidence``: this reason does not
+                    # excuse the trial from the measured denominator.
+                    return (
+                        TrialStatus.FAILED,
+                        TerminationReason.PROVIDER_CONTENT_FILTER,
+                        True,
+                    )
 
                 self._append_both(
                     messages,

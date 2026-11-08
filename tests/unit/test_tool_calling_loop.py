@@ -627,6 +627,36 @@ def test_a_refusal_that_billed_reasoning_is_resampled_like_a_stall():
     assert any(m.role == MessageRole.ASSISTANT and m.content == "recovered" for m in messages)
 
 
+def test_a_refusal_that_outlives_its_resample_stays_in_the_denominator():
+    """Exhausting the resample must not reclassify a refusal as a stall.
+
+    ``REASONING_WITHOUT_ACTION`` is in ``EXCLUDED_TYPED_REASONS`` and
+    ``PROVIDER_CONTENT_FILTER`` is deliberately not, so falling through to the
+    stall branch and ending there would take the trial out of the measured
+    denominator -- "flattering whichever model it declines for most", in
+    ``failure_attribution``'s words. The resample is the only thing the stall
+    path lends a refusal; the accounting stays its own.
+
+    This is the case observed in production: both trials that were rerouted
+    were resampled and still produced no action.
+    """
+    refusal = GenerationResult(
+        text="",
+        tool_calls=[],
+        usage=Usage(prompt_tokens=1, completion_tokens=900, reasoning_tokens=900),
+        finish_reason="content_filter",
+    )
+    client = _ScriptedClient([refusal] * 5)
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, reasoning_stall_retry_count=1),
+    ).run("sys", [], time.time())
+
+    assert client.calls == 2, "one resample, then stop: the refusal is not retried forever"
+    assert outcome.termination_reason == TerminationReason.PROVIDER_CONTENT_FILTER
+
+
 def test_a_refusal_post_mapped_to_stop_is_read_off_the_native_finish_reason():
     """Some routes map a refusal onto ``"stop"`` before it reaches the engine.
 
