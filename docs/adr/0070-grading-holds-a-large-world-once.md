@@ -199,9 +199,10 @@ touches.
 
 ## Links
 
-- Related ADRs: [0068](0068-tool-artifacts-by-reference.md) (task files by
-  reference), [0069](0069-final-state-by-reference.md) (final state by
-  reference).
+- Related ADRs: 0068, task files by reference
+  ([#1970](https://github.com/Toloka/tolokaforge/pull/1970)), and 0069, the final
+  state by reference ([#1972](https://github.com/Toloka/tolokaforge/pull/1972)),
+  both proposed; this ADR does not depend on either.
 - Related code: `core/grading/state_diff.py`, `core/hash.py` (`table_digest`),
   `env/json_db_service/app.py` (`get_state_digests`), `runner/db_client.py`
   (`get_table_digests`, `get_state_hashes`), `runner/service.py`
