@@ -2090,13 +2090,23 @@ one as the other names the wrong party:
 - **Provider content filter** — the same actionless shape, but with
   `finish_reason` (or the provider's own `native_finish_reason`, carried on
   `GenerationResult` for routes that post-map a refusal onto `"stop"`) naming a
-  content filter. Terminates immediately with
-  `TerminationReason.PROVIDER_CONTENT_FILTER` and spends **no** resample on it:
-  the provider's verdict is on the content of the request, and a resample
-  re-sends that content unchanged, so the budget would buy a full prompt's
-  input tokens per attempt for an answer that does not move. Checked ahead of
-  the two shapes above, because a refusal is a refusal whether or not the
-  provider happened to bill reasoning for it.
+  content filter. Terminates with `TerminationReason.PROVIDER_CONTENT_FILTER`,
+  but what it spends first depends on which of two events arrived:
+  - the provider declined the **request** — at or near turn 0, nothing billed.
+    Terminal immediately, **no** resample: the verdict is on the content of the
+    request, a resample re-sends that content unchanged, so the budget would
+    buy a full prompt's input tokens per attempt for an answer that does not
+    move.
+  - the provider declined **mid-generation** having billed reasoning, which is
+    the shape `_is_reasoning_only` recognises. That falls through to the
+    reasoning-stall resample, because those turns demonstrably recover: before
+    this reason existed they went down that path and came back. If the resample
+    does not recover, it still terminates `PROVIDER_CONTENT_FILTER`.
+
+  The reason never becomes `REASONING_WITHOUT_ACTION`. That one sits in
+  `EXCLUDED_TYPED_REASONS`, so ending there would take the trial out of the
+  measured denominator — which is exactly what the next paragraph says a
+  refusal must not do.
 
 All three are recognised immediately after `_generate` — before the assistant
 message would be appended — and none advances the outer turn counter. All

@@ -11,12 +11,13 @@ optional user turn, error classification, max-turns), and delegates every
 *policy* decision to pluggable seams. The engine consumes five wire-shape
 observations directly: the *provider content filter* — the same actionless
 shape, but with ``result.finish_reason`` (or the provider's own
-``native_finish_reason``) naming a content filter — terminates the trial
-immediately with :attr:`TerminationReason.PROVIDER_CONTENT_FILTER` and spends
-no resample on it, because the provider's verdict is on the content of the
-request and a redraw re-sends that content unchanged; checked ahead of the two
-actionless shapes below because a refusal is a refusal whether or not the
-provider happened to bill reasoning for it; the provider-shaped *empty completion* —
+``native_finish_reason``) naming a content filter — terminates with
+:attr:`TerminationReason.PROVIDER_CONTENT_FILTER`, immediately where the
+provider declined the REQUEST (nothing billed: a redraw re-sends that content
+unchanged), and after one pass down the reasoning-stall resample where it
+declined mid-generation having billed reasoning, which is the recoverable
+shape; either way the reason stays its own and the trial stays in the measured
+denominator, so a refusal never leaves it by being recorded as a stall; the provider-shaped *empty completion* —
 ``result.text == "" and not result.tool_calls``, with no reasoning billed —
 resamples up to ``LoopConfig.empty_retry_count`` times
 without appending the empty assistant message, and on the ``(N + 1)``-th empty
@@ -1438,7 +1439,7 @@ class ToolCallingLoop:
                     continue
                 break
 
-            if _is_content_filter_refusal(result):
+            if _is_content_filter_refusal(result) and not _is_reasoning_only(result):
                 # Terminal on the first occurrence: no resample, and deliberately
                 # not a share of ``empty_retry_count``.
                 #
@@ -1457,6 +1458,31 @@ class ToolCallingLoop:
                 # so an operator who finds a model's refusals are intermittent
                 # can see it in ``outcomes_by_reason`` and set policy on the
                 # evidence, instead of the harness guessing on their behalf.
+                #
+                # ``and not _is_reasoning_only(result)`` narrows that to the
+                # population the paragraph above actually describes. Two shapes
+                # arrive carrying a content-filter finish reason and they are not
+                # the same event:
+                #
+                # * the provider declined the REQUEST -- at or near turn 0, one
+                #   call, nothing billed, sub-second. A redraw re-sends identical
+                #   content and does not move. This branch still owns it.
+                # * the provider declined mid-generation AFTER deliberating --
+                #   several successful tool calls first, reasoning tokens billed,
+                #   neither text nor a tool call emitted. That is the actionless
+                #   shape :func:`_is_reasoning_only` already recognises, and it
+                #   is recoverable: before this reason existed those turns went
+                #   down the stall path and came back, one trial recovering ten
+                #   of them and still reaching ``agent_done``.
+                #
+                # Terminating the second shape on first sight turns ordinary
+                # provider variance into a scored 0.0. Measured across one board,
+                # five of twelve (task, arm) groups running more than one repeat
+                # were mixed -- same prompt, same arm, same day, some refused and
+                # some completed -- so "the answer does not move" is false for
+                # it. Falling through gives it the resample budget the stall path
+                # already carries; the request-level decline keeps the terminal
+                # treatment it was written for.
                 self._append_both(
                     messages,
                     self._system_message(
@@ -1512,6 +1538,46 @@ class ToolCallingLoop:
                         replaying_reasoning=False,
                     )
                     continue
+
+                if _is_content_filter_refusal(result):
+                    # The resample was spent and the provider is still refusing.
+                    # It goes back to its own reason rather than ending as a
+                    # stall, because the two are not interchangeable in the
+                    # DENOMINATOR: ``REASONING_WITHOUT_ACTION`` is in
+                    # ``EXCLUDED_TYPED_REASONS`` and would take the trial out of
+                    # the measured set, while ``PROVIDER_CONTENT_FILTER`` is
+                    # deliberately kept out of it -- see
+                    # ``failure_attribution``, which spells out that excluding a
+                    # refusal "would quietly shrink the denominator by exactly
+                    # the trials one provider's safety classifier declined,
+                    # flattering whichever model it declines for most".
+                    #
+                    # So the resample above is all this path buys a refusal:
+                    # the chance to recover, which the pre-#1967 engine gave it.
+                    # Not recovering is still a measured non-pass, graded a
+                    # synthesised failure exactly as before.
+                    self._append_both(
+                        messages,
+                        self._system_message(
+                            "Provider declined the request (content filter) and the "
+                            "resample did not recover; no text and no tool calls "
+                            "returned. Dialogue terminated."
+                        ),
+                    )
+                    self.logger.info(
+                        "Provider declined the request after a resample",
+                        turn=turn,
+                        attempts=reasoning_stall_attempts,
+                        finish_reason=result.finish_reason,
+                        native_finish_reason=getattr(result, "native_finish_reason", None),
+                    )
+                    # No ``_excluding_reason_evidence``: this reason does not
+                    # excuse the trial from the measured denominator.
+                    return (
+                        TrialStatus.FAILED,
+                        TerminationReason.PROVIDER_CONTENT_FILTER,
+                        True,
+                    )
 
                 self._append_both(
                     messages,
