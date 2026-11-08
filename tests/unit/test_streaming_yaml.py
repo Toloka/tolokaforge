@@ -58,6 +58,7 @@ def _awkward_state() -> dict[Any, Any]:
         "nested": [[1, [2, [3, {}]]], []],
         "special_floats": [float("inf"), float("-inf")],
         "agent_visible_dir": "/work",
+        "represented_as_containers": {"tuple": (1, ("two", 3)), "set": {"only"}},
     }
 
 
