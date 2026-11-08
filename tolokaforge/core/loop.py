@@ -1438,7 +1438,7 @@ class ToolCallingLoop:
                     continue
                 break
 
-            if _is_content_filter_refusal(result):
+            if _is_content_filter_refusal(result) and not _is_reasoning_only(result):
                 # Terminal on the first occurrence: no resample, and deliberately
                 # not a share of ``empty_retry_count``.
                 #
@@ -1457,6 +1457,31 @@ class ToolCallingLoop:
                 # so an operator who finds a model's refusals are intermittent
                 # can see it in ``outcomes_by_reason`` and set policy on the
                 # evidence, instead of the harness guessing on their behalf.
+                #
+                # ``and not _is_reasoning_only(result)`` narrows that to the
+                # population the paragraph above actually describes. Two shapes
+                # arrive carrying a content-filter finish reason and they are not
+                # the same event:
+                #
+                # * the provider declined the REQUEST -- at or near turn 0, one
+                #   call, nothing billed, sub-second. A redraw re-sends identical
+                #   content and does not move. This branch still owns it.
+                # * the provider declined mid-generation AFTER deliberating --
+                #   several successful tool calls first, reasoning tokens billed,
+                #   neither text nor a tool call emitted. That is the actionless
+                #   shape :func:`_is_reasoning_only` already recognises, and it
+                #   is recoverable: before this reason existed those turns went
+                #   down the stall path and came back, one trial recovering ten
+                #   of them and still reaching ``agent_done``.
+                #
+                # Terminating the second shape on first sight turns ordinary
+                # provider variance into a scored 0.0. Measured across one board,
+                # five of twelve (task, arm) groups running more than one repeat
+                # were mixed -- same prompt, same arm, same day, some refused and
+                # some completed -- so "the answer does not move" is false for
+                # it. Falling through gives it the resample budget the stall path
+                # already carries; the request-level decline keeps the terminal
+                # treatment it was written for.
                 self._append_both(
                     messages,
                     self._system_message(

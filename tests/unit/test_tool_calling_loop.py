@@ -587,6 +587,46 @@ def test_a_safety_refusal_is_not_resampled():
     assert outcome.termination_reason == TerminationReason.PROVIDER_CONTENT_FILTER
 
 
+def test_a_refusal_that_billed_reasoning_is_resampled_like_a_stall():
+    """A mid-generation decline is the stall shape, and it recovers.
+
+    Two different events arrive carrying ``content_filter``. The provider
+    declining the REQUEST bills nothing and does not move on a redraw -- that
+    one stays terminal, and
+    :func:`test_a_safety_refusal_is_not_resampled` pins it. The provider
+    declining AFTER deliberating bills reasoning and emits neither text nor a
+    tool call, which is exactly what ``_is_reasoning_only`` recognises; before
+    this termination reason existed those turns went down the stall path and
+    came back.
+
+    Measured on one board, five of twelve (task, arm) groups running more than
+    one repeat were mixed -- same prompt, same arm, same day, some refused and
+    some completed -- so terminating this shape on first sight scores provider
+    variance as a model failure.
+    """
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1, completion_tokens=900, reasoning_tokens=900),
+                finish_reason="content_filter",
+            ),
+            GenerationResult(text="recovered", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2, "a refusal that billed reasoning must get the stall resample"
+    assert outcome.termination_reason != TerminationReason.PROVIDER_CONTENT_FILTER
+    assert any(m.role == MessageRole.ASSISTANT and m.content == "recovered" for m in messages)
+
+
 def test_a_refusal_post_mapped_to_stop_is_read_off_the_native_finish_reason():
     """Some routes map a refusal onto ``"stop"`` before it reaches the engine.
 
