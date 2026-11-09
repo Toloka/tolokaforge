@@ -1246,6 +1246,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             },
             tool_artifacts=tool_artifacts,
             tool_artifact_refs=tool_artifact_refs,
+            trial_data_delivery="mount" if by_reference else "inline",
             environment_manifest=environment_manifest,
         )
 

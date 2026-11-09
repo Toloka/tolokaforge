@@ -935,3 +935,58 @@ def test_the_protocol_version_names_the_by_reference_read() -> None:
     assert ENGINE_PROTOCOL_VERSION >= 9
     assert "state_by_reference" in pb2.GetStateRequest.DESCRIPTOR.fields_by_name
     assert "state_file" in pb2.GetStateResponse.DESCRIPTOR.fields_by_name
+
+
+class TestTheDeliveryHoldsTogether:
+    """A description's parts move one way, and ``mount`` needs a runner the engine makes (ADR-0072)."""
+
+    def test_references_with_an_inline_delivery_are_refused(self) -> None:
+        from tolokaforge.runner.models import ArtifactRef
+
+        with pytest.raises(ValueError, match="needs trial_data_delivery: mount"):
+            TaskDescription(
+                task_id="t",
+                name="t",
+                category="test",
+                description="",
+                adapter_type="native",
+                system_prompt="",
+                tool_artifact_refs={"a.py": ArtifactRef(uri="pack:a.py", sha256="0" * 64, size=1)},
+            )
+
+    def test_the_native_adapter_records_the_delivery_with_its_references(
+        self, tmp_path: Path
+    ) -> None:
+        from tests.unit.test_tool_artifact_refs import _mcp_pack
+
+        description = _mcp_pack(tmp_path, delivery="mount").to_task_description("refs_pack")
+
+        assert description.tool_artifact_refs is not None
+        assert description.trial_data_delivery == "mount"
+
+    def test_mount_without_a_trial_scope_runner_is_refused_on_the_library_route(self) -> None:
+        from tolokaforge.core.trial_validation import refuse_a_mount_no_trial_runner_can_take
+
+        description = TaskDescription(
+            task_id="t",
+            name="t",
+            category="test",
+            description="",
+            adapter_type="native",
+            system_prompt="",
+            trial_data_delivery="mount",
+        )
+        with pytest.raises(ValueError, match="no environment manifest"):
+            refuse_a_mount_no_trial_runner_can_take(description)
+
+    def test_a_node_adapter_adopts_the_delivery_its_description_carries(
+        self, tmp_path: Path
+    ) -> None:
+        from tests.unit.test_tool_artifact_refs import _mcp_pack
+
+        described = _mcp_pack(tmp_path / "a", delivery="mount").describe_task("refs_pack")
+        node = _mcp_pack(tmp_path / "b", delivery=None)
+
+        node.adopt_delivery(described)
+
+        assert node.describe_task("refs_pack").trial_data_delivery == "mount"

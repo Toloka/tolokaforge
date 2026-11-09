@@ -119,8 +119,8 @@ the engine materialises per trial from a task-declared stack, and, independently
   temporary name renamed into place — so the file's bytes are exactly the
   `state_json` an inline answer would carry. A runner without the mount refuses
   the read; `state_json` stays empty.
-- **Engine.** The conductor asks by reference only for a task that declares
-  `mount` and provisions a database. The runtime backend places the reported
+- **Engine.** The conductor asks by reference only for a trial whose
+  description says `trial_data_delivery: mount` and that provisions a database. The runtime backend places the reported
   relative path under its side of the mount (refusing a path that leaves it);
   the conductor checks size and SHA-256 in 1 MiB chunks and never parses the file.
   A failed read or a mismatch records `final_state_error`, as an inline capture

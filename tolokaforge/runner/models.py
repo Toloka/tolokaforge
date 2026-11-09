@@ -4139,8 +4139,10 @@ class TaskDescription(BaseModel):
     other. Under ``mount`` the adapter may name the task's files in
     :attr:`tool_artifact_refs` (ADR-0068), and the engine mounts a per-trial
     writable directory into the runner, which answers ``GetState`` with the
-    final state written there instead of on the wire (ADR-0069). Only the
-    ``runner_rpc`` grader without snapshot bundles grades such a trial."""
+    final state written there instead of on the wire (ADR-0069). A grader that
+    reads the world from elsewhere (``grader_rpc``, ``queue``, snapshot
+    bundles) cannot grade such a trial. Artefacts or tables by reference
+    require ``mount``."""
 
     tool_artifact_refs: dict[str, ArtifactRef] | None = None
     """Tool artefacts delivered by reference (ADR-0068, ADR-0072), keyed by their
@@ -4171,6 +4173,21 @@ class TaskDescription(BaseModel):
             raise ValueError(
                 f"{len(both)} artefact path(s) are both inline in tool_artifacts and "
                 f"referenced in tool_artifact_refs: {both[:5]}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _references_need_the_mount(self) -> TaskDescription:
+        """Data by reference is a ``mount`` delivery: the parts of a trial move together.
+
+        Without this a description could reference the task's files while
+        delivering its final state inline, and the engine would mount the task
+        directory for a trial it otherwise treats as inline.
+        """
+        if self.tool_artifact_refs is not None and self.trial_data_delivery != "mount":
+            raise ValueError(
+                "tool_artifact_refs needs trial_data_delivery: mount; a description "
+                "references its task's files only when the run delivers its data by reference"
             )
         return self
 

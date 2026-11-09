@@ -89,6 +89,8 @@ def _world(tmp_path: Path) -> Path:
 
 
 def _description(**fields: Any) -> TaskDescription:
+    if fields.get("tool_artifact_refs") is not None:
+        fields.setdefault("trial_data_delivery", "mount")
     return TaskDescription(
         task_id="refs-task",
         name="refs-task",
@@ -290,6 +292,7 @@ def _description_with_refs(root: Path) -> dict[str, Any]:
         "adapter_type": "native",
         "system_prompt": "",
         "tool_artifact_refs": {target: ref.model_dump(mode="json") for target, ref in refs.items()},
+        "trial_data_delivery": "mount",
     }
 
 
@@ -754,7 +757,10 @@ class TestComposer:
         spec = _trial_spec(_manifest(compose))
         spec.task = spec.task.model_copy(
             update={
-                "tool_artifact_refs": {"tools/world_tool.py": _ref_for(root, "tools/world_tool.py")}
+                "tool_artifact_refs": {
+                    "tools/world_tool.py": _ref_for(root, "tools/world_tool.py")
+                },
+                "trial_data_delivery": "mount",
             }
         )
         return spec
@@ -856,7 +862,21 @@ class TestComposer:
 
 
 def _refs_description_dict(tmp_path: Path) -> dict[str, Any]:
-    return _description_with_refs(_world(tmp_path))
+    """A description with references, of a task whose own trial-scope stack owns the runner."""
+    from tolokaforge.core.models import StackPatch
+    from tolokaforge.core.project_loader import resolve as resolve_environment
+
+    manifest = resolve_environment(
+        None,
+        EnvironmentPatch(
+            stack=StackPatch(compose_file=_compose(tmp_path), runner_service="runner")
+        ),
+    )
+    assert manifest is not None
+    return {
+        **_description_with_refs(_world(tmp_path)),
+        "environment_manifest": manifest.model_dump(mode="json"),
+    }
 
 
 class TestGradersWithoutTheMount:

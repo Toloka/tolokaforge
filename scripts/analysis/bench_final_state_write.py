@@ -19,7 +19,7 @@ Variants:
     The same walk with libyaml's emitter — what ``write_env_state`` uses now
     when PyYAML was built with libyaml.
 ``by_reference``
-    The host's side of ``final_state_delivery: mount`` (ADR-0069): the state
+    The host's side of ``compute.trial_data_delivery: mount`` (ADR-0069): the state
     was written to a file by another process (the runner), and this process
     checks the file's SHA-256 and size, writes the small ``env.yaml`` that
     references it and copies it into the bundle. It never builds the state, so

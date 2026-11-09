@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 __all__ = [
     "GRADERS_OFF_THE_RUNNER",
     "delivers_by_reference",
+    "refuse_a_mount_no_trial_runner_can_take",
     "refuse_references_the_grader_cannot_read",
     "validate_trial_inputs",
 ]
@@ -81,6 +82,36 @@ def refuse_references_the_grader_cannot_read(
     )
 
 
+def refuse_a_mount_no_trial_runner_can_take(description: TaskDescription) -> None:
+    """Refuse ``trial_data_delivery: mount`` on a description whose runner the engine does not make.
+
+    The engine mounts per-trial directories only into a runner a ``trial``-scope stack
+    of the task's own manifest owns. A description built by hand, or for another
+    environment, could ask for ``mount`` without one; it would provision, spend the
+    trial's tokens and lose its final state at capture.
+
+    Raises:
+        ValueError: the description asks for ``mount`` and no trial-scope stack owns
+            its runner.
+    """
+    from tolokaforge.runner.models import runner_outside_trial_scope
+
+    if description.trial_data_delivery != "mount":
+        return
+    manifest = description.environment_manifest
+    found = (
+        runner_outside_trial_scope(manifest.stacks)
+        if manifest is not None
+        else "no environment manifest"
+    )
+    if found is not None:
+        raise ValueError(
+            f"task {description.task_id!r} delivers its data by reference (trial_data_delivery: "
+            f"mount), which needs a trial-scope stack of its own manifest to own the runner; the "
+            f"runner here: {found}"
+        )
+
+
 def validate_trial_inputs(inputs: TrialNodeInputs, *, default_grader_name: str | None) -> None:
     """Apply the trial-contract rules to one trial's inputs, before it runs.
 
@@ -95,6 +126,7 @@ def validate_trial_inputs(inputs: TrialNodeInputs, *, default_grader_name: str |
     grader = inputs.grader_config
     grader_name = grader.name if grader is not None and grader.name else default_grader_name
     task = inputs.trial_spec.task
+    refuse_a_mount_no_trial_runner_can_take(task)
     refuse_references_the_grader_cannot_read(
         grader,
         grader_name,
