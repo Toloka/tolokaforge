@@ -532,6 +532,62 @@ merits, without waiting for it:
   mount, file ownership on a Linux host, and a daemon able to bind-mount the
   describing process's temp directory.
 
+## Outcome (2026-11-09)
+
+Agreed with @rsmtnn and applied to #1970 → #1972 → #1978. This section is the
+record; the detail is in those PRs and in the amendments to ADR-0068, ADR-0069
+and ADR-0071.
+
+### Taken now
+
+- **D1 — the address.** `ArtifactRef {uri, sha256, size}` with a `pack:` scheme,
+  a path relative to the task's directory on whichever machine reads it.
+  `ToolArtifactRefs.root` — the only absolute path on the wire — is gone. The
+  directory those addresses resolve against comes from the materialising
+  machine's own adapter (`RunSubstrate.task_dir_of`), and a run that cannot
+  locate the task is refused at provision rather than guessing.
+- **D3 — a run choice.** `compute.trial_data_delivery: inline | mount` replaces
+  the three per-task manifest keys, which are now **refused** rather than
+  ignored. What it resolved to for each task is recorded on
+  `TaskDescription.trial_data_delivery`, so a project default can no longer make
+  a task unrunnable.
+- **D4 — for the new rules.** `core/trial_validation.py` holds the grader rule
+  and the mount rule, applied both by the orchestrator to its whole run and by
+  `run_trial_from_inputs` to the single trial it is handed.
+
+The final state keeps its existing `StateFileRef` (a path relative to the
+per-trial directory, plus digest and size) and becomes an `ArtifactRef` when the
+store seam lands.
+
+### Deferred, with reasons
+
+| Deferred | Why it can wait |
+|---|---|
+| The general `ArtifactStore` seam (D2), with plugin registration | With `pack:` carrying the load it would wrap one real implementation. Revisit with the second store. |
+| `S3ArtifactStore`, `bundle_parts_uri`, a remote grader for referenced worlds | Gated on open question 1 below. Sequence after #1538 and #1435, which are its prerequisites. |
+| Moving the four existing `Orchestrator` gates behind `validate_trial_inputs` | The data plane does not need it, and it touches tests well outside this stack. The *new* rules are already on the contract. |
+| A hardlink staging directory (open question 4) | Agreed under any option; independent of the addressing. |
+| Unknown keys in the engine protocol (open question 3), as its own ADR | The stack keeps protocols 8/9/10. Consolidating later costs more bumps, not fewer. |
+
+### What the implementation showed
+
+Two things worth recording, because they are evidence about the argument rather
+than about the code:
+
+- An internal review of the revision found that `run_trial_from_inputs` built
+  its adapter from the task alone, so **on the library route it read the task as
+  inline and parsed the whole state file** — the exact copy ADR-0071 exists to
+  remove, in the exact shape this ADR predicted. Fixed with
+  `BaseAdapter.adopt_delivery`.
+- A live trial of the large native-format task, with real models, ran inside a
+  cgroup capped at **16 GiB**: description 1.7 MB carrying 6459 `pack:`
+  references, engine host peak 81 MiB, anonymous peak 8.4 GiB, no OOM.
+
+### Status
+
+Stays `Proposed` until #1970 → #1972 → #1978 merge, then flips to `Accepted`,
+per `README.md`'s rule for a design-first ADR.
+
 ## Links
 
 - `ARCHITECTURE.md` §7 (the three shapes) — #1982.
