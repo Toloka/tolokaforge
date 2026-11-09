@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.8 (2026-11-09)
+
+### BREAKING CHANGE
+
+- wire protocol 9 — runner images below it are refused at
+registration, and runners refuse engines below it. Every bundle's
+metrics.yaml is stamped `schema_version: 9`.
+- the engine/runner wire protocol is now version 8 (7 is ADR-0067's).
+TaskDescription carries tool_artifact_refs, which an older runner image
+refuses at "Invalid trial_spec_json"; rebuild or re-pin the runner image.
+
+### Feat
+
+- **runner**: deliver a trial's final state to the engine by reference (ADR-0069) (#1972)
+- **runner**: deliver a task's tool artefacts by reference to a trial-scope runner (ADR-0068) (#1970)
+
+### Fix
+
+- **runner**: an inline task description reaches a runner or grader image predating ADR-0072 (#1997)
+- **runner**: a trial's DB init gets the whole-state budget, and its error names its type (#1974)
+
+### Perf
+
+- **runner, grading**: grading holds a large world once (ADR-0070) (#1977)
+- **output**: stream env.yaml instead of building a PyYAML node graph (#1984)
+
 ## v0.34.7 (2026-11-08)
 
 ### Fix
