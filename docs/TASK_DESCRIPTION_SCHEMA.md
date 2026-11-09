@@ -590,8 +590,8 @@ At `RegisterTrial` the runner copies each file into the trial's artefact directo
 the inline entries, hashing while it copies. It refuses the trial — listing every path at
 fault — when a file is missing, resolves outside the mount, or differs in digest or size,
 and when it was given no mount at all. Only a runner owned by a `trial`-scope stack gets
-the mount, and only the `runner_rpc` grader without snapshot bundles can grade the task:
-the run refuses `grader_rpc`, `queue` and `grader.snapshot.enabled` for it before any
+the mount, and no grader that reads the world from elsewhere can grade the task: the run
+refuses `grader_rpc`, `queue` and `grader.snapshot.enabled` for it before any
 trial, and so does `run_trial_from_inputs` for the one trial it is handed.
 
 ---

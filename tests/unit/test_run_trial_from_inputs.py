@@ -523,3 +523,54 @@ class TestAgentClient:
             update={"fallbacks": [ModelConfig(provider="openai", name="gpt-4o-mini")]}
         )
         trial_node_mod._build_agent_client(agent, RateLimitProbeConfig(enabled=False))
+
+
+class TestPackReferences:
+    """A description with ``pack:`` references on the library route (ADR-0068, ADR-0072)."""
+
+    def _referencing_spec(self) -> TrialSpec:
+        from tolokaforge.runner.models import ArtifactRef
+
+        spec = _spec()
+        refs = {"a.py": ArtifactRef(uri="pack:a.py", sha256="0" * 64, size=1)}
+        return spec.model_copy(
+            update={"task": spec.task.model_copy(update={"tool_artifact_refs": refs})}
+        )
+
+    def test_a_grader_that_cannot_read_them_is_refused_before_any_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def no_backend(name: str) -> Any:
+            raise AssertionError("a refused trial must not reach backend construction")
+
+        monkeypatch.setattr(trial_node_mod, "load_runtime_backend", no_backend)
+        with pytest.raises(ValueError, match="grader 'grader_rpc'"):
+            run_trial_from_inputs(
+                _inputs(
+                    trial_spec=self._referencing_spec(),
+                    grader_config=GraderConfig(name="grader_rpc"),
+                )
+            )
+
+    def test_the_backend_locates_the_task_through_the_nodes_adapter(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _fake_adapter: _FakeAdapter
+    ) -> None:
+        contexts: list[Any] = []
+
+        class _Stop(Exception):
+            pass
+
+        def capture_backend(name: str) -> Any:
+            def build(ctx: Any) -> Any:
+                contexts.append(ctx)
+                raise _Stop
+
+            return build
+
+        _fake_adapter.get_task_dir = lambda task_id: tmp_path / task_id  # type: ignore[attr-defined]
+        monkeypatch.setattr(trial_node_mod, "load_runtime_backend", capture_backend)
+        with pytest.raises(_Stop):
+            run_trial_from_inputs(_inputs())
+
+        (ctx,) = contexts
+        assert ctx.task_dir_of("task-1") == tmp_path / "task-1"

@@ -138,8 +138,10 @@ the engine materialises per trial from a task-declared stack.
   listed; the directory is removed and nothing lands on `sys.path`. A runner with
   no mount refuses a description with references. The trial's copy keeps each
   trial isolated from the next, as inline extraction does.
-- **Graders.** References resolve only on the trial's runner, so only the
-  `runner_rpc` grader without snapshot bundles can grade such a task. The rule is
+- **Graders.** References resolve only on the trial's runner, so no grader that
+  reads the task's files from elsewhere can grade such a task: `grader_rpc`,
+  `queue` and snapshot bundles are refused (a grader that reads no world, such
+  as `judge_only`, is unaffected). The rule is
   written once on the trial contract (`core/trial_validation.py`, ADR-0072 D4):
   the orchestrator applies it to its run at start, and `run_trial_from_inputs`
   to the one trial it is handed, so the library route refuses `grader_rpc`,
