@@ -88,10 +88,11 @@ Adopt **Option 3**, opt-in through the run's configuration.
   naming no referenced artefact or another digest, and tables both inline and by
   reference. `tables_ref` is left out of the dump while absent.
   `provisions_database` counts a reference without reading it.
-- **Adapter.** The native adapter reads the delivery off the two environment
-  patches as the resolver merges a policy field, so a task that sets nothing is
-  answered without resolving anything, and checks the resolved manifest agrees.
-  Under `mount` it never parses the file: the state file is named by the artefact
+- **Adapter.** The native adapter takes the delivery the run decided for the
+  task (`compute.trial_data_delivery` and a trial-scope runner), and an adapter
+  built on a node from the task alone adopts the one the description it runs
+  carries, so the node's engine never parses the file either. Under `mount` it
+  never parses the file: the state file is named by the artefact
   that already carries it (the task directory's data files, or the case state
   copied beside a shared MCP server), or added under its path in the task
   directory, and `tables_ref` repeats that artefact's digest. The checks that read

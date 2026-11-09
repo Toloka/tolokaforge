@@ -108,6 +108,7 @@ def _description_dict(
         "agent_tools": agent_tools or [],
         "initial_state": {"tables_ref": _tables_ref(root, state_rel).model_dump(mode="json")},
         "tool_artifact_refs": {target: ref.model_dump(mode="json") for target, ref in refs.items()},
+        "trial_data_delivery": "mount",
     }
     if state_checks is not None:
         description["grading"] = {"state_checks": state_checks}
@@ -969,3 +970,33 @@ def test_an_engine_before_the_reference_is_refused_at_registration(
     assert response.success is False
     assert "requires at least 10" in response.error
     assert trial_id not in runner_service.trials
+
+
+class TestANodeAdoptsTheDelivery:
+    """A node builds its adapter from the task alone and runs a description built elsewhere."""
+
+    def test_the_nodes_engine_never_parses_a_referenced_state_file(self, tmp_path: Path) -> None:
+        described = _pack(tmp_path / "control", initial="mount").describe_task("ref_pack")
+        node = _pack(tmp_path / "node", initial=None, state_text="{not json")
+
+        node.adopt_delivery(described)
+
+        assert node.create_environment("ref_pack").data == {}
+
+    def test_without_adopting_it_the_node_would_parse_the_file(self, tmp_path: Path) -> None:
+        node = _pack(tmp_path / "node", initial=None, state_text="{not json")
+
+        with pytest.raises(json.JSONDecodeError):
+            node.create_environment("ref_pack")
+
+    def test_run_trial_from_inputs_adopts_the_description_it_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tolokaforge.core.trial_node as trial_node_mod
+        from tests.unit.test_run_trial_from_inputs import _FakeAdapter, _inputs
+
+        adapter = _FakeAdapter()
+        monkeypatch.setattr(trial_node_mod, "get_adapter", lambda adapter_type, params: adapter)
+        trial_node_mod.run_trial_from_inputs(_inputs())
+
+        assert adapter.adopted == "inline"

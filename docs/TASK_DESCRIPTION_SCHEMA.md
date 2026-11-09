@@ -627,7 +627,7 @@ is one of the referenced artefacts, and `initial_state.tables_ref` names it:
 }
 ```
 
-- **`artifact`** is the key of the file's entry in `tool_artifact_refs.files`, and
+- **`artifact`** is the key of the file's entry in `tool_artifact_refs`, and
   **`sha256`** / **`size`** repeat that entry's; a description whose `tables_ref` names no
   referenced artefact, or another digest, is refused, as is one carrying tables both ways.
 - The file holds the task's `json_db` as written. The runner normalises each collection to

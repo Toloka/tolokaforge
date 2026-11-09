@@ -909,10 +909,18 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """Whether *task*'s state file is delivered by reference (ADR-0071, ADR-0072).
 
         It is when the run delivers the task's data by reference
-        (:meth:`_delivers_by_reference`) and ``json_db`` names a file; an inline
-        mapping is already parsed with the task.
+        (:meth:`_delivers_by_reference`, or the delivery a node adopted from the
+        description it runs, :meth:`adopt_delivery`) and ``json_db`` names a
+        file; an inline mapping is already parsed with the task. The decision is
+        read before the environment is resolved, so a trial's repeated reads of
+        the task resolve it once.
         """
-        if not isinstance(task.initial_state.json_db, str) or self.trial_data_delivery != "mount":
+        if not isinstance(task.initial_state.json_db, str):
+            return False
+        decided = self._delivery_memo().get(task.task_id)
+        if decided is not None:
+            return decided
+        if self.trial_data_delivery != "mount":
             return False
         manifest = resolve_environment(self._project_default_environment, task.environment_manifest)
         return self._delivers_by_reference(task.task_id, manifest)
@@ -1783,7 +1791,7 @@ def _add_initial_state_source(
 
 
 class _LazySeededState:
-    """A by-reference task's seeded tables and shapes, parsed on first read (ADR-0071).
+    """A task's seeded tables and shapes from its state file, parsed on first read (ADR-0071).
 
     The grading gate asks for the tables only when a rule reads them (``id_fields``,
     a comparison view, a check that the task seeds anything); a pack declaring
