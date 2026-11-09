@@ -208,9 +208,7 @@ def merge_tool_libraries(
         )
     artifacts: dict[str, str] = dict(description.tool_artifacts)
     referenced = (
-        tuple(description.tool_artifact_refs.files)
-        if description.tool_artifact_refs is not None
-        else ()
+        tuple(description.tool_artifact_refs) if description.tool_artifact_refs is not None else ()
     )
     import_roots = _import_roots(description)
     provenance: list[dict[str, Any]] = []

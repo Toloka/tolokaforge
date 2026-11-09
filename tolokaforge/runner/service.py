@@ -29,7 +29,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -177,6 +177,7 @@ from tolokaforge.runner.id_resolution import (
     compute_diff_ops,
 )
 from tolokaforge.runner.models import (
+    ArtifactRef,
     EvidencePartName,
     KeyAccountingRecord,
     RecordedToolCall,
@@ -186,7 +187,6 @@ from tolokaforge.runner.models import (
     SearchPlane,
     StateDiff,
     TaskDescription,
-    ToolArtifactRefs,
     ToolExecutorIdentity,
     ToolSchema,
     TraceChecksConfig,
@@ -1047,7 +1047,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self,
         trial_id: str,
         artifacts: dict[str, str],
-        refs: ToolArtifactRefs | None = None,
+        refs: Mapping[str, ArtifactRef] | None = None,
     ) -> Path:
         """Extract the trial's tool artifacts to a temp directory.
 
@@ -1072,7 +1072,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         extract_dir = extract_tool_artifacts(
             trial_id,
             artifacts,
-            refs=refs.files if refs is not None else None,
+            refs=refs,
             refs_dir=tool_artifact_refs_dir_from_env() if refs is not None else None,
         )
         self._artifact_dirs[trial_id] = extract_dir

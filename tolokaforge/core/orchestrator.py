@@ -150,6 +150,10 @@ from tolokaforge.core.trial_node import (
     TrialExecutionUnit,
     build_trial_execution_unit,
 )
+from tolokaforge.core.trial_validation import (
+    GRADERS_OFF_THE_RUNNER,
+    refuse_references_the_grader_cannot_read,
+)
 from tolokaforge.observability.factory import (
     RunIdentity,
     build_trial_observer,
@@ -408,9 +412,6 @@ _DEFAULT_DB_SERVICE_URL = "http://tolokaforge-db-service:8000"
 container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
 mirrors the value on ``TrialSpec.env_endpoints`` so a future out-of-process
 runner reads its service URLs from the spec instead of its own env."""
-
-_GRADERS_OFF_THE_RUNNER = frozenset({"grader_rpc", "queue"})
-"""Graders that do not run on the trial's own runner."""
 
 
 def _effective_grader_name(grader: GraderConfig | None, adapter: BaseAdapter | None) -> str | None:
@@ -1042,6 +1043,15 @@ class Orchestrator:
         self._task_desc_cache[task_id] = description
         return description
 
+    def _task_dir_on_this_machine(self, task_id: str) -> Path:
+        """The task's directory here: where its ``pack:`` references resolve (ADR-0072)."""
+        if self.adapter is None:
+            raise RuntimeError(
+                f"task {task_id!r} delivers its artefacts as pack: references, but the "
+                "orchestrator has no adapter to locate the task's directory"
+            )
+        return self.adapter.get_task_dir(task_id)
+
     def _build_trial_spec(
         self,
         *,
@@ -1369,7 +1379,7 @@ class Orchestrator:
                 "auto_start_services: false."
             )
         grader_name = _effective_grader_name(self.config.grader, self.adapter)
-        if grader_name in _GRADERS_OFF_THE_RUNNER:
+        if grader_name in GRADERS_OFF_THE_RUNNER:
             raise ValueError(
                 f"orchestrator.dispatch cannot use grader {grader_name!r}: it dials a static "
                 "runner address the node does not expose. Use the 'runner_rpc' grader."
@@ -1731,6 +1741,7 @@ class Orchestrator:
                 connect_retry_interval_s=connect_retry_interval_s,
                 grpc_max_message_mb=self._grpc_max_message_mb(),
                 state_read_timeout_s=self._state_read_timeout_s(),
+                task_dir_of=self._task_dir_on_this_machine,
             )
         )
         self.logger.info(
@@ -2857,32 +2868,23 @@ class Orchestrator:
     def _refuse_tool_artifact_refs_the_grader_cannot_read(self) -> None:
         """Refuse, before any trial, tasks whose referenced artefacts the grader cannot read.
 
-        Artefacts delivered by reference (ADR-0068) resolve only on the trial's
-        runner, where the engine mounted the task's directory. The ``grader_rpc``
-        and ``queue`` graders run elsewhere, and a snapshot grade bundle carries
-        inline artefacts only, so each would refuse the trial at grade time,
-        after its tokens were spent. Every offending task is named in one error.
-        Descriptions are resolved only when the run grades one of those ways.
+        The rule is :func:`refuse_references_the_grader_cannot_read`, which the
+        library route applies to each trial too (ADR-0072). Descriptions are
+        resolved only when the run grades a way that cannot read references.
         """
         grader = self.config.grader
-        grader_name = _effective_grader_name(self.config.grader, self.adapter)
-        remote_grader = grader_name in _GRADERS_OFF_THE_RUNNER
+        grader_name = _effective_grader_name(grader, self.adapter)
         snapshot = grader is not None and grader.snapshot is not None and grader.snapshot.enabled
-        if not (remote_grader or snapshot) or self.adapter is None:
+        if self.adapter is None or not (grader_name in GRADERS_OFF_THE_RUNNER or snapshot):
             return
-        offending = sorted(
-            task.task_id
-            for task in self.tasks
-            if self._task_description(task.task_id).tool_artifact_refs is not None
-        )
-        if not offending:
-            return
-        how = f"grader {grader_name!r}" if remote_grader else "grader.snapshot.enabled=true"
-        raise ValueError(
-            f"{how} cannot read tool artefacts delivered by reference (tool_artifacts_delivery: "
-            f"mount, ADR-0068), which tasks {offending} declare: only the trial's runner has "
-            "the task directory mounted. Grade with the runner_rpc grader without snapshot "
-            "mode, or deliver these tasks' artefacts inline."
+        refuse_references_the_grader_cannot_read(
+            grader,
+            grader_name,
+            [
+                task.task_id
+                for task in self.tasks
+                if self._task_description(task.task_id).tool_artifact_refs is not None
+            ],
         )
 
     def _reject_ungradeable_packs(self) -> None:

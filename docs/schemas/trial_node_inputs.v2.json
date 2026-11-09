@@ -298,6 +298,32 @@
       "title": "AppWorldConfig",
       "type": "object"
     },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "description": "Bulk trial data named by content and an address, not carried as bytes (ADR-0068, ADR-0072).\n\n:attr:`uri`'s scheme says where a reader finds the bytes; :attr:`sha256` and\n:attr:`size` say what they must be, and every reader refuses bytes that\ndiffer. The one scheme read today is ``pack:<path>``: a file of the task's\npack, at ``<path>`` relative to the task's directory on whichever machine\nreads it, so a reference stays valid when the description is built on one\nmachine and the trial runs on another.",
+      "properties": {
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "uri": {
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri",
+        "sha256",
+        "size"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
     "BeforeConstraint": {
       "additionalProperties": false,
       "description": "The left side is ordered before the right side.",
@@ -768,15 +794,6 @@
           "title": "Stripped Container Secrets",
           "type": "array",
           "uniqueItems": true
-        },
-        "tool_artifacts_delivery": {
-          "default": "inline",
-          "enum": [
-            "inline",
-            "mount"
-          ],
-          "title": "Tool Artifacts Delivery",
-          "type": "string"
         }
       },
       "required": [
@@ -880,22 +897,6 @@
           ],
           "default": null,
           "title": "Stacks"
-        },
-        "tool_artifacts_delivery": {
-          "anyOf": [
-            {
-              "enum": [
-                "inline",
-                "mount"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Tool Artifacts Delivery"
         }
       },
       "title": "EnvironmentPatch",
@@ -3352,13 +3353,17 @@
         "tool_artifact_refs": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ToolArtifactRefs"
+              "additionalProperties": {
+                "$ref": "#/$defs/ArtifactRef"
+              },
+              "type": "object"
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "title": "Tool Artifact Refs"
         },
         "tool_artifacts": {
           "additionalProperties": {
@@ -3470,55 +3475,6 @@
         }
       },
       "title": "TimeoutDefaults",
-      "type": "object"
-    },
-    "ToolArtifactRef": {
-      "additionalProperties": false,
-      "description": "One tool artefact delivered by reference instead of inline (ADR-0068).\n\nThe bytes are not on the wire. The runner reads them from\n:attr:`source` under the reference root the engine mounted into it, and\nrefuses the trial unless they hash to :attr:`sha256` and measure\n:attr:`size` bytes.",
-      "properties": {
-        "sha256": {
-          "title": "Sha256",
-          "type": "string"
-        },
-        "size": {
-          "minimum": 0,
-          "title": "Size",
-          "type": "integer"
-        },
-        "source": {
-          "title": "Source",
-          "type": "string"
-        }
-      },
-      "required": [
-        "source",
-        "sha256",
-        "size"
-      ],
-      "title": "ToolArtifactRef",
-      "type": "object"
-    },
-    "ToolArtifactRefs": {
-      "additionalProperties": false,
-      "description": "Tool artefacts the runner reads from a mounted directory (ADR-0068).\n\nProduced by an adapter whose task's environment declares\n``tool_artifacts_delivery: mount``. The engine bind-mounts :attr:`root`\nread-only into the runner service of the trial-scope stack that owns the\ntrial's runner, and the runner copies each file into the trial's\nartefact directory beside the inline :attr:`TaskDescription.tool_artifacts`,\nverifying every hash.",
-      "properties": {
-        "files": {
-          "additionalProperties": {
-            "$ref": "#/$defs/ToolArtifactRef"
-          },
-          "title": "Files",
-          "type": "object"
-        },
-        "root": {
-          "title": "Root",
-          "type": "string"
-        }
-      },
-      "required": [
-        "root",
-        "files"
-      ],
-      "title": "ToolArtifactRefs",
       "type": "object"
     },
     "ToolExpectations": {

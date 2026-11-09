@@ -795,7 +795,6 @@ _POLICY_REQUEST_FIELDS = (
     "network_policy",
     "limited_internet_allowlist",
     "security_context_defaults",
-    "tool_artifacts_delivery",
 )
 """Fields that survive atomic ``stack`` replacement — policy requests
 that are substrate-neutral (they describe the trial regardless of
@@ -910,30 +909,7 @@ def resolve(
     manifest = EnvironmentManifest(**manifest_kwargs)
     _fill_missing_service_defaults(manifest)
     _synthesise_composition_plan(manifest, merged)
-    _refuse_a_mount_no_trial_runner_can_take(manifest)
     return manifest
-
-
-def _refuse_a_mount_no_trial_runner_can_take(manifest: EnvironmentManifest) -> None:
-    """Refuse ``tool_artifacts_delivery: mount`` unless a ``trial``-scope stack owns the runner.
-
-    The engine mounts the task's directory into the runner it materialises for
-    the trial (ADR-0068).
-    """
-    from tolokaforge.runner.models import runner_outside_trial_scope
-
-    if manifest.tool_artifacts_delivery != "mount":
-        return
-    found = runner_outside_trial_scope(manifest.stacks)
-    if found is None:
-        return
-    raise ValueError(
-        "tool_artifacts_delivery: mount needs the runner to be owned by a trial-scope "
-        f"stack, which the engine materialises for each trial; the runner here: {found}. "
-        "Make the runner's stack trial-scope (stack_scope: trial in a stacks: block; a scalar "
-        "stack is trial-scope unless every service is isolation: shared), or deliver the "
-        "artefacts inline."
-    )
 
 
 def _fill_missing_service_defaults(manifest: EnvironmentManifest) -> None:

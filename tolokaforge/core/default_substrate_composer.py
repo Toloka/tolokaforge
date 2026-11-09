@@ -155,6 +155,7 @@ class DefaultSubstrateComposer:
                 events=ctx.events,
                 grpc_max_message_mb=ctx.grpc_max_message_mb,
                 state_read_timeout_s=ctx.state_read_timeout_s,
+                task_dir_of=ctx.task_dir_of,
             )
 
         assert runner_decl is not None  # narrowed by runner_handle presence
@@ -191,6 +192,7 @@ class DefaultSubstrateComposer:
             events=ctx.events,
             grpc_max_message_mb=ctx.grpc_max_message_mb,
             state_read_timeout_s=ctx.state_read_timeout_s,
+            task_dir_of=ctx.task_dir_of,
         )
 
     # ------------------------------------------------------------------
@@ -291,7 +293,7 @@ class DefaultSubstrateComposer:
                 ),
                 events=run_sub.events,
                 component_id_prefix=f"trial/{spec.trial_id}",
-                tool_artifact_refs_root=_tool_artifact_refs_root(decl, spec),
+                tool_artifact_refs_root=_tool_artifact_refs_root(decl, spec, run_sub),
             )
             handle = self.materialiser.materialise(decl, ctx)
             trial_handles.append(handle)
@@ -598,26 +600,44 @@ def _refuse_reserved_prefix(
         )
 
 
-def _tool_artifact_refs_root(decl: StackDecl, spec: TrialSpec) -> Path | None:
-    """The reference root to mount into ``decl``'s runner, or ``None`` (ADR-0068).
+def _tool_artifact_refs_root(
+    decl: StackDecl, spec: TrialSpec, run_sub: RunSubstrate
+) -> Path | None:
+    """The task directory to mount into ``decl``'s runner, or ``None`` (ADR-0068, ADR-0072).
 
     Only the stack that owns the trial's runner gets it, and only when the
-    trial's description delivers artefacts by reference.
+    trial's description delivers artefacts by reference. The description names
+    each file by its ``pack:`` address; the directory those addresses resolve
+    against is this machine's copy of the task, found through
+    :attr:`RunSubstrate.task_dir_of`, never a path the describing machine wrote.
+
+    Raises:
+        ProvisionError: the description has references and this run cannot
+            locate the task's directory.
     """
-    refs = spec.task.tool_artifact_refs
-    if refs is None or decl.runner_service is None:
+    if spec.task.tool_artifact_refs is None or decl.runner_service is None:
         return None
-    return Path(refs.root)
+    if run_sub.task_dir_of is None:
+        raise ProvisionError(
+            trial_id=spec.trial_id,
+            stage="provision",
+            reason=(
+                "the task delivers its tool artefacts as pack: references "
+                "(compute.trial_data_delivery: mount), but this run has no way to locate "
+                "the task's directory on this machine to mount into the runner"
+            ),
+        )
+    return run_sub.task_dir_of(spec.task.task_id).resolve()
 
 
 def _refuse_refs_no_trial_runner_can_take(plan: CompositionPlan, spec: TrialSpec) -> None:
     """Refuse a description with references when no trial-scope stack owns the runner.
 
-    The resolver refuses ``tool_artifacts_delivery: mount`` on such a plan
-    already; this holds the composer to the same rule for a description built
-    some other way, or a plan whose scopes were coerced after it was resolved,
-    before any stack is started: such a runner has no mount of this task's
-    directory and would refuse the registration.
+    The adapter keeps such a task's artefacts inline; this holds the composer to
+    the same rule for a description built some other way, or a plan whose scopes
+    were coerced after it was described, before any stack is started: such a
+    runner has no mount of this task's directory and would refuse the
+    registration.
     """
     if spec.task.tool_artifact_refs is None:
         return
@@ -628,7 +648,7 @@ def _refuse_refs_no_trial_runner_can_take(plan: CompositionPlan, spec: TrialSpec
         trial_id=spec.trial_id,
         stage="provision",
         reason=(
-            "the task delivers its tool artefacts by reference (tool_artifacts_delivery: "
+            "the task delivers its tool artefacts by reference (compute.trial_data_delivery: "
             "mount), which needs a trial-scope stack to own the runner so the engine can "
             f"mount the task's directory into it; the runner here: {found}"
         ),

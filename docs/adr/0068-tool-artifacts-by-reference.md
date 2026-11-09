@@ -5,6 +5,9 @@
 - **Deciders:** — (proposed by @rsmtnn)
 - **Supersedes:** —
 - **Superseded by:** —
+- **Revised:** 2026-11-09, by the addressing of [ADR-0072](https://github.com/Toloka/tolokaforge/pull/1983):
+  a reference is a `pack:` address, the delivery is a run setting, and the grader rule
+  is written on the trial contract.
 
 ## Context and Problem Statement
 
@@ -90,22 +93,25 @@ remove a single copy; it only moves the ceiling.
 
 ## Decision
 
-We will adopt **Option 5**, opt-in through the task's environment, for runners
+We will adopt **Option 5**, opt-in through the run's configuration, for runners
 the engine materialises per trial from a task-declared stack.
 
-- **Declaration.** `environment_manifest.tool_artifacts_delivery: inline | mount`
-  (default `inline`), on `EnvironmentPatch` and `EnvironmentManifest`. It is a
-  policy-request field: a project's `default_environment` can set it for every
-  task, and it survives a task's atomic `stack` replacement. The resolver refuses
-  `mount` unless a `trial`-scope stack owns the runner — a `run`-scope runner
-  serves every task of the run and was started before any of them was described.
-- **Wire.** `TaskDescription.tool_artifact_refs: ToolArtifactRefs | None`, with
-  `root` (the absolute task directory on the machine that materialises the stack)
-  and `files: {artefact path: {source, sha256, size}}`. `source` is relative to
-  `root` and may differ from the artefact path (the native adapter delivers a
-  case's state file as `initial_state.json` beside a shared MCP server). Paths are
-  normalised relative POSIX paths; an artefact path is inline or referenced, never
-  both.
+- **Declaration.** `compute.trial_data_delivery: inline | mount` in the run
+  config (default `inline`). How bytes move is a property of the deployment, not
+  of a task, so one task stays comparable across substrates (ADR-0072 D3). It
+  applies to a task whose runner a `trial`-scope stack owns — a `run`-scope runner
+  serves every task of the run and was started before any of them was described —
+  and any other task stays inline, with a log line saying why. A task manifest
+  that names the per-task key an earlier draft used is refused, so a pack written
+  for it does not silently run inline.
+- **Wire.** `TaskDescription.tool_artifact_refs: dict[str, ArtifactRef] | None`,
+  keyed by artefact path, each `ArtifactRef {uri, sha256, size}` (ADR-0072 D1).
+  The one scheme is `pack:<path>`, relative to the task's directory on whichever
+  machine reads it: no path of the describing machine is on the wire, so a
+  description built on one machine stays valid where the trial runs. The pack path
+  may differ from the artefact path (the native adapter delivers a case's state
+  file as `initial_state.json` beside a shared MCP server). Paths are normalised
+  relative POSIX paths; an artefact path is inline or referenced, never both.
 - **Adapter.** Under `mount` the native adapter references every file it would
   have bundled — the task directory's files, the case state copy, the RAG corpus —
   hashing each in 1 MiB chunks, and puts nothing in `tool_artifacts`. Both
@@ -117,10 +123,11 @@ the engine materialises per trial from a task-declared stack.
   outside the task directory is refused. Tool libraries (ADR-0060) keep merging
   inline; a library path that collides with a referenced artefact is refused like
   an inline collision.
-- **Engine.** The composer hands the description's `root` to the stack that owns
+- **Engine.** The composer locates its own copy of the task directory through the
+  run's adapter (`RunSubstrate.task_dir_of`) and hands it to the stack that owns
   the trial's runner (and refuses a description with references when no
-  trial-scope stack owns it, before any stack starts). The docker-compose
-  materialiser adds a read-only bind mount of `root` at
+  trial-scope stack owns it, or when the run cannot locate the task, before any
+  stack starts). The docker-compose materialiser adds a read-only bind mount of it at
   `/tolokaforge/tool-artifact-refs` to the runner service and sets
   `TOLOKAFORGE_TOOL_ARTIFACT_REFS_DIR` to it; a compose file that already
   declares the variable or a volume at that path is refused.
@@ -132,10 +139,14 @@ the engine materialises per trial from a task-declared stack.
   no mount refuses a description with references. The trial's copy keeps each
   trial isolated from the next, as inline extraction does.
 - **Graders.** References resolve only on the trial's runner, so only the
-  `runner_rpc` grader without snapshot bundles can grade such a task. The
-  orchestrator refuses `grader_rpc`, `queue` and `grader.snapshot.enabled` for
-  such tasks at run start; the detached grader, the offline composite kind and the
-  bundle producer refuse a description with references as a second line.
+  `runner_rpc` grader without snapshot bundles can grade such a task. The rule is
+  written once on the trial contract (`core/trial_validation.py`, ADR-0072 D4):
+  the orchestrator applies it to its run at start, and `run_trial_from_inputs`
+  to the one trial it is handed, so the library route refuses `grader_rpc`,
+  `queue` and `grader.snapshot.enabled` as the orchestrator does. The detached
+  grader, the offline composite kind and the bundle producer refuse a description
+  with references as a second line. A store a remote grader can read is ADR-0072's
+  follow-up.
 - **Protocol.** `ENGINE_PROTOCOL_VERSION` becomes 8 (7 is ADR-0067's). An older runner image
   forbids the new key and refuses every trial spec at `Invalid trial_spec_json`;
   an older engine is refused by the runner's version gate. Neither pairing runs a
@@ -165,9 +176,9 @@ the engine materialises per trial from a task-declared stack.
 - Only task-declared trial-scope runners are served. The built-in shared stack,
   task-scope and run-scope runners, `grader_rpc`, `queue` and snapshot grading
   keep inline delivery.
-- `root` is a path on the machine that materialises the stack; a node that
-  materialises the stack itself must describe the task from its own copy of the
-  pack.
+- The mount is the machine that materialises the stack's own copy of the task
+  directory, found through its adapter; a node needs the task's pack, as it
+  already does for compose files and `task_pack_hash`.
 - Protocol 8 requires rebuilding or re-pinning runner images even for runs that
   never use `mount`.
 
@@ -179,9 +190,9 @@ the engine materialises per trial from a task-declared stack.
   serialise the spec straight to bytes instead of to `str`, and avoid holding the
   cached description's artefacts and the serialised request at the same time.
   That trims about two of the copies above without changing the protocol.
-- Serving references to the grader service and to snapshot bundles (a bundle
-  part holding the referenced files, or the grader mounting the same root), if a
-  task that needs `mount` also needs detached grading.
+- Serving references to the grader service and to snapshot bundles through an
+  `ArtifactStore` a remote grader can read (ADR-0072 D2), if a task that needs
+  `mount` also needs detached grading.
 - A world seeded into the database as `initial_state.tables` still travels
   inline; it is not a tool artefact.
 - `copy_compose_context` copies the compose file's whole directory into every

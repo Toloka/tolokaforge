@@ -79,6 +79,7 @@ class PerTrialRuntimeBackend:
     connect_retry_interval: float = 1.0
     grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
     state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
+    task_dir_of: Callable[[str], Path] | None = None
     composer: SubstrateComposer | None = None
     _delegate: SharedStackRuntimeBackend = field(init=False)
 
@@ -93,6 +94,7 @@ class PerTrialRuntimeBackend:
             connect_retry_interval=self.connect_retry_interval,
             grpc_max_message_mb=self.grpc_max_message_mb,
             state_read_timeout_s=self.state_read_timeout_s,
+            task_dir_of=self.task_dir_of,
             composer=self._build_composer(),
         )
         self._delegate._per_trial_mode = True
@@ -251,6 +253,7 @@ def per_trial_runtime_backend_factory(
         connect_retry_interval=ctx.connect_retry_interval_s,
         grpc_max_message_mb=ctx.grpc_max_message_mb,
         state_read_timeout_s=ctx.state_read_timeout_s,
+        task_dir_of=ctx.task_dir_of,
     )
 
 

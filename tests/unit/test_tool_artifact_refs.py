@@ -1,8 +1,8 @@
-"""Tool artefacts delivered by reference instead of inline (ADR-0068).
+"""Tool artefacts delivered by reference instead of inline (ADR-0068, ADR-0072).
 
-A task whose environment declares ``tool_artifacts_delivery: mount`` ships no
-bytes in its description: the native adapter records each file's path, SHA-256
-and size, the engine bind-mounts the task directory read-only into the
+A run that sets ``compute.trial_data_delivery: mount`` ships no bytes of a
+task's files in its description: the native adapter records each file's
+``pack:`` address, SHA-256 and size, the engine bind-mounts the task directory read-only into the
 trial-scope runner, and the runner copies every file into the trial's artefact
 directory, refusing the registration when any file is missing, leaves the mount
 or does not hash to what the task was described with. Every place that cannot
@@ -12,6 +12,7 @@ read the mount refuses a description with references instead of skipping them.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import json
 import logging
@@ -27,6 +28,7 @@ from pydantic import ValidationError
 from tests.canonical._factories import write_yaml_file
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.adapter_params import assemble_adapter_params
 from tolokaforge.core.compose_materialisation import mount_tool_artifact_refs_into_runner
 from tolokaforge.core.grading.bundle_producer import serialize_bundle_from_substrate
 from tolokaforge.core.grading.kinds import CompositeGraderKind, GraderKindRefusedError
@@ -37,23 +39,26 @@ from tolokaforge.core.grading.tool_artifacts import (
     extract_tool_artifacts,
     file_sha256,
 )
-from tolokaforge.core.models import EnvironmentPatch, StackPatch
-from tolokaforge.core.project_loader import resolve as resolve_environment
+from tolokaforge.core.models import ComputeConfig, EnvironmentPatch, RunConfig
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.tool_libraries import ToolLibraryError, merge_tool_libraries
 from tolokaforge.core.trial_grader import GradingFailedError
 from tolokaforge.grader.composite_dispatch import GraderCompositeDispatch
 from tolokaforge.grader.service import GradeDispatch
 from tolokaforge.runner.models import (
+    ArtifactRef,
     RunnerGradingConfig,
-    ServiceSpec,
     TaskDescription,
-    ToolArtifactRef,
-    ToolArtifactRefs,
 )
 
 pytestmark = pytest.mark.unit
 
+
+_MINIMAL_RUN: dict[str, Any] = {
+    "models": {},
+    "orchestrator": {},
+    "evaluation": {"task_packs": [], "output_dir": "/tmp/tolokaforge-test-out"},
+}
 
 _RUNNER_COMPOSE = {
     "services": {
@@ -63,9 +68,13 @@ _RUNNER_COMPOSE = {
 }
 
 
-def _ref_for(root: Path, rel: str) -> ToolArtifactRef:
+def _ref(rel: str, sha256: str = "0" * 64, size: int = 1) -> ArtifactRef:
+    return ArtifactRef(uri=f"pack:{rel}", sha256=sha256, size=size)
+
+
+def _ref_for(root: Path, rel: str) -> ArtifactRef:
     sha256, size = file_sha256(root / rel)
-    return ToolArtifactRef(source=rel, sha256=sha256, size=size)
+    return _ref(rel, sha256, size)
 
 
 def _world(tmp_path: Path) -> Path:
@@ -105,31 +114,40 @@ def _discard_extraction(extract_dir: Path) -> None:
 
 
 class TestWireModel:
-    def test_a_reference_names_a_normalised_relative_source(self) -> None:
-        for source in ("/etc/passwd", "../outside.py", "a//b.py", "./a.py", "a\\b.py", ""):
+    def test_a_reference_names_a_normalised_relative_pack_path(self) -> None:
+        for path in ("/etc/passwd", "../outside.py", "a//b.py", "./a.py", "a\\b.py", ""):
             with pytest.raises(ValidationError, match="relative POSIX path"):
-                ToolArtifactRef(source=source, sha256="0" * 64, size=0)
+                ArtifactRef(uri=f"pack:{path}", sha256="0" * 64, size=0)
+
+    @pytest.mark.parametrize("uri", ["a.py", "file:///abs/a.py", "/abs/a.py", "s3://b/a.py"])
+    def test_a_reference_is_a_pack_address(self, uri: str) -> None:
+        with pytest.raises(ValidationError, match="no 'pack:' scheme"):
+            ArtifactRef(uri=uri, sha256="0" * 64, size=0)
+
+    def test_a_reference_reads_back_its_pack_path(self) -> None:
+        assert _ref("tools/a.py").pack_path == "tools/a.py"
 
     def test_a_reference_carries_a_lowercase_hex_sha256(self) -> None:
         for digest in ("0" * 63, "A" * 64, "z" * 64):
             with pytest.raises(ValidationError, match="64 lowercase hex"):
-                ToolArtifactRef(source="a.py", sha256=digest, size=0)
+                _ref("a.py", digest, 0)
 
-    def test_the_root_is_absolute_and_the_set_non_empty(self) -> None:
-        ref = ToolArtifactRef(source="a.py", sha256="0" * 64, size=1)
-        with pytest.raises(ValidationError, match="not an absolute path"):
-            ToolArtifactRefs(root="relative/root", files={"a.py": ref})
+    def test_the_set_is_non_empty_and_its_targets_normalised(self) -> None:
         with pytest.raises(ValidationError, match="declares no files"):
-            ToolArtifactRefs(root="/abs", files={})
+            _description(tool_artifact_refs={})
         with pytest.raises(ValidationError, match="relative POSIX path"):
-            ToolArtifactRefs(root="/abs", files={"../a.py": ref})
+            _description(tool_artifact_refs={"../a.py": _ref("a.py")})
+
+    def test_no_absolute_path_travels_in_the_description(self) -> None:
+        description = _description(tool_artifact_refs={"a.py": _ref("tools/a.py")})
+        wire = description.model_dump(mode="json")["tool_artifact_refs"]
+        assert wire == {"a.py": {"uri": "pack:tools/a.py", "sha256": "0" * 64, "size": 1}}
 
     def test_an_artefact_is_delivered_inline_or_by_reference_never_both(self) -> None:
-        ref = ToolArtifactRef(source="a.py", sha256="0" * 64, size=1)
         with pytest.raises(ValidationError, match="both inline in tool_artifacts and referenced"):
             _description(
                 tool_artifacts={"a.py": base64.b64encode(b"x").decode()},
-                tool_artifact_refs=ToolArtifactRefs(root="/abs", files={"a.py": ref}),
+                tool_artifact_refs={"a.py": _ref("a.py")},
             )
 
 
@@ -196,10 +214,8 @@ class TestExtraction:
         root = _world(tmp_path)
         good = _ref_for(root, "case_state.json")
         refs = {
-            "gone.py": ToolArtifactRef(source="gone.py", sha256="0" * 64, size=1),
-            "state.json": ToolArtifactRef(
-                source=good.source, sha256=good.sha256, size=good.size + 1
-            ),
+            "gone.py": _ref("gone.py"),
+            "state.json": _ref(good.pack_path, good.sha256, good.size + 1),
         }
 
         with pytest.raises(ToolArtifactRefError) as excinfo:
@@ -207,16 +223,13 @@ class TestExtraction:
 
         message = str(excinfo.value)
         assert "2 of 2" in message
-        assert "'gone.py' is not a file" in message
+        assert "pack:gone.py is not a file" in message
         assert f"expected sha256 {good.sha256} and {good.size + 1} bytes" in message
 
     def test_a_long_list_of_refusals_is_counted_past_the_ones_it_shows(
         self, tmp_path: Path
     ) -> None:
-        refs = {
-            f"gone_{index}.py": ToolArtifactRef(source=f"gone_{index}.py", sha256="0" * 64, size=1)
-            for index in range(7)
-        }
+        refs = {f"gone_{index}.py": _ref(f"gone_{index}.py") for index in range(7)}
 
         with pytest.raises(ToolArtifactRefError) as excinfo:
             extract_tool_artifacts("refs:many", {}, refs=refs, refs_dir=_world(tmp_path))
@@ -233,7 +246,7 @@ class TestExtraction:
         secret.write_text("not the task's")
         (root / "escape.txt").symlink_to(secret)
         digest, size = file_sha256(secret)
-        refs = {"escape.txt": ToolArtifactRef(source="escape.txt", sha256=digest, size=size)}
+        refs = {"escape.txt": _ref("escape.txt", digest, size)}
 
         with pytest.raises(ToolArtifactRefError, match="resolves outside the reference root"):
             extract_tool_artifacts("refs:3", {}, refs=refs, refs_dir=root)
@@ -241,13 +254,13 @@ class TestExtraction:
     def test_references_without_a_root_are_refused_before_anything_is_written(
         self, tmp_path: Path
     ) -> None:
-        refs = {"a.py": ToolArtifactRef(source="a.py", sha256="0" * 64, size=1)}
+        refs = {"a.py": _ref("a.py")}
 
         with pytest.raises(ToolArtifactRefError, match=TOOL_ARTIFACT_REFS_DIR_ENV_VAR):
             extract_tool_artifacts("refs:4", {}, refs=refs, refs_dir=None)
 
     def test_a_root_that_is_not_a_directory_is_refused(self, tmp_path: Path) -> None:
-        refs = {"a.py": ToolArtifactRef(source="a.py", sha256="0" * 64, size=1)}
+        refs = {"a.py": _ref("a.py")}
 
         with pytest.raises(ToolArtifactRefError, match="is not a directory"):
             extract_tool_artifacts("refs:5", {}, refs=refs, refs_dir=tmp_path / "absent")
@@ -268,10 +281,7 @@ class TestExtraction:
 
 
 def _description_with_refs(root: Path) -> dict[str, Any]:
-    refs = ToolArtifactRefs(
-        root=str(root),
-        files={"tools/world_tool.py": _ref_for(root, "tools/world_tool.py")},
-    )
+    refs = {"tools/world_tool.py": _ref_for(root, "tools/world_tool.py")}
     return {
         "task_id": "refs_task",
         "name": "refs task",
@@ -279,7 +289,7 @@ def _description_with_refs(root: Path) -> dict[str, Any]:
         "description": "a task delivering artefacts by reference",
         "adapter_type": "native",
         "system_prompt": "",
-        "tool_artifact_refs": refs.model_dump(mode="json"),
+        "tool_artifact_refs": {target: ref.model_dump(mode="json") for target, ref in refs.items()},
     }
 
 
@@ -358,7 +368,7 @@ class TestRegisterTrial:
 
 
 # ---------------------------------------------------------------------------
-# The environment resolver
+# The delivery is the run's, not the task's
 # ---------------------------------------------------------------------------
 
 
@@ -368,60 +378,24 @@ def _compose(tmp_path: Path) -> Path:
     return compose
 
 
-class TestResolver:
-    def test_inline_is_the_default(self, tmp_path: Path) -> None:
-        manifest = resolve_environment(
-            None,
-            EnvironmentPatch(
-                stack=StackPatch(compose_file=_compose(tmp_path), runner_service="runner")
-            ),
+class TestDeliveryIsARunSetting:
+    def test_a_task_manifest_no_longer_names_a_delivery(self) -> None:
+        with pytest.raises(ValidationError, match="compute.trial_data_delivery"):
+            EnvironmentPatch.model_validate({"tool_artifacts_delivery": "mount"})
+
+    def test_inline_is_the_run_default(self) -> None:
+        assert RunConfig.model_validate(_MINIMAL_RUN).compute is None
+        assert ComputeConfig().trial_data_delivery == "inline"
+
+    def test_the_run_setting_reaches_the_adapter(self) -> None:
+        config = RunConfig.model_validate(
+            {**_MINIMAL_RUN, "compute": {"trial_data_delivery": "mount"}}
         )
-
-        assert manifest is not None
-        assert manifest.tool_artifacts_delivery == "inline"
-
-    def test_mount_resolves_on_a_trial_scope_runner(self, tmp_path: Path) -> None:
-        manifest = resolve_environment(
-            None,
-            EnvironmentPatch(
-                stack=StackPatch(compose_file=_compose(tmp_path), runner_service="runner"),
-                tool_artifacts_delivery="mount",
-            ),
+        assert assemble_adapter_params(config)["trial_data_delivery"] == "mount"
+        assert (
+            assemble_adapter_params(RunConfig.model_validate(_MINIMAL_RUN))["trial_data_delivery"]
+            == "inline"
         )
-
-        assert manifest is not None
-        assert manifest.tool_artifacts_delivery == "mount"
-        assert [decl.stack_scope for decl in manifest.stacks] == ["trial"]
-
-    def test_mount_is_refused_on_a_run_scope_runner(self, tmp_path: Path) -> None:
-        shared = {name: ServiceSpec(isolation="shared") for name in _RUNNER_COMPOSE["services"]}
-        with pytest.raises(ValueError, match="needs the runner to be owned by a trial-scope"):
-            resolve_environment(
-                None,
-                EnvironmentPatch(
-                    stack=StackPatch(compose_file=_compose(tmp_path), runner_service="runner"),
-                    services=shared,
-                    tool_artifacts_delivery="mount",
-                ),
-            )
-
-    def test_a_project_default_survives_the_tasks_own_stack(self, tmp_path: Path) -> None:
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-        task_dir = tmp_path / "task"
-        task_dir.mkdir()
-        manifest = resolve_environment(
-            EnvironmentPatch(
-                stack=StackPatch(compose_file=_compose(project_dir), runner_service="runner"),
-                tool_artifacts_delivery="mount",
-            ),
-            EnvironmentPatch(
-                stack=StackPatch(compose_file=_compose(task_dir), runner_service="runner")
-            ),
-        )
-
-        assert manifest is not None
-        assert manifest.tool_artifacts_delivery == "mount"
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +408,7 @@ def _mcp_pack(
     *,
     delivery: str | None,
     with_corpus: bool = False,
+    shared_runner: bool = False,
     adapter: type[NativeAdapter] = NativeAdapter,
 ) -> NativeAdapter:
     """A shared-domain-shaped MCP pack: the server under ``_shared/``, the state per case."""
@@ -458,8 +433,10 @@ def _mcp_pack(
     environment: dict[str, Any] = {
         "stack": {"compose_file": "environment.compose.yaml", "runner_service": "runner"}
     }
-    if delivery is not None:
-        environment["tool_artifacts_delivery"] = delivery
+    if shared_runner:
+        environment["services"] = {
+            name: {"isolation": "shared"} for name in _RUNNER_COMPOSE["services"]
+        }
     write_yaml_file(
         task_dir / "task.yaml",
         {
@@ -492,7 +469,10 @@ def _mcp_pack(
             "components": {"state_checks": {"jsonpaths": []}},
         },
     )
-    return adapter({"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"})
+    params: dict[str, Any] = {"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"}
+    if delivery is not None:
+        params["trial_data_delivery"] = delivery
+    return adapter(params)
 
 
 class _OwnSetAdapter(NativeAdapter):
@@ -547,8 +527,8 @@ class TestNativeAdapter:
 
         assert base64.b64decode(inline.tool_artifacts["_shared/world/blob.bin"]) == b"\x00\x01\x02"
         assert mounted.tool_artifact_refs is not None
-        assert set(mounted.tool_artifact_refs.files) == set(inline.tool_artifacts)
-        assert mounted.tool_artifact_refs.files["_shared/world/blob.bin"].size == 3
+        assert set(mounted.tool_artifact_refs) == set(inline.tool_artifacts)
+        assert mounted.tool_artifact_refs["_shared/world/blob.bin"].size == 3
 
     def test_an_adapter_that_overrides_the_bundler_alone_is_refused_under_mount(
         self, tmp_path: Path
@@ -588,22 +568,38 @@ class TestNativeAdapter:
         assert mounted.tool_artifacts == {}
         refs = mounted.tool_artifact_refs
         assert refs is not None
-        assert set(refs.files) == set(inline.tool_artifacts)
+        assert set(refs) == set(inline.tool_artifacts)
         task_dir = (tmp_path / "mount" / "tasks" / "refs_pack").resolve()
-        assert refs.root == str(task_dir)
-        for target, ref in refs.files.items():
-            content = (task_dir / ref.source).read_bytes()
-            if target != "task.yaml":  # the two packs differ by the delivery line alone
-                assert content == base64.b64decode(inline.tool_artifacts[target]), target
+        for target, ref in refs.items():
+            assert ref.uri.startswith("pack:"), target
+            content = (task_dir / ref.pack_path).read_bytes()
+            assert content == base64.b64decode(inline.tool_artifacts[target]), target
             assert ref.sha256 == hashlib.sha256(content).hexdigest(), target
             assert ref.size == len(content)
+
+    def test_no_path_of_the_describing_machine_is_in_the_description(self, tmp_path: Path) -> None:
+        mounted = _mcp_pack(tmp_path, delivery="mount").to_task_description("refs_pack")
+
+        assert str(tmp_path) not in mounted.model_dump_json(include={"tool_artifact_refs"})
+
+    def test_a_task_whose_runner_the_run_owns_stays_inline(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        adapter = _mcp_pack(tmp_path, delivery="mount", shared_runner=True)
+
+        description = adapter.to_task_description("refs_pack")
+
+        assert description.tool_artifact_refs is None
+        assert "_shared/mcp_server.py" in description.tool_artifacts
+        assert "no trial-scope stack owns the runner" in caplog.text
 
     def test_the_case_state_is_referenced_beside_the_shared_server(self, tmp_path: Path) -> None:
         description = _mcp_pack(tmp_path, delivery="mount").to_task_description("refs_pack")
 
         assert description.tool_artifact_refs is not None
-        state = description.tool_artifact_refs.files["_shared/initial_state.json"]
-        assert state.source == "case_state.json"
+        state = description.tool_artifact_refs["_shared/initial_state.json"]
+        assert state.uri == "pack:case_state.json"
 
     def test_the_corpus_is_referenced_too(self, tmp_path: Path) -> None:
         description = _mcp_pack(tmp_path, delivery="mount", with_corpus=True).to_task_description(
@@ -611,7 +607,7 @@ class TestNativeAdapter:
         )
 
         assert description.tool_artifact_refs is not None
-        assert "kb/policy.md" in description.tool_artifact_refs.files
+        assert "kb/policy.md" in description.tool_artifact_refs
 
     def test_a_referenced_pack_extracts_to_the_same_tree_as_an_inline_one(
         self, tmp_path: Path
@@ -624,8 +620,8 @@ class TestNativeAdapter:
         mounted_dir = extract_tool_artifacts(
             "tree:mount",
             {},
-            refs=mounted.tool_artifact_refs.files,
-            refs_dir=Path(mounted.tool_artifact_refs.root),
+            refs=mounted.tool_artifact_refs,
+            refs_dir=tmp_path / "mount" / "tasks" / "refs_pack",
         )
         try:
             tree = {
@@ -638,11 +634,7 @@ class TestNativeAdapter:
                 for p in mounted_dir.rglob("*")
                 if p.is_file()
             }
-            assert mounted_tree.keys() == tree.keys()
-            # The two packs differ by the delivery line of task.yaml alone.
-            assert {k: v for k, v in mounted_tree.items() if k != "task.yaml"} == {
-                k: v for k, v in tree.items() if k != "task.yaml"
-            }
+            assert mounted_tree == tree
         finally:
             _discard_extraction(inline_dir)
             _discard_extraction(mounted_dir)
@@ -669,14 +661,7 @@ def test_a_library_colliding_with_a_referenced_artefact_is_refused(
     from tolokaforge.core.models.task_config import ToolLibraryPin
 
     monkeypatch.setattr(tool_libraries, "load_tool_library", lambda name: _Library())
-    refs = ToolArtifactRefs(
-        root="/abs",
-        files={
-            "shared_lib/__init__.py": ToolArtifactRef(
-                source="shared_lib/__init__.py", sha256="0" * 64, size=1
-            )
-        },
-    )
+    refs = {"shared_lib/__init__.py": _ref("shared_lib/__init__.py")}
 
     with pytest.raises(ToolLibraryError, match="shared_lib/__init__.py"):
         merge_tool_libraries(
@@ -769,10 +754,7 @@ class TestComposer:
         spec = _trial_spec(_manifest(compose))
         spec.task = spec.task.model_copy(
             update={
-                "tool_artifact_refs": ToolArtifactRefs(
-                    root=str(root),
-                    files={"tools/world_tool.py": _ref_for(root, "tools/world_tool.py")},
-                )
+                "tool_artifact_refs": {"tools/world_tool.py": _ref_for(root, "tools/world_tool.py")}
             }
         )
         return spec
@@ -802,12 +784,44 @@ class TestComposer:
             _decl(compose, stack_id="side", stack_scope="trial", runner_service=None),
         ]
 
-        composer.provision_trial(plan, self._spec(compose, root), _empty_run_sub())
+        asked: list[str] = []
+
+        def task_dir_of(task_id: str) -> Path:
+            asked.append(task_id)
+            return root
+
+        run_sub = dataclasses.replace(_empty_run_sub(), task_dir_of=task_dir_of)
+        spec = self._spec(compose, root)
+        composer.provision_trial(plan, spec, run_sub)
 
         assert [ctx.tool_artifact_refs_root for ctx in materialiser.materialise_contexts] == [
-            root,
+            root.resolve(),
             None,
         ]
+        assert asked == [spec.task.task_id]
+
+    def test_references_with_no_way_to_find_the_task_are_refused(self, tmp_path: Path) -> None:
+        from tests.unit.test_default_substrate_composer import (
+            _always_ready_loader,
+            _decl,
+            _empty_run_sub,
+            _fake_client_factory,
+            _FakeMaterialiser,
+        )
+        from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
+
+        compose = _compose(tmp_path)
+        root = _world(tmp_path)
+        materialiser = _FakeMaterialiser()
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+            readiness_probe_loader=_always_ready_loader,
+        )
+        plan = [_decl(compose, stack_id="world", stack_scope="trial", runner_service="runner")]
+
+        with pytest.raises(ProvisionError, match="no way to locate the task's directory"):
+            composer.provision_trial(plan, self._spec(compose, root), _empty_run_sub())
 
     def test_a_run_scope_runner_is_refused_before_any_stack_starts(self, tmp_path: Path) -> None:
         from tests.unit.test_default_substrate_composer import (
@@ -987,3 +1001,42 @@ class TestRunStartGate:
         Orchestrator._refuse_tool_artifact_refs_the_grader_cannot_read(
             self._orchestrator(tmp_path, grader)
         )
+
+
+class TestTrialContractGate:
+    """The library route applies the same rule to the one trial it is handed (ADR-0072)."""
+
+    def _inputs(self, tmp_path: Path, grader: dict[str, Any] | None) -> Any:
+        from types import SimpleNamespace
+
+        description = TaskDescription.model_validate(_refs_description_dict(tmp_path))
+        grader_config = None
+        if grader is not None:
+            grader_config = SimpleNamespace(
+                name=grader.get("name"),
+                snapshot=SimpleNamespace(enabled=grader.get("snapshot", False)),
+            )
+        return SimpleNamespace(
+            grader_config=grader_config, trial_spec=SimpleNamespace(task=description)
+        )
+
+    @pytest.mark.parametrize(
+        ("grader", "default", "fragment"),
+        [
+            ({"name": "grader_rpc"}, "runner_rpc", "grader 'grader_rpc'"),
+            (None, "queue", "grader 'queue'"),
+            ({"name": "runner_rpc", "snapshot": True}, "runner_rpc", "grader.snapshot.enabled"),
+        ],
+    )
+    def test_a_grader_off_the_runner_is_refused(
+        self, tmp_path: Path, grader: dict[str, Any] | None, default: str, fragment: str
+    ) -> None:
+        from tolokaforge.core.trial_validation import validate_trial_inputs
+
+        with pytest.raises(ValueError, match=fragment):
+            validate_trial_inputs(self._inputs(tmp_path, grader), default_grader_name=default)
+
+    def test_the_runner_grader_passes(self, tmp_path: Path) -> None:
+        from tolokaforge.core.trial_validation import validate_trial_inputs
+
+        validate_trial_inputs(self._inputs(tmp_path, None), default_grader_name="runner_rpc")

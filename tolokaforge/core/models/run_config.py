@@ -898,6 +898,10 @@ class LocalDockerComputeConfig(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+TrialDataDelivery = Literal["inline", "mount"]
+"""How a trial's bulk data reaches its consumers — see :attr:`ComputeConfig.trial_data_delivery`."""
+
+
 class ComputeConfig(BaseModel):
     """Compute substrate + parallelism + budget selection for a run.
 
@@ -951,6 +955,20 @@ class ComputeConfig(BaseModel):
     that variable itself. A numeric string (``"180"``, as a ``${VAR}``
     interpolation yields) is read as its number, like the sibling
     :attr:`grpc_max_message_mb`; a boolean is refused."""
+
+    trial_data_delivery: TrialDataDelivery = "inline"
+    """How a trial's bulk data moves between the engine and the runner — a
+    property of the deployment, not of a task (ADR-0068, ADR-0072).
+
+    ``inline`` (the default) carries a task's tool artefacts base64-encoded in
+    the registration message. ``mount`` carries only each file's ``pack:``
+    address, SHA-256 and size; the engine bind-mounts the task's directory
+    read-only into the runner and the runner copies and verifies the files.
+    ``mount`` applies to a task whose runner the engine materialises for the
+    trial (a ``trial``-scope stack owns it); any other task stays inline, with a
+    log line saying why. It needs a grader that reads the world on the runner:
+    a run with the ``grader_rpc`` or ``queue`` grader, or with snapshot grade
+    bundles, is refused. Tool libraries (ADR-0060) stay inline either way."""
 
     @field_validator("state_read_timeout_s", mode="before")
     @classmethod

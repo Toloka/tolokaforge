@@ -79,8 +79,7 @@
         "stack_scope": "trial"
       }
     ],
-    "stripped_container_secrets": [],
-    "tool_artifacts_delivery": "inline"
+    "stripped_container_secrets": []
   },
   "generated_at": null,
   "grading": {

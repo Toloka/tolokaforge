@@ -91,10 +91,11 @@ from tolokaforge_coding_harnesses import (
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import (
+        ArtifactRef,
+        EnvironmentManifest,
         MutatesStateRule,
         SearchConfig,
         TaskDescription,
-        ToolArtifactRefs,
         ToolSchema,
     )
 
@@ -398,6 +399,9 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             params.get("agent_harness", ENGINE_LOOP), self._resolved_registry.harnesses
         )
         self.agent_model: str = params.get("agent_model") or ""
+        # ``compute.trial_data_delivery`` (ADR-0072): ``mount`` references the
+        # task's files instead of bundling them, where the task's runner allows.
+        self.trial_data_delivery: str = params.get("trial_data_delivery", "inline")
         if self.agent_harness != ENGINE_LOOP and not self.agent_model:
             raise ValueError(
                 f"native adapter: agent_harness {self.agent_harness!r} requires "
@@ -935,7 +939,6 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             RunnerStateChecksConfig,
             RunnerUserSimulatorConfig,
             TaskDescription,
-            ToolArtifactRefs,
             TraceChecksConfig,
             TranscriptRulesConfig,
             read_unstable_field_specs,
@@ -1187,8 +1190,8 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         # Bundle task directory files for the Docker Runner. The Runner runs in
         # a separate container without access to the host filesystem, so the
         # files travel inline (base64 in the TaskDescription) or, under
-        # ``tool_artifacts_delivery: mount``, by reference to the task
-        # directory the engine mounts into the runner (ADR-0068).
+        # ``compute.trial_data_delivery: mount``, as ``pack:`` references into
+        # the task directory the engine mounts into the runner (ADR-0068, ADR-0072).
         # Custom checks packs (with or without an MCP server) also need the
         # bundle so the runner can resolve ``custom_checks.file`` and every
         # ``relative_imports`` path under the trial's ``artifacts_dir``. Either
@@ -1213,12 +1216,9 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         # under the declared ``corpus_dir``) so the runner can index them.
         search_config = self._resolve_search_config(task, task_dir, task_id)
 
-        by_reference = (
-            environment_manifest is not None
-            and environment_manifest.tool_artifacts_delivery == "mount"
-        )
+        by_reference = self._delivers_by_reference(task_id, environment_manifest)
         tool_artifacts: dict[str, str] = {}
-        tool_artifact_refs: ToolArtifactRefs | None = None
+        tool_artifact_refs: dict[str, ArtifactRef] | None = None
         if by_reference:
             tool_artifact_refs = self._referenced_tool_artifacts(
                 task_id, task_dir, needs_bundle, state_copy, search_config.documents_path
@@ -1262,7 +1262,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             initialization_actions_count=len(initialization_actions),
             tool_artifacts_count=len(tool_artifacts),
             tool_artifact_refs_count=(
-                len(tool_artifact_refs.files) if tool_artifact_refs is not None else 0
+                len(tool_artifact_refs) if tool_artifact_refs is not None else 0
             ),
         )
 
@@ -1466,6 +1466,35 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             tool_name=tool_name,
         )
 
+    def _delivers_by_reference(
+        self, task_id: str, environment_manifest: "EnvironmentManifest | None"
+    ) -> bool:
+        """Whether this task's files travel as references (ADR-0068, ADR-0072).
+
+        The deployment asks for it with ``compute.trial_data_delivery: mount``;
+        it applies where the engine materialises the task's runner for the
+        trial, since only that runner gets the task's directory mounted. Any
+        other task stays inline, and the log says why.
+        """
+        from tolokaforge.runner.models import runner_outside_trial_scope
+
+        if self.trial_data_delivery != "mount":
+            return False
+        found = (
+            runner_outside_trial_scope(environment_manifest.stacks)
+            if environment_manifest is not None
+            else "no environment manifest"
+        )
+        if found is None:
+            return True
+        logger.info(
+            "Task artifacts stay inline: no trial-scope stack owns the runner",
+            task_id=task_id,
+            trial_data_delivery=self.trial_data_delivery,
+            runner=found,
+        )
+        return False
+
     def _inline_tool_artifacts(
         self,
         task_dir: Path,
@@ -1473,7 +1502,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         state_copy: tuple[str, Path] | None,
         corpus_dir: str | None,
     ) -> dict[str, str]:
-        """The files the runner needs, base64-encoded: ``tool_artifacts_delivery: inline``."""
+        """The files the runner needs, base64-encoded: inline delivery."""
         artifacts = self._bundle_task_artifacts(task_dir) if needs_bundle else {}
         if state_copy is not None:
             artifacts[state_copy[0]] = base64.b64encode(state_copy[1].read_bytes()).decode("ascii")
@@ -1488,8 +1517,8 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         needs_bundle: bool,
         state_copy: tuple[str, Path] | None,
         corpus_dir: str | None,
-    ) -> "ToolArtifactRefs | None":
-        """The same files as references: ``tool_artifacts_delivery: mount`` (ADR-0068)."""
+    ) -> "dict[str, ArtifactRef] | None":
+        """The same files as ``pack:`` references: ``compute.trial_data_delivery: mount`` (ADR-0068, ADR-0072)."""
         sources: dict[str, Path] = {}
         if needs_bundle:
             _refuse_a_bundler_without_sources(
@@ -1571,7 +1600,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             dict mapping relative path → base64-encoded content.
 
         Raises:
-            OSError: a file cannot be read, as under ``tool_artifacts_delivery: mount``.
+            OSError: a file cannot be read, as under ``compute.trial_data_delivery: mount``.
         """
         artifacts = {
             rel_path: base64.b64encode(file_path.read_bytes()).decode("ascii")
@@ -1585,8 +1614,8 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """The task directory's files the runner needs, keyed by artefact path: one set for both deliveries.
 
         Inline delivery base64-encodes each of them (:meth:`_bundle_task_artifacts`);
-        ``tool_artifacts_delivery: mount`` references each by path, SHA-256 and size
-        (ADR-0068). An adapter that ships another set of the task's files overrides
+        ``compute.trial_data_delivery: mount`` references each by its ``pack:``
+        address, SHA-256 and size (ADR-0068, ADR-0072). An adapter that ships another set of the task's files overrides
         this method, and both deliveries follow. One that overrides
         :meth:`_bundle_task_artifacts` alone is refused under ``mount``: its
         references would name this default set, and the runner would miss what its
@@ -1636,7 +1665,7 @@ def _refuse_a_bundler_without_sources(
     own_sources = getattr(adapter, sources) is not getattr(NativeAdapter, sources)
     if own_bundle and not own_sources:
         raise ValueError(
-            f"{task_id}: tool_artifacts_delivery: mount references the files "
+            f"{task_id}: compute.trial_data_delivery: mount references the files "
             f"{adapter.__name__}.{sources} names, but {adapter.__name__} overrides "
             f"{bundler} alone, so the runner would miss what its bundle carries; "
             f"override {sources} with the same set, or deliver the artefacts inline"
@@ -1645,8 +1674,11 @@ def _refuse_a_bundler_without_sources(
 
 def _reference_artifacts(
     task_id: str, task_dir: Path, sources: Mapping[str, Path]
-) -> "ToolArtifactRefs":
-    """``sources`` as references under ``task_dir``: each file's path, SHA-256 and size (ADR-0068).
+) -> "dict[str, ArtifactRef]":
+    """``sources`` as ``pack:`` references: each file's path under ``task_dir``, SHA-256 and size.
+
+    The address is relative to the task's directory, so it resolves on whichever
+    machine materialises the trial (ADR-0068, ADR-0072).
 
     Each file is hashed in chunks and never held whole. A source outside
     ``task_dir`` is refused: only the task directory is mounted into the runner.
@@ -1654,21 +1686,21 @@ def _reference_artifacts(
     Raises:
         ValueError: a source lies outside ``task_dir``.
     """
-    from tolokaforge.runner.models import ToolArtifactRef, ToolArtifactRefs
+    from tolokaforge.runner.models import PACK_SCHEME, ArtifactRef
 
     root = task_dir.resolve()
-    files: dict[str, ToolArtifactRef] = {}
+    files: dict[str, ArtifactRef] = {}
     for target, path in sources.items():
         resolved = path.resolve()
         if not resolved.is_relative_to(root):
             raise ValueError(
-                f"{task_id}: tool_artifacts_delivery: mount mounts only the task directory "
+                f"{task_id}: compute.trial_data_delivery: mount mounts only the task directory "
                 f"{root}, but artefact {target!r} is read from {resolved}; move the file "
                 "under the task directory or deliver the artefacts inline"
             )
         sha256, size = file_sha256(resolved)
-        files[target] = ToolArtifactRef(
-            source=resolved.relative_to(root).as_posix(), sha256=sha256, size=size
+        files[target] = ArtifactRef(
+            uri=PACK_SCHEME + resolved.relative_to(root).as_posix(), sha256=sha256, size=size
         )
     logger.info("Referenced task artifacts", count=len(files), task_dir=str(root))
-    return ToolArtifactRefs(root=str(root), files=files)
+    return files

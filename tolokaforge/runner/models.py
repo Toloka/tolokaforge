@@ -3075,11 +3075,6 @@ class StackDecl(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-ToolArtifactsDelivery = Literal["inline", "mount"]
-"""How a task's tool artefacts reach the runner — see
-:attr:`EnvironmentManifest.tool_artifacts_delivery` (ADR-0068)."""
-
-
 ServiceIsolation = Literal["shared", "reset", "ephemeral"]
 """Per-service isolation vocabulary.
 
@@ -3614,6 +3609,15 @@ def _validate_allowlist_entry(entry: str) -> str:
     return lowered
 
 
+_DELIVERY_KEYS_THE_RUN_OWNS = (
+    "tool_artifacts_delivery",
+    "final_state_delivery",
+    "initial_state_delivery",
+)
+"""Per-task delivery keys an earlier draft of ADR-0068/0069/0071 used, now
+``compute.trial_data_delivery`` in the run config (ADR-0072)."""
+
+
 class EnvironmentPatch(BaseModel):
     """Per-project or per-task environment declaration — an all-optional
     input shape that :func:`tolokaforge.core.project_loader.resolve`
@@ -3628,6 +3632,25 @@ class EnvironmentPatch(BaseModel):
     """
 
     model_config = {"extra": "ignore"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_a_delivery_the_run_owns(cls, data: Any) -> Any:
+        """Refuse the per-direction delivery keys: how bytes move is the run's (ADR-0072).
+
+        The model ignores unknown keys, so a pack written for the per-task keys
+        would otherwise run inline without a word — on the large task they were
+        written for, out of memory.
+        """
+        if isinstance(data, Mapping):
+            named = sorted(key for key in _DELIVERY_KEYS_THE_RUN_OWNS if key in data)
+            if named:
+                raise ValueError(
+                    f"{', '.join(named)} is not a task setting: how a trial's data reaches "
+                    "the runner is the run's choice, compute.trial_data_delivery in the run "
+                    "config (ADR-0072)"
+                )
+        return data
 
     stack: StackPatch | None = None
     """Substrate slot — see :class:`StackPatch`. A task patch that sets
@@ -3657,13 +3680,6 @@ class EnvironmentPatch(BaseModel):
     """Security defaults applied to services that do not override them.
     Survives atomic ``stack`` replacement (policy request,
     substrate-neutral)."""
-
-    tool_artifacts_delivery: ToolArtifactsDelivery | None = None
-    """How the task's tool artefacts reach the runner — see
-    :attr:`EnvironmentManifest.tool_artifacts_delivery`. Survives atomic
-    ``stack`` replacement (a request about the task's files, not about the
-    replaced services); the resolver refuses ``mount`` on a plan whose runner
-    is not owned by a ``trial``-scope stack."""
 
     services: dict[str, ServiceSpec] | None = None
     """Per-service isolation + reset declarations, keyed by compose
@@ -3793,19 +3809,6 @@ class EnvironmentManifest(BaseModel):
     security_context_defaults: SecurityContext | None = None
     """Applied by the provisioner to every service that does not override
     the equivalent settings in the compose file."""
-
-    tool_artifacts_delivery: ToolArtifactsDelivery = "inline"
-    """How the task's own tool artefacts reach the runner (ADR-0068).
-
-    ``inline`` (the default) carries every file base64-encoded in
-    :attr:`TaskDescription.tool_artifacts`, inside the registration message.
-    ``mount`` carries only each file's path, SHA-256 and size in
-    :attr:`TaskDescription.tool_artifact_refs`; the engine bind-mounts the
-    task directory read-only into the runner service and the runner copies
-    and verifies the files. ``mount`` needs a runner the engine materialises
-    for this trial, so it is refused unless a ``trial``-scope stack owns the
-    runner, and the grader must be ``runner_rpc`` without snapshot bundles. Tool libraries (ADR-0060) stay
-    inline either way."""
 
     services: dict[str, ServiceSpec] = Field(default_factory=dict)
     """Per-service isolation + reset declarations, keyed by compose
@@ -4010,18 +4013,24 @@ def _refuse_unnormalised_artifact_path(path: str, what: str) -> str:
     return path
 
 
-class ToolArtifactRef(BaseModel):
-    """One tool artefact delivered by reference instead of inline (ADR-0068).
+PACK_SCHEME = "pack:"
+"""The scheme of an :class:`ArtifactRef` that names a file of the task's pack (ADR-0072)."""
 
-    The bytes are not on the wire. The runner reads them from
-    :attr:`source` under the reference root the engine mounted into it, and
-    refuses the trial unless they hash to :attr:`sha256` and measure
-    :attr:`size` bytes.
+
+class ArtifactRef(BaseModel):
+    """Bulk trial data named by content and an address, not carried as bytes (ADR-0068, ADR-0072).
+
+    :attr:`uri`'s scheme says where a reader finds the bytes; :attr:`sha256` and
+    :attr:`size` say what they must be, and every reader refuses bytes that
+    differ. The one scheme read today is ``pack:<path>``: a file of the task's
+    pack, at ``<path>`` relative to the task's directory on whichever machine
+    reads it, so a reference stays valid when the description is built on one
+    machine and the trial runs on another.
     """
 
-    source: str
-    """The file's path relative to :attr:`ToolArtifactRefs.root`. It may differ
-    from the artefact's own path (the key it is stored under): the native adapter
+    uri: str
+    """``pack:`` followed by a normalised relative POSIX path. It may differ from
+    the artefact's own path (the key it is stored under): the native adapter
     delivers a test case's state file as ``initial_state.json`` beside a shared
     MCP server."""
 
@@ -4033,59 +4042,30 @@ class ToolArtifactRef(BaseModel):
 
     model_config = {"extra": "forbid", "frozen": True}
 
-    @field_validator("source")
+    @field_validator("uri")
     @classmethod
-    def _normalised_source(cls, value: str) -> str:
-        return _refuse_unnormalised_artifact_path(value, "tool_artifact_refs source")
+    def _pack_uri(cls, value: str) -> str:
+        if not value.startswith(PACK_SCHEME):
+            raise ValueError(
+                f"artifact reference {value!r} has no {PACK_SCHEME!r} scheme; a reference names "
+                "a file of the task's pack as pack:<path relative to the task's directory>"
+            )
+        _refuse_unnormalised_artifact_path(value[len(PACK_SCHEME) :], "artifact reference path")
+        return value
 
     @field_validator("sha256")
     @classmethod
     def _hex_digest(cls, value: str) -> str:
         if not _SHA256_HEX_RE.match(value):
             raise ValueError(
-                f"tool_artifact_refs sha256 {value!r} is not 64 lowercase hex characters"
+                f"artifact reference sha256 {value!r} is not 64 lowercase hex characters"
             )
         return value
 
-
-class ToolArtifactRefs(BaseModel):
-    """Tool artefacts the runner reads from a mounted directory (ADR-0068).
-
-    Produced by an adapter whose task's environment declares
-    ``tool_artifacts_delivery: mount``. The engine bind-mounts :attr:`root`
-    read-only into the runner service of the trial-scope stack that owns the
-    trial's runner, and the runner copies each file into the trial's
-    artefact directory beside the inline :attr:`TaskDescription.tool_artifacts`,
-    verifying every hash.
-    """
-
-    root: str
-    """Absolute path of the directory the files are read from, on the machine
-    that materialises the trial's stack. The engine mounts it; the runner never
-    reads this value, it reads the mount."""
-
-    files: dict[str, ToolArtifactRef]
-    """Each artefact's path in the trial's artefact directory, to where its bytes are."""
-
-    model_config = {"extra": "forbid"}
-
-    @field_validator("root")
-    @classmethod
-    def _absolute_root(cls, value: str) -> str:
-        if not PurePosixPath(value).is_absolute():
-            raise ValueError(f"tool_artifact_refs root {value!r} is not an absolute path")
-        return value
-
-    @field_validator("files")
-    @classmethod
-    def _normalised_targets(cls, value: dict[str, ToolArtifactRef]) -> dict[str, ToolArtifactRef]:
-        if not value:
-            raise ValueError(
-                "tool_artifact_refs declares no files; leave tool_artifact_refs unset instead"
-            )
-        for target in value:
-            _refuse_unnormalised_artifact_path(target, "tool_artifact_refs path")
-        return value
+    @property
+    def pack_path(self) -> str:
+        """The file's path relative to the task's directory."""
+        return self.uri[len(PACK_SCHEME) :]
 
 
 class TaskDescription(BaseModel):
@@ -4145,11 +4125,12 @@ class TaskDescription(BaseModel):
         "Keys are relative paths, values are base64 content.",
     )
 
-    tool_artifact_refs: ToolArtifactRefs | None = None
-    """Tool artefacts delivered by reference (ADR-0068): their paths, hashes and
-    the directory the engine mounts into the runner, with no bytes on the wire.
-    ``None`` when every artefact travels inline in :attr:`tool_artifacts`. An
-    artefact path appears in at most one of the two."""
+    tool_artifact_refs: dict[str, ArtifactRef] | None = None
+    """Tool artefacts delivered by reference (ADR-0068, ADR-0072), keyed by their
+    path in the trial's artefact directory: where each file is in the task's pack
+    and what it hashes to, with no bytes on the wire. ``None`` when every
+    artefact travels inline in :attr:`tool_artifacts`. An artefact path appears in
+    at most one of the two."""
 
     # --- Environment ---
     environment_manifest: EnvironmentManifest | None = None
@@ -4162,7 +4143,13 @@ class TaskDescription(BaseModel):
     def _refuse_an_artifact_delivered_twice(self) -> TaskDescription:
         if self.tool_artifact_refs is None:
             return self
-        both = sorted(self.tool_artifacts.keys() & self.tool_artifact_refs.files.keys())
+        if not self.tool_artifact_refs:
+            raise ValueError(
+                "tool_artifact_refs declares no files; leave tool_artifact_refs unset instead"
+            )
+        for target in self.tool_artifact_refs:
+            _refuse_unnormalised_artifact_path(target, "tool_artifact_refs path")
+        both = sorted(self.tool_artifacts.keys() & self.tool_artifact_refs.keys())
         if both:
             raise ValueError(
                 f"{len(both)} artefact path(s) are both inline in tool_artifacts and "

@@ -375,8 +375,8 @@ called to serialize the task for transfer to the Runner container.
 | `initialization_actions` | `initial_state.initialization_actions` |
 | `grading` | `grading.yaml`, translated into the runner's grading config |
 | `system_prompt` | system prompt file content |
-| `tool_artifacts` | Every `.py`, `.json`, `.yaml`, `.yml`, `.md`, `.txt` file under the task dir (recursive), base64-encoded — or nothing under `tool_artifacts_delivery: mount` |
-| `tool_artifact_refs` | Under `tool_artifacts_delivery: mount`, the same files by path, SHA-256 and size (ADR-0068) |
+| `tool_artifacts` | Every `.py`, `.json`, `.yaml`, `.yml`, `.md`, `.txt` file under the task dir (recursive), base64-encoded — or nothing under `compute.trial_data_delivery: mount` |
+| `tool_artifact_refs` | Under `compute.trial_data_delivery: mount`, the same files by `pack:` address, SHA-256 and size (ADR-0068, ADR-0072) |
 | `metadata.mcp_server_ref` | Relative path to `mcp_server.py` |
 
 ### Artifact bundling
@@ -402,14 +402,16 @@ task directory (the domain root for a shared domain), recursively, plus the case
 tool schemas in `fixtures/tools.json` are also resolved on the host and embedded into each
 `ToolSchema.parameters`.
 
-**By reference.** A task whose world is large sets
-`environment_manifest.tool_artifacts_delivery: mount` (ADR-0068). The adapter then puts
-nothing in `tool_artifacts`: it records the same files in `tool_artifact_refs` — each
-file's path under the task directory, SHA-256 and size, hashed in chunks — and the engine
-bind-mounts the task directory read-only into the trial-scope runner, which copies and
-verifies every file at `RegisterTrial`. A file outside the task directory (a `json_db`
-path with `..`) is refused under `mount`. See
-[`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifact_refs`](TASK_DESCRIPTION_SCHEMA.md#tool_artifact_refs-the-tasks-files-by-reference-adr-0068).
+**By reference.** A run whose tasks have large worlds sets
+`compute.trial_data_delivery: mount` in its run config (ADR-0068, ADR-0072): how bytes
+move is the deployment's choice, not the task's. For each task whose runner a `trial`-scope
+stack owns, the adapter then puts nothing in `tool_artifacts`: it records the same files in
+`tool_artifact_refs` — each file's `pack:` address relative to the task directory, SHA-256
+and size, hashed in chunks — and the engine bind-mounts its own copy of the task directory
+read-only into the runner, which copies and verifies every file at `RegisterTrial`. A task
+whose runner the run owns stays inline, with a log line saying why. A file outside the task
+directory (a `json_db` path with `..`) is refused under `mount`. See
+[`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifact_refs`](TASK_DESCRIPTION_SCHEMA.md#tool_artifact_refs-the-tasks-files-by-reference-adr-0068-adr-0072).
 
 Two things to know before a pack opts in. The runner service sees the whole task directory,
 read-only, not only the referenced files: a directory that holds something the runner (and so

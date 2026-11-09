@@ -16,10 +16,11 @@ X`` and every adapter's own tool package resolves. Cleanup — path removal,
 the runner tracks the directory on ``self._artifact_dirs[trial_id]`` for
 teardown, the grader scopes it to a local ``try/finally`` on the grade call.
 
-A description may also deliver artefacts by reference (ADR-0068): each entry
-of :attr:`TaskDescription.tool_artifact_refs` names a file under a directory
-the engine mounted read-only into the runner, with the SHA-256 and size the
-adapter computed. :func:`extract_tool_artifacts` copies each such file into the
+A description may also deliver artefacts by reference (ADR-0068, ADR-0072): each
+entry of :attr:`TaskDescription.tool_artifact_refs` names a file of the task's
+pack by its ``pack:`` address, resolved here under the task directory the engine
+mounted read-only into the runner, with the SHA-256 and size the adapter
+computed. :func:`extract_tool_artifacts` copies each such file into the
 same directory as the inline entries, hashing while it copies, and refuses the
 whole set when any file is missing, leaves the mount or does not match. Only a
 process that was handed the mount (:data:`TOOL_ARTIFACT_REFS_DIR_ENV_VAR`) can
@@ -67,10 +68,10 @@ class ToolArtifactRefError(ValueError):
 
 
 class _ToolArtifactRef(Protocol):
-    """What resolution reads off a :class:`~tolokaforge.runner.models.ToolArtifactRef`."""
+    """What resolution reads off a :class:`~tolokaforge.runner.models.ArtifactRef`."""
 
     @property
-    def source(self) -> str: ...
+    def pack_path(self) -> str: ...
 
     @property
     def sha256(self) -> str: ...
@@ -202,11 +203,11 @@ def _copy_verified_refs(
 
 def _copy_one_verified_ref(root: Path, ref: _ToolArtifactRef, out_path: Path) -> str | None:
     """Copy one reference to ``out_path``; why it was refused, or ``None`` when it matched."""
-    source = (root / ref.source).resolve()
+    source = (root / ref.pack_path).resolve()
     if not source.is_relative_to(root):
-        return f"source {ref.source!r} resolves outside the reference root"
+        return f"pack:{ref.pack_path} resolves outside the reference root"
     if not source.is_file():
-        return f"source {ref.source!r} is not a file under the reference root"
+        return f"pack:{ref.pack_path} is not a file under the reference root"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256()
     size = 0
@@ -220,7 +221,7 @@ def _copy_one_verified_ref(root: Path, ref: _ToolArtifactRef, out_path: Path) ->
         return None
     out_path.unlink()
     return (
-        f"source {ref.source!r} has sha256 {actual} and {size} bytes, "
+        f"pack:{ref.pack_path} has sha256 {actual} and {size} bytes, "
         f"expected sha256 {ref.sha256} and {ref.size} bytes"
     )
 

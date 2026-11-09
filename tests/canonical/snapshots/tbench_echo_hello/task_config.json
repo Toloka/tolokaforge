@@ -41,8 +41,7 @@
         "runner_service": null,
         "stack_scope": "trial"
       }
-    },
-    "tool_artifacts_delivery": null
+    }
   },
   "grading": "__adapter__",
   "initial_state": {

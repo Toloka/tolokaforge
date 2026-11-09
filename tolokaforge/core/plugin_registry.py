@@ -147,6 +147,7 @@ from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 
 if TYPE_CHECKING:
     from importlib.metadata import EntryPoint
+    from pathlib import Path
 
     from tolokaforge.core.actors.actor import Actor
     from tolokaforge.core.actors.turn_policy import TurnPolicy
@@ -448,6 +449,11 @@ class RuntimeBackendBuildContext:
     Injected as ``TOLOKAFORGE_STATE_READ_TIMEOUT_S`` into every runner container
     the backend materialises: the runner's bound on one read of a state holder's
     live state."""
+    task_dir_of: Callable[[str], Path] | None = None
+    """Where a task's directory is on this machine, by task id: the base its
+    ``pack:`` references resolve against when the engine mounts it into the
+    task's runner (ADR-0072). ``None`` when the caller has no adapter to ask;
+    a description with references is then refused at provision."""
 
 
 @dataclass(frozen=True)

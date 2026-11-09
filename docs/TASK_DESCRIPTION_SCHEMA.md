@@ -484,7 +484,7 @@ class TaskDescription(BaseModel):
 
     # --- Tool code ---
     tool_artifacts: Dict[str, str] = Field(default_factory=dict)  # relative path -> base64 content
-    tool_artifact_refs: Optional[ToolArtifactRefs] = None  # by reference, ADR-0068
+    tool_artifact_refs: Optional[Dict[str, ArtifactRef]] = None  # pack: references, ADR-0068/0072
 
     model_config = {"extra": "forbid"}
 ```
@@ -561,30 +561,30 @@ adapter's own artefacts is a `✗` line before any run. The encoded bundle of a 
 is built once per process for a given selection, so the descriptions of tasks sharing
 a pin share it rather than each holding a copy.
 
-### `tool_artifact_refs`: the task's files by reference (ADR-0068)
+### `tool_artifact_refs`: the task's files by reference (ADR-0068, ADR-0072)
 
-A task whose environment declares `tool_artifacts_delivery: mount` ships its own files
-by reference instead of inline: `tool_artifacts` holds only the inline entries (the
-pinned tool libraries), and `tool_artifact_refs` lists every other file.
+Under a run's `compute.trial_data_delivery: mount`, a task whose runner a `trial`-scope
+stack owns ships its own files by reference instead of inline: `tool_artifacts` holds only
+the inline entries (the pinned tool libraries), and `tool_artifact_refs` lists every other
+file.
 
 ```json
 "tool_artifact_refs": {
-  "root": "/abs/path/to/the/task/dir",
-  "files": {
-    "_shared/mcp_server.py": {"source": "_shared/mcp_server.py", "sha256": "<64 hex>", "size": 2048},
-    "_shared/initial_state.json": {"source": "testcases/case_7/state.json", "sha256": "<64 hex>", "size": 913}
-  }
+  "_shared/mcp_server.py": {"uri": "pack:_shared/mcp_server.py", "sha256": "<64 hex>", "size": 2048},
+  "_shared/initial_state.json": {"uri": "pack:testcases/case_7/state.json", "sha256": "<64 hex>", "size": 913}
 }
 ```
 
-- **`root`** is the absolute task directory on the machine that materialises the
-  trial's stack. The engine bind-mounts it read-only into the runner service at
-  `/tolokaforge/tool-artifact-refs` and sets `TOLOKAFORGE_TOOL_ARTIFACT_REFS_DIR`; the
-  runner reads the mount, never this value.
-- **`files`** maps each artefact path (where the file lands in the trial's artefact
-  directory) to its `source` under `root`, its lowercase hex `sha256` and its `size`,
-  computed when the task was described. Both paths are normalised relative POSIX paths,
-  and an artefact path is never both inline and referenced.
+- Each key is the artefact path: where the file lands in the trial's artefact directory.
+- Each value is an `ArtifactRef`: the file's `uri`, its lowercase hex `sha256` and its
+  `size`, computed when the task was described. The one scheme is `pack:<path>`, a path
+  relative to the task's directory on whichever machine reads it, so no path of the
+  machine that described the task is in the description. Both paths are normalised
+  relative POSIX paths, and an artefact path is never both inline and referenced.
+
+The engine that materialises the trial locates its own copy of the task directory
+through its adapter, bind-mounts it read-only into the runner service at
+`/tolokaforge/tool-artifact-refs` and sets `TOLOKAFORGE_TOOL_ARTIFACT_REFS_DIR`.
 
 At `RegisterTrial` the runner copies each file into the trial's artefact directory beside
 the inline entries, hashing while it copies. It refuses the trial — listing every path at
@@ -592,7 +592,7 @@ fault — when a file is missing, resolves outside the mount, or differs in dige
 and when it was given no mount at all. Only a runner owned by a `trial`-scope stack gets
 the mount, and only the `runner_rpc` grader without snapshot bundles can grade the task:
 the run refuses `grader_rpc`, `queue` and `grader.snapshot.enabled` for it before any
-trial.
+trial, and so does `run_trial_from_inputs` for the one trial it is handed.
 
 ---
 
