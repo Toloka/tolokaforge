@@ -31,6 +31,9 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 
 Note: number 0043 is intentionally skipped — reserved for a draft that never landed on `main` (`HybridRuntimeBackend` as a distinct class). Superseded before merge by ADR-0044. See closed Milestone 40 (#1363) for the draft's history.
 
+Note: numbers 0068-0071 are held by four ADRs open on the branches of #1970, #1972, #1977 and #1978 (tool artefacts, final state, grading copies and initial state by reference), so the index jumps from 0067 to 0072. ADR-0072 adopts their mechanism and revisits how the data is addressed; it supersedes none of them.
+
+
 
 | # | Title | Status |
 |---|---|---|
@@ -101,3 +104,4 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0065](0065-engine-services-per-run.md) | Start only the engine services a run needs: rag-service and mock-web resolved one by one from the tasks and the adapter, with a `docker.services` override (`auto`, `always`, `never`) | Accepted |
 | [0066](0066-judge-evidence-parts.md) | Judge evidence made of named parts — `customization.evidence` composes the judge's view from seven independent parts (agent policy, knowledge search, state diff, DB, workspace, numbered tool results, state-changing calls by ADR-0061 `mutates_state` with `read_when` rules), each `false` / `true` / options, defaults the judge over the final state | Accepted |
 | [0067](0067-tool-error-is-its-own-status.md) | A tool's declared refusal is its own tool-call status — `DomainToolRegistry` answers a `ToolError` with `isError` and the `tool_error` category, recorded as `tool_error`: a completed call, apart from one that never ran and one that crashed; protocol v7 | Accepted |
+| [0072](0072-trial-data-addressed-by-content.md) | A trial's bulk data is addressed by content and resolved where it is consumed — one `ArtifactRef {uri, sha256, size}` for a task's files, initial state and final state behind an `ArtifactStore` resolver seam (`pack:` and `file://` first, a store later), delivery chosen by the deployment rather than by per-direction `inline \| mount` manifest fields, and run-start validation stated on the trial contract so all three integration shapes enforce it | Proposed |
