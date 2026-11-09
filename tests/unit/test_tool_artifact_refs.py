@@ -152,6 +152,29 @@ class TestWireModel:
                 tool_artifact_refs={"a.py": _ref("a.py")},
             )
 
+    def test_an_inline_description_dumps_as_an_engine_before_adr_0072_emitted_it(self) -> None:
+        # A runner or grader image predating ADR-0072 forbids both keys: an inline
+        # description it serves as before must reach it without them.
+        description = _description()
+        for dumped in (description.model_dump(), json.loads(description.model_dump_json())):
+            assert "trial_data_delivery" not in dumped
+            assert "tool_artifact_refs" not in dumped
+        assert TaskDescription.model_validate_json(description.model_dump_json()) == description
+
+    def test_a_mount_description_carries_its_delivery_and_references(self) -> None:
+        bare = _description(trial_data_delivery="mount")
+        assert json.loads(bare.model_dump_json())["trial_data_delivery"] == "mount"
+        assert "tool_artifact_refs" not in bare.model_dump()
+        referenced = _description(tool_artifact_refs={"a.py": _ref("tools/a.py")})
+        wire = json.loads(referenced.model_dump_json())
+        assert wire["trial_data_delivery"] == "mount"
+        assert wire["tool_artifact_refs"] == {
+            "a.py": {"uri": "pack:tools/a.py", "sha256": "0" * 64, "size": 1}
+        }
+        for description in (bare, referenced):
+            restored = TaskDescription.model_validate_json(description.model_dump_json())
+            assert restored == description
+
 
 # ---------------------------------------------------------------------------
 # Resolution: copy, verify, refuse

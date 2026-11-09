@@ -606,6 +606,11 @@ state is written by the runner to a mounted directory and reaches the trial bund
 [MULTI_CONTAINER_GUIDE.md](MULTI_CONTAINER_GUIDE.md) and
 [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md#a-final-state-delivered-by-reference-adr-0069).
 
+A dump leaves `trial_data_delivery` out while it is `inline` and `tool_artifact_refs`
+out while it is unset, so an inline description serialises as an engine predating
+ADR-0072 emitted it: a runner or grader image of that age, which forbids both keys,
+still accepts it, and refuses a `mount` description it could not serve.
+
 ---
 
 ## Examples

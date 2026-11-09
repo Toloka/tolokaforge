@@ -4158,6 +4158,33 @@ class TaskDescription(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"tool_artifact_refs"})
+    """Fields the dump leaves out while they are ``None``; with ``trial_data_delivery``
+    left out at ``inline`` (the dump below), a description that moves its data inline
+    serialises as an engine predating ADR-0072 emitted it."""
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _leave_out_an_inline_delivery(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Leave the delivery keys out of a dump of an inline description.
+
+        A runner or grader image predating ADR-0072 forbids both keys, so writing
+        ``"trial_data_delivery": "inline"`` and ``"tool_artifact_refs": null`` would have
+        it refuse every description, though it serves an inline one as before. Left
+        out, they are on the wire only for a ``mount`` description, which such an
+        image cannot serve and refuses.
+        """
+        if not isinstance(self, TaskDescription):
+            # A plain mapping stored without validation (``model_copy(update=…)``)
+            # dumps as the mapping it is.
+            return handler(self)
+        data = leave_out_absent_fields(self, handler)
+        if self.trial_data_delivery == "inline":
+            data.pop("trial_data_delivery", None)
+        return data
+
     @model_validator(mode="after")
     def _refuse_an_artifact_delivered_twice(self) -> TaskDescription:
         if self.tool_artifact_refs is None:
