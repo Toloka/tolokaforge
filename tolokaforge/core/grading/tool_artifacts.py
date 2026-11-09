@@ -126,8 +126,8 @@ def extract_tool_artifacts(
             f"{len(refs)} tool artefact(s) of {trial_id} are delivered by reference, but this "
             f"process was given no reference root ({TOOL_ARTIFACT_REFS_DIR_ENV_VAR} is unset). "
             "References are resolved only by the runner of a trial-scope stack the engine "
-            "materialised with the task's directory mounted (tool_artifacts_delivery: mount), "
-            "graded by the runner_rpc grader."
+            "materialised with the task's directory mounted (compute.trial_data_delivery: "
+            "mount); a grader_rpc or queue grader, or a snapshot grade bundle, cannot read them."
         )
     extract_dir = Path(tempfile.mkdtemp(prefix=f"tolokaforge-artifacts-{safe_trial_id}-"))
 

@@ -70,6 +70,7 @@ from tolokaforge.core.grading.state_composition import StateHashConfig, refuse_r
 from tolokaforge.core.grading.tool_artifacts import file_sha256
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
+from tolokaforge.core.models.run_config import TrialDataDelivery
 from tolokaforge.core.project_loader import (
     construct_config,
     layer_judge_customization,
@@ -401,7 +402,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         self.agent_model: str = params.get("agent_model") or ""
         # ``compute.trial_data_delivery`` (ADR-0072): ``mount`` references the
         # task's files instead of bundling them, where the task's runner allows.
-        self.trial_data_delivery: str = params.get("trial_data_delivery", "inline")
+        self.trial_data_delivery: TrialDataDelivery = params.get("trial_data_delivery", "inline")
         if self.agent_harness != ENGINE_LOOP and not self.agent_model:
             raise ValueError(
                 f"native adapter: agent_harness {self.agent_harness!r} requires "
