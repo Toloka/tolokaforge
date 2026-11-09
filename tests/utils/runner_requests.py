@@ -7,13 +7,39 @@ real channel.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
+
+import pytest
 
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import TaskDescription
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
+from tolokaforge.runner.service import RunnerServiceImpl, TrialContextRuntime
+
+
+def initial_table_read_threads(monkeypatch: pytest.MonkeyPatch) -> list[threading.Thread]:
+    """The thread of every read of a trial's initial tables from now on (ADR-0071)."""
+    threads: list[threading.Thread] = []
+    original = TrialContextRuntime.initial_tables
+
+    def recorded(context: TrialContextRuntime) -> dict[str, list[dict[str, Any]]]:
+        threads.append(threading.current_thread())
+        return original(context)
+
+    monkeypatch.setattr(TrialContextRuntime, "initial_tables", recorded)
+    return threads
+
+
+def event_loop_thread(service: RunnerServiceImpl) -> threading.Thread:
+    """The thread ``service`` runs its coroutines on, which every trial shares."""
+
+    async def current() -> threading.Thread:
+        return threading.current_thread()
+
+    return service._run_async(current())
 
 
 def trial_spec_json(

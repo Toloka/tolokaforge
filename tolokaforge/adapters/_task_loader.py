@@ -110,6 +110,8 @@ from tolokaforge.core.project_loader import (
     resolve_effective_grading_combine,
 )
 from tolokaforge.core.tool_output_truncation import validated_output_max_chars
+from tolokaforge.runner.initial_state_file import seeded_table_shapes as seeded_json_db_table_shapes
+from tolokaforge.runner.initial_state_file import seeded_tables as seeded_json_db_tables
 from tolokaforge.runner.models import MutatesStateRule, ToolSchema, parse_mutates_state
 from tolokaforge.tools.registry import ToolCategory, ToolPolicy
 
@@ -1307,10 +1309,7 @@ def seeded_tables_from_task(task: TaskConfig, task_dir: Path) -> dict[str, list[
     disk raises :class:`RuntimeError` — a task declaring state it cannot supply
     is broken wherever it is read.
     """
-    return {
-        name: _seeded_records(collection)
-        for name, collection in _declared_json_db(task, task_dir).items()
-    }
+    return seeded_json_db_tables(_declared_json_db(task, task_dir))
 
 
 def seeded_table_shapes(task: TaskConfig, task_dir: Path) -> dict[str, str]:
@@ -1324,11 +1323,7 @@ def seeded_table_shapes(task: TaskConfig, task_dir: Path) -> dict[str, str]:
     :func:`~tolokaforge.core.grading.comparison_view_checks.comparison_view_findings`).
     A table seeded as a list is absent from the answer.
     """
-    return {
-        name: _collection_shape(collection)
-        for name, collection in _declared_json_db(task, task_dir).items()
-        if not isinstance(collection, list)
-    }
+    return seeded_json_db_table_shapes(_declared_json_db(task, task_dir))
 
 
 def _declared_json_db(task: TaskConfig, task_dir: Path) -> dict[str, Any]:
@@ -1344,16 +1339,6 @@ def _declared_json_db(task: TaskConfig, task_dir: Path) -> dict[str, Any]:
             data: dict[str, Any] = json.load(f)
         return data
     return dict(json_db)
-
-
-def _collection_shape(collection: Any) -> str:
-    """How a seeded collection that is not a list of records is written, in an author's words."""
-    if isinstance(collection, dict):
-        values = list(collection.values())
-        if values and all(isinstance(value, dict) for value in values):
-            return "a mapping of records keyed by id"
-        return "a single record (a mapping)"
-    return f"a {type(collection).__name__}"
 
 
 def seeded_tables_under_adapter(
@@ -1383,23 +1368,6 @@ def seeded_tables_under_adapter(
     if resolved is None:
         return SeededTablesLayer.unresolvable(kind=SkipKind.STRUCTURAL)
     return resolved.grading_seeded_tables(task, task_dir)
-
-
-def _seeded_records(collection: Any) -> list[dict[str, Any]]:
-    """Normalise one seeded collection to the record list its table carries.
-
-    A list is already the records. A mapping is records keyed by id when every
-    value is itself a mapping, and one record otherwise — a mapping of
-    primitives is the table's single row, not a row per field. Anything else is
-    a single record too.
-    """
-    if isinstance(collection, list):
-        return collection
-    if isinstance(collection, dict):
-        values = list(collection.values())
-        if values and all(isinstance(value, dict) for value in values):
-            return values
-    return [collection]
 
 
 class GradingSourceKind(str, Enum):

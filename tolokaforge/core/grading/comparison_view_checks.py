@@ -175,6 +175,7 @@ def check_wire_comparison_view(
     initial_state: RunnerInitialStateConfig,
     *,
     context: str,
+    tables: Mapping[str, Any] | None = None,
     table_shapes: Mapping[str, str] | None = None,
 ) -> str | None:
     """:func:`check_comparison_view` over a ``TaskDescription``'s own blocks.
@@ -183,15 +184,16 @@ def check_wire_comparison_view(
     schemas, the unstable fields and the state-check flags — so the native adapter and
     ``RegisterTrial`` check one description by one call; the one fact the wire cannot
     carry is how a table was seeded, since its tables are lists by type, so the adapter
-    that read the seeded JSON passes ``table_shapes``. ``None`` when the block declares
-    no view.
+    that read the seeded JSON passes ``table_shapes``. ``tables`` stands in for
+    ``initial_state.tables`` when the description names a state file instead (ADR-0071).
+    ``None`` when the block declares no view.
     """
     if state_checks.comparison_view is None:
         return None
     return check_comparison_view(
         state_checks.comparison_view,
         context=context,
-        tables=initial_state.tables,
+        tables=initial_state.tables if tables is None else tables,
         schemas={schema.table_name: tuple(schema.fields) for schema in initial_state.schemas},
         unstable_fields=[
             f"{spec.table_name}.{spec.field_name}" for spec in initial_state.unstable_fields

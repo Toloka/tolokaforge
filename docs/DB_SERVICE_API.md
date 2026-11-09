@@ -57,6 +57,13 @@ other endpoint on it answers: until then each one returns `404 TrialNotFound`.
 
 ### 1. Initialize Trial
 
+**`POST /trials/{trial_id}/init/json_db`** (ADR-0071) takes the same request with
+`json_db` — a task's seeded state as written, a JSON object of collections — in place of
+`tables`, and normalises each collection to its records as the engine does (a list is the
+records, a mapping of mappings is records keyed by id, anything else one record) before
+initialising as below. The runner streams a task's state file into it unparsed; a body
+whose normalised collections are not lists of records is refused with `422`.
+
 **`POST /trials/{trial_id}/init`**
 
 Initialize a trial with initial state, schemas, and unstable field specifications.

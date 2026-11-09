@@ -1138,6 +1138,32 @@
       "title": "InitialStateRef",
       "type": "object"
     },
+    "InitialStateTablesRef": {
+      "additionalProperties": false,
+      "description": "A task's initial tables as one of its referenced tool artefacts (ADR-0071).\n\n:attr:`artifact` names the entry of :attr:`TaskDescription.tool_artifact_refs`\nthe runner copies the state file to, and :attr:`sha256` / :attr:`size` repeat\nthat entry's, so a reader of :class:`RunnerInitialStateConfig` alone knows what\nthe file must hash to. The file holds the task's ``json_db`` as written; the\nrunner normalises it to tables as the inline delivery does.",
+      "properties": {
+        "artifact": {
+          "title": "Artifact",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifact",
+        "sha256",
+        "size"
+      ],
+      "title": "InitialStateTablesRef",
+      "type": "object"
+    },
     "InitializationAction": {
       "description": "One-time environment mutation executed before a trial starts.",
       "properties": {
@@ -2281,6 +2307,17 @@
           },
           "title": "Tables",
           "type": "object"
+        },
+        "tables_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InitialStateTablesRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "unstable_fields": {
           "items": {
