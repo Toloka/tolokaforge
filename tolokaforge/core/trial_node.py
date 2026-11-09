@@ -406,6 +406,9 @@ def _run_verified_trial(inputs: TrialNodeInputs, task: TaskConfig, spec: TrialSp
     output_dir = _job_scoped_output_dir(inputs.output_dir, inputs.job_id)
     adapter = build_single_task_adapter(task, inputs.task_pack_dir)
     validate_trial_inputs(inputs, default_grader_name=adapter.trial_grader_name)
+    # The node's adapter is built from the task alone; the description says how
+    # the run delivers its data, and the adapter's own reads of the task follow it (ADR-0072).
+    adapter.adopt_delivery(spec.task)
     manifest = spec.task.environment_manifest
     runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
     runtime_backend = load_runtime_backend(_resolve_runtime_name(inputs.runtime, spec))(

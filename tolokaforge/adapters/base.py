@@ -18,7 +18,7 @@ from tolokaforge.core.grading.config_validation import (
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Grade, GradingConfig, TaskConfig, Trajectory
-from tolokaforge.runner.models import TaskDescription
+from tolokaforge.runner.models import TaskDescription, TrialDataDelivery
 
 if TYPE_CHECKING:
     from tolokaforge.tools.registry import Tool
@@ -202,7 +202,7 @@ class BaseAdapter(ABC):
         self.params = params
         # The run's ``compute.trial_data_delivery`` (ADR-0072); see
         # :meth:`_delivers_by_reference` for the tasks it applies to.
-        self.trial_data_delivery: str = params.get("trial_data_delivery", "inline")
+        self.trial_data_delivery: TrialDataDelivery = params.get("trial_data_delivery", "inline")
         # The delivery decided for each task, by task id: memoised by
         # :meth:`_delivers_by_reference`, or adopted from a description.
         self._by_reference: dict[str, bool] = {}
@@ -680,7 +680,7 @@ class BaseAdapter(ABC):
             )
         return found is None
 
-    trial_data_delivery: str = "inline"
+    trial_data_delivery: TrialDataDelivery = "inline"
     """The run's ``compute.trial_data_delivery``, from the adapter's params (ADR-0072)."""
 
     # Adapters shipping a custom TrialGrader (registered under the
