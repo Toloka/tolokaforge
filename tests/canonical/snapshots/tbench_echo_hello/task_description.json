@@ -139,9 +139,7 @@
   "source_files": {},
   "system_prompt": "You are an expert developer working inside a Linux container. Use the bash tool to execute commands. Fix the issues described in the user message.",
   "task_id": "echo-hello",
-  "tool_artifact_refs": null,
   "tool_artifacts": {},
-  "trial_data_delivery": "inline",
   "user_simulator": {
     "backstory": "",
     "mode": "scripted",
