@@ -823,11 +823,19 @@ never counting one attempt twice.
 A trial whose tools run in an MCP subprocess keeps its state in that process; the
 DB service only mirrors it. Every read of its final state — `GetState`, each
 `GradeTrial`, and `SubstrateService`'s `ReadFinalDBState` / `ReadFinalDBStateStable`
-— first syncs the mirror from the subprocess. `GradeTrial` syncs once per call,
+— first syncs the mirror from the subprocess, reading back only the tables whose
+digests differ from the subprocess's. `GradeTrial` syncs once per call,
 before any component reads, so an earlier `GetState` never stands in for state the
 agent changed after it, and hash grading's golden replay (which runs in the same
 subprocess, and hands it and the mirror the trial's state back once scored, or when
 grading fails after the replay) is never read as the agent's.
+
+The sync leaves every table whose mirror digest agrees with the subprocess's
+*trusted*. Grading's RAW final state takes those tables from the copy the sync read
+from the subprocess, and reads only the others from the mirror, so a world the sync
+squared takes no row from the db-service and is held once. `GetState` answers the
+same way. The STABLE state and the judge's DB tools read the mirror. A db-service
+without table digests is read whole from the mirror.
 
 When that sync fails — the subprocess is gone or does not answer within
 `compute.state_read_timeout_s` (default 20 s; see

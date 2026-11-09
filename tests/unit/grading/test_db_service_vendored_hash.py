@@ -1,11 +1,12 @@
-"""The db-service image's own stable hash agrees with core's, byte for byte.
+"""The db-service image's own hashes agree with core's, byte for byte.
 
 The db-service image ships ``tolokaforge/env/json_db_service/`` without the engine wheel,
 so ``app.py`` cannot import :mod:`tolokaforge.core.hash` and runs the
-``compute_stable_hash`` and ``filter_unstable_fields`` its ``except ImportError`` branch
-vendors. That copy is the production path of every stable hash the service serves — the
-server-side hash verdict, ETags, snapshot digests — so nothing but this module holds it
-to core. The properties below draw nested states and compare the two digests through
+``compute_stable_hash``, ``filter_unstable_fields`` and ``table_digest`` its
+``except ImportError`` branch vendors. That copy is the production path of every stable
+hash the service serves — the server-side hash verdict, ETags, snapshot digests — and of
+the table digests a state holder's sync trusts its own copy on, so nothing but this
+module holds it to core. The properties below draw nested states and compare the two digests through
 the loader the table-name resolution's parity test uses
 (:func:`tests.utils.db_service_fallback.load_standalone_fallback`), which blocks the core
 import while ``app.py`` loads, so the code that runs here is the image's.
@@ -33,6 +34,7 @@ pytestmark = pytest.mark.unit
 
 _HASH = load_standalone_fallback("compute_stable_hash")
 _FILTER = load_standalone_fallback("filter_unstable_fields")
+_TABLE_DIGEST = load_standalone_fallback("table_digest")
 
 
 def test_the_copies_under_test_are_the_db_services_own() -> None:
@@ -40,6 +42,7 @@ def test_the_copies_under_test_are_the_db_services_own() -> None:
     for vendored, shared in (
         (_HASH, core_hash.compute_stable_hash),
         (_FILTER, core_hash.filter_unstable_fields),
+        (_TABLE_DIGEST, core_hash.table_digest),
     ):
         assert vendored is not shared
         source = Path(inspect.getsourcefile(vendored) or "")
@@ -128,6 +131,13 @@ def test_the_vendored_stable_hash_is_cores_byte_for_byte(
     vendored = _outcome(_HASH, state, unstable_fields, **kwargs)
     shared = _outcome(core_hash.compute_stable_hash, state, unstable_fields, **kwargs)
     assert vendored == shared
+
+
+@given(_RECORDS | _VALUES)
+@settings(max_examples=300, deadline=None)
+def test_the_vendored_table_digest_is_cores_byte_for_byte(table: Any) -> None:
+    """``table_digest(rows)``: the sync trusts a holder's copy when the two sides' agree."""
+    assert _outcome(_TABLE_DIGEST, table) == _outcome(core_hash.table_digest, table)
 
 
 @given(_STATES)

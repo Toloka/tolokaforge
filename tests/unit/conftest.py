@@ -15,22 +15,42 @@ from unittest.mock import patch
 import pytest
 
 from tests.utils.secret_state import cold_secret_manager
+from tolokaforge.core.hash import table_digest
 from tolokaforge.docker.wheel_resolver import WheelArtifact
 
 
 class FakeMutatingDBClient:
-    """Recorder for ``mutate`` calls; answers ``get_state`` from a seeded store.
+    """Records ``mutate`` calls and applies them to a seeded store, as the db-service does.
 
-    Shared between the Tau and MCP diff-sync tests — both drive a diff path
-    that only touches these two methods on the DB client.
+    Shared between the Tau and MCP diff-sync tests. Applying the ops matters to the
+    MCP sync: it compares the store's digests after mutating, and a store that ignored
+    them would always look unlike the holder's and draw a whole-table replace.
     """
 
     def __init__(self, state: dict[str, list[dict]] | None = None) -> None:
         self._state = {t: [dict(r) for r in v] for t, v in (state or {}).items()}
         self.mutations: list[tuple[str, list[dict]]] = []
 
-    async def get_state(self, trial_id: str, timeout: float | None = None) -> Any:
+    async def get_state(
+        self,
+        trial_id: str,
+        tables: list[str] | None = None,
+        timeout: float | None = None,
+        *,
+        hashes: bool = True,
+    ) -> Any:
+        if tables:
+            return SimpleNamespace(data={t: self._state[t] for t in tables if t in self._state})
         return SimpleNamespace(data=self._state)
+
+    async def get_table_digests(
+        self, trial_id: str, tables: list[str] | None = None, timeout: float | None = None
+    ) -> dict[str, str]:
+        return {
+            name: table_digest(rows)
+            for name, rows in self._state.items()
+            if not tables or name in tables
+        }
 
     async def mutate(
         self,
@@ -38,9 +58,30 @@ class FakeMutatingDBClient:
         table_name: str,
         operations: list[dict],
         timeout: float | None = None,
+        *,
+        hashes: bool = True,
     ) -> Any:
         self.mutations.append((table_name, operations))
+        for op in operations:
+            self._state[table_name] = self._applied(self._state.get(table_name, []), op)
         return SimpleNamespace(success=True)
+
+    @staticmethod
+    def _applied(rows: list[dict], op: dict) -> list[dict]:
+        if op["op"] == "replace":
+            return [dict(r) for r in op["records"]]
+        if op["op"] == "insert":
+            return [*rows, dict(op["record"])]
+        if op["op"] == "delete":
+            return [r for r in rows if any(r.get(k) != v for k, v in op["filter"].items())]
+        assert op["op"] == "upsert", op
+        key = op.get("key", "id")
+        fields = [key] if isinstance(key, str) else key
+        for row in rows:
+            if all(row.get(f) == op["record"][f] for f in fields):
+                row.update(op["record"])
+                return rows
+        return [*rows, dict(op["record"])]
 
 
 @pytest.fixture

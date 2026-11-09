@@ -171,6 +171,7 @@ Get the complete current state including all fields.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `tables` | `string` | all | Comma-separated list of tables to return |
+| `hashes` | `bool` | `true` | `false` answers `""` for both hashes, so a reader of a few tables does not pay two hashes of the whole state |
 
 #### Status Codes
 
@@ -285,6 +286,17 @@ Apply mutations to a specific table. Used by tools to modify state.
 {"op": "delete", "filter": {"id": "RES-001"}}
 ```
 
+**Replace:**
+```json
+{"op": "replace", "records": [{"id": "RES-001", "status": "cancelled"}]}
+```
+
+The table's rows become exactly `records`, in that order, which an upsert (it merges
+into a row, and appends a new one) cannot say. It creates a missing table, even an
+empty one. An operation this service does not know is a 400 naming it, also when it
+carries fields the service does not know: a runner syncing a state holder reads that
+answer as "no such operation" and keeps the table as it is.
+
 **Upsert:**
 ```json
 {"op": "upsert", "record": {"id": "RES-001", "status": "modified"}, "key": "id"}
@@ -320,6 +332,14 @@ nothing: rows, version, and the SQL mirror are unchanged.
   }
 }
 ```
+
+#### Query Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `hashes` | `bool` | `true` | `false` answers `""` for `new_hash`, so a caller mutating many tables in turn does not pay a hash of the whole state for each |
+
+Only the mutated table is re-mirrored into SQL.
 
 #### Response
 
@@ -622,6 +642,40 @@ Service health check (not trial-specific).
   "active_trials": 3
 }
 ```
+
+---
+
+### 15. Get Table Digests
+
+**`GET /trials/{trial_id}/state/digests`**
+
+Each table's SHA-256 of its canonical JSON (`sort_keys`, compact separators, ASCII,
+encoded a row at a time), in the state's own table order. A state holder's sync compares
+these with its own tables' and reads back only those that differ; a reader holding a
+table whose digest agrees takes its copy instead of the rows. This is not a grading
+digest and nothing persists it.
+
+#### Query Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `tables` | `string` | all | Comma-separated list of tables to answer for; one the trial lacks is left out |
+
+#### Response
+
+```json
+{
+  "digests": {"users": "ab12...", "orders": "cd34..."},
+  "version": 3
+}
+```
+
+#### Status Codes
+
+| Code | Meaning |
+|------|---------|
+| 200 | Success |
+| 404 | Trial not found |
 
 ---
 
