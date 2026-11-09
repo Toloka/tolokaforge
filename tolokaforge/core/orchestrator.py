@@ -93,6 +93,7 @@ from tolokaforge.core.models.run_config import (
     REMOTE_RUNTIME_NAME,
     USER_TEMPERATURE_IGNORED,
     DispatchConfig,
+    GraderConfig,
     sets_user_temperature,
 )
 from tolokaforge.core.output.aggregate_models import _engine_version
@@ -148,6 +149,10 @@ from tolokaforge.core.trial_node import (
     TrialExecutionContext,
     TrialExecutionUnit,
     build_trial_execution_unit,
+)
+from tolokaforge.core.trial_validation import (
+    GRADERS_OFF_THE_RUNNER,
+    refuse_references_the_grader_cannot_read,
 )
 from tolokaforge.observability.factory import (
     RunIdentity,
@@ -407,6 +412,14 @@ _DEFAULT_DB_SERVICE_URL = "http://tolokaforge-db-service:8000"
 container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
 mirrors the value on ``TrialSpec.env_endpoints`` so a future out-of-process
 runner reads its service URLs from the spec instead of its own env."""
+
+
+def _effective_grader_name(grader: GraderConfig | None, adapter: BaseAdapter | None) -> str | None:
+    """The run config's grader name, else the one the adapter names for its trials."""
+    grader_name = grader.name if grader else None
+    if not grader_name and adapter is not None:
+        return adapter.trial_grader_name
+    return grader_name
 
 
 def _normalise_runner_url(runner_address: str) -> str:
@@ -1030,6 +1043,15 @@ class Orchestrator:
         self._task_desc_cache[task_id] = description
         return description
 
+    def _task_dir_on_this_machine(self, task_id: str) -> Path:
+        """The task's directory here: where its ``pack:`` references resolve (ADR-0072)."""
+        if self.adapter is None:
+            raise RuntimeError(
+                f"task {task_id!r} delivers its artefacts as pack: references, but the "
+                "orchestrator has no adapter to locate the task's directory"
+            )
+        return self.adapter.get_task_dir(task_id)
+
     def _build_trial_spec(
         self,
         *,
@@ -1356,10 +1378,8 @@ class Orchestrator:
                 "stack; it contradicts orchestrator.auto_start_services=true. Set "
                 "auto_start_services: false."
             )
-        grader_name = self.config.grader.name if self.config.grader else None
-        if not grader_name and self.adapter is not None:
-            grader_name = self.adapter.trial_grader_name
-        if grader_name in ("grader_rpc", "queue"):
+        grader_name = _effective_grader_name(self.config.grader, self.adapter)
+        if grader_name in GRADERS_OFF_THE_RUNNER:
             raise ValueError(
                 f"orchestrator.dispatch cannot use grader {grader_name!r}: it dials a static "
                 "runner address the node does not expose. Use the 'runner_rpc' grader."
@@ -1721,6 +1741,7 @@ class Orchestrator:
                 connect_retry_interval_s=connect_retry_interval_s,
                 grpc_max_message_mb=self._grpc_max_message_mb(),
                 state_read_timeout_s=self._state_read_timeout_s(),
+                task_dir_of=self._task_dir_on_this_machine,
             )
         )
         self.logger.info(
@@ -2844,6 +2865,28 @@ class Orchestrator:
             )
         return None
 
+    def _refuse_tool_artifact_refs_the_grader_cannot_read(self) -> None:
+        """Refuse, before any trial, tasks whose referenced artefacts the grader cannot read.
+
+        The rule is :func:`refuse_references_the_grader_cannot_read`, which the
+        library route applies to each trial too (ADR-0072). Descriptions are
+        resolved only when the run grades a way that cannot read references.
+        """
+        grader = self.config.grader
+        grader_name = _effective_grader_name(grader, self.adapter)
+        snapshot = grader is not None and grader.snapshot is not None and grader.snapshot.enabled
+        if self.adapter is None or not (grader_name in GRADERS_OFF_THE_RUNNER or snapshot):
+            return
+        refuse_references_the_grader_cannot_read(
+            grader,
+            grader_name,
+            [
+                task.task_id
+                for task in self.tasks
+                if self._task_description(task.task_id).tool_artifact_refs is not None
+            ],
+        )
+
     def _reject_ungradeable_packs(self) -> None:
         """Refuse a run whose selected packs cannot be graded as written.
 
@@ -3107,6 +3150,7 @@ class Orchestrator:
         # selected task needs a judge but none is configured (fail loud).
         judge_config = self._resolve_judge_config()
         self._reject_ungradeable_packs()
+        self._refuse_tool_artifact_refs_the_grader_cannot_read()
 
         # Log model configuration for all roles
         self.logger.info(

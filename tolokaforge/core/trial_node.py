@@ -63,6 +63,7 @@ from tolokaforge.core.trial_executor import (
     TrialExecutor,
 )
 from tolokaforge.core.trial_grader import TrialGrader
+from tolokaforge.core.trial_validation import validate_trial_inputs
 from tolokaforge.observability.factory import build_trial_observer, write_tracing_receipt
 from tolokaforge.observability.observer import NullTrialObserver, TrialObserver, safely
 from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
@@ -404,6 +405,7 @@ def _run_verified_trial(inputs: TrialNodeInputs, task: TaskConfig, spec: TrialSp
     # recognisable. With none, every path and the trace are keyed as without it.
     output_dir = _job_scoped_output_dir(inputs.output_dir, inputs.job_id)
     adapter = build_single_task_adapter(task, inputs.task_pack_dir)
+    validate_trial_inputs(inputs, default_grader_name=adapter.trial_grader_name)
     manifest = spec.task.environment_manifest
     runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
     runtime_backend = load_runtime_backend(_resolve_runtime_name(inputs.runtime, spec))(
@@ -418,6 +420,8 @@ def _run_verified_trial(inputs: TrialNodeInputs, task: TaskConfig, spec: TrialSp
             expose_substrate=inputs.grader_config is not None
             and inputs.grader_config.expose_substrate,
             grpc_max_message_mb=inputs.grpc_max_message_mb,
+            # Looked up only for a trial whose artefacts are pack: references.
+            task_dir_of=lambda task_id: adapter.get_task_dir(task_id),
         )
     )
     # Resolve the conductor factory before validating the user-simulator config

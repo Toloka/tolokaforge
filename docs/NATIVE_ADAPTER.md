@@ -375,7 +375,8 @@ called to serialize the task for transfer to the Runner container.
 | `initialization_actions` | `initial_state.initialization_actions` |
 | `grading` | `grading.yaml`, translated into the runner's grading config |
 | `system_prompt` | system prompt file content |
-| `tool_artifacts` | All `.py` files (recursive) + top-level `.json`, `.yaml`, `.yml`, `.md`, `.txt` files in the task dir, base64-encoded |
+| `tool_artifacts` | Every `.py`, `.json`, `.yaml`, `.yml`, `.md`, `.txt` file under the task dir (recursive), base64-encoded — or nothing under `compute.trial_data_delivery: mount` |
+| `tool_artifact_refs` | Under `compute.trial_data_delivery: mount`, the same files by `pack:` address, SHA-256 and size (ADR-0068, ADR-0072) |
 | `metadata.mcp_server_ref` | Relative path to `mcp_server.py` |
 
 ### Artifact bundling
@@ -395,9 +396,32 @@ directory that a pinned library also bundles — or a copy of a bundled package
 under `_shared/` or `tools/`, where it would shadow the pinned one — is refused; see
 [`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifacts`](TASK_DESCRIPTION_SCHEMA.md#tool_artifacts-tool-code-and-the-shared-libraries-a-task-pins).
 
-**Bundling scope:**
-- Python (`.py`) files — bundled **recursively** (`**/*.py`), so all subdirectory modules (e.g. `tools/*.py`) are included.
-- Data files (`.json`, `.yaml`, `.yml`, `.md`, `.txt`) — bundled from the **task root only** (not recursive).  `fixtures/tools.json` is *not* bundled as an artifact — its contents are resolved on the host and embedded directly into each `ToolSchema.parameters` inside `TaskDescription`.
+**Bundling scope:** every `.py`, `.json`, `.yaml`, `.yml`, `.md` and `.txt` file under the
+task directory (the domain root for a shared domain), recursively, plus the case's
+`initial_state.json_db` copied beside a shared MCP server and a declared RAG corpus. The
+tool schemas in `fixtures/tools.json` are also resolved on the host and embedded into each
+`ToolSchema.parameters`.
+
+**By reference.** A run whose tasks have large worlds sets
+`compute.trial_data_delivery: mount` in its run config (ADR-0068, ADR-0072): how bytes
+move is the deployment's choice, not the task's. For each task whose runner a `trial`-scope
+stack owns, the adapter then puts nothing in `tool_artifacts`: it records the same files in
+`tool_artifact_refs` — each file's `pack:` address relative to the task directory, SHA-256
+and size, hashed in chunks — and the engine bind-mounts its own copy of the task directory
+read-only into the runner, which copies and verifies every file at `RegisterTrial`. A task
+whose runner the run owns stays inline, with a log line saying why. A file outside the task
+directory (a `json_db` path with `..`) is refused under `mount`. See
+[`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifact_refs`](TASK_DESCRIPTION_SCHEMA.md#tool_artifact_refs-the-tasks-files-by-reference-adr-0068-adr-0072).
+
+Two things to know before a pack opts in. The runner service sees the whole task directory,
+read-only, not only the referenced files: a directory that holds something the runner (and so
+a tool that reads files) must not see keeps inline delivery. And a subclass that ships its
+own set of the task's files overrides `_task_artifact_sources(task_dir)`, the one hook both
+deliveries read; a subclass that overrides `_bundle_task_artifacts` alone is refused under
+`mount`, since its references would name the default set and the runner would miss what its
+bundle used to carry. The RAG corpus has the same pair: `_corpus_artifact_paths` and
+`_bundle_corpus_artifacts`. A file the adapter cannot read fails the description under either
+delivery.
 
 ### Tool schema resolution for Docker
 

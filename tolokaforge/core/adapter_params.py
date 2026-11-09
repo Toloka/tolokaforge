@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any
 
+from tolokaforge.core.models import ComputeConfig
+
 if TYPE_CHECKING:
     from tolokaforge.core.models import ProjectConfig, RunConfig
 
@@ -25,7 +27,8 @@ def assemble_adapter_params(
 
     Carries the harness adapter's own ``params``, the coding-harness selector on
     ``models.agent``, the task glob and project packs (with the
-    ``TASK_PACKS_DIRS`` container override), the TypeSense search plane, and —
+    ``TASK_PACKS_DIRS`` container override), ``compute.trial_data_delivery``, the
+    TypeSense search plane, and —
     when a *project* is given — its ``task_defaults`` and ``default_environment``.
     The adapter type itself is resolved by the caller.
     """
@@ -41,6 +44,10 @@ def assemble_adapter_params(
         params.setdefault("agent_model", agent_model_config.name)
 
     params["tasks_glob"] = config.evaluation.tasks_glob
+
+    # How a task's bulk data reaches the runner is the deployment's choice
+    # (ADR-0072); the adapter references files only when it is ``mount``.
+    params["trial_data_delivery"] = (config.compute or ComputeConfig()).trial_data_delivery
 
     # ``evaluation.projects`` is the canonical field; ``TASK_PACKS_DIRS`` can
     # override config paths to container-visible mounts in Docker flows.

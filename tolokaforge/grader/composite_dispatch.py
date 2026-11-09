@@ -196,6 +196,12 @@ class GraderCompositeDispatch:
                 "read-only. Configure grader: runner_rpc for this task, or disable "
                 "hash_enabled."
             )
+        if task_description.tool_artifact_refs is not None:
+            raise GradingFailedError(
+                "grader_rpc cannot read tool artefacts delivered by reference — only the "
+                "trial's runner has the task directory mounted (ADR-0068). Configure "
+                "grader: runner_rpc for this task, or deliver its artefacts inline."
+            )
 
         id_fields: dict[str, str | list[str]] = (
             state_checks_config.id_fields if state_checks_config else {}

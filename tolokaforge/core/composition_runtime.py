@@ -23,7 +23,7 @@ locks against this file.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, runtime_checkable
@@ -135,6 +135,11 @@ class MaterialiseContext:
     state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
     """Injected as ``TOLOKAFORGE_STATE_READ_TIMEOUT_S`` into the stack's runner
     service unless the compose file declares the variable itself."""
+    tool_artifact_refs_root: Path | None = None
+    """The trial's tool-artefact reference root (ADR-0068), bind-mounted
+    read-only into the stack's runner service. ``None`` — every stack but the
+    trial-scope runner owner of a description with references — mounts
+    nothing."""
 
 
 @dataclass(frozen=True)
@@ -157,6 +162,11 @@ class RunCtx:
     seeds: Mapping[str, SeedRef]
     grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
     state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
+    task_dir_of: Callable[[str], Path] | None = None
+    """Where a task's directory is on this machine, by task id: the base its
+    ``pack:`` references resolve against when the engine mounts it into the
+    task's runner (ADR-0072). ``None`` when the caller has no adapter to ask;
+    a description with references is then refused at provision."""
 
 
 @dataclass
@@ -193,6 +203,11 @@ class RunSubstrate:
     events: RunDisplayEvents
     grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
     state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
+    task_dir_of: Callable[[str], Path] | None = None
+    """Where a task's directory is on this machine, by task id: the base its
+    ``pack:`` references resolve against when the engine mounts it into the
+    task's runner (ADR-0072). ``None`` when the caller has no adapter to ask;
+    a description with references is then refused at provision."""
 
 
 @dataclass(frozen=True)

@@ -233,6 +233,14 @@ The pieces that matter:
 - **`network_policy`** — the egress posture for task services. See
   [network policy](#network-policy) below.
 
+How a task's files reach the runner is not part of the environment: it is
+the run's `compute.trial_data_delivery` (`inline` by default, or `mount`;
+ADR-0068, ADR-0072). Under `mount` the engine bind-mounts the task directory
+read-only into the runner service at `/tolokaforge/tool-artifact-refs` for a
+task whose runner a `trial`-scope stack owns, and the runner copies and
+verifies each file by SHA-256; a task whose runner the run owns stays inline.
+A task manifest that names `tool_artifacts_delivery` is refused.
+
 A task can declare its own `environment_manifest` with the same shape; it
 deep-merges on top of `default_environment` per service. A task that
 supplies its own `stack.compose_file` replaces the stack atomically and

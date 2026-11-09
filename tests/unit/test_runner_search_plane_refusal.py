@@ -390,8 +390,8 @@ def test_a_refused_registration_drops_the_extracted_artifacts(
     extracted: list[Path] = []
     extract = service._extract_tool_artifacts
 
-    def _record(trial_id: str, artifacts: dict[str, str]) -> Path:
-        path = extract(trial_id, artifacts)
+    def _record(trial_id: str, artifacts: dict[str, str], refs: Any = None) -> Path:
+        path = extract(trial_id, artifacts, refs=refs)
         extracted.append(path)
         return path
 

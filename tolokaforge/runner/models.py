@@ -42,7 +42,7 @@ import json
 import math
 import re
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -3477,6 +3477,23 @@ def _check_restricted_services_have_own_networks(
             )
 
 
+def runner_outside_trial_scope(stacks: Iterable[StackDecl]) -> str | None:
+    """What owns the runner when no ``trial``-scope stack does; ``None`` when one does.
+
+    The engine hands a per-task directory only to a runner it materialises for
+    the trial: a ``run``-scope runner was started before the trial's task was
+    described and serves every task of the run, and a plan with no
+    runner-owning stack has no service to give it to.
+    """
+    owners = [decl for decl in stacks if decl.runner_service is not None]
+    if owners and all(decl.stack_scope == "trial" for decl in owners):
+        return None
+    return (
+        ", ".join(f"{decl.stack_id!r} (stack_scope={decl.stack_scope})" for decl in owners)
+        or "no stack sets runner_service"
+    )
+
+
 class StackPatch(BaseModel):
     """Substrate slot inside an :class:`EnvironmentPatch`.
 
@@ -3592,6 +3609,15 @@ def _validate_allowlist_entry(entry: str) -> str:
     return lowered
 
 
+_DELIVERY_KEYS_THE_RUN_OWNS = (
+    "tool_artifacts_delivery",
+    "final_state_delivery",
+    "initial_state_delivery",
+)
+"""Per-task delivery keys an earlier draft of ADR-0068/0069/0071 used, now
+``compute.trial_data_delivery`` in the run config (ADR-0072)."""
+
+
 class EnvironmentPatch(BaseModel):
     """Per-project or per-task environment declaration — an all-optional
     input shape that :func:`tolokaforge.core.project_loader.resolve`
@@ -3606,6 +3632,25 @@ class EnvironmentPatch(BaseModel):
     """
 
     model_config = {"extra": "ignore"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_a_delivery_the_run_owns(cls, data: Any) -> Any:
+        """Refuse the per-direction delivery keys: how bytes move is the run's (ADR-0072).
+
+        The model ignores unknown keys, so a pack written for the per-task keys
+        would otherwise run inline without a word — on the large task they were
+        written for, out of memory.
+        """
+        if isinstance(data, Mapping):
+            named = sorted(key for key in _DELIVERY_KEYS_THE_RUN_OWNS if key in data)
+            if named:
+                raise ValueError(
+                    f"{', '.join(named)} is not a task setting: how a trial's data reaches "
+                    "the runner is the run's choice, compute.trial_data_delivery in the run "
+                    "config (ADR-0072)"
+                )
+        return data
 
     stack: StackPatch | None = None
     """Substrate slot — see :class:`StackPatch`. A task patch that sets
@@ -3945,6 +3990,84 @@ class EnvironmentManifest(BaseModel):
 # =============================================================================
 
 
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _refuse_unnormalised_artifact_path(path: str, what: str) -> str:
+    """``path`` when it is a normalised relative POSIX path, else a ``ValueError``.
+
+    ``PurePosixPath`` would collapse ``a//x``, ``./a`` and ``a/./x`` silently, so
+    the parts are split by hand: the path stored is exactly the path compared
+    and joined under a root, and none can leave that root.
+    """
+    if (
+        not path
+        or path.startswith("/")
+        or "\\" in path
+        or any(part in ("", ".", "..") for part in path.split("/"))
+    ):
+        raise ValueError(
+            f"{what} {path!r} is not a relative POSIX path inside its root (no leading "
+            "'/', no empty, '.' or '..' component, no backslash)"
+        )
+    return path
+
+
+PACK_SCHEME = "pack:"
+"""The scheme of an :class:`ArtifactRef` that names a file of the task's pack (ADR-0072)."""
+
+
+class ArtifactRef(BaseModel):
+    """Bulk trial data named by content and an address, not carried as bytes (ADR-0068, ADR-0072).
+
+    :attr:`uri`'s scheme says where a reader finds the bytes; :attr:`sha256` and
+    :attr:`size` say what they must be, and every reader refuses bytes that
+    differ. The one scheme read today is ``pack:<path>``: a file of the task's
+    pack, at ``<path>`` relative to the task's directory on whichever machine
+    reads it, so a reference stays valid when the description is built on one
+    machine and the trial runs on another.
+    """
+
+    uri: str
+    """``pack:`` followed by a normalised relative POSIX path. It may differ from
+    the artefact's own path (the key it is stored under): the native adapter
+    delivers a test case's state file as ``initial_state.json`` beside a shared
+    MCP server."""
+
+    sha256: str
+    """Lowercase hex SHA-256 of the file's bytes, computed when the task was described."""
+
+    size: int = Field(ge=0)
+    """The file's size in bytes, computed with :attr:`sha256`."""
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+    @field_validator("uri")
+    @classmethod
+    def _pack_uri(cls, value: str) -> str:
+        if not value.startswith(PACK_SCHEME):
+            raise ValueError(
+                f"artifact reference {value!r} has no {PACK_SCHEME!r} scheme; a reference names "
+                "a file of the task's pack as pack:<path relative to the task's directory>"
+            )
+        _refuse_unnormalised_artifact_path(value[len(PACK_SCHEME) :], "artifact reference path")
+        return value
+
+    @field_validator("sha256")
+    @classmethod
+    def _hex_digest(cls, value: str) -> str:
+        if not _SHA256_HEX_RE.match(value):
+            raise ValueError(
+                f"artifact reference sha256 {value!r} is not 64 lowercase hex characters"
+            )
+        return value
+
+    @property
+    def pack_path(self) -> str:
+        """The file's path relative to the task's directory."""
+        return self.uri[len(PACK_SCHEME) :]
+
+
 class TaskDescription(BaseModel):
     """
     Complete serializable task description.
@@ -4002,12 +4125,37 @@ class TaskDescription(BaseModel):
         "Keys are relative paths, values are base64 content.",
     )
 
+    tool_artifact_refs: dict[str, ArtifactRef] | None = None
+    """Tool artefacts delivered by reference (ADR-0068, ADR-0072), keyed by their
+    path in the trial's artefact directory: where each file is in the task's pack
+    and what it hashes to, with no bytes on the wire. ``None`` when every
+    artefact travels inline in :attr:`tool_artifacts`. An artefact path appears in
+    at most one of the two."""
+
     # --- Environment ---
     environment_manifest: EnvironmentManifest | None = None
     """Typed declaration of the task's multi-service environment. ``None``
     means the task does not declare one."""
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _refuse_an_artifact_delivered_twice(self) -> TaskDescription:
+        if self.tool_artifact_refs is None:
+            return self
+        if not self.tool_artifact_refs:
+            raise ValueError(
+                "tool_artifact_refs declares no files; leave tool_artifact_refs unset instead"
+            )
+        for target in self.tool_artifact_refs:
+            _refuse_unnormalised_artifact_path(target, "tool_artifact_refs path")
+        both = sorted(self.tool_artifacts.keys() & self.tool_artifact_refs.keys())
+        if both:
+            raise ValueError(
+                f"{len(both)} artefact path(s) are both inline in tool_artifacts and "
+                f"referenced in tool_artifact_refs: {both[:5]}"
+            )
+        return self
 
 
 # =============================================================================
