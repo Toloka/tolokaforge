@@ -22,7 +22,7 @@ from tolokaforge.runner.grpc_limits import (
     MAX_MESSAGE_MB_CEILING,
     MAX_MESSAGE_MB_FLOOR,
 )
-from tolokaforge.runner.models import JudgeCustomization
+from tolokaforge.runner.models import JudgeCustomization, TrialDataDelivery
 from tolokaforge.runner.state_read_limits import DEFAULT_STATE_READ_TIMEOUT_S
 
 if TYPE_CHECKING:
@@ -898,10 +898,6 @@ class LocalDockerComputeConfig(BaseModel):
     model_config = {"extra": "ignore"}
 
 
-TrialDataDelivery = Literal["inline", "mount"]
-"""How a trial's bulk data reaches its consumers — see :attr:`ComputeConfig.trial_data_delivery`."""
-
-
 class ComputeConfig(BaseModel):
     """Compute substrate + parallelism + budget selection for a run.
 
@@ -961,9 +957,13 @@ class ComputeConfig(BaseModel):
     property of the deployment, not of a task (ADR-0068, ADR-0072).
 
     ``inline`` (the default) carries a task's tool artefacts base64-encoded in
-    the registration message. ``mount`` carries only each file's ``pack:``
-    address, SHA-256 and size; the engine bind-mounts the task's directory
-    read-only into the runner and the runner copies and verifies the files.
+    the registration message and its final state as one JSON string in the
+    ``GetState`` reply. ``mount`` carries only each file's ``pack:`` address,
+    SHA-256 and size, which the runner reads from the task's directory the
+    engine bind-mounts read-only into it (ADR-0068); and the runner writes the
+    final state to a per-trial directory the engine mounts writable, which the
+    engine copies into the trial bundle as ``final_state.json`` without parsing
+    it (ADR-0069).
     ``mount`` applies to a task whose runner the engine materialises for the
     trial (a ``trial``-scope stack owns it); any other task stays inline, with a
     log line saying why. It needs a grader that reads the world on the runner:

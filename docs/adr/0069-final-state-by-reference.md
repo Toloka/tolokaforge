@@ -5,6 +5,9 @@
 - **Deciders:** — (proposed by @rsmtnn)
 - **Supersedes:** —
 - **Superseded by:** —
+- **Revised:** 2026-11-09, by [ADR-0072](https://github.com/Toloka/tolokaforge/pull/1983):
+  the delivery is the run's `compute.trial_data_delivery`, recorded per task on the
+  description, and the grader rule is the trial contract's.
 
 ## Context and Problem Statement
 
@@ -85,18 +88,20 @@ inline `state_json` took 0.50 s and +101 MiB, before gRPC's own copies.
 
 ## Decision
 
-We will adopt **Option 5**, opt-in through the task's environment, for runners
+We will adopt **Option 5**, opt-in through the run's configuration, for runners
 the engine materialises per trial from a task-declared stack, and, independently,
 **Option 2's streamed writer** for every `env.yaml`.
 
-- **Declaration.** `environment_manifest.final_state_delivery: inline | mount`
-  (default `inline`), on `EnvironmentPatch` and `EnvironmentManifest`, a
-  policy-request field that survives a task's atomic `stack` replacement. It is a
-  field of its own rather than a second meaning of `tool_artifacts_delivery`: the
-  two directions are independent (a task can have a small world and a large final
-  state, or the reverse), they refuse different consumers, and only this one
-  interacts with redaction. The resolver applies ADR-0068's rule to both fields:
-  `mount` needs a `trial`-scope stack to own the runner.
+- **Declaration.** The run's `compute.trial_data_delivery: inline | mount`
+  (default `inline`), the one setting ADR-0068's references follow too: how bytes
+  move is the deployment's choice, not a task's (ADR-0072 D3). An earlier draft gave
+  each direction its own task-manifest field; one run setting keeps a task
+  comparable across substrates, and a task manifest that names the old key is
+  refused. When the engine describes a task it records what the setting means for
+  that task in `TaskDescription.trial_data_delivery`: `mount` for a task whose
+  runner a `trial`-scope stack owns, `inline` for any other, which keeps inline
+  delivery with a log line. The composer, the conductor and every grader read
+  that one field.
 - **Mount.** The composer makes a fresh host directory per trial
   (`mkdtemp`, private to the engine's user, with the mounted directory itself
   writable by any user so a runner image with another user can write into it),
@@ -142,12 +147,13 @@ the engine materialises per trial from a task-declared stack, and, independently
   a run (the runner grades from its own state). The consumers that read the final
   state whole are refused for a `mount` task: `grader_rpc` and `queue` (they read
   it over the wire in one message) and `grader.snapshot.enabled` (a grade bundle
-  embeds it) at run start, naming every offending task; the detached grader's
+  embeds it) at run start, naming every offending task, by the same trial-contract
+  rule that `run_trial_from_inputs` applies to its one trial; the detached grader's
   dispatch and the snapshot bundle producer refuse as a second line. The
   `runner_rpc` grader is unaffected.
 - **Protocol.** `ENGINE_PROTOCOL_VERSION` becomes 9. An older image would drop the
   unknown request field and answer inline — the copy the host must not make — and
-  forbids `final_state_delivery` in the trial spec; an older engine is refused by
+  forbids `trial_data_delivery` in the task description; an older engine is refused by
   the runner's version gate. Both pairings fail at registration.
 - **Streamed `env.yaml`, for inline delivery too** (a separate change on this
   branch, taken alone if wanted). `tolokaforge.core.streaming_yaml` walks the

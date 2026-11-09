@@ -95,13 +95,12 @@ def serialize_bundle_from_substrate(
             "artefacts only. Grade this task without snapshot mode, or deliver its "
             "artefacts inline."
         )
-    manifest = getattr(task_description, "environment_manifest", None)
-    if manifest is not None and getattr(manifest, "final_state_delivery", "inline") == "mount":
+    if task_description.trial_data_delivery == "mount":
         raise ValueError(
             f"Cannot build grade bundle for {trial_id}: the task delivers its final state "
-            "by reference (final_state_delivery: mount, ADR-0069) so that the engine never "
-            "holds it, and a grade bundle embeds the whole final state. Grade this task "
-            "without snapshot mode, or deliver its final state inline."
+            "by reference (compute.trial_data_delivery: mount, ADR-0069) so that the engine "
+            "never holds it, and a grade bundle embeds the whole final state. Grade this task "
+            "without snapshot mode, or run it with compute.trial_data_delivery: inline."
         )
     tool_artifacts_b64 = task_description.tool_artifacts or {}
     tool_artifacts: dict[str, bytes] = {

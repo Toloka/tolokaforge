@@ -1,7 +1,7 @@
 """A trial's final state reaches the engine host by reference (ADR-0069).
 
-A task whose environment declares ``final_state_delivery: mount`` has the
-engine bind-mount a per-trial writable directory into its trial-scope runner.
+A run with ``compute.trial_data_delivery: mount`` has, for a task whose runner
+a trial-scope stack owns, the engine bind-mount a per-trial writable directory into its trial-scope runner.
 ``GetState`` with ``state_by_reference`` writes the final state there and
 answers with the file's path, SHA-256 and size; the host checks the file without
 parsing it, records a small ``env.yaml`` that references it, and copies it into
@@ -27,7 +27,7 @@ from tests.utils.runner_requests import register_request, trial_spec_json
 from tests.utils.runner_requests import simple_task_description as simple_task_description_dict
 from tolokaforge.core.compose_materialisation import mount_final_state_dir_into_runner
 from tolokaforge.core.grading.bundle_producer import serialize_bundle_from_substrate
-from tolokaforge.core.models import EnvironmentPatch, StackPatch
+from tolokaforge.core.models import EnvironmentPatch
 from tolokaforge.core.output.artifacts import (
     InMemoryArtifactWriter,
     RedactedBundleError,
@@ -40,7 +40,6 @@ from tolokaforge.core.output_writer import (
     FINAL_STATE_REF_KEY,
     OutputWriter,
 )
-from tolokaforge.core.project_loader import resolve as resolve_environment
 from tolokaforge.core.redaction import SensitiveKeyRedaction
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.trial_grader import GradingFailedError
@@ -60,7 +59,6 @@ from tolokaforge.runner.final_state_file import (
 from tolokaforge.runner.models import (
     EnvironmentManifest,
     RunnerGradingConfig,
-    ServiceSpec,
     TaskDescription,
 )
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
@@ -341,48 +339,35 @@ class TestClientAndBackend:
 # ---------------------------------------------------------------------------
 
 
-class TestResolver:
+class TestTheRunDecides:
+    """The run's setting, not the task, decides; the description records the decision."""
+
+    def test_a_trial_scope_task_of_a_mount_run_is_delivered_by_reference(
+        self, tmp_path: Path
+    ) -> None:
+        from tests.unit.test_tool_artifact_refs import _mcp_pack
+
+        description = _mcp_pack(tmp_path, delivery="mount").describe_task("refs_pack")
+
+        assert description.trial_data_delivery == "mount"
+
     def test_inline_is_the_default(self, tmp_path: Path) -> None:
-        manifest = resolve_environment(
-            None,
-            EnvironmentPatch(
-                stack=StackPatch(compose_file=_compose(tmp_path), runner_service="runner")
-            ),
-        )
+        from tests.unit.test_tool_artifact_refs import _mcp_pack
 
-        assert manifest is not None
-        assert manifest.final_state_delivery == "inline"
+        description = _mcp_pack(tmp_path, delivery=None).describe_task("refs_pack")
 
-    def test_mount_is_refused_on_a_run_scope_runner(self, tmp_path: Path) -> None:
-        shared = {name: ServiceSpec(isolation="shared") for name in _RUNNER_COMPOSE["services"]}
-        with pytest.raises(ValueError, match="final_state_delivery: mount needs the runner"):
-            resolve_environment(
-                None,
-                EnvironmentPatch(
-                    stack=StackPatch(compose_file=_compose(tmp_path), runner_service="runner"),
-                    services=shared,
-                    final_state_delivery="mount",
-                ),
-            )
+        assert description.trial_data_delivery == "inline"
 
-    def test_a_project_default_survives_the_tasks_own_stack(self, tmp_path: Path) -> None:
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-        task_dir = tmp_path / "task"
-        task_dir.mkdir()
-        manifest = resolve_environment(
-            EnvironmentPatch(
-                stack=StackPatch(compose_file=_compose(project_dir), runner_service="runner"),
-                final_state_delivery="mount",
-            ),
-            EnvironmentPatch(
-                stack=StackPatch(compose_file=_compose(task_dir), runner_service="runner")
-            ),
-        )
+    def test_a_task_whose_runner_the_run_owns_stays_inline(self, tmp_path: Path) -> None:
+        from tests.unit.test_tool_artifact_refs import _mcp_pack
 
-        assert manifest is not None
-        assert manifest.final_state_delivery == "mount"
-        assert manifest.tool_artifacts_delivery == "inline"
+        adapter = _mcp_pack(tmp_path, delivery="mount", shared_runner=True)
+
+        assert adapter.describe_task("refs_pack").trial_data_delivery == "inline"
+
+    def test_a_task_manifest_no_longer_names_a_delivery(self) -> None:
+        with pytest.raises(ValueError, match="compute.trial_data_delivery"):
+            EnvironmentPatch.model_validate({"final_state_delivery": "mount"})
 
 
 class TestComposeMount:
@@ -437,8 +422,7 @@ def _mount_spec(compose: Path) -> Any:
     from tests.unit.test_default_substrate_composer import _manifest, _trial_spec
 
     spec = _trial_spec(_manifest(compose))
-    manifest = spec.task.environment_manifest.model_copy(update={"final_state_delivery": "mount"})
-    spec.task = spec.task.model_copy(update={"environment_manifest": manifest})
+    spec.task = spec.task.model_copy(update={"trial_data_delivery": "mount"})
     return spec
 
 
@@ -565,7 +549,7 @@ class TestComposer:
         materialiser = _FakeMaterialiser()
         plan = [_decl(compose, stack_id="shared", stack_scope="run", runner_service="runner")]
 
-        with pytest.raises(ProvisionError, match="final_state_delivery: mount"):
+        with pytest.raises(ProvisionError, match="compute.trial_data_delivery: mount"):
             self._composer(materialiser).provision_trial(
                 plan, _mount_spec(compose), _empty_run_sub()
             )
@@ -644,16 +628,18 @@ class TestCapture:
         from tests.unit.test_conductor import _make_spec
 
         spec = _make_spec()
-        manifest = EnvironmentManifest(
-            compose_file=_compose(tmp_path), runner_service="runner", final_state_delivery="mount"
-        )
+        manifest = EnvironmentManifest(compose_file=_compose(tmp_path), runner_service="runner")
         initial_state = spec.task.initial_state.model_copy(
             update={"tables": {"users": [{"id": "u1"}]}}
         )
         return spec.model_copy(
             update={
                 "task": spec.task.model_copy(
-                    update={"environment_manifest": manifest, "initial_state": initial_state}
+                    update={
+                        "environment_manifest": manifest,
+                        "initial_state": initial_state,
+                        "trial_data_delivery": "mount",
+                    }
                 )
             }
         )
@@ -728,11 +714,8 @@ class TestCapture:
         from tests.unit.test_conductor import _default_success_trajectory
 
         spec = self._spec(tmp_path)
-        manifest = spec.task.environment_manifest.model_copy(
-            update={"final_state_delivery": "inline"}
-        )
         spec = spec.model_copy(
-            update={"task": spec.task.model_copy(update={"environment_manifest": manifest})}
+            update={"task": spec.task.model_copy(update={"trial_data_delivery": "inline"})}
         )
         conductor = self._conductor({"success": True, "state_json": '{"users": []}'})
         setup = self._setup()
@@ -864,8 +847,9 @@ def _mount_description(tmp_path: Path) -> TaskDescription:
         adapter_type="native",
         system_prompt="",
         environment_manifest=EnvironmentManifest(
-            compose_file=_compose(tmp_path), runner_service="runner", final_state_delivery="mount"
+            compose_file=_compose(tmp_path), runner_service="runner"
         ),
+        trial_data_delivery="mount",
     )
 
 
@@ -884,7 +868,7 @@ class TestGradersThatReadTheStateWhole:
             runner_substrate_address="localhost:1",
         )
 
-        with pytest.raises(GradingFailedError, match="final_state_delivery"):
+        with pytest.raises(GradingFailedError, match="compute.trial_data_delivery"):
             GraderCompositeDispatch(logging.getLogger("mount")).grade(dispatch)  # type: ignore[arg-type]
 
     def test_the_snapshot_bundle_producer_refuses(self, tmp_path: Path) -> None:
@@ -932,7 +916,7 @@ class TestRunStartGate:
         from tolokaforge.core.orchestrator import Orchestrator
 
         with pytest.raises(ValueError, match=fragment) as excinfo:
-            Orchestrator._refuse_final_state_mount_the_grader_cannot_read(
+            Orchestrator._refuse_tool_artifact_refs_the_grader_cannot_read(
                 self._orchestrator(tmp_path, grader)
             )
         assert "mount_task" in str(excinfo.value)
@@ -941,7 +925,7 @@ class TestRunStartGate:
     def test_the_runner_grader_passes(self, tmp_path: Path, grader: dict[str, Any] | None) -> None:
         from tolokaforge.core.orchestrator import Orchestrator
 
-        Orchestrator._refuse_final_state_mount_the_grader_cannot_read(
+        Orchestrator._refuse_tool_artifact_refs_the_grader_cannot_read(
             self._orchestrator(tmp_path, grader)
         )
 

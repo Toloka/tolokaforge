@@ -297,7 +297,8 @@ class RuntimeBackend(Protocol):
         ``state_file`` is a :class:`~tolokaforge.runner.final_state_file.StateFile`
         whose path is on this machine. Only a backend that mounted such a
         directory into the trial's runner can serve it; callers pass it only
-        for a task that declares ``final_state_delivery: mount``.
+        for a trial the run delivers by reference
+        (``compute.trial_data_delivery: mount``).
         """
         ...
 

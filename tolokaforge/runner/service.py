@@ -4394,8 +4394,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     error=(
                         "GetState asked for the state by reference, but this runner has no "
                         "final-state directory: the engine mounts one and sets "
-                        f"{FINAL_STATE_DIR_ENV_VAR} only for a task that declares "
-                        "final_state_delivery: mount on a trial-scope runner"
+                        f"{FINAL_STATE_DIR_ENV_VAR} only for a trial-scope runner of a run "
+                        "with compute.trial_data_delivery: mount"
                     ),
                 )
 

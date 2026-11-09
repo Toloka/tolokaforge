@@ -702,15 +702,6 @@
           "default": null,
           "title": "Db Service"
         },
-        "final_state_delivery": {
-          "default": "inline",
-          "enum": [
-            "inline",
-            "mount"
-          ],
-          "title": "Final State Delivery",
-          "type": "string"
-        },
         "initial_state": {
           "additionalProperties": {
             "$ref": "#/$defs/InitialStateRef"
@@ -814,22 +805,6 @@
     "EnvironmentPatch": {
       "description": "Per-project or per-task environment declaration \u2014 an all-optional\ninput shape that :func:`tolokaforge.core.project_loader.resolve`\nbinds to an :class:`EnvironmentManifest`.\n\nEvery field is optional so ``ProjectConfig.default_environment`` and\n``TaskConfig.environment_manifest`` share the same type and compose\non merge: a task that touches only ``stack.inputs`` inherits the\nrest from the project. Patches perform no filesystem I/O at\nconstruction time; the disk-touching validators live on the\n:class:`EnvironmentManifest` output type.",
       "properties": {
-        "final_state_delivery": {
-          "anyOf": [
-            {
-              "enum": [
-                "inline",
-                "mount"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Final State Delivery"
-        },
         "initial_state": {
           "anyOf": [
             {
@@ -3397,6 +3372,15 @@
           "description": "Base64-encoded Python files for tool reconstruction. Keys are relative paths, values are base64 content.",
           "title": "Tool Artifacts",
           "type": "object"
+        },
+        "trial_data_delivery": {
+          "default": "inline",
+          "enum": [
+            "inline",
+            "mount"
+          ],
+          "title": "Trial Data Delivery",
+          "type": "string"
         },
         "user_simulator": {
           "$ref": "#/$defs/RunnerUserSimulatorConfig"

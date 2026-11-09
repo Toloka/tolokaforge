@@ -25,7 +25,7 @@ bumped and this document is updated in the same commit.
             ├── trajectory.yaml             ← message trace + status + metrics
             ├── tool_log.yaml               ← the trial's ordered tool-call record
             ├── env.yaml                    ← final env state (through the redaction policy)
-            ├── final_state.json            ← final DB state, only under final_state_delivery: mount (withheld under a redacting policy)
+            ├── final_state.json            ← final DB state, only under compute.trial_data_delivery: mount (withheld under a redacting policy)
             ├── metrics.yaml
             ├── grade.yaml                  ← only when the trial produced a grade (through the redaction policy)
             ├── judge_trajectory.yaml       ← rubric-judge transcript (when an LLM judge ran; withheld under a redacting policy)
@@ -671,7 +671,8 @@ default policy the snapshot is written exactly as the adapter composed it.
 
 ### A final state delivered by reference (ADR-0069)
 
-A task that declares `final_state_delivery: mount` has its runner write the
+A trial the run delivers by reference (`compute.trial_data_delivery: mount`) has
+its runner write the
 final database state to a file, which the engine checks and copies into the
 bundle as `final_state.json` without parsing it. `env.yaml` then stays small:
 it carries the entries that do not come from the database and a reference in
@@ -908,8 +909,8 @@ written by `write_metrics` includes a root-level `schema_version: 9` marker. The
 one shape that carries no marker is a `metrics.yaml` the writer created for the
 redaction stamp alone, where the caller wrote no metrics of its own (see
 [`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)) —
-such a bundle is refused offline anyway. Generation 9 bundles of a task that
-declares `final_state_delivery: mount` carry the final database state as
+such a bundle is refused offline anyway. Generation 9 bundles of a trial the run
+delivered by reference (`compute.trial_data_delivery: mount`) carry the final database state as
 [`final_state.json`](#a-final-state-delivered-by-reference-adr-0069) beside an
 `env.yaml` that references it; every other generation-9 bundle is shaped as in
 generation 8. Generation 8 bundles record each tool's

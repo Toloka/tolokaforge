@@ -1,6 +1,6 @@
 """A trial's final state as a file in a mounted directory, not a message (ADR-0069).
 
-Under ``final_state_delivery: mount`` the engine bind-mounts a per-trial writable
+Under ``compute.trial_data_delivery: mount`` the engine bind-mounts a per-trial writable
 host directory into the runner service at :data:`FINAL_STATE_MOUNT_PATH` and
 names it by :data:`FINAL_STATE_DIR_ENV_VAR`. ``GetState`` with
 ``state_by_reference`` then writes the state there (:func:`write_state_file`)

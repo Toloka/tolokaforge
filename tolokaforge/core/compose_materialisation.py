@@ -568,8 +568,8 @@ def mount_final_state_dir_into_runner(
 ) -> None:
     """Bind-mount a trial's final-state directory writable into ``runner_service``.
 
-    A task that declares ``final_state_delivery: mount`` (ADR-0069) has the
-    runner write the trial's final state into ``final_state_dir``, mounted at
+    A trial the run delivers by reference (``compute.trial_data_delivery:
+    mount``, ADR-0069) has the runner write the trial's final state into ``final_state_dir``, mounted at
     :data:`FINAL_STATE_MOUNT_PATH` and named to the runner by
     :data:`FINAL_STATE_DIR_ENV_VAR`, and answer ``GetState`` with the file's
     path and hash instead of the bytes.

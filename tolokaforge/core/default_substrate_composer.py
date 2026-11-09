@@ -212,11 +212,11 @@ class DefaultSubstrateComposer:
         manifest = _require_manifest(spec)
         _refuse_reserved_prefix(manifest, spec.trial_id)
         _refuse_refs_no_trial_runner_can_take(plan, spec)
-        _refuse_final_state_mount_no_trial_runner_can_take(plan, spec, manifest)
+        _refuse_final_state_mount_no_trial_runner_can_take(plan, spec)
 
         final_state_dir = (
             _make_final_state_dir(spec.trial_id)
-            if manifest.final_state_delivery == "mount"
+            if spec.task.trial_data_delivery == "mount"
             else None
         )
         try:
@@ -688,16 +688,18 @@ def _refuse_refs_no_trial_runner_can_take(plan: CompositionPlan, spec: TrialSpec
 
 
 def _refuse_final_state_mount_no_trial_runner_can_take(
-    plan: CompositionPlan, spec: TrialSpec, manifest: EnvironmentManifest
+    plan: CompositionPlan, spec: TrialSpec
 ) -> None:
-    """Refuse ``final_state_delivery: mount`` when no trial-scope stack owns the runner.
+    """Refuse a trial delivered by reference when no trial-scope stack owns the runner.
 
-    The composer's counterpart of the resolver's refusal, as
-    :func:`_refuse_refs_no_trial_runner_can_take` is for tool artefacts: the
-    final-state directory is made per trial and mounted into the runner the
-    composer materialises for it, which a run- or task-scope runner is not.
+    The engine marks a description ``trial_data_delivery: mount`` only for a
+    task whose runner a trial-scope stack owns; this holds the composer to the
+    same rule, as :func:`_refuse_refs_no_trial_runner_can_take` does for tool
+    artefacts: the final-state directory is made per trial and mounted into the
+    runner the composer materialises for it, which a run- or task-scope runner
+    is not.
     """
-    if manifest.final_state_delivery != "mount":
+    if spec.task.trial_data_delivery != "mount":
         return
     found = runner_outside_trial_scope(plan)
     if found is None:
@@ -706,7 +708,8 @@ def _refuse_final_state_mount_no_trial_runner_can_take(
         trial_id=spec.trial_id,
         stage="provision",
         reason=(
-            "the task delivers its final state by reference (final_state_delivery: mount), "
+            "the task delivers its final state by reference (compute.trial_data_delivery: "
+            "mount), "
             "which needs a trial-scope stack to own the runner so the engine can mount a "
             f"final-state directory into it; the runner here: {found}"
         ),

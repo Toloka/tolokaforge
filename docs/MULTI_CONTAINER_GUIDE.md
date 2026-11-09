@@ -238,8 +238,18 @@ the run's `compute.trial_data_delivery` (`inline` by default, or `mount`;
 ADR-0068, ADR-0072). Under `mount` the engine bind-mounts the task directory
 read-only into the runner service at `/tolokaforge/tool-artifact-refs` for a
 task whose runner a `trial`-scope stack owns, and the runner copies and
-verifies each file by SHA-256; a task whose runner the run owns stays inline.
-A task manifest that names `tool_artifacts_delivery` is refused.
+verifies each file by SHA-256; and the engine bind-mounts a per-trial writable
+directory at `/tolokaforge/final-state`, where the runner writes the trial's
+final database state and answers `GetState` with the file's path, SHA-256 and
+size, which the engine checks and copies into the trial bundle as
+`final_state.json` without parsing it (ADR-0069). A task whose runner the run
+owns stays inline. Only the `runner_rpc` grader without snapshot bundles grades
+a trial delivered this way, and a redacting artifact-write policy withholds
+`final_state.json`. Both directories are made under the engine's temporary
+directory, so an engine that drives the host's Docker daemon from inside a
+container needs `TMPDIR` on a path the daemon can bind from. A task manifest
+that names `tool_artifacts_delivery`, `final_state_delivery` or
+`initial_state_delivery` is refused.
 
 A task can declare its own `environment_manifest` with the same shape; it
 deep-merges on top of `default_environment` per service. A task that

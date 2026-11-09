@@ -40,7 +40,6 @@
     "compose_file": "<STAGING>/engine/docker-compose.engine.yaml",
     "db_port": null,
     "db_service": null,
-    "final_state_delivery": "inline",
     "initial_state": {},
     "limited_internet_allowlist": [],
     "network_policy": "full_internet",
@@ -142,6 +141,7 @@
   "task_id": "echo-hello",
   "tool_artifact_refs": null,
   "tool_artifacts": {},
+  "trial_data_delivery": "inline",
   "user_simulator": {
     "backstory": "",
     "mode": "scripted",

@@ -25,8 +25,8 @@ from tolokaforge.runner.final_state_file import StateFile, copy_state_file
 TRIAL_BUNDLE_SCHEMA_VERSION = 9
 """The per-trial bundle generation stamped into ``metrics.yaml``.
 
-Version 9 bundles of a task that declares ``final_state_delivery: mount``
-(ADR-0069) carry the final database state as ``final_state.json`` beside
+Version 9 bundles of a trial the run delivers by reference
+(``compute.trial_data_delivery: mount``, ADR-0069) carry the final database state as ``final_state.json`` beside
 ``env.yaml``, which references it under ``final_state`` (``file``, ``sha256``,
 ``size``) instead of recording ``agent``, ``user`` and ``db``; under a
 redacting policy the file is withheld and named in the stamp's ``omitted``.
@@ -100,9 +100,9 @@ ENV_FILENAME = "env.yaml"
 
 FINAL_STATE_FILENAME = RUNNER_FINAL_STATE_FILENAME
 """The trial's final database state as a JSON object, beside ``env.yaml``, for a
-task that declares ``final_state_delivery: mount`` (ADR-0069). Withheld under a
-redacting policy: the engine copies the Runner's bytes and never parses them, so
-a key-name rule cannot reach inside."""
+trial the run delivers by reference (``compute.trial_data_delivery: mount``,
+ADR-0069). Withheld under a redacting policy: the engine copies the Runner's
+bytes and never parses them, so a key-name rule cannot reach inside."""
 
 FINAL_STATE_REF_KEY = "final_state"
 """The ``env.yaml`` key that references :data:`FINAL_STATE_FILENAME` —
@@ -416,8 +416,8 @@ class OutputWriter:
 
         Args:
             env_state: Final environment state dictionary
-            final_state_file: The DB state as a file, for a task that declares
-                ``final_state_delivery: mount``; ``None`` otherwise.
+            final_state_file: The DB state as a file, for a trial the run delivers
+                by reference (``compute.trial_data_delivery: mount``); ``None`` otherwise.
 
         Raises:
             FinalStateFileError: the file changed after it was captured.

@@ -465,8 +465,8 @@ class TrialArtifactWriter(Protocol):
 
         ``final_state_file`` is the trial's DB state as a file on this machine
         (ADR-0069); the bundle carries it as ``final_state.json`` beside an
-        ``env.yaml`` that references it. Callers pass it only for a task that
-        declares ``final_state_delivery: mount``.
+        ``env.yaml`` that references it. Callers pass it only for a trial the
+        run delivers by reference (``compute.trial_data_delivery: mount``).
         """
         ...
 

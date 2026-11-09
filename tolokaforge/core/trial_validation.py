@@ -17,9 +17,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tolokaforge.core.models import GraderConfig
     from tolokaforge.core.trial import TrialNodeInputs
+    from tolokaforge.runner.models import TaskDescription
 
 __all__ = [
     "GRADERS_OFF_THE_RUNNER",
+    "delivers_by_reference",
     "refuse_references_the_grader_cannot_read",
     "validate_trial_inputs",
 ]
@@ -27,6 +29,15 @@ __all__ = [
 
 GRADERS_OFF_THE_RUNNER = frozenset({"grader_rpc", "queue"})
 """Graders that do not run on the trial's own runner."""
+
+
+def delivers_by_reference(description: TaskDescription) -> bool:
+    """Whether any of the trial's data moves by reference instead of on the wire.
+
+    Its files, as ``pack:`` references (ADR-0068), or its final state, written
+    to a directory the engine mounts into the runner (ADR-0069).
+    """
+    return description.tool_artifact_refs is not None or description.trial_data_delivery == "mount"
 
 
 def refuse_references_the_grader_cannot_read(
@@ -37,11 +48,13 @@ def refuse_references_the_grader_cannot_read(
     """Refuse a grader that cannot read the trial data these tasks deliver by reference.
 
     A task's ``pack:`` references (ADR-0068, ADR-0072) resolve only on the
-    trial's runner, where the engine mounted the task's directory. The
-    ``grader_rpc`` and ``queue`` graders run elsewhere, and a snapshot grade
-    bundle carries inline artefacts only, so each would refuse the trial at
-    grade time, after its tokens were spent. Every offending task is named in
-    one error.
+    trial's runner, where the engine mounted the task's directory, and a final
+    state delivered by reference (ADR-0069) is a file the engine never parses.
+    The ``grader_rpc`` and ``queue`` graders run elsewhere and read the final
+    state whole over the wire, and a snapshot grade bundle carries inline
+    artefacts and the whole final state, so each would rebuild the copies the
+    delivery removes or refuse the trial at grade time, after its tokens were
+    spent. Every offending task is named in one error.
 
     Args:
         grader: The run's grader block, if any.
@@ -61,10 +74,10 @@ def refuse_references_the_grader_cannot_read(
         return
     how = f"grader {grader_name!r}" if remote_grader else "grader.snapshot.enabled=true"
     raise ValueError(
-        f"{how} cannot read tool artefacts delivered by reference "
-        f"(compute.trial_data_delivery: mount, ADR-0068), which tasks {offending} use: only "
-        "the trial's runner has the task directory mounted. Grade with the runner_rpc "
-        "grader without snapshot mode, or set compute.trial_data_delivery: inline."
+        f"{how} cannot read trial data delivered by reference "
+        f"(compute.trial_data_delivery: mount, ADR-0068/0069), which tasks {offending} use: "
+        "only the trial's runner has the task directory and the final state. Grade with the "
+        "runner_rpc grader without snapshot mode, or set compute.trial_data_delivery: inline."
     )
 
 
@@ -85,5 +98,5 @@ def validate_trial_inputs(inputs: TrialNodeInputs, *, default_grader_name: str |
     refuse_references_the_grader_cannot_read(
         grader,
         grader_name,
-        [task.task_id] if task.tool_artifact_refs is not None else [],
+        [task.task_id] if delivers_by_reference(task) else [],
     )

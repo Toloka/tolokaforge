@@ -368,9 +368,8 @@ _DB_DERIVED_FINAL_STATE_KEYS = ("agent", "user", "db")
 
 
 def _final_state_by_reference(spec: TrialSpec) -> bool:
-    """Whether the trial's task declares ``final_state_delivery: mount`` (ADR-0069)."""
-    manifest = spec.task.environment_manifest
-    return manifest is not None and manifest.final_state_delivery == "mount"
+    """Whether the run delivers this trial's data by reference (ADR-0069, ADR-0072)."""
+    return spec.task.trial_data_delivery == "mount"
 
 
 class FinalStateUnavailableError(Exception):
@@ -1241,7 +1240,7 @@ class InProcessConductor:
         post-mortem can read which services, images, DSNs, and mounts backed
         the trial. Manifest-less trials keep the JSON-DB-only shape.
 
-        A task that declares ``final_state_delivery: mount`` (ADR-0069) has
+        A trial whose data the run delivers by reference (ADR-0069) has
         the Runner write the DB state to a file on this machine instead; see
         :meth:`_capture_final_state_file`. Only then is a :class:`StateFile`
         returned, for :meth:`_write_artifacts` to place in the bundle.

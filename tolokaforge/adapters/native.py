@@ -70,7 +70,6 @@ from tolokaforge.core.grading.state_composition import StateHashConfig, refuse_r
 from tolokaforge.core.grading.tool_artifacts import file_sha256
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
-from tolokaforge.core.models.run_config import TrialDataDelivery
 from tolokaforge.core.project_loader import (
     construct_config,
     layer_judge_customization,
@@ -93,7 +92,6 @@ from tolokaforge_coding_harnesses import (
 if TYPE_CHECKING:
     from tolokaforge.runner.models import (
         ArtifactRef,
-        EnvironmentManifest,
         MutatesStateRule,
         SearchConfig,
         TaskDescription,
@@ -400,9 +398,6 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             params.get("agent_harness", ENGINE_LOOP), self._resolved_registry.harnesses
         )
         self.agent_model: str = params.get("agent_model") or ""
-        # ``compute.trial_data_delivery`` (ADR-0072): ``mount`` references the
-        # task's files instead of bundling them, where the task's runner allows.
-        self.trial_data_delivery: TrialDataDelivery = params.get("trial_data_delivery", "inline")
         if self.agent_harness != ENGINE_LOOP and not self.agent_model:
             raise ValueError(
                 f"native adapter: agent_harness {self.agent_harness!r} requires "
@@ -1466,35 +1461,6 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             backend_config=dict(search.backend_config),
             tool_name=tool_name,
         )
-
-    def _delivers_by_reference(
-        self, task_id: str, environment_manifest: "EnvironmentManifest | None"
-    ) -> bool:
-        """Whether this task's files travel as references (ADR-0068, ADR-0072).
-
-        The deployment asks for it with ``compute.trial_data_delivery: mount``;
-        it applies where the engine materialises the task's runner for the
-        trial, since only that runner gets the task's directory mounted. Any
-        other task stays inline, and the log says why.
-        """
-        from tolokaforge.runner.models import runner_outside_trial_scope
-
-        if self.trial_data_delivery != "mount":
-            return False
-        found = (
-            runner_outside_trial_scope(environment_manifest.stacks)
-            if environment_manifest is not None
-            else "no environment manifest"
-        )
-        if found is None:
-            return True
-        logger.info(
-            "Task artifacts stay inline: no trial-scope stack owns the runner",
-            task_id=task_id,
-            trial_data_delivery=self.trial_data_delivery,
-            runner=found,
-        )
-        return False
 
     def _inline_tool_artifacts(
         self,
