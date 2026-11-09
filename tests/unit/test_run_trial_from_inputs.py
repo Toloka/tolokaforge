@@ -54,6 +54,9 @@ class _FakeAdapter:
     def register_preloaded_task(self, task: Any, task_dir: Path) -> None:
         self.preloaded = (task, task_dir)
 
+    def adopt_delivery(self, description: Any) -> None:
+        self.adopted = description.trial_data_delivery
+
 
 @pytest.fixture(autouse=True)
 def _fake_adapter(monkeypatch: pytest.MonkeyPatch) -> _FakeAdapter:
@@ -574,3 +577,11 @@ class TestPackReferences:
 
         (ctx,) = contexts
         assert ctx.task_dir_of("task-1") == tmp_path / "task-1"
+
+
+def test_the_node_adapter_adopts_the_delivery_of_the_description_it_runs(
+    _fake_adapter: _FakeAdapter,
+) -> None:
+    run_trial_from_inputs(_inputs())
+
+    assert _fake_adapter.adopted == "inline"

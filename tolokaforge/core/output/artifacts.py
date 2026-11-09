@@ -48,6 +48,7 @@ authoritative on-disk contract.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,8 +57,11 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import yaml
 from pydantic import ValidationError
 
+from tolokaforge.core.env_state import final_db_state_views
 from tolokaforge.core.models import Metrics, RecordedToolCall, Trajectory
 from tolokaforge.core.output_writer import (
+    ENV_FILENAME,
+    FINAL_STATE_REF_KEY,
     GRADE_FILENAME,
     METRICS_FILENAME,
     TOOL_LOG_FILENAME,
@@ -65,6 +69,11 @@ from tolokaforge.core.output_writer import (
     OutputWriter,
 )
 from tolokaforge.core.redaction import NoRedaction, RedactionPolicy, RedactionStamp
+from tolokaforge.runner.final_state_file import (
+    FinalStateFileError,
+    StateFile,
+    verify_state_file,
+)
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from tolokaforge.core.logging import StructuredLogger
@@ -78,6 +87,7 @@ __all__ = [
     "TrialArtifactBundle",
     "bundle_redaction",
     "model_id_slug",
+    "read_final_env_state",
     "read_recorded_tool_log",
     "read_report_trajectory",
     "refuse_redacted_bundle",
@@ -214,6 +224,67 @@ def refuse_redacted_bundle(trial_dir: Path) -> None:
         "confidently wrong rather than undecided. Re-record the trial without redaction "
         "to grade it."
     )
+
+
+def read_final_env_state(trial_dir: Path) -> dict[str, Any]:
+    """The trial's final environment state, with its DB views, whichever way it was delivered.
+
+    An inline bundle's ``env.yaml`` is the whole state and is returned as read.
+    A bundle whose DB state was delivered by reference (ADR-0069) records
+    ``final_state: {file, sha256, size}`` in ``env.yaml`` instead of the
+    ``agent`` / ``user`` / ``db`` keys; the referenced ``final_state.json`` is
+    checked against that reference, parsed, and the three keys are rebuilt from
+    it as :meth:`~tolokaforge.core.env_state.EnvironmentState.get_final_state`
+    builds them. Parsing it holds the whole state in memory — the engine never
+    does that during a run; an offline reader asks for it here.
+
+    Raises:
+        FileNotFoundError: the bundle has no ``env.yaml``.
+        RedactedBundleError: the state file was withheld by a redacting policy.
+        ValueError: ``env.yaml`` is not a mapping, its reference is malformed,
+            the state file is missing, or it is not the bytes referenced.
+    """
+    trial_dir = Path(trial_dir)
+    with (trial_dir / ENV_FILENAME).open(encoding="utf-8") as stream:
+        env = yaml.safe_load(stream)
+    if not isinstance(env, dict):
+        raise ValueError(f"{trial_dir / ENV_FILENAME} does not hold a mapping")
+    ref = env.get(FINAL_STATE_REF_KEY)
+    if ref is None:
+        return env
+    if (
+        not isinstance(ref, dict)
+        or not isinstance(ref.get("file"), str)
+        or not isinstance(ref.get("sha256"), str)
+        or not isinstance(ref.get("size"), int)
+    ):
+        raise ValueError(
+            f"{trial_dir / ENV_FILENAME} {FINAL_STATE_REF_KEY} is not a {{file, sha256, size}} "
+            f"reference: {ref!r}"
+        )
+    path = trial_dir / ref["file"]
+    if not path.resolve().is_relative_to(trial_dir.resolve()):
+        raise ValueError(f"{trial_dir / ENV_FILENAME} references a file outside the bundle")
+    if not path.exists():
+        stamp = bundle_redaction(trial_dir)
+        if stamp is not None and ref["file"] in stamp.omitted:
+            raise RedactedBundleError(
+                f"{trial_dir} was written under the {stamp.policy.value} redaction policy, "
+                f"which withheld {ref['file']}: the engine copies a state delivered by "
+                "reference without parsing it, so no key-name rule could be applied to it"
+            )
+        raise ValueError(f"{path} is referenced by {ENV_FILENAME} and missing")
+    try:
+        verify_state_file(StateFile(path=str(path), sha256=ref["sha256"], size=ref["size"]))
+    except FinalStateFileError as error:
+        raise ValueError(str(error)) from error
+    with path.open(encoding="utf-8") as stream:
+        db_state = json.load(stream)
+    if not isinstance(db_state, dict):
+        raise ValueError(f"{path} does not hold a JSON object")
+    rebuilt = final_db_state_views(db_state)
+    rebuilt.update({key: value for key, value in env.items() if key != FINAL_STATE_REF_KEY})
+    return rebuilt
 
 
 def read_recorded_tool_log(trial_dir: Path) -> tuple[list[RecordedToolCall], bool]:
@@ -384,12 +455,18 @@ class TrialArtifactWriter(Protocol):
         task_snapshot: dict[str, Any],
         env_state: dict[str, Any],
         logger: StructuredLogger,
+        final_state_file: StateFile | None = None,
     ) -> None:
         """Write the per-trial bundle artifacts for a trial in one call:
         ``task.yaml``, ``trajectory.yaml``, ``tool_log.yaml``, ``env.yaml``,
         ``metrics.yaml``, ``grade.yaml`` (when ``trajectory.grade`` is
         non-``None``), and ``logs.yaml``. Convenience for the common
         orchestrator path.
+
+        ``final_state_file`` is the trial's DB state as a file on this machine
+        (ADR-0069); the bundle carries it as ``final_state.json`` beside an
+        ``env.yaml`` that references it. Callers pass it only for a trial the
+        run delivers by reference (``compute.trial_data_delivery: mount``).
         """
         ...
 
@@ -470,10 +547,11 @@ class FileArtifactWriter:
         task_snapshot: dict[str, Any],
         env_state: dict[str, Any],
         logger: StructuredLogger,
+        final_state_file: StateFile | None = None,
     ) -> None:
         """Write task + trajectory + tool log + env + metrics + grade + logs."""
         writer = self._writer(trial_dir)
-        writer.write_all(trajectory, task_snapshot, env_state, logger)
+        writer.write_all(trajectory, task_snapshot, env_state, logger, final_state_file)
 
     # ------------------------------------------------------------------
     # prompts — per-trial YAML inside the trial bundle
@@ -535,7 +613,8 @@ class TrialArtifactBundle:
     called for this trial.
 
     ``write_trial_bundle`` populates ``task``, ``trajectory``, ``tool_log``,
-    ``env``, ``metrics``, ``grade``, and ``logs``. ``tools_schemas`` and
+    ``env``, ``metrics``, ``grade``, ``logs`` and ``final_state_file`` (the
+    reference itself, not a copy of the file). ``tools_schemas`` and
     ``prompts`` are only populated by their own per-piece write methods.
 
     ``tool_log`` mirrors the disk artifact's two distinct states: ``None`` is a
@@ -551,6 +630,7 @@ class TrialArtifactBundle:
     logs: StructuredLogger | None = None
     tools_schemas: list[dict[str, Any]] | None = None
     prompts: dict[str, str | None] | None = None
+    final_state_file: StateFile | None = None
 
 
 class InMemoryArtifactWriter:
@@ -639,12 +719,14 @@ class InMemoryArtifactWriter:
         task_snapshot: dict[str, Any],
         env_state: dict[str, Any],
         logger: StructuredLogger,
+        final_state_file: StateFile | None = None,
     ) -> None:
         bundle = self._bundle(trial_dir)
         bundle.task = task_snapshot
         bundle.trajectory = trajectory
         bundle.tool_log = trajectory.tool_log
         bundle.env = env_state
+        bundle.final_state_file = final_state_file
         bundle.metrics = trajectory.metrics
         # Mirror the disk path's guard exactly (``OutputWriter.write_all``,
         # output_writer.py) — truthiness, not ``is not None`` — so a future

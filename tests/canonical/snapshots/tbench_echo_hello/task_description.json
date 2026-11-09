@@ -141,6 +141,7 @@
   "task_id": "echo-hello",
   "tool_artifact_refs": null,
   "tool_artifacts": {},
+  "trial_data_delivery": "inline",
   "user_simulator": {
     "backstory": "",
     "mode": "scripted",

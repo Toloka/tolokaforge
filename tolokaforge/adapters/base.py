@@ -18,7 +18,7 @@ from tolokaforge.core.grading.config_validation import (
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Grade, GradingConfig, TaskConfig, Trajectory
-from tolokaforge.runner.models import TaskDescription
+from tolokaforge.runner.models import TaskDescription, TrialDataDelivery
 
 if TYPE_CHECKING:
     from tolokaforge.tools.registry import Tool
@@ -200,6 +200,12 @@ class BaseAdapter(ABC):
                 - base_dir: Base directory for resolving paths
         """
         self.params = params
+        # The run's ``compute.trial_data_delivery`` (ADR-0072); see
+        # :meth:`_delivers_by_reference` for the tasks it applies to.
+        self.trial_data_delivery: TrialDataDelivery = params.get("trial_data_delivery", "inline")
+        # The delivery decided for each task, by task id: memoised by
+        # :meth:`_delivers_by_reference`, or adopted from a description.
+        self._by_reference: dict[str, bool] = {}
         self.base_dir = Path(params.get("base_dir", ".")).resolve()
         self.task_packs = self._normalize_task_packs(params.get("task_packs", []))
 
@@ -606,7 +612,8 @@ class BaseAdapter(ABC):
         :func:`~tolokaforge.core.run_trial.run_trial` and the dry run all call
         it. :meth:`to_task_description` is the adapter's part; the bundles of
         the task's ``tool_libraries`` (ADR-0060) are added here for every
-        adapter alike, so an adapter never bundles a library itself.
+        adapter alike, so an adapter never bundles a library itself, and so is
+        the run's delivery for the task (:attr:`TaskDescription.trial_data_delivery`).
 
         Raises:
             ToolLibraryError: A pin names a library that is not installed, is
@@ -618,7 +625,63 @@ class BaseAdapter(ABC):
         from tolokaforge.core.tool_libraries import merge_tool_libraries
 
         description = self.to_task_description(task_id)
+        if description.trial_data_delivery != "mount" and self._delivers_by_reference(
+            task_id, description.environment_manifest
+        ):
+            # Shallow: the nested models are reused as they are, and the
+            # description's own validators still hold the result to the contract.
+            description = type(description).model_validate(
+                {**dict(description), "trial_data_delivery": "mount"}
+            )
         return merge_tool_libraries(description, self.get_task(task_id).tool_libraries)
+
+    def adopt_delivery(self, description: Any) -> None:
+        """Take the delivery a description was built with as this adapter's for its task.
+
+        A node that runs a description another machine built (the library route,
+        dispatch) builds its own adapter from the task alone, without the run's
+        settings; the description says what the run decided, and the adapter's
+        own reads of the task (its state file, its grading inputs) follow it
+        (ADR-0072).
+        """
+        self._delivery_memo()[description.task_id] = description.trial_data_delivery == "mount"
+
+    def _delivery_memo(self) -> dict[str, bool]:
+        """The per-task delivery decisions, made on first use for a subclass that skips ``__init__``."""
+        return self.__dict__.setdefault("_by_reference", {})
+
+    def _delivers_by_reference(self, task_id: str, environment_manifest: Any) -> bool:
+        """Whether this task's trial data moves by reference (ADR-0068, ADR-0069, ADR-0072).
+
+        The deployment asks for it with ``compute.trial_data_delivery: mount``;
+        it applies where the engine materialises the task's runner for the
+        trial, since only that runner gets per-trial host directories mounted.
+        Any other task stays inline, and the log says why.
+        """
+        from tolokaforge.runner.models import runner_outside_trial_scope
+
+        memo = self._delivery_memo()
+        if task_id in memo:
+            return memo[task_id]
+        if self.trial_data_delivery != "mount":
+            return False
+        found = (
+            runner_outside_trial_scope(environment_manifest.stacks)
+            if environment_manifest is not None
+            else "no environment manifest"
+        )
+        memo[task_id] = found is None
+        if found is not None:
+            logger.info(
+                "Trial data stays inline: no trial-scope stack owns the runner",
+                task_id=task_id,
+                trial_data_delivery=self.trial_data_delivery,
+                runner=found,
+            )
+        return found is None
+
+    trial_data_delivery: TrialDataDelivery = "inline"
+    """The run's ``compute.trial_data_delivery``, from the adapter's params (ADR-0072)."""
 
     # Adapters shipping a custom TrialGrader (registered under the
     # tolokaforge.trial_graders entry-point group) override this; the default

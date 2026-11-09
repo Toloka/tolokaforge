@@ -18,6 +18,16 @@ Variants:
 ``streaming_libyaml``
     The same walk with libyaml's emitter — what ``write_env_state`` uses now
     when PyYAML was built with libyaml.
+``by_reference``
+    The host's side of ``compute.trial_data_delivery: mount`` (ADR-0069): the state
+    was written to a file by another process (the runner), and this process
+    checks the file's SHA-256 and size, writes the small ``env.yaml`` that
+    references it and copies it into the bundle. It never builds the state, so
+    its "at rest" is a bare interpreter with the engine imported.
+``runner_state_file``
+    The runner's side of the same delivery: ``write_state_file`` on a built
+    state, against ``json.dumps`` of it (the inline ``state_json``), reported
+    as the extra peak each needs over the built state.
 
 Usage::
 
@@ -43,7 +53,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-VARIANTS = ("yaml_dump", "streaming_python", "streaming_libyaml")
+VARIANTS = (
+    "yaml_dump",
+    "streaming_python",
+    "streaming_libyaml",
+    "by_reference",
+    "runner_state_file",
+)
 
 _RECORD_TEMPLATE_BYTES = 360
 """Approximate JSON size of one synthetic record, used to size the state."""
@@ -111,7 +127,95 @@ def env_state_of(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_by_reference(target_mb: float, out_dir: Path) -> dict[str, Any]:
+    """Host side of the by-reference delivery, after another process wrote the file."""
+    from tolokaforge.core.output_writer import FINAL_STATE_REF_KEY, OutputWriter
+    from tolokaforge.runner.final_state_file import (
+        StateFile,
+        resolve_state_file,
+        verify_state_file,
+    )
+
+    runner_dir = out_dir / "runner"
+    runner_dir.mkdir()
+    prepare = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _PREPARE.format(
+                here=str(Path(__file__).resolve().parent), mb=target_mb, out=str(runner_dir)
+            ),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if prepare.returncode != 0:
+        raise SystemExit(prepare.stderr)
+    reported = json.loads(prepare.stdout)
+    at_rest = _current_rss_bytes()
+    started = time.perf_counter()
+    state_file = resolve_state_file(runner_dir, StateFile(**reported))
+    verify_state_file(state_file)
+    env_state = {
+        FINAL_STATE_REF_KEY: state_file.as_ref(),
+        "filesystem": {},
+        "agent_visible_dir": "/work",
+    }
+    OutputWriter(out_dir / "bundle").write_env_state(env_state, state_file)
+    elapsed = time.perf_counter() - started
+    peak = _rss_bytes()
+    return {
+        "variant": "by_reference",
+        "state_json_mib": round(state_file.size / 2**20, 1),
+        "output_mib": round((out_dir / "bundle" / "env.yaml").stat().st_size / 2**20, 4),
+        "wall_s": round(elapsed, 2),
+        "rss_at_rest_mib": round(at_rest / 2**20),
+        "rss_peak_mib": round(peak / 2**20),
+        "write_cost_mib": round(max(0, peak - at_rest) / 2**20),
+    }
+
+
+_PREPARE = (
+    "import json, pathlib, sys\n"
+    "sys.path.insert(0, {here!r})\n"
+    "from bench_final_state_write import build_state\n"
+    "from tolokaforge.runner.final_state_file import write_state_file\n"
+    "written = write_state_file(pathlib.Path({out!r}), build_state({mb}))\n"
+    "print(json.dumps({{'path': written.path, 'sha256': written.sha256, 'size': written.size}}))\n"
+)
+
+
+def _run_runner_state_file(target_mb: float, out_dir: Path) -> dict[str, Any]:
+    """Extra peak the runner needs to answer inline (one string) versus by reference."""
+    from tolokaforge.runner.final_state_file import write_state_file
+
+    state = build_state(target_mb)
+    at_rest = _current_rss_bytes()
+    started = time.perf_counter()
+    write_state_file(out_dir, state)
+    elapsed = time.perf_counter() - started
+    peak_file = _rss_bytes()
+    started_inline = time.perf_counter()
+    text = json.dumps(state)
+    inline_elapsed = time.perf_counter() - started_inline
+    peak_inline = _rss_bytes()
+    return {
+        "variant": "runner_state_file",
+        "state_json_mib": round(len(text) / 2**20, 1),
+        "wall_s": round(elapsed, 2),
+        "json_dumps_wall_s": round(inline_elapsed, 2),
+        "rss_at_rest_mib": round(at_rest / 2**20),
+        "write_cost_mib": round(max(0, peak_file - at_rest) / 2**20),
+        "json_dumps_cost_mib": round(max(0, peak_inline - at_rest) / 2**20),
+    }
+
+
 def _run_variant(variant: str, target_mb: float, out_dir: Path) -> dict[str, Any]:
+    if variant == "by_reference":
+        return _run_by_reference(target_mb, out_dir)
+    if variant == "runner_state_file":
+        return _run_runner_state_file(target_mb, out_dir)
+
     import yaml
 
     import tolokaforge.core.output_writer  # noqa: F401 - registers the engine's representers

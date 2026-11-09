@@ -76,7 +76,8 @@ def serialize_bundle_from_substrate(
     does not consume.
 
     Raises :class:`ValueError` when the task delivers artefacts by reference
-    (ADR-0068) — the bundle would lack them — and when ``substrate.filesystem_root()`` returns
+    (ADR-0068) — the bundle would lack them — or its final state by reference
+    (ADR-0069) — the bundle would embed it whole — and when ``substrate.filesystem_root()`` returns
     ``None`` — bundle format v1.0 requires ``filesystem.tar``, and every
     live trial has a workspace root, so a ``None`` here indicates a caller
     bug rather than an empty workspace.
@@ -93,6 +94,13 @@ def serialize_bundle_from_substrate(
             "artefacts by reference (ADR-0068), and bundle format v1.0 carries inline "
             "artefacts only. Grade this task without snapshot mode, or deliver its "
             "artefacts inline."
+        )
+    if task_description.trial_data_delivery == "mount":
+        raise ValueError(
+            f"Cannot build grade bundle for {trial_id}: the task delivers its final state "
+            "by reference (compute.trial_data_delivery: mount, ADR-0069) so that the engine "
+            "never holds it, and a grade bundle embeds the whole final state. Grade this task "
+            "without snapshot mode, or run it with compute.trial_data_delivery: inline."
         )
     tool_artifacts_b64 = task_description.tool_artifacts or {}
     tool_artifacts: dict[str, bytes] = {

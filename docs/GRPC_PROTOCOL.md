@@ -572,6 +572,23 @@ message GetStateRequest {
 
   // Specific tables to return (empty = all)
   repeated string tables = 3;
+
+  // Write the state to a file in the final-state directory the engine mounted
+  // into this runner, and answer with state_file instead of state_json
+  // (ADR-0069). A runner with no such mount answers success=false.
+  bool state_by_reference = 4;
+}
+
+// A state the runner wrote to its final-state directory instead of the wire.
+message StateFileRef {
+  // The file's path relative to the final-state directory
+  string path = 1;
+
+  // Lowercase hex SHA-256 of the file's bytes
+  string sha256 = 2;
+
+  // The file's size in bytes
+  int64 size = 3;
 }
 
 message GetStateResponse {
@@ -590,6 +607,10 @@ message GetStateResponse {
 
   // Full state hash (including unstable fields)
   string full_hash = 5;
+
+  // Set instead of state_json when the request asked for state_by_reference:
+  // the state as a JSON object, written to the final-state directory
+  StateFileRef state_file = 6;
 }
 
 // =============================================================================
@@ -691,6 +712,8 @@ Version 6 is the first that carries `RunTestSuiteRequest.user` and `RunTestSuite
 Version 7 is the first that records a call an MCP tool refused — an `isError: true` reply whose `_meta` carries `tolokaforge/error_category: tool_error`, which `DomainToolRegistry` answers a `ToolError` with — as `EXECUTION_STATUS_TOOL_ERROR`. An older image ships its own `DomainToolRegistry`, which still answers a `ToolError` as a success, and would record a third-party server's declared refusal as `EXECUTION_STATUS_ENVIRONMENT_ERROR`; an older host could not record the new status at all. Both pairings are refused before a trial starts.
 
 Version 8 is the first whose trial spec carries `TaskDescription.tool_artifact_refs` (ADR-0068): tool artefacts delivered by reference — each file's path, SHA-256 and size — which the runner copies from the task directory the engine mounted into it, verifying every hash. An image below it declares no such field and refuses every trial spec this engine sends at `Invalid trial_spec_json` (the description forbids unknown keys), so the pairing fails at registration rather than running a trial whose artefacts never arrived; an engine below it is refused by this runner's gate.
+
+Version 9 is the first whose `GetStateRequest` carries `state_by_reference` and whose `GetStateResponse` carries `state_file` (ADR-0069): for a trial the run delivers by reference (`compute.trial_data_delivery: mount`), the runner writes the trial's final state into the writable directory the engine mounted into it and answers with the file's path, SHA-256 and size instead of the state as one JSON string. An image below it drops the unknown request field (proto3 discards unknown fields) and answers with `state_json`, which the host would have to parse whole — exactly what the delivery exists to avoid — and an image below it also forbids the new `trial_data_delivery` key of the task description. Both pairings are refused at registration: the host refuses an image whose `runner_protocol_version` is below 9, and the runner refuses an engine below 9.
 
 The runner's request gate is a lower bound, not an equality: a newer engine still sends `call_id`. From version 3 onward the host also checks `runner_protocol_version` in the successful registration response, so an older image cannot silently omit a newer outcome or grading field.
 

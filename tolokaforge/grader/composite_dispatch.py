@@ -202,6 +202,13 @@ class GraderCompositeDispatch:
                 "trial's runner has the task directory mounted (ADR-0068). Configure "
                 "grader: runner_rpc for this task, or deliver its artefacts inline."
             )
+        if task_description.trial_data_delivery == "mount":
+            raise GradingFailedError(
+                "grader_rpc reads the final state whole over the wire, which this task "
+                "delivers by reference so that no host holds it (compute.trial_data_delivery: "
+                "mount, ADR-0069). Configure grader: runner_rpc for this task, or run it with "
+                "compute.trial_data_delivery: inline."
+            )
 
         id_fields: dict[str, str | list[str]] = (
             state_checks_config.id_fields if state_checks_config else {}

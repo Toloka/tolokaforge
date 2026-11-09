@@ -3373,6 +3373,15 @@
           "title": "Tool Artifacts",
           "type": "object"
         },
+        "trial_data_delivery": {
+          "default": "inline",
+          "enum": [
+            "inline",
+            "mount"
+          ],
+          "title": "Trial Data Delivery",
+          "type": "string"
+        },
         "user_simulator": {
           "$ref": "#/$defs/RunnerUserSimulatorConfig"
         },

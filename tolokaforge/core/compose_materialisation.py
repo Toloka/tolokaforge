@@ -53,6 +53,10 @@ from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.runner_limits_env import runner_limits_env
 from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
 from tolokaforge.runner.compose_naming import compose_scope_slug, compose_trial_slug
+from tolokaforge.runner.final_state_file import (
+    FINAL_STATE_DIR_ENV_VAR,
+    FINAL_STATE_MOUNT_PATH,
+)
 from tolokaforge.runner.models import bind_mount_source
 from tolokaforge.secrets import (
     CONTAINER_SECRETS_ENV_VAR,
@@ -554,6 +558,66 @@ def mount_tool_artifact_refs_into_runner(
     service["environment"] = _merge_service_env(
         service.get("environment"),
         {TOOL_ARTIFACT_REFS_DIR_ENV_VAR: TOOL_ARTIFACT_REFS_MOUNT_PATH},
+    )
+    with compose_file.open("w") as f:
+        yaml.safe_dump(doc, f, sort_keys=False)
+
+
+def mount_final_state_dir_into_runner(
+    compose_file: Path, runner_service: str, final_state_dir: Path
+) -> None:
+    """Bind-mount a trial's final-state directory writable into ``runner_service``.
+
+    A trial the run delivers by reference (``compute.trial_data_delivery:
+    mount``, ADR-0069) has the runner write the trial's final state into ``final_state_dir``, mounted at
+    :data:`FINAL_STATE_MOUNT_PATH` and named to the runner by
+    :data:`FINAL_STATE_DIR_ENV_VAR`, and answer ``GetState`` with the file's
+    path and hash instead of the bytes.
+
+    Raises ``ValueError`` on the same grounds as
+    :func:`mount_tool_artifact_refs_into_runner`: ``final_state_dir`` is not an
+    absolute directory, ``runner_service`` is not declared, or the service
+    already declares the variable or a volume at the mount path.
+    """
+    if not final_state_dir.is_absolute() or not final_state_dir.is_dir():
+        raise ValueError(
+            f"the final-state directory {final_state_dir} is not an absolute directory on "
+            "this machine, so it cannot be mounted into the runner"
+        )
+    with compose_file.open() as f:
+        doc = yaml.safe_load(f)
+    services: dict[str, Any] = doc["services"]
+    if runner_service not in services:
+        raise ValueError(
+            f"runner_service {runner_service!r} is not declared in the compose file "
+            f"{compose_file.name!r}; declared services are {sorted(services)!r}."
+        )
+    service = services[runner_service]
+    if _service_declares_env_var(service.get("environment"), FINAL_STATE_DIR_ENV_VAR):
+        raise ValueError(
+            f"runner_service {runner_service!r} declares {FINAL_STATE_DIR_ENV_VAR}, which "
+            "the engine sets when it mounts the trial's final-state directory; remove it "
+            "from the compose file"
+        )
+    volumes = service.get("volumes") or []
+    if any(_volume_target(entry) == FINAL_STATE_MOUNT_PATH for entry in volumes):
+        raise ValueError(
+            f"runner_service {runner_service!r} already mounts a volume at "
+            f"{FINAL_STATE_MOUNT_PATH}, where the engine mounts the trial's final-state "
+            "directory; mount it elsewhere"
+        )
+    service["volumes"] = [
+        *volumes,
+        {
+            "type": "bind",
+            "source": str(final_state_dir),
+            "target": FINAL_STATE_MOUNT_PATH,
+            "read_only": False,
+        },
+    ]
+    service["environment"] = _merge_service_env(
+        service.get("environment"),
+        {FINAL_STATE_DIR_ENV_VAR: FINAL_STATE_MOUNT_PATH},
     )
     with compose_file.open("w") as f:
         yaml.safe_dump(doc, f, sort_keys=False)

@@ -282,6 +282,7 @@ class RuntimeBackend(Protocol):
         trial_id: str,
         include_unstable: bool = True,
         tables: list[str] | None = None,
+        by_reference: bool = False,
     ) -> dict[str, Any]:
         """Return a snapshot of the trial's DB state (debugging + grading).
 
@@ -290,6 +291,14 @@ class RuntimeBackend(Protocol):
         (empty / ``None`` = all). Returns
         ``{"success": bool, "error": str | None, "state_json": str,
         "stable_hash": str, "full_hash": str}``.
+
+        ``by_reference`` (ADR-0069) has the runner write the state into the
+        trial's final-state directory instead: ``state_json`` is then empty and
+        ``state_file`` is a :class:`~tolokaforge.runner.final_state_file.StateFile`
+        whose path is on this machine. Only a backend that mounted such a
+        directory into the trial's runner can serve it; callers pass it only
+        for a trial the run delivers by reference
+        (``compute.trial_data_delivery: mount``).
         """
         ...
 
@@ -701,6 +710,7 @@ class InMemoryRuntimeBackend:
         trial_id: str,
         include_unstable: bool = True,
         tables: list[str] | None = None,
+        by_reference: bool = False,
     ) -> dict[str, Any]:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.get_state is not implemented. "

@@ -152,6 +152,7 @@ from tolokaforge.core.trial_node import (
 )
 from tolokaforge.core.trial_validation import (
     GRADERS_OFF_THE_RUNNER,
+    delivers_by_reference,
     refuse_references_the_grader_cannot_read,
 )
 from tolokaforge.observability.factory import (
@@ -2883,7 +2884,7 @@ class Orchestrator:
             [
                 task.task_id
                 for task in self.tasks
-                if self._task_description(task.task_id).tool_artifact_refs is not None
+                if delivers_by_reference(self._task_description(task.task_id))
             ],
         )
 

@@ -23,6 +23,7 @@ import os
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import grpc
@@ -46,6 +47,11 @@ from tolokaforge.runner import (
     ExecutionStatus,
     runner_pb2,
     runner_pb2_grpc,
+)
+from tolokaforge.runner.final_state_file import (
+    FinalStateFileError,
+    StateFile,
+    resolve_state_file,
 )
 from tolokaforge.runner.grpc_limits import (
     DEFAULT_MAX_MESSAGE_MB,
@@ -115,6 +121,18 @@ RESET_RECIPE_CAPABILITIES: frozenset[str] = frozenset(
 """The four shipped reset-recipe capability names. Advertised whenever the
 plan admits a ``reset``-labelled service — the "reset" dispatcher delegates
 to :data:`RECIPE_REGISTRY` for these four kinds."""
+
+
+def _failed_state_read(error: str) -> dict[str, Any]:
+    """A ``get_state`` answer that reports *error* the way a failed RPC does."""
+    return {
+        "success": False,
+        "error": error,
+        "state_json": None,
+        "stable_hash": None,
+        "full_hash": None,
+        "state_file": None,
+    }
 
 
 def _normalise_runner_url(runner_address: str) -> str:
@@ -207,6 +225,7 @@ class RunnerClient(Protocol):
         trial_id: str,
         include_unstable: bool = True,
         tables: list[str] | None = None,
+        by_reference: bool = False,
     ) -> dict: ...
 
     def reset_trial(self, trial_id: str, execute_init_actions: bool = False) -> dict: ...
@@ -779,7 +798,11 @@ class GrpcRunnerClient:
             return {"success": False, "error": f"gRPC error: {str(e)}", "grade": None}
 
     def get_state(
-        self, trial_id: str, include_unstable: bool = True, tables: list[str] | None = None
+        self,
+        trial_id: str,
+        include_unstable: bool = True,
+        tables: list[str] | None = None,
+        by_reference: bool = False,
     ) -> dict:
         """
         Get current state snapshot for debugging
@@ -788,6 +811,8 @@ class GrpcRunnerClient:
             trial_id: Trial ID
             include_unstable: Whether to include unstable fields
             tables: Specific tables to return (empty = all)
+            by_reference: Ask the runner to write the state to its final-state
+                directory and answer with the file (ADR-0069).
 
         Returns:
             dict with keys:
@@ -796,6 +821,8 @@ class GrpcRunnerClient:
                 - state_json: str (current state as JSON)
                 - stable_hash: str
                 - full_hash: str
+                - state_file: :class:`StateFile` with the path relative to the
+                  runner's final-state directory (only when ``by_reference``)
         """
         if not self.stub:
             self.connect()
@@ -804,6 +831,8 @@ class GrpcRunnerClient:
             request = runner_pb2.GetStateRequest(
                 trial_id=trial_id, include_unstable=include_unstable, tables=tables or []
             )
+            if by_reference:
+                request.state_by_reference = True
 
             response = self.stub.GetState(request)
 
@@ -814,6 +843,16 @@ class GrpcRunnerClient:
                 "stable_hash": response.stable_hash if response.stable_hash else None,
                 "full_hash": response.full_hash if response.full_hash else None,
             }
+            if by_reference:
+                result["state_file"] = (
+                    StateFile(
+                        path=response.state_file.path,
+                        sha256=response.state_file.sha256,
+                        size=response.state_file.size,
+                    )
+                    if response.HasField("state_file")
+                    else None
+                )
 
             if response.success:
                 logger.debug(f"Got state for trial {trial_id}: stable_hash={response.stable_hash}")
@@ -1606,12 +1645,48 @@ class SharedStackRuntimeBackend:
         trial_id: str,
         include_unstable: bool = True,
         tables: list[str] | None = None,
+        by_reference: bool = False,
     ) -> dict:
-        return self._runner_client_for(trial_id).get_state(
+        """The runner's ``GetState`` answer for ``trial_id``.
+
+        With ``by_reference`` (ADR-0069) the runner writes the state into the
+        final-state directory the composer mounted into it, and ``state_file``
+        in the answer is placed under the host's side of that mount; a trial
+        provisioned without one, or an answer that names no file or a path
+        outside the directory, is reported as a failed read.
+        """
+        if not by_reference:
+            return self._runner_client_for(trial_id).get_state(
+                trial_id=trial_id,
+                include_unstable=include_unstable,
+                tables=tables,
+            )
+        env_handle = self._env_handles.get(trial_id)
+        final_state_dir = None if env_handle is None else env_handle.final_state_dir
+        if final_state_dir is None:
+            return _failed_state_read(
+                f"trial {trial_id!r} was provisioned without a final-state directory, so its "
+                "state cannot be read by reference"
+            )
+        result = self._runner_client_for(trial_id).get_state(
             trial_id=trial_id,
             include_unstable=include_unstable,
             tables=tables,
+            by_reference=True,
         )
+        if not result.get("success"):
+            return result
+        reported = result.get("state_file")
+        if not isinstance(reported, StateFile):
+            return _failed_state_read(
+                "the runner was asked for the state by reference and answered without a state "
+                "file; it may predate ADR-0069"
+            )
+        try:
+            result["state_file"] = resolve_state_file(Path(final_state_dir), reported)
+        except FinalStateFileError as exc:
+            return _failed_state_read(str(exc))
+        return result
 
     def reset_trial(self, trial_id: str, execute_init_actions: bool = False) -> dict:
         return self._runner_client_for(trial_id).reset_trial(

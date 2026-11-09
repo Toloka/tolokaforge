@@ -319,6 +319,10 @@ ADR-0068) is refused with `GradeResponse(success=false)`: the files live on the
 trial's runner mount, which the grader does not have. The orchestrator refuses such a
 task under `grader_rpc` or `queue` before any trial; this is the second line.
 
+A task the run delivers by reference (`compute.trial_data_delivery: mount`,
+ADR-0069) is refused the same way, on both lines: the grader reads the final state whole over the
+wire, and the delivery exists so that no host holds it.
+
 Field numbers are stable and additive. The bundle-URI pair lands on 13
 and 14 so numbers 8–12 stay free as a reserved window for future
 growth (per-trial substrate override, grader-kind hint, credentials

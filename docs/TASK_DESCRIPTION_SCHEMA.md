@@ -594,6 +594,18 @@ the mount, and no grader that reads the world from elsewhere can grade the task:
 refuses `grader_rpc`, `queue` and `grader.snapshot.enabled` for it before any
 trial, and so does `run_trial_from_inputs` for the one trial it is handed.
 
+### `trial_data_delivery`: what the run decided for this task (ADR-0072)
+
+`trial_data_delivery` (`inline` or `mount`) records the run's
+`compute.trial_data_delivery` as it applies to this task: `mount` for a task whose
+runner a `trial`-scope stack owns, `inline` for any other. The engine sets it when it
+describes the task; a task never declares it. Under `mount` the trial's final database
+state is written by the runner to a mounted directory and reaches the trial bundle as
+`final_state.json` instead of crossing the wire in `GetStateResponse.state_json`
+(ADR-0069). The same scope and grader rules apply. See
+[MULTI_CONTAINER_GUIDE.md](MULTI_CONTAINER_GUIDE.md) and
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md#a-final-state-delivered-by-reference-adr-0069).
+
 ---
 
 ## Examples
