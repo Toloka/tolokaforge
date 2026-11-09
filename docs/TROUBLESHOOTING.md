@@ -64,7 +64,12 @@ the protocol-version half of the pairing see
 ## A Large Task World Fails to Register or Capture
 
 **Symptom.** Trials of a task with a large initial state fail at registration,
-or their final-state capture fails, with an error such as:
+or their final-state capture fails. There are two causes: the world does not fit
+a gRPC message, or the DB init runs out of time.
+
+### The world does not fit a gRPC message
+
+The error reads:
 
 ```
 RegisterTrial failed: the message exceeds the gRPC message size limit (CLIENT: Sent message larger than max (73400320 vs. 52428800)). The engine's limit is 50 MiB, set by `compute.grpc_max_message_mb`; ...
@@ -94,6 +99,22 @@ compose file that sets `TOLOKAFORGE_GRPC_MAX_MESSAGE_MB` on its runner keeps
 that value, so raise it there too; a separately deployed runner or grader
 needs the same variable. Memory per trial grows with the message on both
 sides — see [RUNNER.md § gRPC message size](RUNNER.md#grpc-message-size).
+
+### The DB init runs out of time
+
+The error reads:
+
+```
+DB Service initialization failed: ReadTimeout (the init's budget is 300 s; raise compute.state_read_timeout_s for a world slower than that to load)
+```
+
+**Cause.** `RegisterTrial` sends the whole initial state to the db-service in one
+request, and the service did not load it within the whole-state budget
+(`compute.state_read_timeout_s` plus 280 s). `grpc_max_message_mb` has no effect on
+this bound.
+
+**Fix.** Raise `compute.state_read_timeout_s`, which moves every whole-state deadline
+with it: see [RUNNER.md § State read timeout](RUNNER.md#state-read-timeout).
 
 ## A Trial's State Holder Did Not Answer in Time
 

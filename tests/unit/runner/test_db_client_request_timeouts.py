@@ -22,6 +22,14 @@ _STABLE = {"data": {}, "version": 1, "stable_hash": "s", "filtered_fields": []}
 _QUERY = {"results": [], "count": 0}
 _MUTATE = {"status": "ok", "version": 2, "affected_rows": 0, "new_hash": "h"}
 _HASH = {"stable_hash": "s", "full_hash": "f", "version": 1}
+_INIT = {
+    "status": "initialized",
+    "trial_id": "t:0",
+    "tables_initialized": [],
+    "schemas_registered": 0,
+    "unstable_fields_registered": 0,
+    "initial_hash": "h",
+}
 # One answer fits the snapshot, restore and reset responses alike.
 _POSTED = {"status": "ok", "snapshot_name": "n", "restored_from": "n", "version": 1, "hash": "h"}
 
@@ -40,6 +48,8 @@ class _RecordingClient:
             body = _QUERY
         elif url.endswith("/state/hash"):
             body = _HASH
+        elif url.endswith("/init"):
+            body = _INIT
         elif method == "POST":
             body = _POSTED
         else:
@@ -57,6 +67,7 @@ class _RecordingClient:
 
 
 _READS = [
+    pytest.param(lambda c, t: c.init_trial("t:0", tables={}, timeout=t), id="init_trial"),
     pytest.param(lambda c, t: c.get_state("t:0", ["users"], timeout=t), id="get_state"),
     pytest.param(lambda c, t: c.get_stable_state("t:0", timeout=t), id="get_stable_state"),
     pytest.param(lambda c, t: c.query("t:0", "$.users", timeout=t), id="query"),

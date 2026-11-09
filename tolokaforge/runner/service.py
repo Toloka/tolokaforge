@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 import grpc
+import httpx
 from pydantic import ValidationError
 
 from tolokaforge.core.grading import composite
@@ -867,6 +868,20 @@ class _LiveStateSync:
 # =============================================================================
 
 
+def _db_init_failure_cause(error: Exception, budget_s: float) -> str:
+    """Why a trial's DB init failed: the type always, as an ``httpx`` timeout's message is empty.
+
+    A timeout also names the budget it ran out of and the setting that raises it.
+    """
+    cause = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
+    if not isinstance(error, httpx.TimeoutException | TimeoutError):
+        return cause
+    return (
+        f"{cause} (the init's budget is {budget_s:.0f} s; raise compute.state_read_timeout_s "
+        "for a world slower than that to load)"
+    )
+
+
 class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     """
     gRPC service implementation for the Runner.
@@ -1278,23 +1293,35 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # compose stack. FAIL FAST is preserved for trials that DO declare DB state.
         initial_state = task_description.initial_state
         if provisions_database(initial_state):
+            # The whole initial state goes in one request: a large world's takes as
+            # long to send and load as a whole-state read takes to answer, which the
+            # client's default does not cover. The call is bounded as GetState is, and
+            # the request is cut to what the call has left, so a slow init fails with
+            # its own cause before the wait for it gives up.
+            budget_s = self.state_read_deadlines.final_state_read_s
             try:
-                # Run async operation on dedicated event loop thread
-                self._run_async(
-                    self.db_client.init_trial(
-                        trial_id=trial_id,
-                        tables=initial_state.tables,
-                        schemas=[s.model_dump() for s in initial_state.schemas],
-                        unstable_fields=[u.model_dump() for u in initial_state.unstable_fields],
+                # Run async operation on dedicated event loop thread.
+                with self._call_budget(trial_id, budget_s):
+                    self._run_async(
+                        self.db_client.init_trial(
+                            trial_id=trial_id,
+                            tables=initial_state.tables,
+                            schemas=[s.model_dump() for s in initial_state.schemas],
+                            unstable_fields=[u.model_dump() for u in initial_state.unstable_fields],
+                            timeout=self._whole_state_read_s(trial_id),
+                        ),
+                        timeout=budget_s,
                     )
-                )
                 logger.info(f"RegisterTrial: {trial_id} - DB Service initialized")
             except Exception as e:
-                # FAIL FAST: DB init failure is a critical error
-                logger.error(f"RegisterTrial: Failed to initialize DB Service: {e}")
+                # FAIL FAST: DB init failure is a critical error.
+                cause = _db_init_failure_cause(e, budget_s)
+                logger.error(
+                    f"RegisterTrial: Failed to initialize DB Service: {cause}", exc_info=True
+                )
                 return pb2.RegisterTrialResponse(
                     success=False,
-                    error=f"DB Service initialization failed: {e}",
+                    error=f"DB Service initialization failed: {cause}",
                 )
         else:
             logger.info(
