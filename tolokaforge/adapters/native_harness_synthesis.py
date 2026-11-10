@@ -33,6 +33,7 @@ from typing import Any
 
 import yaml
 
+from tolokaforge.core.refs_staging import is_engine_path
 from tolokaforge_coding_harnesses import (
     INSTALL_SCRIPT,
     MIDDLEWARE_PROXY_SCRIPT,
@@ -367,7 +368,7 @@ def _set_env(existing: Any, key: str, value: str) -> Any:
 def _hash_task_tree(hasher: hashlib._Hash, task_dir: Path) -> None:
     """Fold every file under *task_dir* into *hasher*, path then bytes."""
     for path in sorted(task_dir.rglob("*")):
-        if "__pycache__" in path.parts:
+        if "__pycache__" in path.parts or is_engine_path(path.relative_to(task_dir)):
             continue
         rel = path.relative_to(task_dir).as_posix()
         hasher.update(b"P|" + rel.encode() + b"\n")

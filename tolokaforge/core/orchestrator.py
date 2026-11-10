@@ -131,6 +131,7 @@ from tolokaforge.core.pricing_freshness import (
     live_prices,
 )
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
+from tolokaforge.core.refs_staging import ENGINE_DIR_NAME, REFS_DIR_NAME
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
@@ -1667,6 +1668,7 @@ class Orchestrator:
         env_manifest: EnvironmentManifest | None = None,
         run_id: str = "run",
         log_capture: LogCaptureConfig | None = None,
+        refs_staging_dir: Path | None = None,
     ) -> RuntimeBackend:
         """Construct the composer-driven runtime backend.
 
@@ -1743,6 +1745,7 @@ class Orchestrator:
                 grpc_max_message_mb=self._grpc_max_message_mb(),
                 state_read_timeout_s=self._state_read_timeout_s(),
                 task_dir_of=self._task_dir_on_this_machine,
+                refs_staging_dir=refs_staging_dir,
             )
         )
         self.logger.info(
@@ -3338,6 +3341,9 @@ class Orchestrator:
                         runner_address,
                         env_manifest=run_env_manifest,
                         run_id=run_id,
+                        # A trial's referenced files are staged in the run's own directory
+                        # when it is on the task directory's filesystem (ADR-0072).
+                        refs_staging_dir=output_dir / ENGINE_DIR_NAME / REFS_DIR_NAME,
                     )
                 self._events.phase_changed(phase="connecting_runtime")
                 runtime_backend.connect()
