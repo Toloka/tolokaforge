@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import shutil
 import tempfile
 from collections.abc import Callable, Mapping
@@ -220,17 +221,23 @@ class DefaultSubstrateComposer:
             if spec.task.trial_data_delivery == "mount"
             else None
         )
+        refs_owned: list[Path] = []
         try:
-            refs_dir = _stage_trial_refs(spec, run_sub, final_state_dir)
+            refs_dir = _stage_trial_refs(spec, run_sub, final_state_dir, refs_owned)
             handle = self._provision_trial_stacks(
                 plan, spec, manifest, run_sub, final_state_dir, refs_dir
             )
         except BaseException:
             _remove_final_state_dir(final_state_dir)
+            _remove_refs_staging_dir(refs_owned[0] if refs_owned else None)
             raise
         if final_state_dir is None:
             return handle
-        return dataclasses.replace(handle, final_state_dir=final_state_dir)
+        return dataclasses.replace(
+            handle,
+            final_state_dir=final_state_dir,
+            refs_staging_dir=refs_owned[0] if refs_owned else None,
+        )
 
     def _provision_trial_stacks(
         self,
@@ -469,6 +476,7 @@ class DefaultSubstrateComposer:
                 )
         _teardown_handles_best_effort(self.materialiser, list(env_handle.trial_stack_handles))
         _remove_final_state_dir(env_handle.final_state_dir)
+        _remove_refs_staging_dir(env_handle.refs_staging_dir)
 
     def teardown_run(self, run_sub: RunSubstrate) -> None:
         if run_sub.runner_client is not None:
@@ -639,7 +647,10 @@ def _refuse_reserved_prefix(
 
 
 def _stage_trial_refs(
-    spec: TrialSpec, run_sub: RunSubstrate, final_state_dir: Path | None
+    spec: TrialSpec,
+    run_sub: RunSubstrate,
+    final_state_dir: Path | None,
+    owned: list[Path],
 ) -> Path | None:
     """The directory of the trial's referenced files to mount into its runner, or ``None``.
 
@@ -647,9 +658,13 @@ def _stage_trial_refs(
     ``pack:`` address (ADR-0068, ADR-0072); the directory those addresses resolve
     against is this machine's copy of the task, found through
     :attr:`RunSubstrate.task_dir_of`, never a path the describing machine wrote. The
-    runner gets only the referenced files, linked or copied into a directory beside
-    the trial's final-state directory (:func:`stage_referenced_files`), not the whole
-    task directory, and the directory goes with the final-state one at teardown.
+    runner gets only the referenced files (:func:`stage_referenced_files`), not the
+    whole task directory. They are staged on the task directory's filesystem, beside it
+    (:func:`_refs_staging_root`), so every file is a hard link and nothing lands in a
+    memory-backed temporary filesystem; that root is appended to ``owned``, for the
+    caller to remove on a failure and to keep on the trial's handle for teardown. Where
+    that is not possible they are staged beside the trial's final-state directory, and
+    go with it.
 
     Raises:
         ProvisionError: the description has references and this run cannot locate
@@ -680,11 +695,57 @@ def _stage_trial_refs(
             ),
         )
     task_dir = run_sub.task_dir_of(spec.task.task_id)
+    root = _refs_staging_root(task_dir, spec.trial_id)
+    if root is not None:
+        owned.append(root)
+    parent = root if root is not None else final_state_dir.parent
     try:
-        staged = stage_referenced_files(task_dir, refs, final_state_dir.parent / _REFS_STAGING_NAME)
+        staged = stage_referenced_files(task_dir, refs, parent / _REFS_STAGING_NAME)
     except RefsStagingError as exc:
         raise ProvisionError(trial_id=spec.trial_id, stage="provision", reason=str(exc)) from exc
     return staged.directory
+
+
+def _refs_staging_root(task_dir: Path, trial_id: str) -> Path | None:
+    """A fresh directory beside ``task_dir``, on its filesystem, for the trial's references.
+
+    ``None`` when the task directory's parent is not writable by this process or is on
+    another device than the task directory (a mount point): the caller then stages
+    beside the final-state directory, where a file the filesystem cannot link is
+    copied. Hidden and named after the trial, so a listing of the tasks shows it as
+    the engine's.
+    """
+    resolved = task_dir.resolve()
+    parent = resolved.parent
+    try:
+        same_device = _device_of(parent) == _device_of(resolved)
+    except OSError:
+        return None
+    if not same_device or not os.access(parent, os.W_OK | os.X_OK):
+        return None
+    try:
+        return Path(
+            tempfile.mkdtemp(
+                prefix=f".tolokaforge-refs-{compose_trial_slug(trial_id)}-", dir=parent
+            )
+        )
+    except OSError:
+        return None
+
+
+def _device_of(path: Path) -> int:
+    """The device ``path`` is on (a seam for tests)."""
+    return path.stat().st_dev
+
+
+def _remove_refs_staging_dir(directory: Path | None) -> None:
+    """Remove a trial's staged references made beside its task; a failure is logged, not raised."""
+    if directory is None:
+        return
+    try:
+        shutil.rmtree(directory)
+    except OSError:
+        logger.exception("DefaultSubstrateComposer: left staged references %s", directory)
 
 
 _REFS_STAGING_NAME = "pack-refs"

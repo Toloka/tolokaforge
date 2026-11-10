@@ -235,6 +235,11 @@ class ComposedEnvHandle:
     (ADR-0069), mounted into it at materialise time; ``None`` unless the run
     delivers the trial by reference (``compute.trial_data_delivery: mount``).
     The composer that made it removes it at :meth:`SubstrateComposer.teardown_trial`."""
+    refs_staging_dir: Path | None = None
+    """A directory of the trial's staged references the composer made beside the task's
+    directory, on its filesystem (ADR-0072); ``None`` when there are no references or
+    they were staged beside :attr:`final_state_dir`, which takes them with it. The
+    composer that made it removes it at :meth:`SubstrateComposer.teardown_trial`."""
 
     @property
     def compose(self) -> Any:

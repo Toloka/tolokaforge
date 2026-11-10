@@ -10,7 +10,10 @@ their ``pack:`` paths, and mounts that instead, at the same path in the containe
 
 Each file is a hard link to the task's copy when the filesystem allows it, which
 costs no bytes and no time whatever the world's size, and a copy otherwise (the
-staging directory on another filesystem, or a link the kernel refuses). Hard links
+staging directory on another filesystem, or a link the kernel refuses), logged as a
+warning with its bytes: the composer puts the staging directory on the task
+directory's filesystem where it can, so a copy into a memory-backed temporary
+filesystem stays the exception. Hard links
 share the task file's inode, so nothing here changes a file's mode or contents; the
 mount is read-only.
 
@@ -54,6 +57,7 @@ class StagedRefs:
     directory: Path
     linked: int
     copied: int
+    copied_bytes: int = 0
 
 
 def stage_referenced_files(
@@ -101,7 +105,7 @@ def stage_referenced_files(
         )
     staging.mkdir(mode=_DIR_MODE)
     staging.chmod(_DIR_MODE)
-    linked = copied = 0
+    linked = copied = copied_bytes = 0
     for pack_path, source in sources.items():
         target = staging / pack_path
         _make_parents(staging, target.parent)
@@ -111,16 +115,18 @@ def stage_referenced_files(
         except OSError:
             shutil.copyfile(source, target)
             copied += 1
+            copied_bytes += wanted[pack_path].size
     if copied:
-        logger.info(
-            "staged %d referenced file(s) in %s: %d linked, %d copied (another filesystem "
-            "or a refused link)",
+        logger.warning(
+            "staged %d referenced file(s) in %s: %d linked, %d copied (%d bytes): the staging "
+            "directory is on another filesystem than the task's, or a link was refused",
             len(sources),
             staging,
             linked,
             copied,
+            copied_bytes,
         )
-    return StagedRefs(directory=staging, linked=linked, copied=copied)
+    return StagedRefs(directory=staging, linked=linked, copied=copied, copied_bytes=copied_bytes)
 
 
 def _make_parents(staging: Path, directory: Path) -> None:

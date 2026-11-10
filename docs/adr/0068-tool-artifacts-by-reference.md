@@ -130,12 +130,14 @@ the engine materialises per trial from a task-declared stack.
   the trial's runner (and refuses a description with references when no
   trial-scope stack owns it, or when the run cannot locate the task, before any
   stack starts). It stages the referenced files alone into a per-trial directory
-  beside the trial's final-state directory, at their `pack:` paths: a hard link to
-  the task's file where the filesystem allows it, a copy otherwise. A file that is
+  beside the task directory, on its filesystem, at their `pack:` paths, so each is a
+  hard link to the task's file; where the task directory's parent is not writable or
+  is another device, beside the trial's final-state directory instead, where a file
+  that cannot be linked is copied, with a warning naming the bytes. A file that is
   missing, resolves outside the task directory or has another size than described
   is refused there, every one listed, before any stack starts; the runner's digest
-  check stays the one that decides. The directory goes with the final-state one at
-  teardown. The docker-compose materialiser adds a read-only bind mount of it at
+  check stays the one that decides. The directory is removed at teardown, and when
+  the trial's provision fails. The docker-compose materialiser adds a read-only bind mount of it at
   `/tolokaforge/tool-artifact-refs` to the runner service and sets
   `TOLOKAFORGE_TOOL_ARTIFACT_REFS_DIR` to it; a compose file that already
   declares the variable or a volume at that path is refused.

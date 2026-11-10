@@ -16,6 +16,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -774,6 +775,100 @@ class TestComposeMount:
 
 
 class TestComposer:
+    def _composer(self) -> tuple[Any, Any]:
+        from tests.unit.test_default_substrate_composer import (
+            _always_ready_loader,
+            _fake_client_factory,
+            _FakeMaterialiser,
+        )
+        from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
+
+        materialiser = _FakeMaterialiser()
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+            readiness_probe_loader=_always_ready_loader,
+        )
+        return composer, materialiser
+
+    def _provision(self, tmp_path: Path, root: Path) -> tuple[Any, Any, Path]:
+        from tests.unit.test_default_substrate_composer import _decl, _empty_run_sub
+
+        compose = _compose(tmp_path)
+        composer, materialiser = self._composer()
+        plan = [_decl(compose, stack_id="world", stack_scope="trial", runner_service="runner")]
+        run_sub = dataclasses.replace(_empty_run_sub(), task_dir_of=lambda _task: root)
+        handle = composer.provision_trial(plan, self._spec(compose, root), run_sub)
+        (staged,) = [ctx.tool_artifact_refs_root for ctx in materialiser.materialise_contexts]
+        return composer, handle, staged
+
+    def test_an_unwritable_task_parent_stages_beside_the_final_state(self, tmp_path: Path) -> None:
+        if os.geteuid() == 0:
+            pytest.skip("root writes through any mode")
+        root = _world(tmp_path / "packs")
+        (tmp_path / "packs").chmod(0o555)
+        try:
+            composer, handle, staged = self._provision(tmp_path, root)
+            assert staged.parent == handle.final_state_dir.parent
+            assert handle.refs_staging_dir is None
+            assert not list((tmp_path / "packs").glob(".tolokaforge-refs-*"))
+            composer.teardown_trial(handle)
+            assert not staged.exists()
+        finally:
+            (tmp_path / "packs").chmod(0o755)
+
+    def test_a_task_parent_on_another_device_stages_beside_the_final_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tolokaforge.core.default_substrate_composer as composer_module
+
+        root = _world(tmp_path)
+        monkeypatch.setattr(
+            composer_module, "_device_of", lambda path: 1 if path == root.resolve() else 2
+        )
+        composer, handle, staged = self._provision(tmp_path, root)
+        assert staged.parent == handle.final_state_dir.parent
+        assert handle.refs_staging_dir is None
+        composer.teardown_trial(handle)
+        assert not staged.exists()
+
+    @pytest.mark.parametrize("placement", ["beside_task", "beside_final_state"])
+    def test_a_failed_provision_removes_the_staged_references(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, placement: str
+    ) -> None:
+        import tolokaforge.core.default_substrate_composer as composer_module
+        from tests.unit.test_default_substrate_composer import _decl, _empty_run_sub
+
+        root = _world(tmp_path)
+        if placement == "beside_final_state":
+            monkeypatch.setattr(
+                composer_module, "_device_of", lambda path: 1 if path == root.resolve() else 2
+            )
+        made: list[Path] = []
+        real = composer_module._make_final_state_dir
+
+        def recording(trial_id: str) -> Path:
+            made.append(real(trial_id))
+            return made[-1]
+
+        def boom(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("stack failed")
+
+        monkeypatch.setattr(composer_module, "_make_final_state_dir", recording)
+        monkeypatch.setattr(
+            composer_module.DefaultSubstrateComposer, "_provision_trial_stacks", boom
+        )
+        compose = _compose(tmp_path)
+        composer, _ = self._composer()
+        plan = [_decl(compose, stack_id="world", stack_scope="trial", runner_service="runner")]
+        run_sub = dataclasses.replace(_empty_run_sub(), task_dir_of=lambda _task: root)
+
+        with pytest.raises(RuntimeError, match="stack failed"):
+            composer.provision_trial(plan, self._spec(compose, root), run_sub)
+        assert not list(tmp_path.glob(".tolokaforge-refs-*"))
+        assert not made[0].parent.exists()
+        assert (root / "tools" / "world_tool.py").is_file()
+
     def _spec(self, compose: Path, root: Path) -> Any:
         from tests.unit.test_default_substrate_composer import _manifest, _trial_spec
 
@@ -833,10 +928,14 @@ class TestComposer:
             "tools/world_tool.py",
         ]
         assert (staged / "tools" / "world_tool.py").read_text() == "ANSWER = 42\n"
-        # It lives and goes with the trial's final-state directory.
-        assert staged.parent == handle.final_state_dir.parent
+        # Beside the task, on its filesystem: a hard link, kept on the handle for teardown.
+        assert staged.parent.parent == root.parent
+        assert staged.parent.name.startswith(".tolokaforge-refs-")
+        assert handle.refs_staging_dir == staged.parent
+        source = (root / "tools" / "world_tool.py").stat()
+        assert (staged / "tools" / "world_tool.py").stat().st_ino == source.st_ino
         composer.teardown_trial(handle)
-        assert not staged.exists()
+        assert not staged.parent.exists()
         assert (root / "tools" / "world_tool.py").read_text() == "ANSWER = 42\n"
 
     def test_a_referenced_file_of_another_size_is_refused_before_any_stack_starts(
@@ -1162,8 +1261,8 @@ class TestStaging:
         source = (root / "tools" / "world_tool.py").stat()
         assert (staged.directory / "tools" / "world_tool.py").stat().st_ino == source.st_ino
 
-    def test_a_refused_link_falls_back_to_a_copy(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    def test_a_refused_link_falls_back_to_a_copy_with_a_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         import errno
 
@@ -1175,9 +1274,12 @@ class TestStaging:
         monkeypatch.setattr(refs_staging.os, "link", cross_device)
         root = _world(tmp_path)
         refs = {"data/records.json": _ref_for(root, "data/records.json")}
-        staged = refs_staging.stage_referenced_files(root, refs, tmp_path / "staged")
+        size = (root / "data" / "records.json").stat().st_size
+        with caplog.at_level(logging.WARNING, logger=refs_staging.__name__):
+            staged = refs_staging.stage_referenced_files(root, refs, tmp_path / "staged")
 
-        assert (staged.linked, staged.copied) == (0, 1)
+        assert (staged.linked, staged.copied, staged.copied_bytes) == (0, 1, size)
+        assert f"1 copied ({size} bytes)" in caplog.text
         copy = staged.directory / "data" / "records.json"
         assert copy.read_bytes() == (root / "data" / "records.json").read_bytes()
         assert copy.stat().st_ino != (root / "data" / "records.json").stat().st_ino

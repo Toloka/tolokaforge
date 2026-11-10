@@ -242,6 +242,7 @@ class TestCompanionDataclassFields:
             "trial_endpoints",
             "trial_runner_client",
             "final_state_dir",
+            "refs_staging_dir",
         ]
 
 
