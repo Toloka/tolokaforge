@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import os
 import shutil
 import tempfile
 from collections.abc import Callable, Mapping
@@ -50,7 +49,14 @@ from tolokaforge.core.docker_compose_materialiser import DockerComposeMaterialis
 from tolokaforge.core.models.task_config import SeedRef
 from tolokaforge.core.models.trajectory import ProvisionStage
 from tolokaforge.core.plugin_registry import ReadinessProbeFactory, load_readiness_probe
-from tolokaforge.core.refs_staging import RefsStagingError, stage_referenced_files
+from tolokaforge.core.refs_staging import (
+    ENGINE_DIR_NAME,
+    REFS_DIR_NAME,
+    RefsStagingError,
+    mark_owner,
+    stage_referenced_files,
+    sweep_stale_staging,
+)
 from tolokaforge.core.run_display_events import RunDisplayEvents
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.service_lifecycle_dispatchers import DISPATCHER_REGISTRY
@@ -162,6 +168,7 @@ class DefaultSubstrateComposer:
                 grpc_max_message_mb=ctx.grpc_max_message_mb,
                 state_read_timeout_s=ctx.state_read_timeout_s,
                 task_dir_of=ctx.task_dir_of,
+                refs_staging_dir=ctx.refs_staging_dir,
             )
 
         assert runner_decl is not None  # narrowed by runner_handle presence
@@ -199,6 +206,7 @@ class DefaultSubstrateComposer:
             grpc_max_message_mb=ctx.grpc_max_message_mb,
             state_read_timeout_s=ctx.state_read_timeout_s,
             task_dir_of=ctx.task_dir_of,
+            refs_staging_dir=ctx.refs_staging_dir,
         )
 
     # ------------------------------------------------------------------
@@ -659,12 +667,12 @@ def _stage_trial_refs(
     against is this machine's copy of the task, found through
     :attr:`RunSubstrate.task_dir_of`, never a path the describing machine wrote. The
     runner gets only the referenced files (:func:`stage_referenced_files`), not the
-    whole task directory. They are staged on the task directory's filesystem, beside it
-    (:func:`_refs_staging_root`), so every file is a hard link and nothing lands in a
-    memory-backed temporary filesystem; that root is appended to ``owned``, for the
-    caller to remove on a failure and to keep on the trial's handle for teardown. Where
-    that is not possible they are staged beside the trial's final-state directory, and
-    go with it.
+    whole task directory. They are staged on the task directory's filesystem, in the
+    run's directory or beside the task (:func:`_refs_staging_root`), so every file is a
+    hard link and nothing lands in a memory-backed temporary filesystem; that root is
+    appended to ``owned``, for the caller to remove on a failure and to keep on the
+    trial's handle for teardown. Where neither is possible they are staged beside the
+    trial's final-state directory, and go with it.
 
     Raises:
         ProvisionError: the description has references and this run cannot locate
@@ -695,9 +703,16 @@ def _stage_trial_refs(
             ),
         )
     task_dir = run_sub.task_dir_of(spec.task.task_id)
-    root = _refs_staging_root(task_dir, spec.trial_id)
+    root, where = _refs_staging_root(task_dir, spec.trial_id, run_sub.refs_staging_dir)
     if root is not None:
         owned.append(root)
+        logger.info("staging the references of trial %s in %s", spec.trial_id, where)
+    else:
+        logger.info(
+            "staging the references of trial %s beside its final-state directory: %s",
+            spec.trial_id,
+            where,
+        )
     parent = root if root is not None else final_state_dir.parent
     try:
         staged = stage_referenced_files(task_dir, refs, parent / _REFS_STAGING_NAME)
@@ -706,31 +721,49 @@ def _stage_trial_refs(
     return staged.directory
 
 
-def _refs_staging_root(task_dir: Path, trial_id: str) -> Path | None:
-    """A fresh directory beside ``task_dir``, on its filesystem, for the trial's references.
+def _refs_staging_root(
+    task_dir: Path, trial_id: str, run_dir: Path | None
+) -> tuple[Path | None, str]:
+    """A fresh directory for the trial's references on the task directory's filesystem.
 
-    ``None`` when the task directory's parent is not writable by this process or is on
-    another device than the task directory (a mount point): the caller then stages
-    beside the final-state directory, where a file the filesystem cannot link is
-    copied. Hidden and named after the trial, so a listing of the tasks shows it as
-    the engine's.
+    In order: the run's own directory (``run_dir``, under the run's output) and the one
+    documented hidden directory beside the task directory
+    (``<parent>/.tolokaforge/refs``), each when it can be made, is writable and is on
+    the task directory's device, so every file is a hard link. Each is swept of what an
+    engine killed before its teardown left there, the first time this process stages
+    into it. Returns the directory and where it is, or ``None`` and why neither could
+    be used: the caller then stages beside the final-state directory, where a file the
+    filesystem cannot link is copied.
     """
     resolved = task_dir.resolve()
-    parent = resolved.parent
     try:
-        same_device = _device_of(parent) == _device_of(resolved)
-    except OSError:
-        return None
-    if not same_device or not os.access(parent, os.W_OK | os.X_OK):
-        return None
-    try:
-        return Path(
-            tempfile.mkdtemp(
-                prefix=f".tolokaforge-refs-{compose_trial_slug(trial_id)}-", dir=parent
-            )
-        )
-    except OSError:
-        return None
+        task_device = _device_of(resolved)
+    except OSError as exc:
+        return None, f"the task directory {task_dir} cannot be read ({exc})"
+    reasons: list[str] = []
+    beside_task = resolved.parent / ENGINE_DIR_NAME / REFS_DIR_NAME
+    for label, base in (("the run's directory", run_dir), ("beside the task", beside_task)):
+        if base is None:
+            reasons.append(f"{label}: none")
+            continue
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            if _device_of(base) != task_device:
+                reasons.append(f"{label} {base}: another device than the task directory")
+                continue
+            if base not in _SWEPT:
+                _SWEPT.add(base)
+                sweep_stale_staging(base)
+            root = Path(tempfile.mkdtemp(prefix=f"{compose_trial_slug(trial_id)}-", dir=base))
+            mark_owner(root)
+            return root, f"{label} ({base})"
+        except OSError as exc:
+            reasons.append(f"{label} {base}: {exc.strerror or exc} (errno {exc.errno})")
+    return None, "; ".join(reasons)
+
+
+_SWEPT: set[Path] = set()
+"""Staging bases this process has swept of stale entries."""
 
 
 def _device_of(path: Path) -> int:
@@ -772,7 +805,7 @@ def _refuse_refs_no_trial_runner_can_take(plan: CompositionPlan, spec: TrialSpec
         reason=(
             "the task delivers its tool artefacts by reference (compute.trial_data_delivery: "
             "mount), which needs a trial-scope stack to own the runner so the engine can "
-            f"mount the task's directory into it; the runner here: {found}"
+            f"mount the trial's referenced files into it; the runner here: {found}"
         ),
     )
 

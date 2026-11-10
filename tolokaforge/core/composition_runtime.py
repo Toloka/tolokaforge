@@ -172,6 +172,10 @@ class RunCtx:
     ``pack:`` references resolve against when the engine mounts it into the
     task's runner (ADR-0072). ``None`` when the caller has no adapter to ask;
     a description with references is then refused at provision."""
+    refs_staging_dir: Path | None = None
+    """A directory of the run the engine owns, where a trial's referenced files are
+    staged for its runner when it is on the task directory's filesystem (ADR-0072);
+    ``None`` stages them beside the task directory or the final-state directory."""
 
 
 @dataclass
@@ -213,6 +217,10 @@ class RunSubstrate:
     ``pack:`` references resolve against when the engine mounts it into the
     task's runner (ADR-0072). ``None`` when the caller has no adapter to ask;
     a description with references is then refused at provision."""
+    refs_staging_dir: Path | None = None
+    """A directory of the run the engine owns, where a trial's referenced files are
+    staged for its runner when it is on the task directory's filesystem (ADR-0072);
+    ``None`` stages them beside the task directory or the final-state directory."""
 
 
 @dataclass(frozen=True)

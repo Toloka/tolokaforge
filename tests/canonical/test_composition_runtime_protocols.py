@@ -210,6 +210,7 @@ class TestCompanionDataclassFields:
             "grpc_max_message_mb",
             "state_read_timeout_s",
             "task_dir_of",
+            "refs_staging_dir",
         ]
 
     def test_run_substrate_fields(self) -> None:
@@ -233,6 +234,7 @@ class TestCompanionDataclassFields:
             "grpc_max_message_mb",
             "state_read_timeout_s",
             "task_dir_of",
+            "refs_staging_dir",
         ]
 
     def test_composed_env_handle_fields(self) -> None:

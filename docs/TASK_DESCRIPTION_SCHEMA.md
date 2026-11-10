@@ -583,8 +583,12 @@ file.
   relative POSIX paths, and an artefact path is never both inline and referenced.
 
 The engine that materialises the trial locates its own copy of the task directory
-through its adapter, bind-mounts it read-only into the runner service at
-`/tolokaforge/tool-artifact-refs` and sets `TOLOKAFORGE_TOOL_ARTIFACT_REFS_DIR`.
+through its adapter, stages the referenced files alone into a per-trial directory (hard
+links on the task directory's filesystem, see
+[MULTI_CONTAINER_GUIDE.md](MULTI_CONTAINER_GUIDE.md)), bind-mounts that read-only into the
+runner service at `/tolokaforge/tool-artifact-refs` and sets
+`TOLOKAFORGE_TOOL_ARTIFACT_REFS_DIR`. A file of the task that no reference names never
+reaches the runner.
 
 At `RegisterTrial` the runner copies each file into the trial's artefact directory beside
 the inline entries, hashing while it copies. It refuses the trial — listing every path at

@@ -18,6 +18,7 @@ from tolokaforge.core.grading.config_validation import (
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Grade, GradingConfig, TaskConfig, Trajectory
+from tolokaforge.core.refs_staging import is_engine_path
 from tolokaforge.runner.models import TaskDescription, TrialDataDelivery
 
 if TYPE_CHECKING:
@@ -296,6 +297,8 @@ class BaseAdapter(ABC):
         for resolved_pattern in self._resolve_glob_patterns(pattern):
             for expanded in self._expand_braces(resolved_pattern):
                 for match in glob_module.glob(expanded, recursive=recursive):
+                    if is_engine_path(match):
+                        continue  # the engine's own staging beside a task (ADR-0072)
                     path = Path(match).resolve()
                     if path in seen:
                         continue
