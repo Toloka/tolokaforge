@@ -235,10 +235,11 @@ The pieces that matter:
 
 How a task's files reach the runner is not part of the environment: it is
 the run's `compute.trial_data_delivery` (`inline` by default, or `mount`;
-ADR-0068, ADR-0072). Under `mount` the engine bind-mounts the task directory
-read-only into the runner service at `/tolokaforge/tool-artifact-refs` for a
-task whose runner a `trial`-scope stack owns, and the runner copies and
-verifies each file by SHA-256; and the engine bind-mounts a per-trial writable
+ADR-0068, ADR-0072). Under `mount` the engine stages the files the description
+references, alone, into a per-trial directory (hard links where the filesystem
+allows, copies otherwise) and bind-mounts it read-only into the runner service
+at `/tolokaforge/tool-artifact-refs` for a task whose runner a `trial`-scope
+stack owns, and the runner copies and verifies each file by SHA-256; and the engine bind-mounts a per-trial writable
 directory at `/tolokaforge/final-state`, where the runner writes the trial's
 final database state and answers `GetState` with the file's path, SHA-256 and
 size, which the engine checks and copies into the trial bundle as

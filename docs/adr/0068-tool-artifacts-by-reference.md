@@ -8,6 +8,8 @@
 - **Revised:** 2026-11-09, by the addressing of [ADR-0072](https://github.com/Toloka/tolokaforge/pull/1983):
   a reference is a `pack:` address, the delivery is a run setting, and the grader rule
   is written on the trial contract.
+- **Revised:** 2026-11-10, ADR-0072's open question 4: the runner's mount holds the referenced
+  files only, staged per trial, not the whole task directory.
 
 ## Context and Problem Statement
 
@@ -127,7 +129,13 @@ the engine materialises per trial from a task-declared stack.
   run's adapter (`RunSubstrate.task_dir_of`) and hands it to the stack that owns
   the trial's runner (and refuses a description with references when no
   trial-scope stack owns it, or when the run cannot locate the task, before any
-  stack starts). The docker-compose materialiser adds a read-only bind mount of it at
+  stack starts). It stages the referenced files alone into a per-trial directory
+  beside the trial's final-state directory, at their `pack:` paths: a hard link to
+  the task's file where the filesystem allows it, a copy otherwise. A file that is
+  missing, resolves outside the task directory or has another size than described
+  is refused there, every one listed, before any stack starts; the runner's digest
+  check stays the one that decides. The directory goes with the final-state one at
+  teardown. The docker-compose materialiser adds a read-only bind mount of it at
   `/tolokaforge/tool-artifact-refs` to the runner service and sets
   `TOLOKAFORGE_TOOL_ARTIFACT_REFS_DIR` to it; a compose file that already
   declares the variable or a volume at that path is refused.
