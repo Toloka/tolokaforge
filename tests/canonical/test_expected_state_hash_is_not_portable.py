@@ -435,6 +435,7 @@ def _runner_view_verdict(case: _ViewCase, servicer: Any, context: Any) -> Verdic
                 description.grading.state_checks,
                 copy.deepcopy(case.trial),
                 copy.deepcopy(case.golden),
+                initial_tables=copy.deepcopy(description.initial_state.tables),
                 basis=HashComparisonBasis.GOLDEN_REPLAY,
                 golden_replay=GoldenReplayRecord(authored=1),
             )
