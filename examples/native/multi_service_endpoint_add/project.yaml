@@ -16,7 +16,7 @@ description: >
   Single-task auto-dev project proving the filesystem_dir seed-backed reset
   recipe fires through the CLI. A pristine FastAPI source tree is restored into a
   shared volume per trial; the agent adds a `GET /orders/{id}/summary` endpoint,
-  runs the real test suite over HTTP, and the PASS/FAIL marker is the
+  runs the real test suite over HTTP, and the real PASS/FAIL result is the
   deterministic floor of a three-way grade.
 
 tasks:

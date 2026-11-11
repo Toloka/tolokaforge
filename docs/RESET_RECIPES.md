@@ -164,11 +164,13 @@ to a `testrunner` service labelled `isolation: reset`. The novel piece is the
 pristine tree into that volume, so the source the agent edits over `/work` is the
 same source the `testrunner` runs the suite against over `/workspace`. The agent
 adds a missing `GET /orders/{id}/summary` endpoint and calls the testrunner's
-`POST /run-tests`, whose real `unittest` exit code writes a `PASS`/`FAIL` marker
-back into the volume — the decisive `state_checks` grading floor.
+`POST /run-tests`, which runs the real `unittest` suite and returns its verdict.
+The recorded `/run-tests` response is the decisive `trace_checks` grading floor;
+the test-runner also writes a human-readable `PASS`/`FAIL` marker back into the
+volume, which grading does not read because the agent can overwrite it.
 `tests/integration/test_endpoint_add_end_to_end.py` witnesses the recipe directly:
 after a real trial-scope provision it reads `runner:/work/app.py` and
 confirms it matches the seed (the recipe fired across the bridge), then drives
 `POST /run-tests` on the pristine source (marker `FAIL`) and again after writing
-the reference endpoint (marker `PASS`), proving the grading floor tracks the real
-suite result.
+the reference endpoint (marker `PASS`), proving the test-runner's result tracks the
+real suite result.

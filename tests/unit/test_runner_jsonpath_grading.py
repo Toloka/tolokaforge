@@ -90,8 +90,8 @@ def test_pass_marker_discriminates_against_fail(
 ):
     """A test-result marker file checked with ``contains_ci: "PASS"`` must score
     1.0 only when the marker says PASS. A file containing exactly ``FAIL`` must
-    NOT vacuously satisfy the check — this is the decisive state-check floor the
-    endpoint_add pack relies on, and using ``contains:`` instead of
+    NOT vacuously satisfy the check — a marker-based state-check floor relies on
+    this, and using ``contains:`` instead of
     ``contains_ci:`` would silently always-pass because the missing key defaults
     to ``""`` and ``"" in content`` is vacuously True.
     """

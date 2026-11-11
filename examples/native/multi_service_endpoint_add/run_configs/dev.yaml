@@ -9,7 +9,7 @@
 # `pristine_source` directory seed, so the per-trial backend re-seeds the shared
 # volume with the pristine FastAPI source before each trial. The agent reads the
 # code, adds `GET /orders/{id}/summary`, and runs the suite over http_request;
-# the real PASS/FAIL marker is the deterministic grading floor.
+# the real PASS/FAIL test result is the deterministic grading floor.
 #
 # `runtime: per_trial` because `testrunner` is `isolation: reset` and the other
 # services default to `ephemeral` — that mix routes the run onto the per-trial
