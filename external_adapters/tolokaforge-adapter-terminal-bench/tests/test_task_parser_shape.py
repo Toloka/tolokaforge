@@ -267,3 +267,24 @@ def test_a_user_that_is_not_a_non_empty_string_is_refused(tmp_path: Path, bad: s
     )
     with pytest.raises(ValueError, match="verifier.user"):
         discover_tasks(tmp_path)
+
+
+def test_unknown_network_mode_is_refused_not_dropped(tmp_path) -> None:
+    """A ``network_mode`` nobody renders would leave the container on the network.
+
+    Refusing names the task and the value; dropping it would run a task that
+    asked for isolation without any, and nothing downstream could tell.
+    """
+    import pytest
+    from tolokaforge_adapter_terminal_bench.task_parser import parse_task_dir
+
+    task_dir = tmp_path / "weird"
+    (task_dir / "environment").mkdir(parents=True)
+    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    (task_dir / "instruction.md").write_text("Do the thing.\n")
+    (task_dir / "task.toml").write_text(
+        '[environment]\nnetwork_mode = "host"\n'
+    )
+
+    with pytest.raises(ValueError, match="network_mode"):
+        parse_task_dir(task_dir)

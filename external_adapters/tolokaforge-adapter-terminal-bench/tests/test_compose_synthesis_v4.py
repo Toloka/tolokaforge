@@ -308,3 +308,76 @@ def test_db_service_healthcheck_probes_with_urllib_not_curl() -> None:
     assert "urllib.request.urlopen" in probe
     assert "http://localhost:8000/health" in probe
     assert "curl" not in probe
+
+
+_NETWORK_TASK_TOML = """
+artifacts = ["/app"]
+
+[metadata]
+difficulty = "medium"
+tags = ["demo"]
+
+[agent]
+timeout_sec = 1800.0
+
+[verifier]
+timeout_sec = 300.0
+network_mode = "no-network"
+
+[environment]
+cpus = 2
+memory_mb = 4096
+network_mode = "no-network"
+"""
+
+
+def _write_no_network_task(base: Path, task_id: str, *, toml: str) -> None:
+    task_dir = base / task_id
+    (task_dir / "environment").mkdir(parents=True)
+    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    (task_dir / "instruction.md").write_text("Do the thing.\n")
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "Dockerfile").write_text('FROM python:3.12-slim\nCMD ["sleep", "infinity"]\n')
+    (tests_dir / "test.sh").write_text("#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n")
+    (task_dir / "task.toml").write_text(toml)
+
+
+def test_declared_no_network_isolates_both_agent_and_verifier(tmp_path: Path) -> None:
+    """A pack that declares ``no-network`` gets it rendered onto both containers.
+
+    Every Terminal-Bench 4 pack measured its published pass rates with the
+    agent offline. Before this was rendered the field was parsed by nothing and
+    the agent kept egress, so a trial was neither comparable to the pack's own
+    numbers nor safe on an unpublished task set.
+    """
+    _write_no_network_task(tmp_path, "netiso", toml=_NETWORK_TASK_TOML)
+    _, doc = _materialise(tmp_path, "netiso")
+
+    assert doc["services"]["main"]["network_mode"] == "none"
+    assert doc["services"]["verifier"]["network_mode"] == "none"
+
+
+def test_task_declaring_no_network_mode_keeps_default_networking(tmp_path: Path) -> None:
+    """A pack that declares nothing is left exactly as it was."""
+    _write_task(tmp_path, "plain", v4=True)
+    _, doc = _materialise(tmp_path, "plain")
+
+    assert "network_mode" not in doc["services"]["main"]
+    assert "network_mode" not in doc["services"]["verifier"]
+
+
+def test_verifier_network_mode_read_from_nested_environment_table(tmp_path: Path) -> None:
+    """TB4.0 packs split between ``[verifier]`` and ``[verifier.environment]``.
+
+    Ten of the hundred Arena TB4.0 packs put the verifier's isolation in the
+    nested table. Reading only the direct key would drop it for those.
+    """
+    toml = _NETWORK_TASK_TOML.replace(
+        'timeout_sec = 300.0\nnetwork_mode = "no-network"',
+        'timeout_sec = 300.0\n\n[verifier.environment]\nnetwork_mode = "no-network"',
+    )
+    _write_no_network_task(tmp_path, "nested", toml=toml)
+    _, doc = _materialise(tmp_path, "nested")
+
+    assert doc["services"]["verifier"]["network_mode"] == "none"
