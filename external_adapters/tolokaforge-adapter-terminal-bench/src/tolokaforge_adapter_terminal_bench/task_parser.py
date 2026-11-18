@@ -128,6 +128,24 @@ class TerminalBenchTask:
     """
     cpus: float = 2
     memory_mb: int = 4096
+    network_mode: str | None = None
+    """Network isolation the task asks for its agent container, from
+    ``[environment].network_mode``.
+
+    ``"no-network"`` means the agent is meant to work offline. Dropping this
+    field is not cosmetic on a benchmark: the reference numbers a pack ships
+    were measured with the agent offline, so an agent that silently keeps
+    egress is not being measured against the same task — and on an unpublished
+    set it can reach for the answer.
+    """
+    verifier_network_mode: str | None = None
+    """Network isolation the task asks for its verifier container, from
+    ``[verifier].network_mode`` or ``[verifier.environment].network_mode``.
+
+    Declared separately from :attr:`network_mode` because the two containers
+    are isolated independently: a pack may let the verifier reach a sidecar
+    while the agent is offline.
+    """
     environment_mode: str | None = None
     """How the task runs its verifier: ``"separate"`` for a task whose tests run
     in their own container, ``None`` for the single-container shape whose tests
@@ -279,6 +297,59 @@ def _parse_user(task_id: str, section: Mapping[str, Any], section_name: str) -> 
     # Returned stripped: surrounding whitespace is a typo, and ``--user ' root '``
     # is refused by docker with an error that names neither the task nor the key.
     return user.strip()
+
+
+#: ``network_mode`` values a task may declare. ``"no-network"`` is the only
+#: isolating one Terminal-Bench packs use; the rest name the default, and are
+#: accepted so a pack that spells it out is not refused. Anything else is
+#: refused rather than dropped — a value nobody renders is a task asking for an
+#: isolation it does not get, which is exactly the silent-measurement bug this
+#: field exists to end.
+NO_NETWORK = "no-network"
+_NETWORK_MODES_DEFAULT = frozenset({"default", "bridge"})
+
+
+def _parse_network_mode(
+    task_id: str, section: Mapping[str, Any], section_name: str
+) -> str | None:
+    """The ``network_mode`` a ``[environment]`` / ``[verifier]`` section declares."""
+    mode = section.get("network_mode")
+    if mode is None:
+        return None
+    if not isinstance(mode, str) or not mode.strip():
+        raise ValueError(
+            f"terminal-bench task {task_id!r}: {section_name}.network_mode must be a "
+            f"non-empty string; got {mode!r}."
+        )
+    mode = mode.strip()
+    if mode != NO_NETWORK and mode not in _NETWORK_MODES_DEFAULT:
+        raise ValueError(
+            f"terminal-bench task {task_id!r}: {section_name}.network_mode "
+            f"{mode!r} is not one of {NO_NETWORK!r}, "
+            f"{sorted(_NETWORK_MODES_DEFAULT)}. Refused rather than ignored: a "
+            "network mode nobody renders would leave the container on the network "
+            "the task asked to be kept off."
+        )
+    return mode
+
+
+def _parse_verifier_network_mode(
+    task_id: str, verifier: Mapping[str, Any]
+) -> str | None:
+    """The verifier's ``network_mode``, from either place a pack may put it.
+
+    TB4.0 packs split roughly 86/14 between ``[verifier]`` and the nested
+    ``[verifier.environment]``; TB4.1 puts it on ``[verifier]``. Both are read
+    so the isolation is not lost to which table the author chose, with the
+    direct key winning when a pack sets both.
+    """
+    direct = _parse_network_mode(task_id, verifier, "verifier")
+    if direct is not None:
+        return direct
+    nested = verifier.get("environment")
+    if not isinstance(nested, Mapping):
+        return None
+    return _parse_network_mode(task_id, nested, "verifier.environment")
 
 
 def _parse_artifacts(task_id: str, toml_data: Mapping[str, Any]) -> list[TerminalBenchArtifact]:
@@ -471,6 +542,8 @@ def parse_task_dir(task_dir: Path) -> TerminalBenchTask:
         verifier_user=_parse_user(task_id, verifier, "verifier"),
         cpus=environment.get("cpus", 2),
         memory_mb=environment.get("memory_mb", 4096),
+        network_mode=_parse_network_mode(task_id, environment, "environment"),
+        verifier_network_mode=_parse_verifier_network_mode(task_id, verifier),
         environment_mode=environment_mode,
         artifacts=artifacts,
         collect=_parse_collect(task_id, verifier),

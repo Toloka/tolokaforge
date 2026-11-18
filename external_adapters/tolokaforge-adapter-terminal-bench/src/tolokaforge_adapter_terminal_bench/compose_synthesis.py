@@ -59,7 +59,7 @@ import yaml
 # fails in the adapter with the adapter's own message rather than deep inside
 # a Pydantic validator on the synthesised compose file.
 from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS
-from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
+from tolokaforge_adapter_terminal_bench.task_parser import NO_NETWORK, TerminalBenchTask
 from tolokaforge_coding_harnesses import (
     DEFAULT_PATH_RESOLVER,
     ENGINE_LOOP,
@@ -1324,7 +1324,22 @@ def _build_synthesised_compose(
             # The verifier image is always built from the task's own ``tests/`` —
             # there is no registry artifact for it — so it carries a ``build`` even
             # when the agent image is pulled.
-            services[_VERIFIER_SERVICE] = _verifier_service_body(verifier_image)
+            verifier_body = _verifier_service_body(verifier_image)
+            # The lone verifier talks to nothing: the grader reaches it by
+            # ``docker exec`` and its artifacts arrive by ``docker cp``, neither
+            # of which needs a network. A tier-3 verifier stack is left alone —
+            # there its services address each other over ``_VERIFIER_NETWORK``.
+            _apply_declared_network_isolation(
+                verifier_body,
+                meta.verifier_network_mode,
+                task_id=meta.task_id,
+                service=_VERIFIER_SERVICE,
+            )
+            services[_VERIFIER_SERVICE] = verifier_body
+
+    _apply_declared_network_isolation(
+        agent_body, meta.network_mode, task_id=meta.task_id, service=agent_service
+    )
 
     _stamp_trial_container_names(services)
 
@@ -1422,6 +1437,40 @@ def _tests_sidecar_service_body(agent_image: str, agent_build: Any) -> dict[str,
         }
     )
     return body
+
+
+def _apply_declared_network_isolation(
+    body: dict[str, Any], declared: str | None, *, task_id: str, service: str
+) -> None:
+    """Render a task's declared ``no-network`` onto a synthesised service body.
+
+    Terminal-Bench packs declare isolation per container
+    (``[environment].network_mode``, ``[verifier].network_mode``). Until this
+    was rendered the field was parsed by nothing and every container kept
+    egress, so a pack whose published pass rates were measured offline was
+    being run online — the agent could reach the network the task asked to be
+    kept off, and the trial was not comparable to the pack's own numbers.
+
+    ``network_mode: none`` is the same lever the single-container shape already
+    uses to seal its test sidecar; it leaves the container off every network
+    the trial has, including the default one.
+
+    Refused rather than dropped when the service is already on named networks:
+    compose rejects ``network_mode`` beside ``networks``, and silently keeping
+    the networks would hand back the egress the task asked to lose.
+    """
+    if declared != NO_NETWORK:
+        return
+    if body.get("networks"):
+        raise ValueError(
+            f"terminal-bench task {task_id!r}: service {service!r} declares "
+            f"network_mode={NO_NETWORK!r} but is attached to named networks "
+            f"{sorted(body['networks'])}. Compose refuses the two together, and "
+            "dropping the isolation would run the task on a network it asked to "
+            "be kept off. Give the sidecars their own network and leave this "
+            "service off it, or drop the declaration from the pack."
+        )
+    body["network_mode"] = "none"
 
 
 def _verifier_service_body(verifier_image: str) -> dict[str, Any]:
