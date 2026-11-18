@@ -5,6 +5,7 @@ import time
 from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from tolokaforge_coding_harnesses.stdout_telemetry import (
     HarnessStdoutTelemetry,
@@ -87,6 +88,7 @@ from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.runner.tool_factory import (
     BACKSTOP_GRACE_S,
+    read_episode_exit_status,
     wrap_episode_command_with_watchdog,
 )
 from tolokaforge.tools.registry import (
@@ -364,6 +366,10 @@ class TrialRunner:
         # nothing, read back out of the trial container while it was still up.
         self._harness_stdout_telemetry: HarnessStdoutTelemetry | None = None
         self._harness_usage_records: str | None = None
+        # The episode's own exit status, as the wrapped command reported it.
+        # ``None`` is "not measured": a stream truncated, killed or lost before
+        # the marker. It may neither condemn a trial nor excuse one.
+        self._harness_episode_exit_status: int | None = None
         self.start_time: float = 0.0
         self.logger: StructuredLogger | None = None  # Initialized in run()
         self._effective_system_prompt: str | None = None
@@ -761,8 +767,9 @@ class TrialRunner:
             # host deadline, making the in-container kill authoritative and the
             # host deadline a true backstop. Only this harness-episode command
             # is wrapped; the engine loop's per-command execs are untouched.
+            episode_nonce = uuid4().hex
             watchdog_command = wrap_episode_command_with_watchdog(
-                command, max(1.0, timeout_s - BACKSTOP_GRACE_S)
+                command, max(1.0, timeout_s - BACKSTOP_GRACE_S), nonce=episode_nonce
             )
             # The CLI invocation is what the trial recorded, so the trajectory
             # shows the command the adapter built, not the watchdog plumbing.
@@ -774,6 +781,13 @@ class TrialRunner:
                 {"command": watchdog_command},
                 call_id=call_id,
             )
+            # The marker is the engine's own plumbing, so it comes out of the
+            # stream before the parser, the recorded call or the transcript can
+            # see it — the trial reads as if the CLI had been run bare.
+            self._harness_episode_exit_status, episode_stdout = read_episode_exit_status(
+                result.output, episode_nonce
+            )
+            result = result.model_copy(update={"output": episode_stdout})
             output = resolve_tool_output(result)
             tool_status = resolve_tool_status(result)
             # Read the CLI's stdout, not the recorded output: a failed call

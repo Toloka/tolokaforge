@@ -60,6 +60,33 @@ and the currently-opted-in set. Two adapters ship the opt-in today:
 `native` and `terminal_bench`. See
 [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md).
 
+### The episode exec
+
+A harness trial is **one exec** into the trial container: the CLI invocation
+the adapter built. That command is what the trajectory records as the agent's
+single tool call.
+
+What the runner actually sends is that command wrapped by
+[`wrap_episode_command_with_watchdog`](../tolokaforge/runner/tool_factory.py).
+The wrapper runs the CLI in a process group of its own and SIGKILLs that whole
+group from inside the container a few seconds before the host deadline, so a
+wedged CLI is stopped whether or not it cooperates and whether or not the
+host-side exec client is still attached. The wrapped script exits with the
+CLI's own code, or `137` when the watchdog fired.
+
+It also prints that code on stdout, as a marker line carrying a per-trial
+nonce. That marker is the engine's only channel for the number: the exec's own
+status says whether the exec completed, not what the CLI inside it returned.
+`read_episode_exit_status` reads the marker and takes it back out of the
+stream before the stdout-telemetry parser, the recorded tool call or the
+transcript sees it, so the trial reads as if the CLI had been run bare and the
+marker never reaches the model's context. A stream carrying no marker for the
+trial's nonce — truncated, killed, or crossed with another trial's — leaves
+the exit status unknown, which is neither a success nor a failure.
+
+Only the harness episode is wrapped; the per-command execs an engine-loop
+trial issues run unwrapped.
+
 ## What each shipped adopter provides
 
 Two adapters ship the mixin today. Both accept `models.agent.harness`;

@@ -1389,7 +1389,60 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
-def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str:
+_EPISODE_EXIT_MARKER_HEAD = "__tf_episode_exit__"
+"""Opening word of the line the wrapped episode prints to report its own status.
+
+The engine has no other channel for it: ``ToolWrapper.execute`` returns a
+string, and the fine-grained status a tool call carries says only whether the
+exec itself completed, not what the CLI inside it returned.
+
+The nonce that follows is a collision guard, not a secret — it is readable from
+``/proc`` inside the container. It stops a CLI that happens to print this text
+from being mistaken for the wrapper. Forging it pays nothing: the wrapper emits
+its own marker after ``wait``, so it is the last one in an untruncated stream
+and wins, and the marker never reaches the model's context because the recorded
+command is the unwrapped one.
+"""
+
+
+def read_episode_exit_status(output: str, nonce: str) -> tuple[int | None, str]:
+    """The episode's own exit status, and *output* with its markers removed.
+
+    The public half of the rule :func:`wrap_episode_command_with_watchdog`
+    writes. The last marker carrying *nonce* wins and is found anywhere in the
+    text, because ``_run_argv_preserving_partial_output`` appends its own
+    ``[exit code: N]`` footer and the command's stderr after the stdout the
+    marker ends.
+
+    ``None`` is "not measured" — a stream truncated, killed or lost before the
+    marker, or one carrying another trial's nonce — and a caller may read it
+    neither as success nor as failure.
+
+    Removal is substring-exact on the framed form, so every byte around a
+    marker survives, including a final line the CLI left without its newline.
+    """
+    head = f"\n{_EPISODE_EXIT_MARKER_HEAD}:{nonce}:"
+    exit_status: int | None = None
+    kept: list[str] = []
+    cursor = 0
+    search_from = 0
+    while (start := output.find(head, search_from)) != -1:
+        code_at = start + len(head)
+        end = output.find("\n", code_at)
+        if end == -1:
+            break
+        code = output[code_at:end]
+        search_from = end
+        if not (code.isascii() and code.isdigit()):
+            continue
+        exit_status = int(code)
+        kept.append(output[cursor:start])
+        cursor = max(cursor, end + 1)
+    kept.append(output[cursor:])
+    return exit_status, "".join(kept)
+
+
+def wrap_episode_command_with_watchdog(command: str, kill_after_s: float, *, nonce: str) -> str:
     """Return *command* guarded by an in-container wall-clock watchdog.
 
     The wrapped script runs *command* in a process group of its own and
@@ -1398,6 +1451,12 @@ def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str
     whether or not the host-side ``docker exec`` client is still attached. The
     wrapped script exits with the command's own code, or ``137``
     (``128 + SIGKILL``) when the watchdog fired.
+
+    That same code is printed to stdout as a marker line carrying *nonce*,
+    which is how the engine learns it: :func:`read_episode_exit_status` reads
+    the marker and takes it back out of the stream. The marker is framed in
+    newlines of its own, because a CLI whose last line ends without one would
+    otherwise have that line fused to the marker.
 
     The new process group is opened with ``setsid`` where it exists, and under
     bash job control (``set -m``) where it does not — some minimal images ship
@@ -1408,6 +1467,11 @@ def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str
     the engine loop issues run unwrapped, so a backgrounded service they start
     keeps outliving its exec as before.
     """
+    if not (nonce.isascii() and nonce.isalnum()):
+        raise ValueError(
+            f"episode nonce must be ASCII alphanumeric, got {nonce!r}: it is rendered "
+            "into the script's printf format, where quoting cannot protect it"
+        )
     quoted = shlex.quote(command)
     # busybox ``sleep`` takes a whole number of seconds and rejects the ``%g``
     # scientific form (e.g. ``1e+06``), which would fire the kill at once, so
@@ -1444,6 +1508,7 @@ def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str
         "{ wait $__tf_cpid; __tf_rc=$?; } 2>/dev/null; "
         "kill -KILL -$__tf_wd 2>/dev/null; "
         "wait $__tf_wd 2>/dev/null; "
+        f"printf '\\n{_EPISODE_EXIT_MARKER_HEAD}:{nonce}:%s\\n' \"$__tf_rc\"; "
         "exit $__tf_rc"
     )
 
