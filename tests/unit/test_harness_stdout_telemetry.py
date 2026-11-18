@@ -36,6 +36,8 @@ from tolokaforge.core.runner import TrialRunner
 from tolokaforge.tools.registry import ToolResult
 from tolokaforge_coding_harnesses import MIDDLEWARE_PROXY_USAGE_SOURCE
 
+pytestmark = pytest.mark.unit
+
 _RESULT_EVENT: dict[str, Any] = {
     "type": "result",
     "subtype": "success",
@@ -554,11 +556,14 @@ class TestTheRecordsAreReadOutOfTheLiveContainer:
 
     def test_a_harness_with_no_middleware_is_never_read_from(self) -> None:
         """``claude-code`` boots no proxy, so its adapter publishes no path and
-        the engine must not go poking in the container for one."""
+        the engine must not go poking in the container for one: the episode
+        exec, which carries the task's command inside the watchdog wrapper, is
+        the only command that runs."""
         _trajectory, executor = _trial(_STREAM_JSON)
 
         assert executor.usage_read_commands == []
-        assert executor.commands == ["claude --print"]
+        assert len(executor.commands) == 1
+        assert "claude --print" in executor.commands[0]
 
     def test_the_read_is_not_the_agents_tool_use(self) -> None:
         """One ``docker exec`` is what the engine ran on the agent's behalf.
