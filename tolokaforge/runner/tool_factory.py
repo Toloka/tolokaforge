@@ -1428,7 +1428,10 @@ def read_episode_exit_status(output: str, nonce: str) -> tuple[int | None, str]:
     after it is a channel the agent writes freely. The last qualifying marker
     wins. A stream whose stdout happens to contain the footer text has its
     search cut short and resolves ``None`` — that is the fail-safe direction,
-    because "not measured" condemns nothing.
+    because "not measured" condemns nothing. It is also the residual evasion:
+    an agent that can write the footer text onto the episode's own stdout makes
+    its exit status unreadable, which costs it nothing and buys it back the
+    verifier's grade.
 
     ``None`` is "not measured" — a stream truncated, killed or lost before the
     marker, or one carrying another trial's nonce — and a caller may read it
@@ -1437,8 +1440,9 @@ def read_episode_exit_status(output: str, nonce: str) -> tuple[int | None, str]:
     Removal is wider than the search: every framed marker carrying *nonce*
     comes out wherever it sits and whatever code it carries, so no engine
     plumbing survives into the recorded stream. It is substring-exact on the
-    framed form, so every byte around a marker survives, including a final line
-    the CLI left without its newline.
+    framed form, so every byte outside the framed marker survives, including a
+    final line the CLI left without its newline. A marker written without its
+    own trailing newline borrows the following line's, and takes it.
     """
     head = f"\n{_EPISODE_EXIT_MARKER_HEAD}:{nonce}:"
     stdout_end = _episode_stdout_end(output)

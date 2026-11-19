@@ -623,9 +623,12 @@ class GradingCompleteness:
         ``--fail-on-zero-coverage`` is set: nothing reached the measurement
         point (``measured_trials == 0``), or every measurement was a
         harness-synthesised auto-fail from
-        ``ERROR``/``TIMEOUT``/``HARNESS_CLI_FAILED``/``STUCK_DETECTED``/
-        ``CONTEXT_WINDOW_EXCEEDED``/``PROVIDER_CONTENT_FILTER``
-        (``synthesized_trials == measured_trials``). See
+        ``TIMEOUT``/``STUCK_DETECTED``/``CONTEXT_WINDOW_EXCEEDED``/
+        ``PROVIDER_CONTENT_FILTER`` — the reasons a synthesised grade can carry
+        on a trial that still classifies as measured
+        (``synthesized_trials == measured_trials``). A reason classifying
+        ``HARNESS_ERROR``, such as ``ERROR`` or ``HARNESS_CLI_FAILED``, reaches
+        neither count and fires the first trigger instead. See
         ``docs/adr/0041-zero-coverage-exit-signal.md``.
         """
         return self.total_attempts > 0 and (
