@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import Enum
 
 import pytest
 
@@ -37,6 +38,20 @@ _MEASURED = TrialOutcomeClass.MEASURED
 _HARNESS = TrialOutcomeClass.HARNESS_ERROR
 _ABORT = TrialOutcomeClass.INFRASTRUCTURE_ABORT
 _UNGRADEABLE = TrialOutcomeClass.UNGRADEABLE
+
+
+class _Verdict(str, Enum):
+    """What grading left on the trial — the table's third dimension.
+
+    A trial carries a verdict, or the reason grading refused to produce one, or
+    neither. The three are distinct states on disk and the classifier answers
+    each differently, so each gets its own pass over the whole cross-product.
+    """
+
+    GRADED = "graded"
+    REFUSED = "refused"
+    NEVER_SCORED = "never-scored"
+
 
 # Every ``TrialStatus`` x (``TerminationReason`` | None) cell of a trial whose
 # grading did not refuse, with both answers written out: what the trial is
@@ -145,56 +160,179 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.ERROR, None, _HARNESS, True),
 )
 
-# The same cross-product a second time over: every cell as it stands when
-# grading refused. The class column is ``UNGRADEABLE`` throughout — a refusal is
+# The same cross-product again, for a trial that reached no verdict at all: no
+# grade, and no refusal either. The class column is written out rather than
+# carried over from the graded half, because the two differ exactly where this
+# table earns its place — a trial that ended error-shaped with nothing to show
+# for it measured nothing, so it is a harness error rather than a result on every
+# reason the exclusion allowlist does not already claim, and an infrastructure
+# abort on the ones it does. A trial that ran to an end and was simply not graded yet
+# is the grade-later shape the replay path writes, and keeps its graded class.
+_NEVER_SCORED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeClass], ...] = (
+    (TrialStatus.COMPLETED, TerminationReason.AGENT_DONE, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.AGENT_SUBMITTED, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.USER_STOP, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.STUCK_DETECTED, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.MAX_TURNS, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.MAX_STEPS, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.TOO_MANY_ERRORS, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.TRIAL_TOKEN_BUDGET, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.USER_TOOL_LOOP_LIMIT, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.TIMEOUT, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.ERROR, _HARNESS),
+    (TrialStatus.COMPLETED, TerminationReason.HARNESS_CLI_FAILED, _HARNESS),
+    (TrialStatus.COMPLETED, TerminationReason.RATE_LIMIT, _ABORT),
+    (TrialStatus.COMPLETED, TerminationReason.API_TIMEOUT, _ABORT),
+    (TrialStatus.COMPLETED, TerminationReason.API_ERROR, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS, _ABORT),
+    (TrialStatus.COMPLETED, TerminationReason.EMPTY_COMPLETION, _ABORT),
+    (TrialStatus.COMPLETED, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT),
+    (TrialStatus.COMPLETED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.PROVIDER_CONTENT_FILTER, _MEASURED),
+    (TrialStatus.COMPLETED, TerminationReason.PROVISION_ERROR, _ABORT),
+    (TrialStatus.COMPLETED, TerminationReason.TRIAL_LOST, _HARNESS),
+    (TrialStatus.COMPLETED, None, _MEASURED),
+    (TrialStatus.FAILED, TerminationReason.AGENT_DONE, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.AGENT_SUBMITTED, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.USER_STOP, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.STUCK_DETECTED, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.MAX_TURNS, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.MAX_STEPS, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.TOO_MANY_ERRORS, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.TRIAL_TOKEN_BUDGET, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.USER_TOOL_LOOP_LIMIT, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.TIMEOUT, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.ERROR, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.HARNESS_CLI_FAILED, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.RATE_LIMIT, _ABORT),
+    (TrialStatus.FAILED, TerminationReason.API_TIMEOUT, _ABORT),
+    (TrialStatus.FAILED, TerminationReason.API_ERROR, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS, _ABORT),
+    (TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, _ABORT),
+    (TrialStatus.FAILED, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT),
+    (TrialStatus.FAILED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.PROVIDER_CONTENT_FILTER, _HARNESS),
+    (TrialStatus.FAILED, TerminationReason.PROVISION_ERROR, _ABORT),
+    (TrialStatus.FAILED, TerminationReason.TRIAL_LOST, _HARNESS),
+    (TrialStatus.FAILED, None, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.AGENT_DONE, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.AGENT_SUBMITTED, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.USER_STOP, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.STUCK_DETECTED, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.MAX_TURNS, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.MAX_STEPS, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.TOO_MANY_ERRORS, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.TRIAL_TOKEN_BUDGET, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.USER_TOOL_LOOP_LIMIT, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.TIMEOUT, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.ERROR, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.HARNESS_CLI_FAILED, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.RATE_LIMIT, _ABORT),
+    (TrialStatus.TIMEOUT, TerminationReason.API_TIMEOUT, _ABORT),
+    (TrialStatus.TIMEOUT, TerminationReason.API_ERROR, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS, _ABORT),
+    (TrialStatus.TIMEOUT, TerminationReason.EMPTY_COMPLETION, _ABORT),
+    (TrialStatus.TIMEOUT, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT),
+    (TrialStatus.TIMEOUT, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.PROVIDER_CONTENT_FILTER, _HARNESS),
+    (TrialStatus.TIMEOUT, TerminationReason.PROVISION_ERROR, _ABORT),
+    (TrialStatus.TIMEOUT, TerminationReason.TRIAL_LOST, _HARNESS),
+    (TrialStatus.TIMEOUT, None, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.AGENT_DONE, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.AGENT_SUBMITTED, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.USER_STOP, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.STUCK_DETECTED, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.MAX_TURNS, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.MAX_STEPS, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.TOO_MANY_ERRORS, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.TRIAL_TOKEN_BUDGET, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.USER_TOOL_LOOP_LIMIT, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.TIMEOUT, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.ERROR, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.HARNESS_CLI_FAILED, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.RATE_LIMIT, _ABORT),
+    (TrialStatus.ERROR, TerminationReason.API_TIMEOUT, _ABORT),
+    (TrialStatus.ERROR, TerminationReason.API_ERROR, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS, _ABORT),
+    (TrialStatus.ERROR, TerminationReason.EMPTY_COMPLETION, _ABORT),
+    (TrialStatus.ERROR, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT),
+    (TrialStatus.ERROR, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.PROVIDER_CONTENT_FILTER, _HARNESS),
+    (TrialStatus.ERROR, TerminationReason.PROVISION_ERROR, _ABORT),
+    (TrialStatus.ERROR, TerminationReason.TRIAL_LOST, _HARNESS),
+    (TrialStatus.ERROR, None, _HARNESS),
+)
+
+
+_RETRYABLE = {(status, reason): retryable for status, reason, _, retryable in _GRADED_CELLS}
+
+# The three halves as one table, one row per ``(status, reason, verdict)``. The
+# refused half's class column is ``UNGRADEABLE`` throughout — a refusal is
 # evidence about us, so no termination reason buys the trial out of the
-# denominator — and the retryability column is copied from the graded half,
-# which is what makes running both halves against production a parity lock
-# rather than two unrelated passes.
+# denominator. Retryability is carried over from the graded half for both other
+# halves: the decision to repeat an attempt does not consult what grading left
+# behind, and running every half against production is what makes that a parity
+# lock rather than three unrelated passes.
 _OUTCOME_CELLS: tuple[
-    tuple[TrialStatus, TerminationReason | None, bool, TrialOutcomeClass, bool], ...
+    tuple[TrialStatus, TerminationReason | None, _Verdict, TrialOutcomeClass, bool], ...
 ] = (
     *(
-        (status, reason, False, outcome_class, retryable)
+        (status, reason, _Verdict.GRADED, outcome_class, retryable)
         for status, reason, outcome_class, retryable in _GRADED_CELLS
     ),
     *(
-        (status, reason, True, _UNGRADEABLE, retryable)
+        (status, reason, _Verdict.REFUSED, _UNGRADEABLE, retryable)
         for status, reason, _, retryable in _GRADED_CELLS
+    ),
+    *(
+        (status, reason, _Verdict.NEVER_SCORED, outcome_class, _RETRYABLE[status, reason])
+        for status, reason, outcome_class in _NEVER_SCORED_CELLS
     ),
 )
 
 
 def _cell_id(
-    status: TrialStatus, reason: TerminationReason | None, *, ungradeable: bool = False
+    status: TrialStatus, reason: TerminationReason | None, verdict: _Verdict = _Verdict.GRADED
 ) -> str:
     stem = f"{status.value}-{reason.value if reason else 'unset'}"
-    return f"{stem}-ungradeable" if ungradeable else stem
+    return stem if verdict is _Verdict.GRADED else f"{stem}-{verdict.value}"
 
 
 def outcome_cells() -> tuple:
     """The graded cells, as pytest params keyed by ``status-reason``.
 
     Exported for :mod:`tests.unit.test_trial_grader`, which drives the grader
-    over them. A trajectory carrying ``grading_error`` never reaches grading —
-    the conductor writes the field only after ``grade`` has already raised — so
-    the ungradeable half is not that suite's domain.
+    over them. The other two halves are what grading *left behind* rather than
+    what it was handed — a trajectory carrying ``grading_error`` never reaches
+    grading, since the conductor writes the field only after ``grade`` has
+    already raised — so neither is that suite's domain.
     """
     return tuple(pytest.param(cell, id=_cell_id(cell[0], cell[1])) for cell in _GRADED_CELLS)
 
 
 def all_outcome_cells() -> tuple:
-    """Every cell, graded and ungradeable, as pytest params."""
+    """Every cell, over all three verdict shapes, as pytest params."""
     return tuple(
-        pytest.param(cell, id=_cell_id(cell[0], cell[1], ungradeable=cell[2]))
-        for cell in _OUTCOME_CELLS
+        pytest.param(cell, id=_cell_id(cell[0], cell[1], cell[2])) for cell in _OUTCOME_CELLS
     )
 
 
 def _cell_trajectory(
-    status: TrialStatus, reason: TerminationReason | None, *, grading_error: str | None = None
+    status: TrialStatus,
+    reason: TerminationReason | None,
+    *,
+    verdict: _Verdict = _Verdict.GRADED,
+    refusal: str = "",
 ) -> Trajectory:
-    traj = _base_trajectory(grading_error=grading_error)
+    """One cell of the cross-product, built in the shape its *verdict* names.
+
+    *refusal* is the message a real ``GradeTrial`` refusal carried, and reaches
+    the trajectory only on the refused shape — one source for what grading left
+    behind, so no cell can claim a verdict it does not carry.
+    """
+    traj = _base_trajectory(
+        verdict=verdict, grading_error=refusal if verdict is _Verdict.REFUSED else None
+    )
     traj.status = status
     traj.termination_reason = reason
     return traj
@@ -212,21 +350,21 @@ def real_refusal(runner_service, mock_grpc_context) -> str:
 
 
 class TestOutcomeClassificationCrossProduct:
-    """``classify_trial_outcome`` is total, and the exclusion default is an
-    allowlist: a reason it has never heard of is counted, not dropped."""
+    """``classify_trial_outcome`` is total over the status, the reason and what
+    grading left behind. The exclusion default is an allowlist — a reason it has
+    never heard of is counted, not dropped — and counted is not the same as
+    measured."""
 
     def test_the_table_covers_every_cell_exactly_once(self) -> None:
-        cells = {
-            (status, reason, ungradeable) for status, reason, ungradeable, _, _ in _OUTCOME_CELLS
-        }
+        cells = {(status, reason, verdict) for status, reason, verdict, _, _ in _OUTCOME_CELLS}
         expected = {
-            (status, reason, ungradeable)
+            (status, reason, verdict)
             for status in TrialStatus
             for reason in (*TerminationReason, None)
-            for ungradeable in (False, True)
+            for verdict in _Verdict
         }
         assert cells == expected
-        assert len(_OUTCOME_CELLS) == len(expected) == 184
+        assert len(_OUTCOME_CELLS) == len(expected) == 276
 
     def test_the_class_column_exhausts_the_declared_vocabulary(self) -> None:
         """The table is hand-maintained and the enum is declared in production,
@@ -239,11 +377,11 @@ class TestOutcomeClassificationCrossProduct:
     @pytest.mark.parametrize("cell", all_outcome_cells())
     def test_every_cell_classifies_as_tabled(
         self,
-        cell: tuple[TrialStatus, TerminationReason | None, bool, TrialOutcomeClass, bool],
+        cell: tuple[TrialStatus, TerminationReason | None, _Verdict, TrialOutcomeClass, bool],
         real_refusal: str,
     ) -> None:
-        status, reason, ungradeable, expected_class, _ = cell
-        traj = _cell_trajectory(status, reason, grading_error=real_refusal if ungradeable else None)
+        status, reason, verdict, expected_class, _ = cell
+        traj = _cell_trajectory(status, reason, verdict=verdict, refusal=real_refusal)
         assert classify_trial_outcome(traj) is expected_class
 
     def test_an_unrecognised_reason_would_be_counted(self) -> None:
@@ -256,6 +394,29 @@ class TestOutcomeClassificationCrossProduct:
             if classify_trial_outcome(_cell_trajectory(TrialStatus.ERROR, reason)) is not _ABORT
         }
         assert counted == set(TerminationReason) - EXCLUDED_TYPED_REASONS
+
+    def test_a_trial_that_ended_badly_with_no_verdict_measured_nothing(self) -> None:
+        """The whole never-scored half in one statement, read off the classifier
+        over the entire cross-product rather than off the table above: the only
+        status that still measures anything without a verdict is the one that ran
+        to an end. An error-shaped trial that produced no grade is a harness error
+        on any reason that is not an exclusion — and an infrastructure abort on
+        one that is — so a provider outage that spent every retry reads as four
+        defects of ours rather than four measurements of the agent. Either way it
+        is not a measurement, which is what this asserts; ``HARNESS_ERROR`` is
+        inside ``measured_trials``, so no historical ``avg_score`` moves and what
+        changes is that the run says so."""
+        still_measured = {
+            status
+            for status in TrialStatus
+            for reason in (*TerminationReason, None)
+            if classify_trial_outcome(
+                _cell_trajectory(status, reason, verdict=_Verdict.NEVER_SCORED)
+            )
+            is _MEASURED
+        }
+
+        assert still_measured == {TrialStatus.COMPLETED}
 
     def test_empty_completion_is_excluded_from_the_measured_denominator(self) -> None:
         """A trial whose provider returned no text and no tool calls after
@@ -301,19 +462,19 @@ class TestRetryabilityIsIndependentOfCountability:
     the same cells. It is deliberately NOT derived from the classification —
     the cells where the two answers differ are the design.
 
-    Grading is the same kind of independence one dimension over: the ungradeable
-    half of the table carries the graded half's retryability answers, so this
-    pass fails on any cell where a refusal moved the decision to repeat the
-    attempt."""
+    Grading is the same kind of independence one dimension over: the refused and
+    never-scored halves of the table carry the graded half's retryability
+    answers, so this pass fails on any cell where what grading left behind moved
+    the decision to repeat the attempt."""
 
     @pytest.mark.parametrize("cell", all_outcome_cells())
     def test_every_cell_retries_as_tabled(
         self,
-        cell: tuple[TrialStatus, TerminationReason | None, bool, TrialOutcomeClass, bool],
+        cell: tuple[TrialStatus, TerminationReason | None, _Verdict, TrialOutcomeClass, bool],
         real_refusal: str,
     ) -> None:
-        status, reason, ungradeable, _, expected_retryable = cell
-        traj = _cell_trajectory(status, reason, grading_error=real_refusal if ungradeable else None)
+        status, reason, verdict, _, expected_retryable = cell
+        traj = _cell_trajectory(status, reason, verdict=verdict, refusal=real_refusal)
         assert Orchestrator._is_retryable_trajectory(traj) is expected_retryable
 
     def test_an_auth_shaped_api_error_is_not_retried(self) -> None:
@@ -361,12 +522,17 @@ class TestRetryabilityIsIndependentOfCountability:
         assert (TrialStatus.TIMEOUT, TerminationReason.TIMEOUT) in disagreements
 
 
-def _base_trajectory(*, grading_error: str | None = None) -> Trajectory:
-    """A trial with a verdict, or with the reason grading refused instead.
+def _base_trajectory(
+    *, verdict: _Verdict = _Verdict.GRADED, grading_error: str | None = None
+) -> Trajectory:
+    """A trial carrying a verdict, the reason grading refused one, or neither.
 
-    The two are mutually exclusive — ``Trajectory`` rejects a value carrying
-    both — so an ungradeable trial carries no :class:`Grade` at all.
+    A grade and a ``grading_error`` are mutually exclusive — ``Trajectory``
+    rejects a value carrying both — and the never-scored shape carries neither,
+    which is what a trial that reached no grading at all leaves on disk.
     """
+    if (verdict is _Verdict.REFUSED) is not bool(grading_error):
+        raise ValueError(f"the {verdict.value} shape is not built from {grading_error!r}")
     return Trajectory(
         task_id="task_x",
         trial_index=0,
@@ -375,9 +541,9 @@ def _base_trajectory(*, grading_error: str | None = None) -> Trajectory:
         messages=[Message(role=MessageRole.USER, content="hello")],
         metrics=Metrics(),
         grade=(
-            None
-            if grading_error
-            else Grade(binary_pass=False, score=0.0, components=GradeComponents(), reasons="failed")
+            Grade(binary_pass=False, score=0.0, components=GradeComponents(), reasons="failed")
+            if verdict is _Verdict.GRADED
+            else None
         ),
         grading_error=grading_error,
     )
@@ -501,7 +667,10 @@ def test_a_grading_refusal_is_attributed_to_us_not_to_the_model(real_refusal: st
     way through to ``model_reasoning`` and ``failure_attribution.json`` blames
     the agent for a grading fault of ours."""
     traj = _cell_trajectory(
-        TrialStatus.COMPLETED, TerminationReason.AGENT_DONE, grading_error=real_refusal
+        TrialStatus.COMPLETED,
+        TerminationReason.AGENT_DONE,
+        verdict=_Verdict.REFUSED,
+        refusal=real_refusal,
     )
 
     attribution = attribute_failure(traj)

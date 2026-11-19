@@ -17,6 +17,7 @@ from typing import Any
 
 from tolokaforge.core.failure_attribution import (
     EXCLUDED_TYPED_REASONS,
+    HARNESS_ERROR_REASONS,
     TrialOutcomeClass,
     classify_trial_outcome,
 )
@@ -74,15 +75,26 @@ def _outcome_key(trajectory: Trajectory, outcome: TrialOutcomeClass) -> str:
     reason-less trial is ``MEASURED`` when it completed and ``HARNESS_ERROR``
     when it did not.
 
-    An ungradeable trial terminates the way any graded trial does, ``agent_done``
-    most often of all, so the reason alone would file it in the graded trial's
-    row and leave that row's class last-write-wins. Prefixing keeps one key to
-    one class without hiding which reason it was.
+    Two shapes would otherwise break that. An ungradeable trial terminates the
+    way any graded trial does, ``agent_done`` most often of all; a trial that
+    ended badly with no verdict terminates on a reason a graded trial reaches
+    too, ``api_error`` and ``timeout`` among them. Either would file in the
+    graded trial's row and leave that row's class last-write-wins. Prefixing
+    keeps one key to one class without hiding which reason it was.
+
+    A reason in :data:`HARNESS_ERROR_REASONS` needs no prefix: it names the
+    fault ours with a grade or without, so its row holds one class already.
     """
     reason = trajectory.termination_reason
     key = reason.value if reason is not None else f"unset_{trajectory.status.value}"
     if outcome is TrialOutcomeClass.UNGRADEABLE:
         return f"ungradeable_{key}"
+    if (
+        outcome is TrialOutcomeClass.HARNESS_ERROR
+        and reason is not None
+        and reason not in HARNESS_ERROR_REASONS
+    ):
+        return f"unscored_{key}"
     return key
 
 
@@ -419,7 +431,8 @@ def _measured_averages(measured: Sequence[Trajectory]) -> dict[str, Any]:
     denominator, counted from the same list, so the run-level micro can rebuild
     the numerator instead of assuming every measured trial was graded. The two
     counts differ on any run that hit an ``UNGRADEABLE`` trial, whose grading
-    refused, or a ``trial_lost`` one, which is not graded at all.
+    refused, a ``trial_lost`` one, which is not graded at all, or one that ended
+    error-shaped with no verdict behind it.
     """
     scores = [t.grade.score for t in measured if t.grade is not None]
     return {

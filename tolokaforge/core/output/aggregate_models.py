@@ -84,7 +84,7 @@ __all__ = [
     "ServiceLogCaptureSource",
 ]
 
-AGGREGATE_SCHEMA_VERSION = 5
+AGGREGATE_SCHEMA_VERSION = 6
 """The ``aggregate.json`` wire generation.
 
 Rates are over ``measured_trials`` — the trials that measured the agent,
@@ -107,6 +107,17 @@ excluded termination reason bumps the version — so a reader knows from the sta
 alone which reasons a file could have reported, rather than inferring it from
 which keys happen to be present. :data:`ABORT_KEY_CONTRACT_HISTORY` records the
 set per generation and is what enforces the pairing.
+
+Version 6 re-keys the error-shaped trials that reached no verdict. On any reason
+that is not an exclusion such a trial is a ``harness_error`` rather than a
+measurement: it is counted in ``harness_errors`` and its ``outcomes_by_reason``
+row is ``unscored_<reason>`` under ``harness_error`` rather than ``<reason>``
+under ``measured``. It stays inside ``measured_trials``, which holds our own
+defects too, so no rate moves; on an excluded reason it was already an
+``infrastructure_abort`` outside that denominator. A generation moves whenever a
+row is re-keyed or trials cross a class boundary, not only when the abort keys
+change — the same trials reported under two different sets of numbers cannot both
+claim one stamp — so this generation carries generation 5's abort keys unchanged.
 """
 
 ABORT_KEY_CONTRACT_HISTORY: tuple[tuple[int, frozenset[str]], ...] = (
@@ -135,6 +146,19 @@ ABORT_KEY_CONTRACT_HISTORY: tuple[tuple[int, frozenset[str]], ...] = (
             }
         ),
     ),
+    (
+        6,
+        frozenset(
+            {
+                "api_timeout",
+                "empty_completion",
+                "provider_refused_all_requests",
+                "provision_error",
+                "rate_limit",
+                "reasoning_without_action",
+            }
+        ),
+    ),
 )
 """Which ``infrastructure_aborts`` keys each wire generation requires, append-only.
 
@@ -147,7 +171,9 @@ The newest row is the contract in force, and
 :data:`~tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` at
 :data:`AGGREGATE_SCHEMA_VERSION`. Adding an excluded reason therefore cannot
 compile past that test without appending a row, and a new row must carry a
-strictly greater version — so the bump is enforced rather than remembered.
+strictly greater version — so the bump is enforced rather than remembered. A
+generation that moved for some other wire change repeats its predecessor's key
+set: the row records what the generation requires, not what it added.
 
 The pairing matters because the measurement-fidelity gate's R2 rule demands the
 full key set only of bundles stamped at the current generation. An archived
@@ -176,8 +202,8 @@ class OutcomeReasonCount(BaseModel):
 
     The key the row hangs off is a termination reason, or ``unset_<status>`` for
     a trial that recorded no reason, or either of those under an ``ungradeable_``
-    prefix — see :func:`~tolokaforge.core.metrics._outcome_key` for why the
-    prefix is what keeps one key mapping to exactly one ``class``.
+    or ``unscored_`` prefix — see :func:`~tolokaforge.core.metrics._outcome_key`
+    for why a prefix is what keeps one key mapping to exactly one ``class``.
 
     ``class`` is a Python keyword, so the field is aliased; dump with
     ``by_alias=True`` to produce the wire shape.

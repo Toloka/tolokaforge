@@ -191,7 +191,9 @@ from `self.results`:
 
 `zero_coverage` fires on two triggers, both fail-loud when
 `--fail-on-zero-coverage` is set. The first — `measured_trials == 0` —
-covers a run whose every attempt classified as an infrastructure abort.
+covers a run whose every attempt classified as something other than a
+measurement: an infrastructure abort, or a harness error, which is what
+an attempt that ended `error` / `timeout` / `failed` with no verdict is.
 The second — `synthesized_trials == measured_trials` — covers a run
 whose every measured trial was harness-synthesised from a
 non-agent-observation termination reason: the run reached its

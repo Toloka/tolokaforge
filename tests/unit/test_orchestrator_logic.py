@@ -779,6 +779,72 @@ class TestGenerateReports:
             v for v in check_run_bundle(tmp_path) if v.rule is FidelityRule.DISK_RECONCILIATION
         ] == []
 
+    def test_a_provider_outage_is_not_reported_as_a_run_of_measurements(
+        self, tmp_path: Path
+    ) -> None:
+        """Seven trials, four of which spent their retries on ``api_error`` and
+        reached no verdict — the shape a dispatch node returns when its own
+        grading never ran (``RemoteTrialExecutor._write_result_bundle`` writes
+        the grade-less bundle).
+
+        The run's two readings of it must say the same thing. ``run_state.json``
+        calls those four failed, and ``failure_attribution.json`` reporting them
+        ``measured`` read a provider outage as seven measurements of the agent.
+        They are harness errors, which sits **inside** ``measured_trials``, so
+        the denominator and every historical ``avg_score`` are untouched — what
+        changes is that the run says which three trials it actually measured.
+        """
+        from unittest.mock import MagicMock
+
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        orch = Orchestrator(_make_run_config())
+        orch.logger = MagicMock()
+        orch.tasks = [_make_task_config("T1")]
+        orch.results = [
+            _make_trajectory(
+                "T1",
+                i,
+                score=0.0,
+                binary_pass=False,
+                termination_reason=TerminationReason.API_ERROR,
+            )
+            for i in range(3)
+        ]
+        for trial_index in range(3, 7):
+            never_scored = _make_trajectory(
+                "T1",
+                trial_index,
+                status=TrialStatus.ERROR,
+                termination_reason=TerminationReason.API_ERROR,
+            )
+            never_scored.grade = None
+            orch.results.append(never_scored)
+
+        orch._generate_reports(tmp_path)
+        orch._publish_grading_completeness()
+
+        attribution = json.loads((tmp_path / "failure_attribution.json").read_text())
+        assert attribution["summary"]["by_outcome_class"] == {"measured": 3, "harness_error": 4}
+
+        aggregate = json.loads((tmp_path / "aggregate.json").read_text())
+        assert aggregate["measured_trials"] == 7
+        assert aggregate["harness_errors"] == 4
+        assert aggregate["scored_trials"] == 3
+        assert aggregate["avg_score_micro"] == 0.0
+        # All seven ended `api_error`, and the three the provider answered for
+        # keep their own row: one key cannot hold two classes.
+        assert aggregate["outcomes_by_reason"] == {
+            "api_error": {"class": "measured", "count": 3},
+            "unscored_api_error": {"class": "harness_error", "count": 4},
+        }
+
+        # The gate that decides whether the run measured anything reads the same
+        # three trials the grades do, so a run that is nothing but this outage
+        # reports zero coverage instead of a floor of zeroes.
+        assert orch.grading_completeness.measured_trials == 3
+        assert orch.grading_completeness.scored_trials == 3
+
     def test_a_clean_run_announces_no_degraded_coverage(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock
 

@@ -78,6 +78,21 @@ def _harness_error(trial_idx: int) -> Trajectory:
     )
 
 
+def _never_scored(trial_idx: int) -> Trajectory:
+    """A trial that spent its retries on a provider fault and reached no verdict.
+
+    The reason is one a graded trial reaches too, which is the whole point of
+    the row it gets: ``api_error`` is counted when a grade says how the agent
+    did, and a defect of ours when nothing does.
+    """
+    return _trial(
+        trial_idx,
+        score=None,
+        status=TrialStatus.ERROR,
+        termination_reason=TerminationReason.API_ERROR,
+    )
+
+
 def _ungradeable(trial_idx: int) -> Trajectory:
     """A trial that ended normally and whose grading then refused.
 
@@ -319,6 +334,33 @@ class TestInfrastructureAbortsLeaveTheDenominator:
             "agent_done": {"class": "measured", "count": 1},
             "ungradeable_agent_done": {"class": "ungradeable", "count": 1},
         }
+        counted = sum(row["count"] for row in metrics["outcomes_by_reason"].values())
+        assert counted == metrics["total_trials"]
+
+    def test_a_graded_and_a_never_scored_trial_get_separate_rows(self) -> None:
+        """Both trials terminated ``api_error``, and only one of them measured
+        anything. One row for the pair would report a provider outage as part of
+        the agent's result — or the agent's result as part of the outage,
+        depending which trial the loop saw last."""
+        metrics = calculate_task_metrics(
+            [
+                _trial(
+                    0,
+                    score=0.0,
+                    status=TrialStatus.ERROR,
+                    termination_reason=TerminationReason.API_ERROR,
+                ),
+                _never_scored(1),
+            ]
+        )
+
+        assert metrics["outcomes_by_reason"] == {
+            "api_error": {"class": "measured", "count": 1},
+            "unscored_api_error": {"class": "harness_error", "count": 1},
+        }
+        assert metrics["measured_trials"] == 2
+        assert metrics["harness_errors"] == 1
+        assert metrics["scored_trials"] == 1
         counted = sum(row["count"] for row in metrics["outcomes_by_reason"].values())
         assert counted == metrics["total_trials"]
 

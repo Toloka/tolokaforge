@@ -353,6 +353,12 @@ def _lost_bundle(trial_dir: Path) -> None:
     )
 
 
+def _never_scored_bundle(trial_dir: Path) -> None:
+    _grade_less_bundle(
+        trial_dir, status=TrialStatus.ERROR, termination_reason=TerminationReason.API_ERROR
+    )
+
+
 def test_grade_less_bundles_are_skips_that_say_which_grade_less_shape_they_are(
     tmp_path: Path,
 ) -> None:
@@ -360,32 +366,36 @@ def test_grade_less_bundles_are_skips_that_say_which_grade_less_shape_they_are(
     its reason comes from its own recorded trajectory: the trial grading refused
     carries the recorded ``grading_error``, the aborted one carries its termination
     reason, the one whose runner lost it says the trial was measured and the
-    registration went before a verdict could be computed, and one in none of those
-    shapes — a completed trial the run simply never graded — is named as the anomaly
-    it is. All four sentences DIFFER — one hardcoded "(infrastructure abort)" for the
-    lot would mislabel most of the population, and a lost trial reaching the anomaly
-    arm would report a shape the harness writes deliberately as one it does not write
-    at all. Classification precedes input reconstruction, so the judge is never
-    reached and nothing is written."""
+    registration went before a verdict could be computed, the one that ended
+    error-shaped on a reason that excludes nothing says it ended before a verdict was
+    computed, and one in none of those shapes — a completed trial the run simply never
+    graded — is named as the anomaly it is. All five sentences DIFFER — one hardcoded
+    "(infrastructure abort)" for the lot would mislabel most of the population, and a
+    lost or never-scored trial reaching the anomaly arm would report a shape the
+    harness writes deliberately as one it does not write at all. Classification
+    precedes input reconstruction, so the judge is never reached and nothing is
+    written."""
     source = tmp_path / "run"
     ungradeable = source / "trials" / "ungradeable" / "0"
     aborted = source / "trials" / "aborted" / "0"
     lost = source / "trials" / "lost" / "0"
+    never_scored = source / "trials" / "never_scored" / "0"
     anomalous = source / "trials" / "anomalous" / "0"
     _grade_less_bundle(ungradeable, grading_error=_GRADING_REFUSAL)
     _aborted_bundle(aborted)
     _lost_bundle(lost)
+    _never_scored_bundle(never_scored)
     _grade_less_bundle(anomalous)
     client = _submit_report_client()
 
     assert classify_trial(ungradeable) is TrialEligibility.NO_GRADE
     outcomes = [
         run_replay_batch(source, replay_id="r1", trial=bundle, judge_client=client)[0]
-        for bundle in (ungradeable, aborted, lost, anomalous)
+        for bundle in (ungradeable, aborted, lost, never_scored, anomalous)
     ]
 
-    assert [o.status for o in outcomes] == [ReplayOutcomeStatus.SKIPPED_NO_GRADE] * 4
-    ungradeable_reason, aborted_reason, lost_reason, anomalous_reason = (
+    assert [o.status for o in outcomes] == [ReplayOutcomeStatus.SKIPPED_NO_GRADE] * 5
+    ungradeable_reason, aborted_reason, lost_reason, never_scored_reason, anomalous_reason = (
         o.reason or "" for o in outcomes
     )
     assert _GRADING_REFUSAL in ungradeable_reason
@@ -394,9 +404,23 @@ def test_grade_less_bundles_are_skips_that_say_which_grade_less_shape_they_are(
     assert TerminationReason.TRIAL_LOST.value in lost_reason
     assert "lost its registration" in lost_reason
     assert "neither grade-less shape" not in lost_reason
+    assert TerminationReason.API_ERROR.value in never_scored_reason
+    assert f"status: {TrialStatus.ERROR.value}" in never_scored_reason
+    assert "neither grade-less shape" not in never_scored_reason
     assert "neither grade-less shape" in anomalous_reason
     assert TrialOutcomeClass.MEASURED.value in anomalous_reason
-    assert len({ungradeable_reason, aborted_reason, lost_reason, anomalous_reason}) == 4
+    assert (
+        len(
+            {
+                ungradeable_reason,
+                aborted_reason,
+                lost_reason,
+                never_scored_reason,
+                anomalous_reason,
+            }
+        )
+        == 5
+    )
     assert client.calls == 0
     assert not (source / "replays").exists()
 
