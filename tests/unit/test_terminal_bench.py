@@ -395,6 +395,39 @@ class TestTerminalBenchAdapterDockerStackRequirements:
                 doc = yaml.safe_load(handle)
             assert doc["services"][build.service]["image"] == build.expected_image_ref
 
+    def test_declared_build_timeout_reaches_every_build_of_a_multi_container_task(
+        self, fixture_dir, tmp_path
+    ):
+        """``[environment].build_timeout_sec`` is what bounds the build subprocess,
+        so it has to arrive on every entry the task contributes — the sidecar-bearing
+        task included, whose stack is exactly where an unbounded build hangs a board."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+        builds = adapter.docker_stack_requirements().image_builds
+
+        by_compose = {b.compose_file: b for b in builds}
+        multi_compose = adapter._environment("echo-hello-multi").compose_file
+        assert multi_compose in by_compose
+        assert by_compose[multi_compose].timeout_sec == 900.0
+        assert len(yaml.safe_load(multi_compose.read_text())["services"]) > 1
+
+    def test_a_task_declaring_no_build_timeout_carries_none(self, fixture_dir, tmp_path):
+        """No invented default: a task that declares no budget must reach the
+        orchestrator with ``None``, or a number nobody asked for would kill its build."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+        builds = adapter.docker_stack_requirements().image_builds
+
+        single_compose = adapter._environment("echo-hello-single").compose_file
+        declared = {b.compose_file: b.timeout_sec for b in builds}
+        assert declared[single_compose] is None
+
     def test_prebuild_images_false_returns_no_builds(self, fixture_dir, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 

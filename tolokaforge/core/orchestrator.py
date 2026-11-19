@@ -1851,8 +1851,14 @@ class Orchestrator:
         that ref resolvable. Either mismatch raises rather than letting the
         run proceed on an image nobody predicted — the failure mode that made
         a dead agent read back as a passing trial.
+
+        The build runs under ``ComposeImageBuild.timeout_sec`` when the adapter
+        declared one, raising
+        :class:`~tolokaforge.docker.image.ImageBuildTimeout` on expiry.
         """
         import subprocess
+
+        from tolokaforge.docker.image import ImageBuildTimeout
 
         image_ref = _compose_service_image_ref(build.compose_file, build.service)
         if image_ref != build.expected_image_ref:
@@ -1876,11 +1882,24 @@ class Orchestrator:
             "Building adapter-declared compose image",
             compose_file=str(build.compose_file),
             service=build.service,
+            timeout_sec=build.timeout_sec,
         )
-        subprocess.run(
-            ["docker", "compose", "-f", str(build.compose_file), "build", build.service],
-            check=True,
-        )
+        try:
+            subprocess.run(
+                ["docker", "compose", "-f", str(build.compose_file), "build", build.service],
+                check=True,
+                timeout=build.timeout_sec,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise ImageBuildTimeout(
+                image_ref,
+                float(build.timeout_sec),
+                f"compose service {build.service!r} in {build.compose_file!s} did not "
+                "finish building within the budget its task declared. A package mirror "
+                "that stalls instead of refusing produces this; re-run once the mirror "
+                "answers, or raise the task's declared build budget if the image "
+                "honestly costs more.",
+            ) from e
         if not _local_image_exists(image_ref):
             raise RuntimeError(
                 f"compose service {build.service!r}: `docker compose build` exited 0 but "

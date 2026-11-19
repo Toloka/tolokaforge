@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     _db_service_body,
@@ -11,6 +12,8 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     materialise_task_environment,
 )
 from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+pytestmark = pytest.mark.unit
 
 _TASK_TOML = """
 [metadata]

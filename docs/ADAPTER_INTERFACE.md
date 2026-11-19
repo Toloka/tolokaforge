@@ -409,7 +409,9 @@ class MyAdapter(BaseAdapter):
         return DockerStackRequirements(
             task_pack_mounts=[self.task_pack_root],
             image_builds=[
-                ComposeImageBuild(compose_file=compose, service="main")
+                ComposeImageBuild(
+                    compose_file=compose, service="main", timeout_sec=900.0
+                )
                 for compose in self.task_compose_files()
             ],
         )
@@ -444,6 +446,17 @@ Fields:
   This keeps the daemon-free `get_task()` / `to_task_description()` accessor
   contract intact — adapters *declare* what needs building; the orchestrator
   runs the subprocess.
+
+  Each entry carries an optional `timeout_sec: float | None` that bounds its
+  own build; on expiry the orchestrator raises
+  `tolokaforge.docker.image.ImageBuildTimeout`, naming the image ref and the
+  budget. The budget is per entry, so a task contributing several builds gives
+  each of them this much and the error names the one service that wedged.
+  `None` — the default — lets the build run unbounded. An adapter whose task
+  format declares a build budget passes it through here rather than letting
+  the orchestrator invent one: a build reaching a package mirror that stalls
+  instead of refusing otherwise hangs the run until the job's wall clock kills
+  it, with nothing naming the cause.
 
 ### `ToolWrapper.execute` and `ToolWrapper.execute_call`
 
