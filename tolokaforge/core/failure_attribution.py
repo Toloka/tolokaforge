@@ -218,7 +218,8 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         # already claim ``timeout_or_resource`` for the ERROR / TIMEOUT /
         # EMPTY_COMPLETION reasons, so this branch fires on any synthesised trial
         # whose ``termination_reason`` is not enumerated above (today
-        # STUCK_DETECTED and PROVIDER_CONTENT_FILTER). The tool-log scan below
+        # HARNESS_CLI_FAILED, STUCK_DETECTED and PROVIDER_CONTENT_FILTER). The
+        # tool-log scan below
         # settles on ``model_reasoning`` by default, which would
         # misattribute a harness-terminated trial to the
         # model, so the synth marker takes precedence. Forward-compat: a future

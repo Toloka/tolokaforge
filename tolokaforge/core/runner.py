@@ -878,13 +878,20 @@ class TrialRunner:
     def _harness_episode_spent_nothing(self) -> bool:
         """Whether the episode exited non-zero having reported no spend of its own.
 
-        The conjunction is the rule, and each half is load-bearing. A non-zero
-        exit alone condemns a CLI that did the work and crashed on the way out.
-        A zero total alone is indistinguishable from a CLI that prints no counts
-        at all. Only a CLI that reported counts of its own, totalling zero,
-        beside a non-zero exit, says the episode never reached the model.
+        The conjunction is the rule, and every conjunct is load-bearing. A
+        non-zero exit alone condemns a CLI that did the work and crashed on the
+        way out. A zero token total alone is indistinguishable from a CLI that
+        prints no counts at all. Only a terminal telemetry record parsed beside
+        a non-zero exit, reporting no turns and no cost, whose token fields
+        total zero, says the episode never reached the model.
 
-        The middleware records are deliberately not a third conjunct:
+        Turns and cost are conjuncts because the token fields are read by key:
+        a CLI that renames its usage keys parses as zero tokens while still
+        reporting the turns it took and the money it spent, and that is a CLI
+        whose trial is the agent's own. A reported cost of exactly ``0.0``
+        condemns, because a CLI that billed itself nothing spent nothing.
+
+        The middleware records are deliberately not a further conjunct:
         :meth:`_harness_requests_all_refused` already consumes the only shape
         they could contribute, and it is checked first. That holds because no
         shipped harness has both a token-reporting stdout tap and a middleware
@@ -896,6 +903,8 @@ class TrialRunner:
             return False
         telemetry = self._harness_stdout_telemetry
         if telemetry is None or not telemetry.has_token_counts:
+            return False
+        if telemetry.turns > 0 or telemetry.cost_usd:
             return False
         return (telemetry.prompt_tokens or 0) + (telemetry.completion_tokens or 0) == 0
 

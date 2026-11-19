@@ -15,11 +15,11 @@ The conductor's job (per ``docs/CLOUD_RUNTIME_ARCHITECTURE.md`` §6.3) is to
      substrate killed the trial before the agent could be measured, and any
      score would describe work that never happened.
   2. ``TerminationReason.HARNESS_CLI_FAILED`` — auto-fail. The coding-harness
-     CLI exited non-zero and its own telemetry reported token counts totalling
-     zero, so the episode never reached the model and the repository is the one
-     the trial started with. It is placed above case 3 because it arrives with
-     ``TrialStatus.ERROR``, which that case would otherwise claim and report as
-     a bare "failed with status: error".
+     CLI exited non-zero and its own telemetry reported no turns, no cost and
+     token counts totalling zero, so the episode never reached the model and
+     the repository is the one the trial started with. It is placed above case
+     3 because it arrives with ``TrialStatus.ERROR``, which that case would
+     otherwise claim and report as a bare "failed with status: error".
   3. ``TrialStatus.ERROR`` / ``TrialStatus.TIMEOUT`` — auto-fail without
      touching the runner. The trial did end badly on the agent's watch, but
      running the judge on a truncated transcript would produce a false

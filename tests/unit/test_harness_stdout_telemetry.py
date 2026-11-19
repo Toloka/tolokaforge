@@ -1177,6 +1177,42 @@ _FAILED_STREAM_JSON = "\n".join(
 )
 
 
+_RENAMED_USAGE_STREAM = json.dumps(
+    {
+        "type": "result",
+        "subtype": "success",
+        "is_error": True,
+        "num_turns": 19,
+        "total_cost_usd": 0.42,
+        "usage": {"inputTokens": 129, "outputTokens": 15235},
+    }
+)
+"""A ``claude-code`` upgrade that renamed its usage keys — the same class of
+fault #2007 is about, one release later.
+
+The parser reads the block by key, so every token field reads zero while the
+CLI's own turn count and bill say it did nineteen turns of real work.
+"""
+
+_BILLED_WITHOUT_TURNS_STREAM = json.dumps(
+    {
+        "type": "result",
+        "subtype": "success",
+        "is_error": True,
+        "total_cost_usd": 0.42,
+        "usage": {"inputTokens": 129, "outputTokens": 15235},
+    }
+)
+"""The same rename reaching ``num_turns`` as well, so the bill is all that is
+left of what the CLI reported."""
+
+_BARE_TURN_STREAM = json.dumps({"type": "turn.completed"})
+"""A ``codex`` turn that completed carrying no usage block.
+
+The same shape from the other side: a counted turn contributing zero tokens.
+"""
+
+
 def _graded(trajectory: Trajectory) -> Grade | None:
     """The grade the harness lane's own grader answers *trajectory* with."""
     return RunnerRPCTrialGrader(
@@ -1185,8 +1221,9 @@ def _graded(trajectory: Trajectory) -> Grade | None:
 
 
 class TestACliThatFailedWithoutSpendingAnythingIsNotAMeasurement:
-    """The conjunction is the rule: a non-zero exit **and** a CLI that reported
-    token counts of its own totalling zero.
+    """The conjunction is the rule: a non-zero exit **and** a terminal
+    telemetry record reporting no turns, no cost and token fields totalling
+    zero.
 
     Either half alone is a different trial. A non-zero exit on its own is a CLI
     that may have done the work and crashed on the way out, and a zero total on
@@ -1237,6 +1274,41 @@ class TestACliThatFailedWithoutSpendingAnythingIsNotAMeasurement:
         exited non-zero; its trial is the agent's own and is graded normally."""
         trajectory = _run(_STREAM_JSON, episode_exit_code=1)
 
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.AGENT_DONE
+
+    @pytest.mark.parametrize(
+        ("harness", "model", "stdout"),
+        [
+            ("claude-code", _MODEL, _RENAMED_USAGE_STREAM),
+            ("claude-code", _MODEL, _BILLED_WITHOUT_TURNS_STREAM),
+            ("codex", _CODEX_MODEL, _BARE_TURN_STREAM),
+        ],
+        ids=[
+            "claude-code-reported-nineteen-turns",
+            "claude-code-billed-itself-forty-two-cents",
+            "codex-counted-a-turn",
+        ],
+    )
+    def test_a_cli_that_reported_turns_or_cost_is_the_agents_own_trial(
+        self, harness: str, model: str, stdout: str
+    ) -> None:
+        """A zero token total is only evidence when nothing else the CLI
+        reported contradicts it.
+
+        The token fields are read by key, so a CLI that renames them reports
+        zero tokens for work it did — and condemning on the tokens alone would
+        turn one upstream rename into every failing episode losing its
+        verifier score, including one that took nineteen turns and billed
+        $0.42.
+        """
+        runner, trajectory, _executor = _trial(
+            stdout, harness=harness, model=model, episode_exit_code=1
+        )
+
+        telemetry = runner._harness_stdout_telemetry
+        assert telemetry is not None
+        assert (telemetry.prompt_tokens, telemetry.completion_tokens) == (0, 0)
         assert trajectory.status is TrialStatus.COMPLETED
         assert trajectory.termination_reason is TerminationReason.AGENT_DONE
 

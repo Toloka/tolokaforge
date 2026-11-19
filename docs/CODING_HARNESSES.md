@@ -87,23 +87,30 @@ the exit status unknown, which is neither a success nor a failure.
 Only the harness episode is wrapped; the per-command execs an engine-loop
 trial issues run unwrapped.
 
-An episode that exited non-zero **and** whose CLI reported token counts of its
-own totalling zero terminates `harness_cli_failed`: the CLI never reached the
-model, so the trial is a harness error with a synthesised failing grade rather
-than a verifier score against a repository the agent never touched. Both halves
-are required — a CLI that billed for real work and then crashed is still the
-agent's own trial, and a zero total from a CLI that prints no counts says
-nothing at all.
+An episode that exited non-zero **and** left a terminal telemetry record
+reporting no turns, no cost and token fields totalling zero terminates
+`harness_cli_failed`: the CLI never reached the model, so the trial is a
+harness error with a synthesised failing grade rather than a verifier score
+against a repository the agent never touched. Every conjunct is required — a
+CLI that billed for real work and then crashed is still the agent's own trial,
+a zero total from a CLI that prints no counts says nothing at all, and a CLI
+that renamed its usage keys reports zero tokens beside the turns and the bill
+that prove it worked.
 
-Coverage follows the taps, so it is exactly the harnesses that report what they
-spent. `claude-code` prints its terminal `result` event even on a failed run,
-which is the case this gate was built from. `codex` and `opencode` report per
-turn and per step, so a CLI of theirs that died before its first turn leaves no
-telemetry and is not condemned. `kimi-code` prints turns and no token counts,
-and its refused-provider case is `provider_refused_all_requests` instead.
-`gemini-cli` declares neither a stdout dialect nor request middleware, so
-nothing can say whether its episode did any work: a non-zero exit there is
-logged as an uncovered failure and the trial stands as measured.
+Coverage follows the one tap the gate consumes, so it is exactly the harnesses
+with a **stdout** token tap. `claude-code` prints its terminal `result` event
+even on a failed run, which is the case this gate was built from. `codex` and
+`opencode` report per turn and per step, so a CLI of theirs that died before
+its first turn leaves no telemetry and is not condemned. `kimi-code` prints
+turns and no token counts, and its refused-provider case is
+`provider_refused_all_requests` instead. `grok-build` and `qwen-code` likewise
+print no counts of their own and are metered off the wire by their
+`request_middleware`, which this gate does not read: a failed episode of theirs
+is condemned only where the proxy served nothing, and is otherwise neither
+condemned nor logged as uncovered. `gemini-cli` declares neither a stdout
+dialect nor request middleware, so nothing can say whether its episode did any
+work: a non-zero exit there is logged as an uncovered failure and the trial
+stands as measured.
 
 ## What each shipped adopter provides
 

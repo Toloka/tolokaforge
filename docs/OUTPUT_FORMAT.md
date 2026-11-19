@@ -209,7 +209,8 @@ describe its newly executed attempts.
 * **`judge_prompt` derivation**: computed from the trial's effective
   `grading_config.llm_judge` at bundle-write time, not from an actual
   judge invocation, so an auto-fail trial (`ERROR` / `TIMEOUT` /
-  `STUCK_DETECTED` / `CONTEXT_WINDOW_EXCEEDED` / `PROVIDER_CONTENT_FILTER`)
+  `HARNESS_CLI_FAILED` / `STUCK_DETECTED` / `CONTEXT_WINDOW_EXCEEDED` /
+  `PROVIDER_CONTENT_FILTER`)
   that never called the judge
   still records the contract it would have graded under. Same source of
   truth as the judge's own composition

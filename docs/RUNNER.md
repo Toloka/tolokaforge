@@ -811,8 +811,8 @@ other would silently either stop retrying transient failures or start excusing
 agent failures from the benchmark.
 
 `harness_cli_failed` is the coding-harness lane's own: the CLI exited non-zero
-and its stdout telemetry reported token counts totalling zero, so the episode
-spent nothing on the model and the repository is the one the trial started with.
+and its stdout telemetry reported no turns, no cost and token counts totalling
+zero, so the episode spent nothing on the model and the repository is the one the trial started with.
 It classifies as `harness_error` — a stale version pin is our defect, and the
 agent can reach the CLI from the shell it has — and it *is* graded, as a
 synthesised `0.0`, which is what separates it from a verifier score against work

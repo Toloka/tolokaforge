@@ -40,7 +40,8 @@ class TerminationReason(str, Enum):
     )
     HARNESS_CLI_FAILED = (
         # The coding-harness CLI exited non-zero and its own telemetry reported
-        # token counts totalling zero, so the episode spent nothing on the model
+        # no turns, no cost and token counts totalling zero, so the episode spent
+        # nothing on the model
         "harness_cli_failed"
     )
     EMPTY_COMPLETION = "empty_completion"  # Provider returned no text and no tool calls

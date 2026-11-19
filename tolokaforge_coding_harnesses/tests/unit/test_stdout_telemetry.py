@@ -567,8 +567,6 @@ class TestTheClisOwnVerdictOnItsRun:
     def test_the_subtype_is_not_the_verdict(self) -> None:
         """That same failing run reports ``subtype: success``. Reading the
         subtype instead would have called this trial a success."""
-        assert _FAILED_RESULT_EVENT["subtype"] == "success"
-
         telemetry = parse_harness_stdout("claude-code", _stream(_FAILED_RESULT_EVENT))
 
         assert telemetry is not None

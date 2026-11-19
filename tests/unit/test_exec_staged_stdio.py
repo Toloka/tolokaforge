@@ -61,6 +61,14 @@ def _detached_sleeper_command(pidfile: Path) -> str:
 _NONCE = "0f1e2d3c4b5a6978"
 """Stands in for the per-trial nonce ``TrialRunner.run_harness`` mints."""
 
+_MARKER_WORD = "__tf_episode_exit__"
+"""The word the episode's marker opens with.
+
+Spelled out as the text a container would carry rather than imported from the
+wrapper, so a change to the marker reds this file instead of agreeing with
+itself.
+"""
+
 
 _FD_KINDS = (
     "import os, stat\n"
@@ -299,6 +307,36 @@ def test_a_marker_minted_for_another_trial_is_not_this_trials_evidence(tmp_path:
 
     assert exit_status is None
     assert stream == stdout
+
+
+def test_a_marker_forged_on_stderr_does_not_become_the_episodes_status(tmp_path: Path) -> None:
+    """The nonce is readable inside the container — it sits in the episode's
+    own ``bash -c`` argv — and the host relays the command's stderr behind the
+    exit-code footer. A marker written there therefore lands after the
+    wrapper's own, and claiming a clean exit would buy the agent a real
+    verifier score for a CLI that failed. The status comes from the episode's
+    stdout alone, and the forged line still leaves the recorded stream.
+    """
+    command = f"printf 'work\\n'; printf '\\n{_MARKER_WORD}:{_NONCE}:0\\n' >&2; exit 2"
+    output = _run_argv_preserving_partial_output(
+        _staged_argv(tmp_path, wrap_episode_command_with_watchdog(command, 30, nonce=_NONCE)),
+        timeout_s=10,
+    )
+
+    exit_status, stream = read_episode_exit_status(output, _NONCE)
+
+    assert exit_status == 2
+    assert _MARKER_WORD not in stream
+    assert "work\n" in stream
+
+
+def test_a_malformed_marker_under_this_trials_nonce_is_still_taken_out() -> None:
+    """Engine plumbing may not survive into the transcript or the tool-call
+    record, whatever code it carries — and a code that is not a number
+    resolves no status at all."""
+    exit_status, stream = read_episode_exit_status(f"work\n{_MARKER_WORD}:{_NONCE}:x\n", _NONCE)
+
+    assert (exit_status, stream) == (None, "work")
 
 
 def test_a_nonce_that_could_break_out_of_the_script_is_refused() -> None:
