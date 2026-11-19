@@ -133,6 +133,15 @@ orchestrator's image-preparation step runs `docker compose build` once per
 run before any trial provisions. Synthesis itself never shells out —
 `materialise_task_environment` only reads and writes files.
 
+Every entry a task contributes carries that task's
+`[environment] build_timeout_sec` as `ComposeImageBuild.timeout_sec`, so a
+build that outlives the budget its own pack declared raises
+`ImageBuildTimeout` naming the service. A task that declares none builds
+unbounded. The budget matters on a board: each task builds an agent image —
+and a layered or verifier image besides — that `apt-get`s and `pip install`s
+over the network, and one mirror that stalls instead of refusing would
+otherwise hang the whole shard until the job's wall clock killed it.
+
 ## Harness mode — coding-harness CLIs
 
 `agent_harness` selects which agent drives the trial. The default,

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import tomllib
 import yaml
 
 
@@ -128,6 +128,16 @@ class TerminalBenchTask:
     """
     cpus: float = 2
     memory_mb: int = 4096
+    build_timeout_sec: float | None = None
+    """Seconds the task allows each of its image builds, from
+    ``[environment].build_timeout_sec``, or ``None`` when it declares none.
+
+    ``None`` rather than a number because an invented budget would kill a
+    build the task was willing to wait for. A task that names one is stating
+    what a healthy build costs it. Dropping the field leaves the build
+    unbounded, and one stalled package mirror then hangs a whole board until
+    the job's wall clock kills it with nothing naming the cause.
+    """
     environment_mode: str | None = None
     """How the task runs its verifier: ``"separate"`` for a task whose tests run
     in their own container, ``None`` for the single-container shape whose tests
@@ -238,24 +248,27 @@ def _parse_task_toml(task_dir: Path) -> dict:
         return tomllib.load(f)
 
 
-def _parse_verifier_timeout(task_id: str, data: Mapping[str, Any]) -> float | None:
-    """The task's declared verifier timeout, refused unless it is a positive number.
+def _parse_positive_seconds(
+    task_id: str, section: Mapping[str, Any], section_name: str, key: str
+) -> float | None:
+    """A duration a ``task.toml`` section declares, or ``None`` when it declares none.
 
-    Checked here rather than at the grading kind, which validates the same
-    bound but only once a trial has been run: the agent's work would already
-    be spent before anything noticed the task could not be graded.
+    Refused unless it is a positive number. Checked at parse time rather than
+    where the duration is spent, which is always after work has been done:
+    a verifier budget is only reached once the agent's trial is paid for, and
+    a build budget only once the build is already running.
     """
-    declared = data.get("timeout_sec")
+    declared = section.get(key)
     if declared is None:
         return None
     if isinstance(declared, bool) or not isinstance(declared, int | float):
         raise ValueError(
-            f"terminal-bench task {task_id!r}: verifier.timeout_sec must be a number; "
+            f"terminal-bench task {task_id!r}: {section_name}.{key} must be a number; "
             f"got {declared!r}."
         )
     if declared <= 0:
         raise ValueError(
-            f"terminal-bench task {task_id!r}: verifier.timeout_sec must be greater "
+            f"terminal-bench task {task_id!r}: {section_name}.{key} must be greater "
             f"than zero; got {declared!r}."
         )
     return float(declared)
@@ -466,11 +479,14 @@ def parse_task_dir(task_dir: Path) -> TerminalBenchTask:
         difficulty=metadata.get("difficulty", "medium"),
         tags=metadata.get("tags", []),
         agent_timeout_sec=agent.get("timeout_sec", 1800.0),
-        verifier_timeout_sec=_parse_verifier_timeout(task_id, verifier),
+        verifier_timeout_sec=_parse_positive_seconds(task_id, verifier, "verifier", "timeout_sec"),
         agent_user=_parse_user(task_id, agent, "agent"),
         verifier_user=_parse_user(task_id, verifier, "verifier"),
         cpus=environment.get("cpus", 2),
         memory_mb=environment.get("memory_mb", 4096),
+        build_timeout_sec=_parse_positive_seconds(
+            task_id, environment, "environment", "build_timeout_sec"
+        ),
         environment_mode=environment_mode,
         artifacts=artifacts,
         collect=_parse_collect(task_id, verifier),
