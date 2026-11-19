@@ -214,9 +214,9 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         trajectory.grade is not None
         and trajectory.grade.synthesized_by_termination_reason is not None
     ):
-        # A harness-synthesised auto-fail grade — the deterministic branches above
-        # already claim ``timeout_or_resource`` for the ERROR / TIMEOUT /
-        # EMPTY_COMPLETION reasons, so this branch fires on any synthesised trial
+        # A harness-synthesised auto-fail grade — the deterministic branch above
+        # already claims ``timeout_or_resource`` for every reason it enumerates,
+        # so this branch fires on any synthesised trial
         # whose ``termination_reason`` is not enumerated above (today
         # HARNESS_CLI_FAILED, STUCK_DETECTED and PROVIDER_CONTENT_FILTER). The
         # tool-log scan below

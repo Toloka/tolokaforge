@@ -284,10 +284,9 @@ and the fallback would blame the agent for a substrate fault.
 `harness_autofail` catches trials the harness auto-failed on a `TrialGrader`
 synth branch whose termination reason is not otherwise enumerated in the
 deterministic elif chain — today that is `HARNESS_CLI_FAILED`,
-`STUCK_DETECTED` and `PROVIDER_CONTENT_FILTER` (the `TIMEOUT` /
-`EMPTY_COMPLETION` / `CONTEXT_WINDOW_EXCEEDED` / `ERROR` / `RATE_LIMIT` /
-`API_ERROR` reasons keep their `timeout_or_resource` label because the
-enumerated branch catches them first). It is forward-compat: any future `TerminationReason` a `TrialGrader`
+`STUCK_DETECTED` and `PROVIDER_CONTENT_FILTER` (every reason the branch above
+enumerates keeps its `timeout_or_resource` label, because that branch catches
+them first). It is forward-compat: any future `TerminationReason` a `TrialGrader`
 synthesises from without an enumerated branch lands here rather than falling
 through to the tool-log scan and settling on `model_reasoning`. The trial was
 never measured by an evaluator, so any fallthrough that blames the model
