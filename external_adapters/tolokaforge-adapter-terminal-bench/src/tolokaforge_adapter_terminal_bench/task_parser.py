@@ -134,8 +134,7 @@ class TerminalBenchTask:
 
     ``None`` rather than a number because an invented budget would kill a
     build the task was willing to wait for. A task that names one is stating
-    what a healthy build costs it: every delivered Terminal-Bench 4 pack does,
-    between 600 and 2400 seconds. Dropping the field leaves the build
+    what a healthy build costs it. Dropping the field leaves the build
     unbounded, and one stalled package mirror then hangs a whole board until
     the job's wall clock kills it with nothing naming the cause.
     """
