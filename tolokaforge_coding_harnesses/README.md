@@ -134,10 +134,11 @@ A response reporting no usage writes no record, keeping "not measured" distinct
 from "measured zero".
 
 **The records are read out of the running container, not off the host.** The
-synthesised trial compose mounts `/logs` from its context *relatively*, and the
-context a trial is brought up from is a per-trial copy the stack deletes at
-teardown — so the staging tree's `_logs` is a template that never receives the
-container's writes and no host path names the file. The consumer reads it
+synthesised trial compose mounts the agent's log directory from its context
+*relatively*, and the context a trial is brought up from is a per-trial copy
+the stack deletes at teardown — so the staging tree's `_logs` is a template
+that never receives the container's writes and no host path names the file.
+The consumer reads it
 through the same exec tool the CLI ran under, the moment the CLI's single
 invocation returns.
 

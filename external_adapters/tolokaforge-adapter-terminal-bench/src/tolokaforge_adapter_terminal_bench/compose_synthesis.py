@@ -59,7 +59,7 @@ import yaml
 # fails in the adapter with the adapter's own message rather than deep inside
 # a Pydantic validator on the synthesised compose file.
 from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS
-from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
+from tolokaforge_adapter_terminal_bench.task_parser import TaskShape, TerminalBenchTask
 from tolokaforge_coding_harnesses import (
     DEFAULT_PATH_RESOLVER,
     ENGINE_LOOP,
@@ -85,17 +85,28 @@ CONTAINER_LOGS_DIR = "/logs"
 ``T_BENCH_CONTAINER_LOGS_PATH`` a terminal-bench pack authors against."""
 
 STAGING_LOGS_DIRNAME = "_logs"
+"""Directory inside the staging tree the harness log mounts bind from.
+
+Relative, so the mount resolves against whichever copy of the compose context
+is actually brought up — the engine copies the staging tree per trial, which is
+what keeps one trial's logs out of the next one's."""
+
+CONTAINER_AGENT_LOGS_DIR = f"{CONTAINER_LOGS_DIR}/agent"
+"""The agent's own directory in the log tree, container-side.
+
+On the separate-verifier shape it is the whole of the tree the agent is given:
+the verifier's reward file is written under a sibling directory that never
+enters the agent's filesystem."""
+
+STAGING_AGENT_LOGS_DIR = f"./{STAGING_LOGS_DIRNAME}/agent"
+"""Host side of :data:`CONTAINER_AGENT_LOGS_DIR`, relative to the staging root."""
+
 # The task's own grading suite, as it sits in the staging directory. It is
 # mounted into the sidecar and never into the agent.
 _TESTS_STAGING_DIRNAME = "tests"
 # Where the suite appears inside the sidecar, and the path the agent is kept
 # away from. Also the value task compose files see as ``${TEST_DIR}``.
 _TESTS_CONTAINER_DIR = "/tests"
-"""Directory inside the staging tree the agent service's ``/logs`` mounts from.
-
-Relative, so the mount resolves against whichever copy of the compose context
-is actually brought up — the engine copies the staging tree per trial, which is
-what keeps one trial's logs out of the next one's."""
 
 _SYNTHESISED_COMPOSE_FILENAME = "docker-compose.tolokaforge.yaml"
 _ENGINE_COMPOSE_FILENAME = "docker-compose.engine.yaml"
@@ -465,9 +476,9 @@ _ENVIRONMENT_BUILD_CONTEXT = "./environment"
 #: the staging-relative host paths ours mount them from. A task authored
 #: against the harbor format reads these four as ``${ENV_*}`` / ``${HOST_*}``.
 _HARBOR_LOG_PATHS = {
-    "ENV_AGENT_LOGS_PATH": f"{CONTAINER_LOGS_DIR}/agent",
+    "ENV_AGENT_LOGS_PATH": CONTAINER_AGENT_LOGS_DIR,
     "ENV_VERIFIER_LOGS_PATH": f"{CONTAINER_LOGS_DIR}/verifier",
-    "HOST_AGENT_LOGS_PATH": f"./{STAGING_LOGS_DIRNAME}/agent",
+    "HOST_AGENT_LOGS_PATH": STAGING_AGENT_LOGS_DIR,
     "HOST_VERIFIER_LOGS_PATH": f"./{STAGING_LOGS_DIRNAME}/verifier",
 }
 
@@ -593,8 +604,55 @@ def _reroot_mount_source(mount: Any) -> Any:
     return mount
 
 
-def _agent_volumes(declared: Any, *, reserve_tests_target: bool = True) -> list[Any]:
-    """The agent service's mounts: the task's own, plus ours for logs.
+@dataclass(frozen=True)
+class _AgentMountShape:
+    """What the adapter mounts on the agent service, and what it refuses to pass
+    through from the task's own compose.
+
+    *log_mount* is the one mount the adapter owns here. *reserved_targets* are
+    container paths a task-authored mount may not claim; *refused_sources* are
+    staging directories a task-authored mount may not bind from, whatever it
+    targets.
+
+    The three move together — which half of the log tree the agent is given
+    decides what it must not be handed beside it — so :data:`_AGENT_MOUNT_SHAPES`
+    holds one whole shape per :class:`TaskShape` rather than separate switches
+    that can be set to a combination no shape means.
+    """
+
+    log_mount: str
+    reserved_targets: frozenset[str]
+    refused_sources: frozenset[str]
+
+
+_AGENT_MOUNT_SHAPES: Final[dict[TaskShape, _AgentMountShape]] = {
+    # The suite runs in the agent's own container, so the reward lives under a
+    # ``/logs`` both sides share and no mount can separate them. What is kept
+    # out is the suite: ``/tests`` is reserved and a ``./tests``-sourced mount
+    # is refused, because an agent that can read the assertions it is scored by
+    # is not being measured.
+    TaskShape.SINGLE_CONTAINER: _AgentMountShape(
+        log_mount=f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}",
+        reserved_targets=frozenset({CONTAINER_LOGS_DIR, _TESTS_CONTAINER_DIR}),
+        refused_sources=frozenset({_TESTS_STAGING_DIRNAME}),
+    ),
+    # The verifier grades in its own container from ``/logs/verifier``, so the
+    # agent gets ``/logs/agent`` and nothing else: the reward file it would be
+    # scored by is not on its filesystem to rewrite. ``/logs`` stays reserved
+    # rather than narrowing to ``/logs/agent`` — a task mounting the whole tree
+    # one level up would otherwise be passed through and hand it all back. The
+    # source refusal closes the same route spelled the other way round, a
+    # ``./_logs`` bind aimed at some target nothing reserves.
+    TaskShape.SEPARATE_VERIFIER: _AgentMountShape(
+        log_mount=f"{STAGING_AGENT_LOGS_DIR}:{CONTAINER_AGENT_LOGS_DIR}",
+        reserved_targets=frozenset({CONTAINER_LOGS_DIR}),
+        refused_sources=frozenset({STAGING_LOGS_DIRNAME}),
+    ),
+}
+
+
+def _agent_volumes(declared: Any, *, shape: _AgentMountShape) -> list[Any]:
+    """The agent service's mounts: the task's own, plus *shape*'s log mount.
 
     84 of the canonical compose files mount a named volume on the agent service
     — ``app_src:/app`` and the like — shared with the sibling services that run
@@ -602,32 +660,23 @@ def _agent_volumes(declared: Any, *, reserve_tests_target: bool = True) -> list[
     those tasks with an empty ``/app`` and siblings that never saw an edit, so
     what is declared is kept and ours is appended.
 
-    A task mount targeting ``/logs`` is dropped in favour of ours: it is the
-    harness's directory rather than the task's — the verifier reads its reward
-    from under it — and two mounts on one target leave which of them wins up to
-    compose.
+    A declared mount is dropped when its target is reserved — two mounts on one
+    target leave which of them wins up to compose — or when its host source is
+    one the shape refuses, which catches the same reach spelled as an innocuous
+    target. ``/tests`` is never mounted here under either shape: the suite
+    reaches the agent's container only at grading time, copied in from
+    :data:`_TESTS_SIDECAR_SERVICE`.
 
-    ``/tests`` is never mounted here. The suite reaches the agent's container
-    only at grading time, copied in from :data:`_TESTS_SIDECAR_SERVICE`, because
-    an agent that can read the assertions it is scored by is not being measured.
-    *reserve_tests_target* additionally drops a task-authored mount aimed at
-    ``/tests``, which would otherwise put the suite back where the sidecar exists
-    to keep it from. It is ``False`` only for the separate-verifier shape, whose
-    agent container has no grading relationship with ``/tests`` at all and whose
-    behaviour here is unchanged.
+    Only the agent service is filtered. A task-authored sibling in the agent
+    stack keeps its declared mounts (#2020).
     """
-    ours: list[Any] = []
-    reserved = {CONTAINER_LOGS_DIR}
-    if reserve_tests_target:
-        reserved.add(_TESTS_CONTAINER_DIR)
-    ours.append(f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}")
     kept = [
         mount
         for mount in (declared or [])
-        if not _mount_target_is_under(_mount_target(mount), reserved)
-        and not (reserve_tests_target and _mount_source_is_the_suite(_mount_source(mount)))
+        if not _mount_target_is_under(_mount_target(mount), shape.reserved_targets)
+        and not _mount_source_is_under(_mount_source(mount), shape.refused_sources)
     ]
-    return kept + ours
+    return [*kept, shape.log_mount]
 
 
 def _mount_target(mount: Any) -> str | None:
@@ -664,25 +713,30 @@ def _mount_source(mount: Any) -> str | None:
     return None
 
 
-def _mount_source_is_the_suite(source: str | None) -> bool:
-    """Whether *source* is the task's ``tests/`` directory, or inside it.
+def _mount_source_is_under(source: str | None, roots: Collection[str]) -> bool:
+    """Whether *source* is one of *roots* in the staging tree, or inside one.
 
     Checked independently of the target: a task that binds ``./tests`` to
     ``/opt/suite`` hands the agent the assertions just as surely as one that
-    binds it to ``/tests``, and the reserved-target check alone would let it
-    through.
+    binds it to ``/tests``, and a task that binds ``./_logs/verifier`` to
+    ``/opt/stolen`` hands it the reward file. The reserved-target check alone
+    lets both through.
+
+    Evaluated on the substituted, re-rooted source, so it sees the path a
+    ``${HOST_VERIFIER_LOGS_PATH}`` or ``${T_BENCH_TASK_LOGS_PATH}`` spelling
+    resolves to rather than the variable. A source still carrying ``${...}``
+    here names no variable either dialect defines, so it names no staging
+    directory either.
     """
     if source is None or "${" in source:
         return False
     path = PurePosixPath(posixpath.normpath(source))
     if path.is_absolute():
         return False
-    return path == PurePosixPath(_TESTS_STAGING_DIRNAME) or path.is_relative_to(
-        _TESTS_STAGING_DIRNAME
-    )
+    return any(path == PurePosixPath(root) or path.is_relative_to(root) for root in roots)
 
 
-def _mount_target_is_under(target: str | None, reserved: set[str]) -> bool:
+def _mount_target_is_under(target: str | None, reserved: Collection[str]) -> bool:
     """Whether *target* is one of *reserved* or sits inside one."""
     if target is None:
         return False
@@ -1214,8 +1268,8 @@ def _build_synthesised_compose(
         "T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME": agent_container_name,
         "T_BENCH_CONTAINER_LOGS_PATH": CONTAINER_LOGS_DIR,
         "T_BENCH_TASK_LOGS_PATH": f"./{STAGING_LOGS_DIRNAME}",
-        "T_BENCH_CONTAINER_AGENT_LOGS_PATH": f"{CONTAINER_LOGS_DIR}/agent",
-        "T_BENCH_TASK_AGENT_LOGS_PATH": f"./{STAGING_LOGS_DIRNAME}/agent",
+        "T_BENCH_CONTAINER_AGENT_LOGS_PATH": CONTAINER_AGENT_LOGS_DIR,
+        "T_BENCH_TASK_AGENT_LOGS_PATH": STAGING_AGENT_LOGS_DIR,
         "T_BENCH_TEST_DIR": "/tests",
         # The harbor dialect, which the canonical ``environment/`` compose files
         # author against. ``CONTEXT_DIR`` is the environment directory — upstream
@@ -1265,7 +1319,7 @@ def _build_synthesised_compose(
         agent_body.pop("build", None)
     agent_body["container_name"] = agent_container_name
     agent_body["volumes"] = _agent_volumes(
-        agent_body.get("volumes"), reserve_tests_target=not meta.is_v4
+        agent_body.get("volumes"), shape=_AGENT_MOUNT_SHAPES[meta.shape]
     )
     agent_env = agent_body.get("environment")
     # TEST_DIR is NOT set on the agent. It named the ``/tests`` mount, and that

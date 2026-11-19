@@ -113,8 +113,9 @@ _REMOVED_PARAMS: dict[str, str] = {
     ),
     "logs_host_root": (
         "per-trial log directories are created inside the staging dir "
-        "(`_logs/verifier`, `_logs/agent`) and bind-mounted into the "
-        "agent service via relative volumes; no host-daemon path is required"
+        "(`_logs/verifier`, `_logs/agent`) and reach the containers through "
+        "relative volumes in the synthesised compose file, each service "
+        "getting only the half it writes; no host-daemon path is required"
     ),
 }
 
