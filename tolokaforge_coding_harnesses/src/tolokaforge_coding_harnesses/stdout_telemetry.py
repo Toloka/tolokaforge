@@ -7,12 +7,15 @@ trial bundle already captures that stream verbatim — this module turns it into
 a neutral record the caller can fold into whatever metrics it keeps.
 
 Availability is a property of what each CLI actually prints, not of the harness
-surface, and the three shipped dialects agree on nothing but being JSON lines:
+surface, and the four shipped dialects agree on nothing but being JSON lines:
 
 * ``claude-code`` terminates its ``stream-json`` output with a single
-  ``result`` event carrying turns, cost and a usage block.
+  ``result`` event carrying turns, cost, a usage block, and the CLI's own
+  verdict on whether the run failed.
 * ``codex`` under ``--json`` emits one ``turn.completed`` **per turn**, each
   with that turn's usage, so totals are a sum across them. It reports no cost.
+* ``opencode`` under ``--format=json`` emits one ``step_finish`` **per step**
+  carrying that step's tokens and cost, so totals are a sum across them.
 * ``kimi-code`` prints an OpenAI-shaped message transcript and no usage at
   all — turns are countable from it, tokens are not.
 
@@ -103,6 +106,16 @@ class HarnessStdoutTelemetry:
 
     ``completion_tokens`` is likewise the output total, ``reasoning_tokens``
     included where a CLI breaks that out — it is a subset, not an addend.
+
+    :attr:`reported_error` is the CLI's own verdict on its run, and it is
+    three-valued on the same convention: ``None`` is "this dialect reports no
+    verdict", ``False`` is "the CLI said it succeeded", ``True`` is "the CLI
+    said it failed". Only ``claude-code`` reports one. It is a diagnostic, not
+    a judgement — a CLI that exhausted its turn budget reports ``True`` for an
+    outcome the agent earned — so nothing may condemn a trial on it alone.
+    :attr:`error_text` is what the CLI said about a run it called a failure,
+    for an operator reading a log; it is ``None`` wherever
+    :attr:`reported_error` is not ``True``.
     """
 
     dialect: str
@@ -114,6 +127,8 @@ class HarnessStdoutTelemetry:
     cache_read_input_tokens: int | None
     cache_creation_input_tokens: int | None
     reasoning_tokens: int | None = None
+    reported_error: bool | None = None
+    error_text: str | None = None
 
     @property
     def has_token_counts(self) -> bool:
@@ -154,6 +169,12 @@ def _parse_claude_code_stream_json(stdout: str) -> HarnessStdoutTelemetry | None
     tokens beside 705k cache reads. :attr:`HarnessStdoutTelemetry.prompt_tokens`
     is the inclusive total, so the three are summed here — and the sum is what
     reproduces the CLI's own ``total_cost_usd`` when priced.
+
+    The event also carries the CLI's verdict on its own run in ``is_error``,
+    and the text behind it in ``result``. ``subtype`` is not read: a run that
+    died on an API error still reports ``"subtype": "success"`` beside
+    ``"is_error": true``, so the two disagree and ``is_error`` is the one that
+    means what it says.
     """
     result = _last_result_event(stdout)
     if result is None:
@@ -163,6 +184,7 @@ def _parse_claude_code_stream_json(stdout: str) -> HarnessStdoutTelemetry | None
     duration_ms = _as_float(result.get("duration_ms"))
     cache_read = _as_int(usage.get("cache_read_input_tokens"))
     cache_creation = _as_int(usage.get("cache_creation_input_tokens"))
+    reported_error = _as_bool(result.get("is_error"))
     return HarnessStdoutTelemetry(
         dialect=CLAUDE_CODE_STREAM_JSON,
         turns=_as_int(result.get("num_turns")),
@@ -172,6 +194,8 @@ def _parse_claude_code_stream_json(stdout: str) -> HarnessStdoutTelemetry | None
         completion_tokens=_as_int(usage.get("output_tokens")),
         cache_read_input_tokens=cache_read,
         cache_creation_input_tokens=cache_creation,
+        reported_error=reported_error,
+        error_text=_as_text(result.get("result")) if reported_error else None,
     )
 
 
@@ -402,6 +426,21 @@ def _as_int(value: object) -> int:
         return int(value)
     except ValueError:
         return 0
+
+
+def _as_bool(value: object) -> bool | None:
+    """*value* as the CLI's verdict, or ``None`` when it reported none.
+
+    Only a real boolean counts: a string or a number in that slot is a shape
+    this parser does not know, and guessing which way it leans would invent a
+    verdict the CLI never gave.
+    """
+    return value if isinstance(value, bool) else None
+
+
+def _as_text(value: object) -> str | None:
+    """*value* as text the CLI wrote, or ``None`` when it wrote none."""
+    return value if isinstance(value, str) and value else None
 
 
 def _as_float(value: object) -> float | None:

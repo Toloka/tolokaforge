@@ -2,16 +2,18 @@
 
 Each fixture reproduces the key set and value shape of a stream a live trial
 produced — the ``claude-code`` terminating ``result`` event, ``codex``'s
-per-turn ``turn.completed`` usage, and ``kimi-code``'s usage-free message
-transcript. They are hand-written rather than captured verbatim, because a
-real stream is hundreds of kilobytes of transcript around a few token fields;
-the parsers were separately run against the full captures end to end, and the
-commit that added each dialect records which trial it was checked against.
+per-turn ``turn.completed`` usage, ``opencode``'s per-step ``step_finish``,
+and ``kimi-code``'s usage-free message transcript. They are hand-written
+rather than captured verbatim, because a real stream is hundreds of kilobytes
+of transcript around a few token fields; the parsers were separately run
+against the full captures end to end, and the commit that added each dialect
+records which trial it was checked against.
 
-The three dialects agree on nothing but being JSON lines, and on what they
-*omit*: codex reports no cost, kimi-code no tokens. That asymmetry is the
-whole reason the dialect table and the ``None``-versus-zero distinction exist,
-so most of what follows is about absence rather than arithmetic.
+The four dialects agree on nothing but being JSON lines, and on what they
+*omit*: codex reports no cost, kimi-code no tokens, and only claude-code
+reports a verdict on its own run. That asymmetry is the whole reason the
+dialect table and the ``None``-versus-zero distinction exist, so most of what
+follows is about absence rather than arithmetic.
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ from tolokaforge_coding_harnesses.stdout_telemetry import (
     STDOUT_TELEMETRY_DIALECTS,
     parse_harness_stdout,
 )
+
+pytestmark = pytest.mark.unit
 
 _RESULT_EVENT = {
     "type": "result",
@@ -42,6 +46,22 @@ _RESULT_EVENT = {
         "service_tier": "standard",
     },
 }
+
+
+_FAILED_RESULT_EVENT = {
+    "type": "result",
+    "subtype": "success",
+    "is_error": True,
+    "result": (
+        "API Error: 400 Claude Code 2.1.233 does not support this model; "
+        "version 2.1.280 or newer is required."
+    ),
+}
+"""The run #2007 reproduced: a CLI that died on an API error.
+
+Recorded from that trial, down to the ``subtype`` — the stream says
+``"success"`` beside ``"is_error": true``, and carries no usage block at all.
+"""
 
 
 _CODEX_TURN_COMPLETED: dict[str, object] = {
@@ -521,3 +541,88 @@ class TestOpencodeStepsWithNoTokensBlock:
         assert telemetry is not None
         assert telemetry.has_token_counts is True
         assert telemetry.prompt_tokens == 5
+
+
+class TestTheClisOwnVerdictOnItsRun:
+    """Whether the CLI thinks its own run failed, as the CLI said it.
+
+    Three values, not two: ``None`` is "this dialect reports no verdict",
+    ``False`` is "the CLI said it succeeded". Collapsing them would turn every
+    silent dialect into a claim of success.
+
+    The verdict is a diagnostic, not a judgement. ``claude-code`` sets the same
+    flag for a run that merely exhausted its turn budget — an outcome the agent
+    earned — so nothing may condemn a trial on this field alone.
+    """
+
+    def test_a_run_the_cli_called_a_failure_carries_the_text_it_gave(self) -> None:
+        """The text is the whole point of keeping it: an operator reads the
+        stale version pin out of a run rather than out of a bundle."""
+        telemetry = parse_harness_stdout("claude-code", _stream(_FAILED_RESULT_EVENT))
+
+        assert telemetry is not None
+        assert telemetry.reported_error is True
+        assert telemetry.error_text == _FAILED_RESULT_EVENT["result"]
+
+    def test_the_subtype_is_not_the_verdict(self) -> None:
+        """That same failing run reports ``subtype: success``. Reading the
+        subtype instead would have called this trial a success."""
+        assert _FAILED_RESULT_EVENT["subtype"] == "success"
+
+        telemetry = parse_harness_stdout("claude-code", _stream(_FAILED_RESULT_EVENT))
+
+        assert telemetry is not None
+        assert telemetry.reported_error is True
+
+    def test_a_run_the_cli_called_a_success_reports_false(self) -> None:
+        telemetry = parse_harness_stdout("claude-code", _stream(_RESULT_EVENT))
+
+        assert telemetry is not None
+        assert telemetry.reported_error is False
+        assert telemetry.error_text is None
+
+    @pytest.mark.parametrize(
+        ("harness", "stdout"),
+        [
+            ("codex", _stream(*_CODEX_STREAM)),
+            ("kimi-code", _stream(*_KIMI_STREAM)),
+            ("opencode", TestOpencodeJson.STREAM),
+        ],
+    )
+    def test_a_dialect_that_reports_no_verdict_says_nothing(
+        self, harness: str, stdout: str
+    ) -> None:
+        """These three print no equivalent field, and a shape they do print —
+        a stream that ended, a step that finished — is not one."""
+        telemetry = parse_harness_stdout(harness, stdout)
+
+        assert telemetry is not None
+        assert telemetry.reported_error is None
+        assert telemetry.error_text is None
+
+    def test_an_omitted_flag_is_not_a_verdict(self) -> None:
+        event = {k: v for k, v in _RESULT_EVENT.items() if k != "is_error"}
+
+        telemetry = parse_harness_stdout("claude-code", _stream(event))
+
+        assert telemetry is not None
+        assert telemetry.reported_error is None
+
+    def test_a_non_boolean_flag_is_not_a_verdict(self) -> None:
+        """A string in that slot is a shape this parser does not know, and
+        leaning either way would invent a verdict the CLI never gave."""
+        telemetry = parse_harness_stdout(
+            "claude-code", _stream({**_RESULT_EVENT, "is_error": "true"})
+        )
+
+        assert telemetry is not None
+        assert telemetry.reported_error is None
+
+    def test_a_failure_with_no_text_carries_none(self) -> None:
+        event = {k: v for k, v in _FAILED_RESULT_EVENT.items() if k != "result"}
+
+        telemetry = parse_harness_stdout("claude-code", _stream(event))
+
+        assert telemetry is not None
+        assert telemetry.reported_error is True
+        assert telemetry.error_text is None
