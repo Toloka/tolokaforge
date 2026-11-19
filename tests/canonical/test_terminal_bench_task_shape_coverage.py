@@ -9,9 +9,11 @@ Two locks keep that from recurring:
 
 - **Discovery implies materialisation.** A task that loads but cannot be
   brought to a runnable environment is the same silent hole one stage later.
-- **The fixture corpus keeps one of every shape.** The fixtures are the only
-  corpus CI has; a shape that drops out of them stops being tested without
-  any assertion changing.
+- **The fixture corpus keeps one of every shape, on both axes.** Compose layout
+  (where the task's topology comes from) and verifier placement (whether the
+  suite runs in the agent's container or its own) vary independently. The
+  fixtures are the only corpus CI has; a shape that drops out of them stops
+  being tested without any assertion changing.
 """
 
 from __future__ import annotations
@@ -20,14 +22,14 @@ import re
 from pathlib import Path
 
 import pytest
-from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+from tolokaforge_adapter_terminal_bench.task_parser import TaskShape, discover_tasks
 
 pytestmark = pytest.mark.canonical
 
 FIXTURE_DIR = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
 
 
-def _shape(task) -> str:
+def _compose_layout(task) -> str:
     """Which of the three corpus layouts the task uses."""
     if task.compose_file is None:
         return "synthesised"
@@ -53,6 +55,7 @@ def test_every_discovered_task_materialises_into_a_runnable_stack(tmp_path):
     )
     task_ids = adapter.get_task_ids()
     assert task_ids, "the fixture corpus is empty — discovery is broken, not passing"
+    tasks = discover_tasks(FIXTURE_DIR)
 
     for task_id in task_ids:
         env = adapter._environment(task_id)
@@ -73,6 +76,23 @@ def test_every_discovered_task_materialises_into_a_runnable_stack(tmp_path):
             f"{task_id}: the agent service declares no build, so its image "
             f"{agent.get('image')!r} is a local tag nothing produces"
         )
+
+        # A separate-verifier task is graded in a second container, and that
+        # container is only ever built from the task's own ``tests/`` — no
+        # registry carries it. Losing either the service or its build turns
+        # grading into a pull of a tag nothing produces, which surfaces as a
+        # trial that fails to come up rather than as a task that scores wrong.
+        assert (env.verifier_service is not None) is tasks[task_id].is_v4, (
+            f"{task_id}: verifier service {env.verifier_service!r} disagrees with the "
+            f"detected shape {tasks[task_id].shape}"
+        )
+        if env.verifier_service is not None:
+            verifier = services.get(env.verifier_service) or {}
+            assert verifier, f"{task_id}: verifier service {env.verifier_service!r} is absent"
+            assert verifier.get("build"), (
+                f"{task_id}: the verifier service declares no build, so its image "
+                f"{verifier.get('image')!r} is a local tag nothing produces"
+            )
 
         declared_volumes = set(doc.get("volumes") or {})
         for name, body in services.items():
@@ -101,18 +121,42 @@ def test_every_discovered_task_materialises_into_a_runnable_stack(tmp_path):
         assert not unresolved, f"{task_id}: unresolved compose variables {sorted(unresolved)}"
 
 
-def test_the_fixture_corpus_covers_every_shape():
+def test_the_fixture_corpus_covers_every_compose_layout():
     """All three corpus layouts stay represented among the fixtures.
 
-    These are the only tasks CI has, so a shape absent from them is a shape
+    These are the only tasks CI has, so a layout absent from them is a layout
     nothing exercises end-to-end. Pinned by name rather than by count: deleting
-    the one fixture carrying a shape should fail here, not quietly narrow what
+    the one fixture carrying a layout should fail here, not quietly narrow what
     the suite proves.
     """
-    shapes = {task_id: _shape(task) for task_id, task in discover_tasks(FIXTURE_DIR).items()}
+    layouts = {
+        task_id: _compose_layout(task) for task_id, task in discover_tasks(FIXTURE_DIR).items()
+    }
     assert {
         "echo-hello-single": "synthesised",
         "echo-hello-multi": "env-compose",
         "echo-hello": "root-compose",
+    }.items() <= layouts.items()
+    assert set(layouts.values()) == {"synthesised", "env-compose", "root-compose"}
+
+
+def test_the_fixture_corpus_covers_every_verifier_shape():
+    """Both verifier placements stay represented among the fixtures.
+
+    Compose layout and verifier placement are independent axes, and a corpus
+    can cover every layout while running every suite inside the agent's own
+    container. That is the hole the separate-verifier path shipped through:
+    discovery, materialisation and the whole artifact re-materialisation step
+    were reachable only from the adapter's own synthetic fixture, never from
+    the corpus the rest of the suite walks.
+
+    Compared against :class:`TaskShape` itself rather than a literal set, so a
+    new placement cannot be added to the adapter without a fixture that
+    exercises it.
+    """
+    shapes = {task_id: task.shape for task_id, task in discover_tasks(FIXTURE_DIR).items()}
+    assert {
+        "echo-hello-single": TaskShape.SINGLE_CONTAINER,
+        "echo-hello-verified": TaskShape.SEPARATE_VERIFIER,
     }.items() <= shapes.items()
-    assert set(shapes.values()) == {"synthesised", "env-compose", "root-compose"}
+    assert set(shapes.values()) == set(TaskShape)
