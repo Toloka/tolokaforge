@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import Callable
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
@@ -63,6 +64,16 @@ def _volume_targets(service_body: dict) -> list[str]:
     return targets
 
 
+def _host_sources(service_body: dict) -> list[str]:
+    """Host-path bind sources in a service's volumes (skips named volumes)."""
+    sources = []
+    for mount in service_body.get("volumes") or []:
+        source = mount.split(":")[0] if isinstance(mount, str) else mount.get("source")
+        if isinstance(source, str) and source.startswith((".", "/", "~")):
+            sources.append(source)
+    return sources
+
+
 def _env_map(service_body: dict) -> dict[str, str]:
     env = service_body.get("environment") or {}
     if isinstance(env, dict):
@@ -86,7 +97,8 @@ def test_v4_task_gets_a_verifier_service(tmp_path: Path) -> None:
     verifier = services["verifier"]
     assert verifier["build"] == {"context": "./tests", "dockerfile": "Dockerfile"}
     assert verifier["container_name"] == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_verifier"
-    assert "/logs" in _volume_targets(verifier)
+    # Its own half of the log tree, where its suite writes the reward.
+    assert verifier["volumes"] == ["./_logs/verifier:/logs/verifier"]
     # Distinct from the agent and the engine services.
     assert env.agent_service != "verifier"
     assert "runner" not in services and "db-service" not in services
@@ -95,7 +107,10 @@ def test_v4_task_gets_a_verifier_service(tmp_path: Path) -> None:
     agent = services[env.agent_service]
     agent_targets = _volume_targets(agent)
     assert "/tests" not in agent_targets
-    assert "/logs" in agent_targets
+    # The agent is given its own half of the log tree and nothing else: the
+    # reward the verifier scores it by is not on its filesystem to rewrite.
+    assert agent_targets == ["/logs/agent"]
+    assert _host_sources(agent) == ["./_logs/agent"]
     # TEST_DIR would point the agent at the dropped /tests mount, so it is not set.
     assert "TEST_DIR" not in _env_map(agent)
 
@@ -118,6 +133,60 @@ def test_v21_task_has_no_verifier_service(tmp_path: Path) -> None:
     assert "TEST_DIR" not in _env_map(agent)
     assert env.tests_sidecar_service == "tests-vault"
     assert _volume_targets(services["tests-vault"]) == ["/tests"]
+
+
+#: One task-authored agent service reaching for the harness log tree four ways:
+#: the verifier's own directory at a target nothing reserves, the whole tree at
+#: a target nothing reserves, the whole tree one level above ours, and the
+#: verifier's directory at its own path. Each dialect spells them the way a task
+#: authored against it can — a literal relative source in an ``environment/``
+#: compose is re-rooted onto ``environment/`` and names a different directory,
+#: so there it is the variables that reach the tree.
+_LOG_TREE_REACH = {
+    "docker-compose.yaml": (
+        "services:\n"
+        "  main:\n"
+        "    volumes:\n"
+        '      - "${HOST_VERIFIER_LOGS_PATH}:/opt/stolen"\n'
+        '      - "./_logs:/opt/all"\n'
+        '      - "${T_BENCH_TASK_LOGS_PATH}:${T_BENCH_CONTAINER_LOGS_PATH}"\n'
+        '      - "./_logs/verifier:/logs/verifier"\n'
+        '      - "keep:/srv"\n'
+        "volumes:\n  keep:\n"
+    ),
+    "environment/docker-compose.yaml": (
+        "services:\n"
+        "  main:\n"
+        "    volumes:\n"
+        '      - "${HOST_VERIFIER_LOGS_PATH}:/opt/stolen"\n'
+        '      - "${T_BENCH_TASK_LOGS_PATH}:/opt/all"\n'
+        '      - "${T_BENCH_TASK_LOGS_PATH}:${T_BENCH_CONTAINER_LOGS_PATH}"\n'
+        '      - "${HOST_VERIFIER_LOGS_PATH}:${ENV_VERIFIER_LOGS_PATH}"\n'
+        '      - "keep:/srv"\n'
+        "volumes:\n  keep:\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("dialect", sorted(_LOG_TREE_REACH))
+def test_v4_agent_keeps_no_task_mount_into_the_log_tree(tmp_path: Path, dialect: str) -> None:
+    """A reserved target is only half the guard.
+
+    ``${HOST_VERIFIER_LOGS_PATH}:/opt/stolen`` binds the directory the reward
+    is read from onto a path nothing reserves, so the agent could rewrite the
+    file it is scored by at a name the target check never looks at. The source
+    check is what closes it, and it has to run on the substituted path because
+    that is the only point at which the variable is a directory.
+    """
+    _write_task(tmp_path, "adv", v4=True)
+    (tmp_path / "adv" / dialect).write_text(_LOG_TREE_REACH[dialect])
+
+    _env, doc = _materialise(tmp_path, "adv")
+    agent = doc["services"]["main"]
+
+    # The declared named volume is the task's own and survives; everything
+    # reaching for the log tree is gone, and ours is the only mount left.
+    assert agent["volumes"] == ["keep:/srv", "./_logs/agent:/logs/agent"]
 
 
 _TIER3_TOML = (
@@ -143,17 +212,23 @@ _TESTS_COMPOSE = (
 )
 
 
-def _write_tier3_task(base: Path, task_id: str) -> None:
+def _write_tier3_task(
+    base: Path,
+    task_id: str,
+    *,
+    agent_compose: str = _AGENT_COMPOSE,
+    tests_compose: str = _TESTS_COMPOSE,
+) -> None:
     task_dir = base / task_id
     (task_dir / "environment").mkdir(parents=True)
     (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
-    (task_dir / "environment" / "docker-compose.yaml").write_text(_AGENT_COMPOSE)
+    (task_dir / "environment" / "docker-compose.yaml").write_text(agent_compose)
     (task_dir / "instruction.md").write_text("Do the thing.\n")
     tests_dir = task_dir / "tests"
     tests_dir.mkdir()
     (tests_dir / "Dockerfile").write_text('FROM python:3.12-slim\nCMD ["sleep","infinity"]\n')
     (tests_dir / "test.sh").write_text("#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n")
-    (tests_dir / "docker-compose.yaml").write_text(_TESTS_COMPOSE)
+    (tests_dir / "docker-compose.yaml").write_text(tests_compose)
     (task_dir / "task.toml").write_text(_TIER3_TOML)
 
 
@@ -179,6 +254,50 @@ def test_tier3_merges_verifier_stack_namespaced_and_aliased(tmp_path: Path) -> N
     # The agent's own postgres stays on the default network (no networks key).
     assert "networks" not in svcs["postgres"]
     assert (doc.get("networks") or {}).get("tb4_verifier") == {}
+
+
+_TIER3_AGENT_COMPOSE_REACHING_FOR_THE_LOG_TREE = (
+    "services:\n"
+    "  postgres:\n    image: postgres:16\n"
+    '    volumes: ["${HOST_VERIFIER_LOGS_PATH}:/mnt/v"]\n'
+    "  main:\n    environment:\n      DATABASE_URL: postgresql://u:p@postgres:5432/db\n"
+    "    volumes:\n"
+    '      - "${HOST_VERIFIER_LOGS_PATH}:/opt/stolen"\n'
+    '      - "${T_BENCH_TASK_LOGS_PATH}:/opt/all"\n'
+    '      - "${T_BENCH_TASK_LOGS_PATH}:${T_BENCH_CONTAINER_LOGS_PATH}"\n'
+    '      - "${HOST_VERIFIER_LOGS_PATH}:${ENV_VERIFIER_LOGS_PATH}"\n'
+    '      - "keep:/srv"\n'
+    "    depends_on:\n      postgres:\n        condition: service_healthy\n"
+    "volumes:\n  keep:\n"
+)
+
+
+def test_tier3_sibling_log_mount_survives_pending_2020(tmp_path: Path) -> None:
+    """The filter is on the agent service alone, and the sibling shows where that ends.
+
+    The agent half is the guarantee: a multi-container task reaches for the log
+    tree the same four ways a single-service one does and keeps none of them.
+
+    The sibling half records a hole, not a sanctioned behaviour. A
+    task-authored service in the agent stack keeps its ``./_logs/verifier``
+    bind, and a named volume shared with the agent would carry it across —
+    #2020. Filtering siblings is what severed a task's own sidecars in #2005,
+    so it is deliberately not done here, and the surface is asserted so it
+    exists somewhere other than the code: #2005 survived review because the
+    multi-container case was in no test at all.
+
+    **When #2020 lands this assertion flips and this test goes red.** That is
+    an expectation expiring, not a regression — delete the sibling assertion
+    and this paragraph with it.
+    """
+    _write_tier3_task(
+        tmp_path, "dbtask", agent_compose=_TIER3_AGENT_COMPOSE_REACHING_FOR_THE_LOG_TREE
+    )
+    _env, doc = _materialise(tmp_path, "dbtask")
+    svcs = doc["services"]
+
+    assert svcs["main"]["volumes"] == ["keep:/srv", "./_logs/agent:/logs/agent"]
+    assert _host_sources(svcs["postgres"]) == ["./_logs/verifier"]
 
 
 def test_tier1_has_no_verifier_stack(tmp_path: Path) -> None:
@@ -211,18 +330,14 @@ _TESTS_COMPOSE_VOL = (
 )
 
 
+def _write_tier3_named_volumes_task(base: Path, task_id: str) -> None:
+    _write_tier3_task(
+        base, task_id, agent_compose=_AGENT_COMPOSE_VOL, tests_compose=_TESTS_COMPOSE_VOL
+    )
+
+
 def test_tier3_named_volumes_are_namespaced_without_agent_collision(tmp_path: Path) -> None:
-    task_dir = tmp_path / "voltask"
-    (task_dir / "environment").mkdir(parents=True)
-    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
-    (task_dir / "environment" / "docker-compose.yaml").write_text(_AGENT_COMPOSE_VOL)
-    (task_dir / "instruction.md").write_text("Do the thing.\n")
-    tests_dir = task_dir / "tests"
-    tests_dir.mkdir()
-    (tests_dir / "Dockerfile").write_text('FROM python:3.12-slim\nCMD ["sleep","infinity"]\n')
-    (tests_dir / "test.sh").write_text("#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n")
-    (tests_dir / "docker-compose.yaml").write_text(_TESTS_COMPOSE_VOL)
-    (task_dir / "task.toml").write_text(_TIER3_TOML)
+    _write_tier3_named_volumes_task(tmp_path, "voltask")
 
     _env, doc = _materialise(tmp_path, "voltask")
     svcs = doc["services"]
@@ -243,6 +358,13 @@ def test_tier3_named_volumes_are_namespaced_without_agent_collision(tmp_path: Pa
     assert "verifier_shared" in _volume_sources(svcs["verifier_main"])
     assert "verifier_shared" in _volume_sources(svcs["verifier_cache"])
 
+    # The verifier main's own log mount sits alongside those task volumes, not
+    # in place of them: merging the stack must not cost it either one.
+    assert svcs["verifier_main"]["volumes"] == [
+        "./_logs/verifier:/logs/verifier",
+        "verifier_shared:/tb4/redis_cache",
+    ]
+
 
 def _volume_sources(service_body: dict) -> list[str]:
     """Named-volume source names in a service's volumes (skips bind mounts)."""
@@ -256,6 +378,67 @@ def _volume_sources(service_body: dict) -> list[str]:
         if src and not src.startswith((".", "/")):
             out.append(src)
     return out
+
+
+def _write_tier1_task(base: Path, task_id: str) -> None:
+    _write_task(base, task_id, v4=True)
+
+
+def _names_the_same_tree(left: str, right: str) -> bool:
+    """Whether two staging-relative bind sources reach the same files."""
+    a, b = PurePosixPath(left), PurePosixPath(right)
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
+
+
+@pytest.mark.parametrize(
+    "write_task",
+    [_write_tier1_task, _write_tier3_task, _write_tier3_named_volumes_task],
+    ids=["tier1", "tier3", "tier3-named-volumes"],
+)
+def test_the_adapter_hands_the_agent_and_the_verifier_no_shared_host_directory(
+    tmp_path: Path, write_task: Callable[[Path, str], None]
+) -> None:
+    """The verifier has no business reading the agent's working files.
+
+    ``_logs/agent`` carries the middleware usage records and, for ``opencode``,
+    the CLI's whole XDG state. A suite that consulted them would be scoring the
+    agent on data the agent writes, so neither adapter-owned mount may reach
+    into the other's directory.
+
+    A prefix is a share, which is why this compares trees rather than strings:
+    ``./_logs`` and ``./_logs/verifier`` are not two directories, they are one
+    directory and a window into it.
+
+    Claimed over **the adapter's own mounts on these three fixtures**, not over
+    every emitted document: ``_merge_verifier_stack`` copies a tier-3
+    ``tests/docker-compose.yaml`` main's own binds through verbatim, so a
+    verifier compose declaring ``./_logs:/x`` re-joins the trees. That is the
+    verifier's own compose rather than the agent's, so it is not a route back
+    to a forgeable reward.
+    """
+    write_task(tmp_path, "sep")
+    env, doc = _materialise(tmp_path, "sep")
+    svcs = doc["services"]
+
+    agent_sources = _host_sources(svcs[env.agent_service])
+    verifier_sources = sorted(
+        {
+            source
+            for name, body in svcs.items()
+            if name.startswith("verifier")
+            for source in _host_sources(body)
+        }
+    )
+
+    assert agent_sources == ["./_logs/agent"]
+    assert any(source.startswith("./_logs") for source in verifier_sources)
+    overlapping = [
+        (agent, verifier)
+        for agent in agent_sources
+        for verifier in verifier_sources
+        if _names_the_same_tree(agent, verifier)
+    ]
+    assert overlapping == []
 
 
 def test_namespace_volume_refs_long_syntax_without_type() -> None:

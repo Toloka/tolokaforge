@@ -139,6 +139,61 @@ def test_malformed_artifacts_raise(tmp_path: Path, artifacts_line: str) -> None:
         discover_tasks(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "source",
+    ["/logs", "/logs/verifier", "/logs/verifier/", "//logs", "/logs/../logs", "/"],
+    ids=["root", "verifier-dir", "trailing-slash", "double-slash", "dot-dot", "filesystem-root"],
+)
+@pytest.mark.parametrize("spelling", ["bare", "table"], ids=["bare-string", "table"])
+def test_an_artifact_naming_the_harness_log_tree_is_refused(
+    tmp_path: Path, source: str, spelling: str
+) -> None:
+    """Materialising an artifact empties that path in the verifier first.
+
+    So an artifact at or above ``/logs`` deletes ``/logs/verifier`` — where the
+    reward is written — and streams the agent's log tree in as the verifier's
+    own, reopening through the engine the separation the two log mounts keep.
+    A pack declaring it is already broken, so it is refused at discovery rather
+    than loaded and run.
+
+    The comparison is on the normalised path, not the string: ``//logs`` and
+    ``/logs/../logs`` name the same directory to docker and must not be a way
+    past it.
+    """
+    entry = f'"{source}"' if spelling == "bare" else f'{{ source = "{source}" }}'
+    _write_task(tmp_path, "sneaky", f"artifacts = [{entry}]\n" + _V21_TOML, tests_dockerfile=True)
+
+    with pytest.raises(ValueError) as excinfo:
+        discover_tasks(tmp_path)
+
+    message = str(excinfo.value)
+    assert "sneaky" in message
+    assert source in message
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        '"/app/output"',
+        '"/app"',
+        '"/app/data/logs"',
+        '"/logsmith"',
+        '{ source = "/app/output" }',
+        '{ source = "/tmp/pg.dump", service = "postgres" }',
+    ],
+)
+def test_an_artifact_outside_the_harness_log_tree_still_parses(tmp_path: Path, entry: str) -> None:
+    """The refusal is on the log tree, not on the substring ``logs``.
+
+    ``/app/data/logs`` is a task's own directory and ``/logsmith`` only shares a
+    prefix with ``/logs``; a guard that rejected either would break packs that
+    have nothing to do with the harness tree.
+    """
+    _write_task(tmp_path, "fine", f"artifacts = [{entry}]\n" + _V21_TOML, tests_dockerfile=True)
+    task = discover_tasks(tmp_path)["fine"]
+    assert len(task.artifacts) == 1
+
+
 def test_separate_verifier_without_tests_dockerfile_raises(tmp_path: Path) -> None:
     # Declares the separate-verifier shape via artifacts but ships no tests/Dockerfile
     # to build the verifier container from — must fail clearly at discovery.

@@ -9,7 +9,11 @@ verifier container), not a stand-in:
   re-materialised from the agent into the verifier container and the suite there
   passes;
 * a no-op writes nothing and scores **0.0** — the artifact is absent, so the
-  verifier runs without it and the suite fails.
+  verifier runs without it and the suite fails;
+* the agent's container holds ``/logs/agent`` and **no** ``/logs/verifier``, and
+  an agent that plants its own ``/logs/verifier/reward.txt = 1`` still scores
+  **0.0** — the file it wrote is container-local and the trial is graded from
+  the verifier's own reward, which the agent cannot reach.
 
 Heavy (it builds Docker images and brings up compose stacks), so it carries the
 ``integration`` / ``docker`` / ``requires_docker`` markers plus a
@@ -22,6 +26,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -150,14 +155,11 @@ def _make_trial_spec(task_description: Any, trial_id: str) -> TrialSpec:
     )
 
 
-def _provision_and_grade(
-    backend: SharedStackRuntimeBackend,
-    task: Any,
-    trial_id: str,
-    *,
-    solve: bool,
-) -> float:
-    """Provision one trial, optionally apply the oracle, grade it, tear it down."""
+@contextmanager
+def _registered_trial(
+    backend: SharedStackRuntimeBackend, task: Any, trial_id: str
+) -> Iterator[str]:
+    """One provisioned and registered trial, torn down on the way out."""
     spec = _make_trial_spec(task, trial_id)
     handle = backend.provision(spec)
     try:
@@ -166,24 +168,48 @@ def _provision_and_grade(
             trial_spec_json=spec.model_dump_json(exclude={"task": {"environment_manifest"}}),
         )
         assert register["success"] is True, register.get("error")
-        if solve:
-            # Apply the oracle in the AGENT container; grading then re-materialises
-            # /app/answer.txt into the verifier container before running the suite.
-            result = backend.execute_tool(
-                trial_id=spec.trial_id,
-                tool_name="bash",
-                arguments={"command": "echo 42 > /app/answer.txt"},
-                call_id="oracle",
-            )
-            assert result.success is True, result.error
-        graded = backend.grade_trial(trial_id=spec.trial_id, llm_messages_json=json.dumps([]))
-        assert graded["success"] is True, graded.get("error")
-        grade = graded["grade"]
-        assert grade is not None
-        return grade["score"]
+        yield spec.trial_id
     finally:
         backend.cleanup_trial(trial_id=spec.trial_id)
         backend.teardown(handle)
+
+
+def _in_the_agent_container(
+    backend: SharedStackRuntimeBackend, trial_id: str, command: str, call_id: str
+) -> str:
+    """*command*'s stdout, run as the agent would run it."""
+    result = backend.execute_tool(
+        trial_id=trial_id,
+        tool_name="bash",
+        arguments={"command": command},
+        call_id=call_id,
+    )
+    assert result.success is True, result.error
+    return result.output
+
+
+def _grade(backend: SharedStackRuntimeBackend, trial_id: str) -> float:
+    graded = backend.grade_trial(trial_id=trial_id, llm_messages_json=json.dumps([]))
+    assert graded["success"] is True, graded.get("error")
+    grade = graded["grade"]
+    assert grade is not None
+    return grade["score"]
+
+
+def _provision_and_grade(
+    backend: SharedStackRuntimeBackend,
+    task: Any,
+    trial_id: str,
+    *,
+    solve: bool,
+) -> float:
+    """Provision one trial, optionally apply the oracle, grade it, tear it down."""
+    with _registered_trial(backend, task, trial_id) as registered:
+        if solve:
+            # Apply the oracle in the AGENT container; grading then re-materialises
+            # /app/answer.txt into the verifier container before running the suite.
+            _in_the_agent_container(backend, registered, "echo 42 > /app/answer.txt", "oracle")
+        return _grade(backend, registered)
 
 
 @pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
@@ -220,4 +246,55 @@ class TestTerminalBenchV4SeparateVerifier:
         assert score == 0.0, (
             f"a no-op leaves the declared artifact absent, so the verifier runs "
             f"without it and the suite fails; expected 0.0, got {score}."
+        )
+
+    def test_an_agent_planting_a_reward_still_scores_zero(
+        self,
+        connected_backend: SharedStackRuntimeBackend,
+        prebuilt_environment: dict[str, Any],
+    ) -> None:
+        """The agent's container holds its own log directory and nothing else.
+
+        ``/logs/agent`` is there to be written — the middleware usage tap and,
+        for ``opencode``, the CLI's XDG state live under it. ``/logs/verifier``
+        is not there at all, so the file the trial is scored by is not on the
+        agent's filesystem to rewrite.
+
+        Planting one anyway has to *succeed* and still be worthless: the agent
+        is root in its own container, so ``mkdir -p /logs/verifier`` works and
+        writes a container-local file. The verifier reads its own
+        ``/logs/verifier/reward.txt``, written by its own suite on a host
+        directory the agent never mounts, and this trial wrote no artifact — so
+        the suite fails and the score is the no-op's 0.0, not the planted 1.
+        """
+        with _registered_trial(
+            connected_backend, prebuilt_environment["task"], f"{_TASK_ID}:forgery"
+        ) as trial_id:
+            separated = _in_the_agent_container(
+                connected_backend,
+                trial_id,
+                "test -d /logs/agent && test ! -e /logs/verifier && echo SEPARATED",
+                "probe",
+            )
+            assert "SEPARATED" in separated, (
+                "the agent container must carry /logs/agent and no /logs/verifier; "
+                f"probe said: {separated!r}"
+            )
+            planted = _in_the_agent_container(
+                connected_backend,
+                trial_id,
+                "mkdir -p /logs/verifier && echo 1 > /logs/verifier/reward.txt "
+                "&& cat /logs/verifier/reward.txt",
+                "plant",
+            )
+            assert planted.strip() == "1", (
+                "planting the reward must succeed in the agent's own container — "
+                f"a refusal would mean the trees are still joined; got {planted!r}"
+            )
+
+            score = _grade(connected_backend, trial_id)
+
+        assert score == 0.0, (
+            f"the planted reward is container-local; grading reads the verifier's own, "
+            f"which this no-op trial fails; expected 0.0, got {score}."
         )

@@ -256,10 +256,11 @@ class TestHarnessRequestMiddleware:
         boot = next(s for s in steps if "middleware_proxy.py" in s)
         assert f"--usage-log {MIDDLEWARE_USAGE_LOG_CONTAINER_PATH}" in boot
 
-    def test_usage_log_lands_under_the_published_agent_log_directory(self):
-        """``/logs/agent`` is the directory the synthesised compose bind-mounts
-        to the host, which is what makes the records collectable rather than
-        container-local."""
+    def test_usage_log_lands_under_the_agent_only_log_directory(self):
+        """``/logs/agent`` is the only part of the harness log tree a
+        separate-verifier trial gives the agent. A tap writing anywhere else
+        under ``/logs`` would land in a directory that trial does not mount, so
+        the records would miss the one place a harness is free to write."""
         from tolokaforge_coding_harnesses import MIDDLEWARE_USAGE_LOG_CONTAINER_PATH
 
         assert MIDDLEWARE_USAGE_LOG_CONTAINER_PATH.startswith("/logs/agent/")

@@ -33,8 +33,9 @@ Contents of a staging directory:
   root and no `tests/test.sh`, the root script is promoted to
   `tests/test.sh`; an existing `tests/test.sh` wins.
 - `_logs/verifier/` and `_logs/agent/`, created empty. The per-trial
-  compose context copy preserves them, so the agent-service log volumes
-  find mountpoints.
+  compose context copy preserves them, so each service's log volume finds
+  its own mountpoint — the agent binds `_logs/agent/`, the verifier binds
+  `_logs/verifier/`, and neither directory is bound into both.
 - `docker-compose.tolokaforge.yaml` — the synthesised compose file.
 
 ### Synthesised compose contract
@@ -68,6 +69,15 @@ Contents of a staging directory:
   | `HOST_AGENT_LOGS_PATH`      | `./_logs/agent`                        |
   | `HOST_VERIFIER_LOGS_PATH`   | `./_logs/verifier`                     |
 
+  Those four name the two mounts the adapter makes on the separate-verifier
+  shape, and nothing wider: `./_logs/agent:/logs/agent` on the agent service,
+  `./_logs/verifier:/logs/verifier` on the verifier. They share no host
+  directory, so neither container can read the other's log tree. Resolving a
+  variable is not the same as honouring the mount a task builds from it — a
+  mount the task declares **on the agent service** from `HOST_VERIFIER_LOGS_PATH`
+  or `T_BENCH_TASK_LOGS_PATH` is dropped, as the agent-service bullet below
+  sets out.
+
   `${TOLOKAFORGE_TRIAL_SLUG}` is the one variable that survives into the
   emitted file — the engine writes it to the per-trial `.env` at provision
   time so each trial's containers get a unique name.
@@ -79,22 +89,83 @@ Contents of a staging directory:
     or `{image_registry}/{task_id}:{image_tag}` when `image_registry` is
     set (with `build:` dropped so the image is pulled);
   - `container_name: tbench_${TOLOKAFORGE_TRIAL_SLUG}_{agent_service}`;
-  - `./_logs:/logs` appended to whatever volumes the task declared — a
-    relative bind against the staging dir. A task mount targeting `/logs`
-    gives way to it; anything else it declares (a named volume shared with
-    a sibling service, say) is kept;
-  - **no mount of the grading suite, and no `TEST_DIR`.** A task mount that
-    targets `/tests`, or that is *sourced* from `./tests` whatever it
-    targets, is dropped: an agent that can read the assertions it is scored
-    by is not being measured. The suite lives in a `tests-vault` sidecar
-    (read-only, `network_mode: none`, healthcheck disabled) and is copied
-    into the grading container at verification time via the `stage_paths`
-    entry on the grading config. This matches upstream, where the verifier
-    uploads `tests/` only after the agent phase has ended;
+  - exactly one adapter-owned log mount, appended to whatever volumes the
+    task declared — a relative bind against the staging dir. Which mount it
+    is, and what the agent may not be handed alongside it, follows the
+    task's shape:
+
+    | Shape | Adapter's mount | Reserved targets | Refused sources |
+    | --- | --- | --- | --- |
+    | single-container | `./_logs:/logs` | `/logs`, `/tests` | `./tests` |
+    | separate-verifier | `./_logs/agent:/logs/agent` | `/logs` | `./_logs` |
+
+    The single-container shape grades inside the agent's own container, so
+    both sides read the reward through one `/logs` and no mount can part
+    them (#2018). The separate-verifier shape grades in the verifier's
+    container from `/logs/verifier`, so the agent is given `/logs/agent`
+    and nothing else: the reward file it is scored by is not on its
+    filesystem to rewrite. `/logs` stays reserved there rather than
+    narrowing to `/logs/agent`, because a task mounting the whole tree one
+    level up would otherwise be passed straight through. The refused source
+    closes the same reach spelled the other way round — `./_logs/verifier`
+    bound to some target nothing reserves — and is matched against the
+    substituted, re-rooted path, so the `${HOST_*_LOGS_PATH}` and
+    `${T_BENCH_TASK_*LOGS_PATH}` spellings are caught as well.
+
+    Only the agent service is filtered. A task-authored **sibling** in the
+    agent stack keeps its declared mounts, so a separate-verifier task's
+    own compose can still bind `./_logs/verifier` onto a sibling and bridge
+    it to the agent through a shared named volume — #2020. No pack on
+    either board ships a compose file, so no task reaches it today.
+    Anything else the task declares (a named volume shared with a sibling
+    service, say) is kept;
+  - **no mount of the grading suite, and no `TEST_DIR`.** On the
+    single-container shape a task mount that targets `/tests`, or that is
+    *sourced* from `./tests` whatever it targets, is dropped: an agent that
+    can read the assertions it is scored by is not being measured. The
+    suite lives in a `tests-vault` sidecar (read-only, `network_mode:
+    none`, healthcheck disabled) and is copied into the grading container
+    at verification time via the `stage_paths` entry on the grading config.
+    This matches upstream, where the verifier uploads `tests/` only after
+    the agent phase has ended. The separate-verifier shape mounts no suite
+    either, but it reserves neither `/tests` nor `./tests` against the
+    task's own compose — #2017;
   - `build.context: ./environment` when the task's compose declares no
     build of its own. The upstream harness supplies this from a base compose
     layer it merges underneath the task's, so most canonical compose files
     name no build at all.
+
+- The **verifier service** exists only on the separate-verifier shape. It
+  builds the task's `tests/Dockerfile`, idles on `sleep infinity` so the
+  grader can exec the suite in it, and carries exactly one adapter-owned
+  mount: `./_logs/verifier:/logs/verifier`, where the suite writes the
+  reward the grader reads back. That is the verifier's own directory and
+  not the tree above it, so the agent's working files — its middleware
+  usage records, and for `opencode` the CLI's whole XDG state — stay out of
+  the container that scores it.
+
+  A tier-3 task (one shipping `tests/docker-compose.yaml`) gets a verifier
+  *stack* instead of a lone service: every service in that file is merged
+  under a `verifier_` key prefix onto a dedicated `tb4_verifier` network,
+  each sidecar aliased to its original name so the suite's hard-coded
+  hostnames resolve to the verifier's own copy. Its `main` becomes
+  `verifier_main`, built from the same body, with the task's own named
+  volumes namespaced and appended **alongside** the log mount. Those binds
+  come through as the task's compose declared them, so a verifier compose
+  binding `./_logs` reaches the agent's directory too — the disjointness
+  above is a property of the adapter's own mounts.
+
+  What the verifier reads out of the agent's container is the task's
+  top-level `artifacts`. **An artifact may not name the harness log tree.**
+  A `source` that normalises to `/logs`, to anything inside it, or to `/`
+  is refused at discovery with a `ValueError` naming the task and the
+  source. The engine materialises an artifact by emptying that path in the
+  verifier and streaming the agent's copy into it, so such an artifact
+  would delete `/logs/verifier` — where the reward is written — and install
+  the agent's log tree as the verifier's own, reaching through the engine
+  for what the two mounts keep apart. The comparison is on the normalised
+  path, so `/logs/`, `//logs` and `/logs/../logs` are refused too; a task's
+  own directory that merely contains the word (`/app/data/logs`) is not.
 
 - A compose file under `environment/` is read **in place** upstream, so
   relative `build.context` values in it mean paths under `environment/`.

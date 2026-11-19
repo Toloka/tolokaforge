@@ -1329,12 +1329,12 @@ MIDDLEWARE_USAGE_LOG_CONTAINER_PATH = "/logs/agent/tolokaforge_usage.ndjson"
 """Where the middleware proxy appends its per-request token-usage NDJSON
 inside the trial container.
 
-Under ``/logs/agent`` because that is the directory a harness-mode trial
-already publishes to the host: the synthesised compose bind-mounts the
-trial's agent-log directory onto ``/logs``, so a consumer reads the records
-as an ordinary run artifact. A runtime that mounts nothing there gets a
-container-local file instead — the proxy creates the parent directory, so
-the tap still runs and the records are simply discarded with the container.
+Under ``/logs/agent`` because that is the one part of the harness log tree
+the agent is given: a separate-verifier trial mounts that directory and no
+other, keeping the verifier's reward file off the agent's filesystem. The
+records are read back with ``cat`` inside the container, never from a host
+path, so a runtime that mounts nothing there works the same way — the proxy
+creates the parent directory, and the file dies with the container.
 """
 
 
