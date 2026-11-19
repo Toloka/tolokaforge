@@ -59,7 +59,11 @@ import yaml
 # fails in the adapter with the adapter's own message rather than deep inside
 # a Pydantic validator on the synthesised compose file.
 from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS
-from tolokaforge_adapter_terminal_bench.task_parser import TaskShape, TerminalBenchTask
+from tolokaforge_adapter_terminal_bench.task_parser import (
+    CONTAINER_LOGS_DIR,
+    TaskShape,
+    TerminalBenchTask,
+)
 from tolokaforge_coding_harnesses import (
     DEFAULT_PATH_RESOLVER,
     ENGINE_LOOP,
@@ -79,10 +83,6 @@ from tolokaforge_coding_harnesses import (
 
 AGENT_SERVICE_DEFAULT = "main"
 PROJECT_PREFIX = "tbench_"
-
-CONTAINER_LOGS_DIR = "/logs"
-"""Where the agent service sees its log directory, matching the
-``T_BENCH_CONTAINER_LOGS_PATH`` a terminal-bench pack authors against."""
 
 STAGING_LOGS_DIRNAME = "_logs"
 """Directory inside the staging tree the harness log mounts bind from.

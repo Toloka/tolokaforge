@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+import posixpath
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-import tomllib
 import yaml
+
+CONTAINER_LOGS_DIR = "/logs"
+"""The harness log tree inside a trial container.
+
+The value a terminal-bench pack authors against as ``T_BENCH_CONTAINER_LOGS_PATH``.
+It is the tree, not a mount: the agent and the verifier each bind their own
+directory beneath it and neither binds the root, which is what keeps the reward
+the verifier scores by out of the agent's filesystem. A task's own paths never
+name it — see :func:`_parse_artifacts`."""
+
+_CONTAINER_LOGS_ROOT = PurePosixPath(CONTAINER_LOGS_DIR)
 
 
 class TaskShape(Enum):
@@ -281,6 +293,48 @@ def _parse_user(task_id: str, section: Mapping[str, Any], section_name: str) -> 
     return user.strip()
 
 
+def _container_path(source: str) -> PurePosixPath:
+    """*source* as the container path it actually names.
+
+    ``posixpath.normpath`` keeps exactly two leading slashes, because POSIX
+    leaves ``//path`` implementation-defined, and :class:`PurePosixPath` then
+    models ``//`` as a root of its own — so ``//logs`` compares unequal to
+    ``/logs`` while naming the same directory to Linux and to docker.
+    Collapsing the run first is what makes the comparison in
+    :func:`_refuse_harness_log_artifact` total rather than defeated by a
+    spelling.
+    """
+    collapsed = "/" + source.lstrip("/") if source.startswith("/") else source
+    return PurePosixPath(posixpath.normpath(collapsed))
+
+
+def _refuse_harness_log_artifact(task_id: str, source: str) -> None:
+    """Refuse an artifact that would carry the harness log tree into the verifier.
+
+    The engine materialises an artifact by **emptying that path in the verifier**
+    and streaming the agent's copy into it
+    (:meth:`tolokaforge.runner.service.RunnerServiceImpl._materialise_path`). A
+    source at ``/logs``, inside it, or above it therefore destroys
+    ``/logs/verifier`` — the directory the reward is read from — and replaces
+    the tree with the agent's, which is the separation the two log mounts exist
+    to keep. Declaring one is already broken; loading it quietly is worse.
+    """
+    path = _container_path(source)
+    reaches_the_log_tree = path.is_relative_to(_CONTAINER_LOGS_ROOT) or (
+        _CONTAINER_LOGS_ROOT.is_relative_to(path)
+    )
+    if not reaches_the_log_tree:
+        return
+    raise ValueError(
+        f"terminal-bench task {task_id!r}: artifact source {source!r} names the harness "
+        f"log tree ({CONTAINER_LOGS_DIR}), which no task may declare. An artifact is "
+        "materialised by emptying that path in the verifier and copying the agent's over "
+        f"it, so this would delete {CONTAINER_LOGS_DIR}/verifier — where the reward this "
+        "task is scored by is written — and hand the agent's log tree to the verifier as "
+        "its own. Declare the state the verifier needs (e.g. '/app/output') instead."
+    )
+
+
 def _parse_artifacts(task_id: str, toml_data: Mapping[str, Any]) -> list[TerminalBenchArtifact]:
     """State roots the separate verifier re-materialises, from top-level ``artifacts``.
 
@@ -288,6 +342,9 @@ def _parse_artifacts(task_id: str, toml_data: Mapping[str, Any]) -> list[Termina
     an optional ``exclude`` list. ``artifacts`` is deliberately read from the top
     level, not from ``[verifier]``: a nested table is dropped on the wire, so a
     task that put it there would silently lose its re-materialisation set.
+
+    Either spelling is refused when its source reaches the harness log tree —
+    see :func:`_refuse_harness_log_artifact`.
     """
     declared = toml_data.get("artifacts")
     if declared is None:
@@ -300,6 +357,7 @@ def _parse_artifacts(task_id: str, toml_data: Mapping[str, Any]) -> list[Termina
     parsed: list[TerminalBenchArtifact] = []
     for entry in declared:
         if isinstance(entry, str):
+            _refuse_harness_log_artifact(task_id, entry)
             parsed.append(TerminalBenchArtifact(source=entry))
             continue
         if isinstance(entry, Mapping):
@@ -309,6 +367,7 @@ def _parse_artifacts(task_id: str, toml_data: Mapping[str, Any]) -> list[Termina
                     f"terminal-bench task {task_id!r}: each artifact table needs a "
                     f"non-blank 'source'; got {entry!r}."
                 )
+            _refuse_harness_log_artifact(task_id, source)
             exclude_raw = entry.get("exclude", [])
             if not isinstance(exclude_raw, list) or not all(
                 isinstance(x, str) for x in exclude_raw

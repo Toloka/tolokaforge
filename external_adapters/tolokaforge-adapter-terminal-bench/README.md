@@ -155,6 +155,18 @@ Contents of a staging directory:
   binding `./_logs` reaches the agent's directory too — the disjointness
   above is a property of the adapter's own mounts.
 
+  What the verifier reads out of the agent's container is the task's
+  top-level `artifacts`. **An artifact may not name the harness log tree.**
+  A `source` that normalises to `/logs`, to anything inside it, or to `/`
+  is refused at discovery with a `ValueError` naming the task and the
+  source. The engine materialises an artifact by emptying that path in the
+  verifier and streaming the agent's copy into it, so such an artifact
+  would delete `/logs/verifier` — where the reward is written — and install
+  the agent's log tree as the verifier's own, reaching through the engine
+  for what the two mounts keep apart. The comparison is on the normalised
+  path, so `/logs/`, `//logs` and `/logs/../logs` are refused too; a task's
+  own directory that merely contains the word (`/app/data/logs`) is not.
+
 - A compose file under `environment/` is read **in place** upstream, so
   relative `build.context` values in it mean paths under `environment/`.
   The emitted file sits one level up at the staging root, so those contexts
