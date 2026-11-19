@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import Callable
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
@@ -94,7 +95,8 @@ def test_v4_task_gets_a_verifier_service(tmp_path: Path) -> None:
     verifier = services["verifier"]
     assert verifier["build"] == {"context": "./tests", "dockerfile": "Dockerfile"}
     assert verifier["container_name"] == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_verifier"
-    assert "/logs" in _volume_targets(verifier)
+    # Its own half of the log tree, where its suite writes the reward.
+    assert verifier["volumes"] == ["./_logs/verifier:/logs/verifier"]
     # Distinct from the agent and the engine services.
     assert env.agent_service != "verifier"
     assert "runner" not in services and "db-service" not in services
@@ -208,7 +210,13 @@ _TESTS_COMPOSE = (
 )
 
 
-def _write_tier3_task(base: Path, task_id: str, *, agent_compose: str = _AGENT_COMPOSE) -> None:
+def _write_tier3_task(
+    base: Path,
+    task_id: str,
+    *,
+    agent_compose: str = _AGENT_COMPOSE,
+    tests_compose: str = _TESTS_COMPOSE,
+) -> None:
     task_dir = base / task_id
     (task_dir / "environment").mkdir(parents=True)
     (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
@@ -218,7 +226,7 @@ def _write_tier3_task(base: Path, task_id: str, *, agent_compose: str = _AGENT_C
     tests_dir.mkdir()
     (tests_dir / "Dockerfile").write_text('FROM python:3.12-slim\nCMD ["sleep","infinity"]\n')
     (tests_dir / "test.sh").write_text("#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n")
-    (tests_dir / "docker-compose.yaml").write_text(_TESTS_COMPOSE)
+    (tests_dir / "docker-compose.yaml").write_text(tests_compose)
     (task_dir / "task.toml").write_text(_TIER3_TOML)
 
 
@@ -320,18 +328,14 @@ _TESTS_COMPOSE_VOL = (
 )
 
 
+def _write_tier3_named_volumes_task(base: Path, task_id: str) -> None:
+    _write_tier3_task(
+        base, task_id, agent_compose=_AGENT_COMPOSE_VOL, tests_compose=_TESTS_COMPOSE_VOL
+    )
+
+
 def test_tier3_named_volumes_are_namespaced_without_agent_collision(tmp_path: Path) -> None:
-    task_dir = tmp_path / "voltask"
-    (task_dir / "environment").mkdir(parents=True)
-    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
-    (task_dir / "environment" / "docker-compose.yaml").write_text(_AGENT_COMPOSE_VOL)
-    (task_dir / "instruction.md").write_text("Do the thing.\n")
-    tests_dir = task_dir / "tests"
-    tests_dir.mkdir()
-    (tests_dir / "Dockerfile").write_text('FROM python:3.12-slim\nCMD ["sleep","infinity"]\n')
-    (tests_dir / "test.sh").write_text("#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n")
-    (tests_dir / "docker-compose.yaml").write_text(_TESTS_COMPOSE_VOL)
-    (task_dir / "task.toml").write_text(_TIER3_TOML)
+    _write_tier3_named_volumes_task(tmp_path, "voltask")
 
     _env, doc = _materialise(tmp_path, "voltask")
     svcs = doc["services"]
@@ -352,6 +356,13 @@ def test_tier3_named_volumes_are_namespaced_without_agent_collision(tmp_path: Pa
     assert "verifier_shared" in _volume_sources(svcs["verifier_main"])
     assert "verifier_shared" in _volume_sources(svcs["verifier_cache"])
 
+    # The verifier main's own log mount sits alongside those task volumes, not
+    # in place of them: merging the stack must not cost it either one.
+    assert svcs["verifier_main"]["volumes"] == [
+        "./_logs/verifier:/logs/verifier",
+        "verifier_shared:/tb4/redis_cache",
+    ]
+
 
 def _volume_sources(service_body: dict) -> list[str]:
     """Named-volume source names in a service's volumes (skips bind mounts)."""
@@ -365,6 +376,67 @@ def _volume_sources(service_body: dict) -> list[str]:
         if src and not src.startswith((".", "/")):
             out.append(src)
     return out
+
+
+def _write_tier1_task(base: Path, task_id: str) -> None:
+    _write_task(base, task_id, v4=True)
+
+
+def _names_the_same_tree(left: str, right: str) -> bool:
+    """Whether two staging-relative bind sources reach the same files."""
+    a, b = PurePosixPath(left), PurePosixPath(right)
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
+
+
+@pytest.mark.parametrize(
+    "write_task",
+    [_write_tier1_task, _write_tier3_task, _write_tier3_named_volumes_task],
+    ids=["tier1", "tier3", "tier3-named-volumes"],
+)
+def test_the_adapter_hands_the_agent_and_the_verifier_no_shared_host_directory(
+    tmp_path: Path, write_task: Callable[[Path, str], None]
+) -> None:
+    """The verifier has no business reading the agent's working files.
+
+    ``_logs/agent`` carries the middleware usage records and, for ``opencode``,
+    the CLI's whole XDG state. A suite that consulted them would be scoring the
+    agent on data the agent writes, so neither adapter-owned mount may reach
+    into the other's directory.
+
+    A prefix is a share, which is why this compares trees rather than strings:
+    ``./_logs`` and ``./_logs/verifier`` are not two directories, they are one
+    directory and a window into it.
+
+    Claimed over **the adapter's own mounts on these three fixtures**, not over
+    every emitted document: ``_merge_verifier_stack`` copies a tier-3
+    ``tests/docker-compose.yaml`` main's own binds through verbatim, so a
+    verifier compose declaring ``./_logs:/x`` re-joins the trees. That is the
+    verifier's own compose rather than the agent's, so it is not a route back
+    to a forgeable reward.
+    """
+    write_task(tmp_path, "sep")
+    env, doc = _materialise(tmp_path, "sep")
+    svcs = doc["services"]
+
+    agent_sources = _host_sources(svcs[env.agent_service])
+    verifier_sources = sorted(
+        {
+            source
+            for name, body in svcs.items()
+            if name.startswith("verifier")
+            for source in _host_sources(body)
+        }
+    )
+
+    assert agent_sources == ["./_logs/agent"]
+    assert any(source.startswith("./_logs") for source in verifier_sources)
+    overlapping = [
+        (agent, verifier)
+        for agent in agent_sources
+        for verifier in verifier_sources
+        if _names_the_same_tree(agent, verifier)
+    ]
+    assert overlapping == []
 
 
 def test_namespace_volume_refs_long_syntax_without_type() -> None:

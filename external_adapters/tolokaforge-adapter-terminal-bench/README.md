@@ -33,8 +33,9 @@ Contents of a staging directory:
   root and no `tests/test.sh`, the root script is promoted to
   `tests/test.sh`; an existing `tests/test.sh` wins.
 - `_logs/verifier/` and `_logs/agent/`, created empty. The per-trial
-  compose context copy preserves them, so the agent-service log volumes
-  find mountpoints.
+  compose context copy preserves them, so each service's log volume finds
+  its own mountpoint — the agent binds `_logs/agent/`, the verifier binds
+  `_logs/verifier/`, and neither directory is bound into both.
 - `docker-compose.tolokaforge.yaml` — the synthesised compose file.
 
 ### Synthesised compose contract
@@ -67,6 +68,15 @@ Contents of a staging directory:
   | `ENV_VERIFIER_LOGS_PATH`    | `/logs/verifier`                       |
   | `HOST_AGENT_LOGS_PATH`      | `./_logs/agent`                        |
   | `HOST_VERIFIER_LOGS_PATH`   | `./_logs/verifier`                     |
+
+  Those four name the two mounts the adapter makes on the separate-verifier
+  shape, and nothing wider: `./_logs/agent:/logs/agent` on the agent service,
+  `./_logs/verifier:/logs/verifier` on the verifier. They share no host
+  directory, so neither container can read the other's log tree. Resolving a
+  variable is not the same as honouring the mount a task builds from it — a
+  mount the task declares **on the agent service** from `HOST_VERIFIER_LOGS_PATH`
+  or `T_BENCH_TASK_LOGS_PATH` is dropped, as the agent-service bullet below
+  sets out.
 
   `${TOLOKAFORGE_TRIAL_SLUG}` is the one variable that survives into the
   emitted file — the engine writes it to the per-trial `.env` at provision
@@ -124,6 +134,26 @@ Contents of a staging directory:
     build of its own. The upstream harness supplies this from a base compose
     layer it merges underneath the task's, so most canonical compose files
     name no build at all.
+
+- The **verifier service** exists only on the separate-verifier shape. It
+  builds the task's `tests/Dockerfile`, idles on `sleep infinity` so the
+  grader can exec the suite in it, and carries exactly one adapter-owned
+  mount: `./_logs/verifier:/logs/verifier`, where the suite writes the
+  reward the grader reads back. That is the verifier's own directory and
+  not the tree above it, so the agent's working files — its middleware
+  usage records, and for `opencode` the CLI's whole XDG state — stay out of
+  the container that scores it.
+
+  A tier-3 task (one shipping `tests/docker-compose.yaml`) gets a verifier
+  *stack* instead of a lone service: every service in that file is merged
+  under a `verifier_` key prefix onto a dedicated `tb4_verifier` network,
+  each sidecar aliased to its original name so the suite's hard-coded
+  hostnames resolve to the verifier's own copy. Its `main` becomes
+  `verifier_main`, built from the same body, with the task's own named
+  volumes namespaced and appended **alongside** the log mount. Those binds
+  come through as the task's compose declared them, so a verifier compose
+  binding `./_logs` reaches the agent's directory too — the disjointness
+  above is a property of the adapter's own mounts.
 
 - A compose file under `environment/` is read **in place** upstream, so
   relative `build.context` values in it mean paths under `environment/`.

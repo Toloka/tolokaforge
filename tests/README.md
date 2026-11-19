@@ -533,8 +533,8 @@ build-and-tag path leaves there, so a stale `:latest` fails naming
 `uv run tolokaforge docker build --core` rather than grading under an older tree.
 Keyless: no LLM, no API key, and no tool is executed.
 
-`tests/integration/docker/test_terminal_bench_per_trial.py` is the end-to-end
-lock for the terminal-bench per-trial substrate: it materialises the
+`external_adapters/tolokaforge-adapter-terminal-bench/tests/test_terminal_bench_per_trial.py`
+is the end-to-end lock for the terminal-bench per-trial substrate: it materialises the
 `fix-billing-holds` staging directory, builds the engine images with the docker
 CLI baked in and aliases them as `tolokaforge-{runner,db-service}:local`, runs
 the adapter-declared `docker compose build` for the agent image, then drives

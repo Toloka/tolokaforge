@@ -101,6 +101,15 @@ enters the agent's filesystem."""
 STAGING_AGENT_LOGS_DIR = f"./{STAGING_LOGS_DIRNAME}/agent"
 """Host side of :data:`CONTAINER_AGENT_LOGS_DIR`, relative to the staging root."""
 
+CONTAINER_VERIFIER_LOGS_DIR = f"{CONTAINER_LOGS_DIR}/verifier"
+"""The verifier's own directory in the log tree, container-side.
+
+The whole of the tree the verifier is given, and where its suite writes the
+reward the grader reads back."""
+
+STAGING_VERIFIER_LOGS_DIR = f"./{STAGING_LOGS_DIRNAME}/verifier"
+"""Host side of :data:`CONTAINER_VERIFIER_LOGS_DIR`, relative to the staging root."""
+
 # The task's own grading suite, as it sits in the staging directory. It is
 # mounted into the sidecar and never into the agent.
 _TESTS_STAGING_DIRNAME = "tests"
@@ -477,9 +486,9 @@ _ENVIRONMENT_BUILD_CONTEXT = "./environment"
 #: against the harbor format reads these four as ``${ENV_*}`` / ``${HOST_*}``.
 _HARBOR_LOG_PATHS = {
     "ENV_AGENT_LOGS_PATH": CONTAINER_AGENT_LOGS_DIR,
-    "ENV_VERIFIER_LOGS_PATH": f"{CONTAINER_LOGS_DIR}/verifier",
+    "ENV_VERIFIER_LOGS_PATH": CONTAINER_VERIFIER_LOGS_DIR,
     "HOST_AGENT_LOGS_PATH": STAGING_AGENT_LOGS_DIR,
-    "HOST_VERIFIER_LOGS_PATH": f"./{STAGING_LOGS_DIRNAME}/verifier",
+    "HOST_VERIFIER_LOGS_PATH": STAGING_VERIFIER_LOGS_DIR,
 }
 
 
@@ -1487,12 +1496,21 @@ def _verifier_service_body(verifier_image: str) -> dict[str, Any]:
     and ``.dockerignore``). A ``command`` keeps the container alive so the grader
     can exec the suite in it and copy the task's declared artifacts across first;
     the log mount is where that suite writes the reward the grader reads back.
+
+    That mount is the verifier's own directory and not the log tree above it,
+    so the agent's working files — its middleware usage records, and for
+    ``opencode`` the CLI's whole XDG state — stay out of the container that
+    scores it.
+
+    Both tiers come through here: :func:`_merge_verifier_stack` builds the
+    tier-3 ``verifier_main`` from this body and appends the task's own
+    namespaced volumes to it.
     """
     return {
         "build": {"context": "./tests", "dockerfile": "Dockerfile"},
         "image": verifier_image,
         "command": ["sh", "-c", "sleep infinity"],
-        "volumes": [f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}"],
+        "volumes": [f"{STAGING_VERIFIER_LOGS_DIR}:{CONTAINER_VERIFIER_LOGS_DIR}"],
     }
 
 
