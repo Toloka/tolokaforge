@@ -60,6 +60,58 @@ and the currently-opted-in set. Two adapters ship the opt-in today:
 `native` and `terminal_bench`. See
 [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md).
 
+### The episode exec
+
+A harness trial is **one exec** into the trial container: the CLI invocation
+the adapter built. That command is what the trajectory records as the agent's
+single tool call.
+
+What the runner actually sends is that command wrapped by
+[`wrap_episode_command_with_watchdog`](../tolokaforge/runner/tool_factory.py).
+The wrapper runs the CLI in a process group of its own and SIGKILLs that whole
+group from inside the container a few seconds before the host deadline, so a
+wedged CLI is stopped whether or not it cooperates and whether or not the
+host-side exec client is still attached. The wrapped script exits with the
+CLI's own code, or `137` when the watchdog fired.
+
+It also prints that code on stdout, as a marker line carrying a per-trial
+nonce. That marker is the engine's only channel for the number: the exec's own
+status says whether the exec completed, not what the CLI inside it returned.
+`read_episode_exit_status` reads the marker and takes it back out of the
+stream before the stdout-telemetry parser, the recorded tool call or the
+transcript sees it, so the trial reads as if the CLI had been run bare and the
+marker never reaches the model's context. A stream carrying no marker for the
+trial's nonce — truncated, killed, or crossed with another trial's — leaves
+the exit status unknown, which is neither a success nor a failure.
+
+Only the harness episode is wrapped; the per-command execs an engine-loop
+trial issues run unwrapped.
+
+An episode that exited non-zero **and** left a terminal telemetry record
+reporting no turns, no cost and token fields totalling zero terminates
+`harness_cli_failed`: the CLI never reached the model, so the trial is a
+harness error with a synthesised failing grade rather than a verifier score
+against a repository the agent never touched. Every conjunct is required — a
+CLI that billed for real work and then crashed is still the agent's own trial,
+a zero total from a CLI that prints no counts says nothing at all, and a CLI
+that renamed its usage keys reports zero tokens beside the turns and the bill
+that prove it worked.
+
+Coverage follows the one tap the gate consumes, so it is exactly the harnesses
+with a **stdout** token tap. `claude-code` prints its terminal `result` event
+even on a failed run, which is the case this gate was built from. `codex` and
+`opencode` report per turn and per step, so a CLI of theirs that died before
+its first turn leaves no telemetry and is not condemned. `kimi-code` prints
+turns and no token counts, and its refused-provider case is
+`provider_refused_all_requests` instead. `grok-build` and `qwen-code` likewise
+print no counts of their own and are metered off the wire by their
+`request_middleware`, which this gate does not read: a failed episode of theirs
+is condemned only where the proxy served nothing, and is otherwise neither
+condemned nor logged as uncovered. `gemini-cli` declares neither a stdout
+dialect nor request middleware, so nothing can say whether its episode did any
+work: a non-zero exit there is logged as an uncovered failure and the trial
+stands as measured.
+
 ## What each shipped adopter provides
 
 Two adapters ship the mixin today. Both accept `models.agent.harness`;

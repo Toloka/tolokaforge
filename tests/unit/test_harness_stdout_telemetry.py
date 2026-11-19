@@ -23,18 +23,28 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
+from tests.canonical._factories import make_trial_spec
+from tolokaforge.core.failure_attribution import (
+    TrialOutcomeClass,
+    attribute_failure,
+    classify_trial_outcome,
+)
 from tolokaforge.core.metrics import calculate_task_metrics
-from tolokaforge.core.models import Trajectory, TrialStatus
+from tolokaforge.core.models import Grade, Trajectory, TrialStatus
 from tolokaforge.core.models.trial_status import TerminationReason
 from tolokaforge.core.pricing import get_pricing_info
 from tolokaforge.core.runner import TrialRunner
+from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
 from tolokaforge.tools.registry import ToolResult
 from tolokaforge_coding_harnesses import MIDDLEWARE_PROXY_USAGE_SOURCE
+
+pytestmark = pytest.mark.unit
 
 _RESULT_EVENT: dict[str, Any] = {
     "type": "result",
@@ -122,6 +132,34 @@ compose-context copy it deletes at teardown, so no host path names the file.
 """
 
 
+_EPISODE_MARKER_WORD = "__tf_episode_exit__"
+"""The word the wrapped episode's marker opens with.
+
+Spelled out here as the text a container would carry rather than imported from
+the wrapper, so a change to the marker reds this file instead of agreeing with
+itself.
+"""
+
+_NONCE_IN_COMMAND = re.compile(rf"{_EPISODE_MARKER_WORD}:([0-9a-f]+):")
+
+
+def _episode_marker(nonce: str, exit_code: int) -> str:
+    """The framed line the wrapped script prints just before it exits."""
+    return f"\n{_EPISODE_MARKER_WORD}:{nonce}:{exit_code}\n"
+
+
+def _episode_nonce(command: str) -> str:
+    """The nonce the engine minted for this trial, read off the command it sent.
+
+    The container learns it the same way — it is in the script it runs — so a
+    fake that reports a status reports it under the trial's own nonce rather
+    than one the test invented.
+    """
+    match = _NONCE_IN_COMMAND.search(command)
+    assert match is not None, f"the episode command carries no exit marker: {command}"
+    return match.group(1)
+
+
 class _ScriptedToolExecutor:
     """Stands in for the container's ``docker compose exec`` bash tool.
 
@@ -135,6 +173,11 @@ class _ScriptedToolExecutor:
     the read fails the way ``cat`` does. ``raises`` is the executor itself
     failing — a container already gone, a transport error — which must cost
     the trial nothing either.
+
+    The episode's stream carries the exit marker the wrapped script prints,
+    under the nonce the engine put in the command. ``episode_exit_code`` of
+    ``None`` is a stream that lost it: a CLI killed mid-write, a truncated
+    read.
     """
 
     def __init__(
@@ -144,18 +187,20 @@ class _ScriptedToolExecutor:
         success: bool = True,
         usage_records: str | None = None,
         raises: Exception | None = None,
+        episode_exit_code: int | None = 0,
     ) -> None:
         self._output = output
         self._success = success
         self._usage_records = usage_records
         self._raises = raises
+        self._episode_exit_code = episode_exit_code
         self.commands: list[str] = []
 
     def execute(self, tool_name: str, arguments: dict[str, Any], **kwargs: Any) -> ToolResult:
         command = arguments["command"]
         self.commands.append(command)
         if not command.startswith("cat "):
-            return ToolResult(success=self._success, output=self._output)
+            return ToolResult(success=self._success, output=self._episode_stream(command))
         if self._raises is not None:
             raise self._raises
         if self._usage_records is None:
@@ -165,6 +210,12 @@ class _ScriptedToolExecutor:
                 error=f"cat: {_USAGE_LOG_CONTAINER_PATH}: No such file or directory",
             )
         return ToolResult(success=True, output=self._usage_records)
+
+    def _episode_stream(self, command: str) -> str:
+        """What the container hands back: the CLI's output, then the marker."""
+        if self._episode_exit_code is None:
+            return self._output
+        return self._output + _episode_marker(_episode_nonce(command), self._episode_exit_code)
 
     @property
     def usage_read_commands(self) -> list[str]:
@@ -181,15 +232,21 @@ def _trial(
     usage_log_container_path: str | None = None,
     usage_records: str | None = None,
     raises: Exception | None = None,
-) -> tuple[Trajectory, _ScriptedToolExecutor]:
-    """Drive a harness trial, handing back the executor it ran against.
+    episode_exit_code: int | None = 0,
+) -> tuple[TrialRunner, Trajectory, _ScriptedToolExecutor]:
+    """Drive a harness trial, handing back the runner and the executor.
 
     The executor is what says whether the engine's usage read fired at all,
     which no field on the trial can answer — an absent read and a read that
-    found nothing leave identical metrics.
+    found nothing leave identical metrics. The runner is what says which exit
+    status the episode reported, which nothing on the trial carries either.
     """
     executor = _ScriptedToolExecutor(
-        stdout, success=success, usage_records=usage_records, raises=raises
+        stdout,
+        success=success,
+        usage_records=usage_records,
+        raises=raises,
+        episode_exit_code=episode_exit_code,
     )
     runner = TrialRunner(
         task_id="telemetry",
@@ -208,11 +265,11 @@ def _trial(
         harness=harness,
         usage_log_container_path=usage_log_container_path,
     )
-    return trajectory, executor
+    return runner, trajectory, executor
 
 
 def _run(stdout: str, **kwargs: Any) -> Trajectory:
-    return _trial(stdout, **kwargs)[0]
+    return _trial(stdout, **kwargs)[1]
 
 
 class TestTheTrialReportsWhatTheCliReported:
@@ -445,6 +502,53 @@ class TestTheCostIsOursAndTheClisIsTheCrossCheck:
         assert metrics.harness_reported_cost_usd is None
 
 
+class TestTheEpisodeReportsItsOwnExitStatus:
+    """What the CLI returned reaches the engine on the episode's own stdout.
+
+    The exec around the CLI reports only whether the exec completed, so the
+    wrapped script prints the command's exit code under the trial's nonce.
+    That marker is engine plumbing: it is taken back out of the stream before
+    the parser, the recorded call or the transcript can see it, and the trial
+    reads as if the CLI had been run bare.
+    """
+
+    def test_the_trial_resolves_the_status_the_marker_carried(self) -> None:
+        runner, _trajectory, _executor = _trial(_STREAM_JSON, episode_exit_code=1)
+
+        assert runner._harness_episode_exit_status == 1
+
+    def test_the_marker_reaches_neither_the_transcript_nor_the_record(self) -> None:
+        runner, trajectory, _executor = _trial(_STREAM_JSON, episode_exit_code=1)
+
+        assert trajectory.messages[-1].content == _STREAM_JSON
+        assert trajectory.tool_log[0].output == _STREAM_JSON
+        assert runner._harness_stdout_telemetry is not None
+        assert trajectory.metrics.turns == 19
+
+    def test_a_stream_the_marker_never_reached_is_not_measured(self) -> None:
+        """A CLI killed mid-write, or a stream truncated on the way back,
+        leaves no marker. That silence may neither condemn the trial nor
+        excuse it: the status reads as unknown and the trial is recorded
+        exactly as a trial with nothing to report."""
+        runner, trajectory, _executor = _trial(_STREAM_JSON, episode_exit_code=None)
+
+        assert runner._harness_episode_exit_status is None
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.AGENT_DONE
+        assert trajectory.messages[-1].content == _STREAM_JSON
+
+    def test_another_trials_marker_is_not_this_trials_evidence(self) -> None:
+        """The nonce is what makes the marker this trial's. One carrying
+        another — a CLI echoing the text, a stream crossed with another
+        trial's — is read by nothing and left exactly where it was."""
+        stdout = _STREAM_JSON + _episode_marker("e7a1c0de", 1)
+
+        runner, trajectory, _executor = _trial(stdout, episode_exit_code=None)
+
+        assert runner._harness_episode_exit_status is None
+        assert trajectory.messages[-1].content == stdout
+
+
 class TestAnUnreportedTrialKeepsTheEnginesOwnAccounting:
     """Absent telemetry must read as "not measured", never as measured zero."""
 
@@ -542,7 +646,7 @@ class TestTheRecordsAreReadOutOfTheLiveContainer:
     """
 
     def test_the_read_names_the_container_path_the_adapter_published(self) -> None:
-        _trajectory, executor = _trial(
+        _runner, _trajectory, executor = _trial(
             _KIMI_STDOUT,
             harness="kimi-code",
             model=_KIMI_MODEL,
@@ -554,11 +658,14 @@ class TestTheRecordsAreReadOutOfTheLiveContainer:
 
     def test_a_harness_with_no_middleware_is_never_read_from(self) -> None:
         """``claude-code`` boots no proxy, so its adapter publishes no path and
-        the engine must not go poking in the container for one."""
-        _trajectory, executor = _trial(_STREAM_JSON)
+        the engine must not go poking in the container for one: the episode
+        exec, which carries the task's command inside the watchdog wrapper, is
+        the only command that runs."""
+        _runner, _trajectory, executor = _trial(_STREAM_JSON)
 
         assert executor.usage_read_commands == []
-        assert executor.commands == ["claude --print"]
+        assert len(executor.commands) == 1
+        assert "claude --print" in executor.commands[0]
 
     def test_the_read_is_not_the_agents_tool_use(self) -> None:
         """One ``docker exec`` is what the engine ran on the agent's behalf.
@@ -1051,3 +1158,228 @@ class TestTheCacheRateFlagTracksTheRateThatWasMissing:
         ).metrics
 
         assert metrics.cost_cache_rate_fallback is True
+
+
+_FAILED_RESULT_EVENT: dict[str, Any] = {
+    "type": "result",
+    "subtype": "success",
+    "is_error": True,
+    "result": (
+        "API Error: 400 Claude Code 2.1.233 does not support this model; "
+        "version 2.1.280 or newer is required."
+    ),
+}
+"""The terminal event of the run #2007 reproduced: an API error, no usage
+block, and a ``subtype`` that still says ``success``."""
+
+_FAILED_STREAM_JSON = "\n".join(
+    json.dumps(event) for event in ({"type": "system"}, _FAILED_RESULT_EVENT)
+)
+
+
+_RENAMED_USAGE_STREAM = json.dumps(
+    {
+        "type": "result",
+        "subtype": "success",
+        "is_error": True,
+        "num_turns": 19,
+        "total_cost_usd": 0.42,
+        "usage": {"inputTokens": 129, "outputTokens": 15235},
+    }
+)
+"""A ``claude-code`` upgrade that renamed its usage keys — the same class of
+fault #2007 is about, one release later.
+
+The parser reads the block by key, so every token field reads zero while the
+CLI's own turn count and bill say it did nineteen turns of real work.
+"""
+
+_BILLED_WITHOUT_TURNS_STREAM = json.dumps(
+    {
+        "type": "result",
+        "subtype": "success",
+        "is_error": True,
+        "total_cost_usd": 0.42,
+        "usage": {"inputTokens": 129, "outputTokens": 15235},
+    }
+)
+"""The same rename reaching ``num_turns`` as well, so the bill is all that is
+left of what the CLI reported."""
+
+_BARE_TURN_STREAM = json.dumps({"type": "turn.completed"})
+"""A ``codex`` turn that completed carrying no usage block.
+
+The same shape from the other side: a counted turn contributing zero tokens.
+"""
+
+
+def _graded(trajectory: Trajectory) -> Grade | None:
+    """The grade the harness lane's own grader answers *trajectory* with."""
+    return RunnerRPCTrialGrader(
+        runner_address="stub:0", logger=MagicMock(), runner_client=MagicMock()
+    ).grade(make_trial_spec(), trajectory, "You are an agent.")
+
+
+class TestACliThatFailedWithoutSpendingAnythingIsNotAMeasurement:
+    """The conjunction is the rule: a non-zero exit **and** a terminal
+    telemetry record reporting no turns, no cost and token fields totalling
+    zero.
+
+    Either half alone is a different trial. A non-zero exit on its own is a CLI
+    that may have done the work and crashed on the way out, and a zero total on
+    its own is indistinguishable from a CLI that prints no counts at all —
+    condemning either would destroy a real verifier score.
+    """
+
+    def test_the_issue_signature_is_a_harness_error_not_the_models_failure(self) -> None:
+        """#2007's acceptance criterion, end to end: exit 1 beside a terminal
+        event reporting an API error and no spend.
+
+        What this trial used to produce was ``completed`` / ``agent_done`` /
+        ``measured`` / ``model_reasoning`` with a verifier score of 0.0 against
+        a repository the agent never touched — a stale version pin reported as
+        model weakness.
+        """
+        trajectory = _run(_FAILED_STREAM_JSON, episode_exit_code=1)
+
+        assert trajectory.status is TrialStatus.ERROR
+        assert trajectory.termination_reason is TerminationReason.HARNESS_CLI_FAILED
+        assert classify_trial_outcome(trajectory) is TrialOutcomeClass.HARNESS_ERROR
+
+        grade = _graded(trajectory)
+        assert grade is not None
+        assert grade.score == 0.0
+        assert grade.binary_pass is False
+        assert grade.synthesized_by_termination_reason is TerminationReason.HARNESS_CLI_FAILED
+        assert "reported no spend" in grade.reasons
+
+        trajectory.grade = grade
+        assert attribute_failure(trajectory)["failure_class"] == "harness_autofail"
+
+    def test_the_trial_stays_in_the_denominator_as_our_own_defect(self) -> None:
+        """A harness error is counted, not excluded: the fault is ours and the
+        route to it is agent-reachable, so removing it would take our own
+        defects out of the measurement."""
+        trajectory = _run(_FAILED_STREAM_JSON, episode_exit_code=1)
+        trajectory.grade = _graded(trajectory)
+
+        metrics = calculate_task_metrics([trajectory])
+
+        assert metrics["total_trials"] == 1
+        assert metrics["harness_errors"] == 1
+        assert sum(metrics["infrastructure_aborts"].values()) == 0
+
+    def test_a_cli_that_spent_something_before_failing_is_still_measured(self) -> None:
+        """The blast-radius guard. This CLI billed for real work and then
+        exited non-zero; its trial is the agent's own and is graded normally."""
+        trajectory = _run(_STREAM_JSON, episode_exit_code=1)
+
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.AGENT_DONE
+
+    @pytest.mark.parametrize(
+        ("harness", "model", "stdout"),
+        [
+            ("claude-code", _MODEL, _RENAMED_USAGE_STREAM),
+            ("claude-code", _MODEL, _BILLED_WITHOUT_TURNS_STREAM),
+            ("codex", _CODEX_MODEL, _BARE_TURN_STREAM),
+        ],
+        ids=[
+            "claude-code-reported-nineteen-turns",
+            "claude-code-billed-itself-forty-two-cents",
+            "codex-counted-a-turn",
+        ],
+    )
+    def test_a_cli_that_reported_turns_or_cost_is_the_agents_own_trial(
+        self, harness: str, model: str, stdout: str
+    ) -> None:
+        """A zero token total is only evidence when nothing else the CLI
+        reported contradicts it.
+
+        The token fields are read by key, so a CLI that renames them reports
+        zero tokens for work it did — and condemning on the tokens alone would
+        turn one upstream rename into every failing episode losing its
+        verifier score, including one that took nineteen turns and billed
+        $0.42.
+        """
+        runner, trajectory, _executor = _trial(
+            stdout, harness=harness, model=model, episode_exit_code=1
+        )
+
+        telemetry = runner._harness_stdout_telemetry
+        assert telemetry is not None
+        assert (telemetry.prompt_tokens, telemetry.completion_tokens) == (0, 0)
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.AGENT_DONE
+
+    def test_an_episode_that_exited_zero_is_untouched_whatever_it_called_itself(self) -> None:
+        """A CLI that set ``is_error`` on a run it completed — a turn-budget
+        cutoff does exactly that — is a measured agent outcome. The verdict is
+        diagnostic; only the exit status and the spend gate the lane."""
+        trajectory = _run(_FAILED_STREAM_JSON, episode_exit_code=0)
+
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.AGENT_DONE
+
+    def test_an_unknown_exit_status_condemns_nothing(self) -> None:
+        """A stream that lost the marker says nothing about how the CLI ended,
+        and an absent measurement may not condemn a trial."""
+        trajectory = _run(_FAILED_STREAM_JSON, episode_exit_code=None)
+
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.AGENT_DONE
+
+    def test_a_refusing_proxy_still_wins(self) -> None:
+        """Both conditions at once. The proxy's per-request statuses are the
+        more specific evidence — they say the trial never reached the model —
+        and they are typed evidence that earns exclusion, which this reason
+        deliberately does not."""
+        trajectory = _run(
+            "",
+            harness="kimi-code",
+            model=_KIMI_MODEL,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=json.dumps(
+                {
+                    "timestamp": "2026-09-18T10:00:00+00:00",
+                    "path": "/v1/chat/completions",
+                    "status": 403,
+                    "model": "kimi-k2",
+                }
+            )
+            + "\n",
+            episode_exit_code=1,
+        )
+
+        assert trajectory.termination_reason is TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS
+
+
+class TestAHarnessWithNoReadableTapIsNotCondemned:
+    """``gemini-cli`` declares neither a stdout dialect nor request middleware,
+    so nothing can say whether its episode did any work.
+
+    Condemning it on the exit status alone would destroy a real verifier score
+    for a trial that solved the task and exited non-zero on the way out, and
+    destroying a measurement is the worse error. The gap is logged instead of
+    guessed at, so it is visible in a run rather than silent.
+    """
+
+    def test_the_trial_stands_as_measured(self) -> None:
+        trajectory = _run("Implemented the ingest path.", harness="gemini-cli", episode_exit_code=1)
+
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.AGENT_DONE
+
+    def test_the_gap_is_named_in_the_run(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING):
+            _run("Implemented the ingest path.", harness="gemini-cli", episode_exit_code=1)
+
+        assert [r for r in caplog.records if "no tap reported what it spent" in r.getMessage()]
+
+    def test_an_episode_that_exited_zero_says_nothing(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING):
+            _run("Implemented the ingest path.", harness="gemini-cli", episode_exit_code=0)
+
+        assert [
+            r for r in caplog.records if "no tap reported what it spent" in r.getMessage()
+        ] == []

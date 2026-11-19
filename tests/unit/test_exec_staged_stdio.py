@@ -28,6 +28,7 @@ from tolokaforge.runner.tool_factory import (
     _STAGED_STDIO_SCRIPT,
     _docker_exec_plan,
     _run_argv_preserving_partial_output,
+    read_episode_exit_status,
     wrap_episode_command_with_watchdog,
 )
 
@@ -55,6 +56,18 @@ def _wait_for_file(path: Path, timeout_s: float = 5.0) -> None:
 # episode cap has to be able to kill.
 def _detached_sleeper_command(pidfile: Path) -> str:
     return f"sleep 300 & echo $! > {pidfile}; echo running; wait"
+
+
+_NONCE = "0f1e2d3c4b5a6978"
+"""Stands in for the per-trial nonce ``TrialRunner.run_harness`` mints."""
+
+_MARKER_WORD = "__tf_episode_exit__"
+"""The word the episode's marker opens with.
+
+Spelled out as the text a container would carry rather than imported from the
+wrapper, so a change to the marker reds this file instead of agreeing with
+itself.
+"""
 
 
 _FD_KINDS = (
@@ -188,7 +201,9 @@ def test_watchdog_sigkills_the_episode_process_group_by_the_deadline(tmp_path: P
     than the host timeout. On the same inputs the unwrapped command's sleeper
     survives — see the test above."""
     pidfile = tmp_path / "pid"
-    wrapped = wrap_episode_command_with_watchdog(_detached_sleeper_command(pidfile), 1)
+    wrapped = wrap_episode_command_with_watchdog(
+        _detached_sleeper_command(pidfile), 1, nonce=_NONCE
+    )
     sleeper: int | None = None
     try:
         output = _run_argv_preserving_partial_output(
@@ -232,7 +247,7 @@ def test_watchdog_timer_leaves_no_orphan_when_the_command_finishes_early(tmp_pat
     timer identifiable while staying far wider than the instant command."""
     budget = 1800  # 30 min: outlives the command by far, and distinctive enough to spot
     before = _sleep_pids(budget)
-    wrapped = wrap_episode_command_with_watchdog("echo done", budget)
+    wrapped = wrap_episode_command_with_watchdog("echo done", budget, nonce=_NONCE)
     output = _run_argv_preserving_partial_output(_staged_argv(tmp_path, wrapped), timeout_s=10)
     assert "done" in output, output
     deadline = time.monotonic() + 3
@@ -243,6 +258,92 @@ def test_watchdog_timer_leaves_no_orphan_when_the_command_finishes_early(tmp_pat
             break
         time.sleep(0.05)
     assert not leaked, f"watchdog timer 'sleep {budget}' leaked as an orphan: {sorted(leaked)}"
+
+
+def _episode_stdout(tmp_path: Path, command: str, *, nonce: str = _NONCE) -> tuple[int, str]:
+    """Run *command* wrapped as an episode, exactly as the container would.
+
+    The wrapper is plain shell, so a real bash on the host is the same rule the
+    trial container runs — the marker and the exit code below are the ones a
+    trial would see, not a rendering of the script read back as text.
+    """
+    wrapped = wrap_episode_command_with_watchdog(command, 30, nonce=nonce)
+    proc = subprocess.run(
+        _staged_argv(tmp_path, wrapped), capture_output=True, text=True, timeout=30
+    )
+    return proc.returncode, proc.stdout
+
+
+def test_the_episode_reports_its_own_exit_status_and_still_exits_with_it(tmp_path: Path) -> None:
+    """The engine's only channel for what the CLI returned.
+
+    The exec around it completes whatever the CLI did, so without the marker
+    the number never leaves the container. Reading it back leaves the CLI's own
+    stream as it was.
+    """
+    returncode, stdout = _episode_stdout(tmp_path, "printf 'work\\n'; exit 3")
+
+    exit_status, stream = read_episode_exit_status(stdout, _NONCE)
+
+    assert (returncode, exit_status, stream) == (3, 3, "work\n")
+
+
+def test_a_final_line_without_its_newline_survives_the_marker(tmp_path: Path) -> None:
+    """A CLI that ends mid-line keeps that line to itself: the marker carries
+    newlines of its own, and removing it restores the stream byte for byte."""
+    returncode, stdout = _episode_stdout(tmp_path, "printf 'no newline'; exit 0")
+
+    exit_status, stream = read_episode_exit_status(stdout, _NONCE)
+
+    assert (returncode, exit_status, stream) == (0, 0, "no newline")
+
+
+def test_a_marker_minted_for_another_trial_is_not_this_trials_evidence(tmp_path: Path) -> None:
+    """A CLI printing a marker of its own — or another trial's output reaching
+    this stream — reads as not measured, and the text stays where it was."""
+    _returncode, stdout = _episode_stdout(tmp_path, "printf 'work\\n'; exit 3")
+
+    exit_status, stream = read_episode_exit_status(stdout, "e7a1c0de")
+
+    assert exit_status is None
+    assert stream == stdout
+
+
+def test_a_marker_forged_on_stderr_does_not_become_the_episodes_status(tmp_path: Path) -> None:
+    """The nonce is readable inside the container — it sits in the episode's
+    own ``bash -c`` argv — and the host relays the command's stderr behind the
+    exit-code footer. A marker written there therefore lands after the
+    wrapper's own, and claiming a clean exit would buy the agent a real
+    verifier score for a CLI that failed. The status comes from the episode's
+    stdout alone, and the forged line still leaves the recorded stream.
+    """
+    command = f"printf 'work\\n'; printf '\\n{_MARKER_WORD}:{_NONCE}:0\\n' >&2; exit 2"
+    output = _run_argv_preserving_partial_output(
+        _staged_argv(tmp_path, wrap_episode_command_with_watchdog(command, 30, nonce=_NONCE)),
+        timeout_s=10,
+    )
+
+    exit_status, stream = read_episode_exit_status(output, _NONCE)
+
+    assert exit_status == 2
+    assert _MARKER_WORD not in stream
+    assert "work\n" in stream
+
+
+def test_a_malformed_marker_under_this_trials_nonce_is_still_taken_out() -> None:
+    """Engine plumbing may not survive into the transcript or the tool-call
+    record, whatever code it carries — and a code that is not a number
+    resolves no status at all."""
+    exit_status, stream = read_episode_exit_status(f"work\n{_MARKER_WORD}:{_NONCE}:x\n", _NONCE)
+
+    assert (exit_status, stream) == (None, "work")
+
+
+def test_a_nonce_that_could_break_out_of_the_script_is_refused() -> None:
+    """The nonce is rendered into the script's ``printf`` format, where no
+    quoting stands between it and the shell."""
+    with pytest.raises(ValueError, match="ASCII alphanumeric"):
+        wrap_episode_command_with_watchdog("echo hi", 30, nonce="x'; rm -rf /; echo '")
 
 
 def test_docker_exec_plan_shape() -> None:

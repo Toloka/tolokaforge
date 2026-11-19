@@ -789,7 +789,8 @@ independent by design:
 
 - **Is another attempt worth making?** `Orchestrator._is_retryable_trajectory`.
   Anything transient — a rate limit, an API error, a timeout, a bare error, a
-  `trial_lost` registration, a gateway that refused every request — is requeued
+  `trial_lost` registration, a gateway that refused every request, a
+  coding-harness CLI that failed without spending anything — is requeued
   until `max_attempt_retries` is spent. A deterministic fault
   (`provision_error`, an auth-shaped `api_error` or
   `provider_refused_all_requests`) is not: the next attempt fails the same way.
@@ -802,11 +803,22 @@ independent by design:
   non-pass and is graded a failure rather than dropped.
 
 They disagree, and the disagreements are the point. A wall-clock `timeout`, an
-`api_error`, a bare `error` and a `trial_lost` are all retried *and* counted:
+`api_error`, a bare `error`, a `harness_cli_failed` and a `trial_lost` are all
+retried *and* counted:
 repeating them may help, and the trial they describe is either one the agent was
 measured on or one whose fault is ours to carry. Deriving either answer from the
 other would silently either stop retrying transient failures or start excusing
 agent failures from the benchmark.
+
+`harness_cli_failed` is the coding-harness lane's own: the CLI exited non-zero
+and its stdout telemetry reported no turns, no cost and token counts totalling
+zero, so the episode spent nothing on the model and the repository is the one the trial started with.
+It classifies as `harness_error` — a stale version pin is our defect, and the
+agent can reach the CLI from the shell it has — and it *is* graded, as a
+synthesised `0.0`, which is what separates it from a verifier score against work
+that never happened. A new attempt is worth making because the failure may be
+transient; a stale pin will simply fail the same way until the registry is
+fixed, and the reason in the bundle is what says so.
 
 `trial_lost` is the one of those the agent had no part in: the runner no longer
 holds the trial the engine is running — a restarted shared-stack runner, a
