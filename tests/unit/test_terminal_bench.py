@@ -360,6 +360,12 @@ class TestTerminalBenchAdapterDockerStackRequirements:
         by_compose_file: dict[Path, list[str]] = {}
         for build in builds:
             by_compose_file.setdefault(build.compose_file, []).append(build.service)
+        # Project, do not filter: a build naming a compose file that belongs to no
+        # discovered task would otherwise be dropped before the comparison, and the
+        # exact-list assertions this helper replaced would have caught it.
+        assert set(by_compose_file) == {
+            adapter._environment(task_id).compose_file for task_id in adapter.get_task_ids()
+        }, "a declared build names a compose file belonging to no discovered task"
         return {
             task_id: by_compose_file[adapter._environment(task_id).compose_file]
             for task_id in adapter.get_task_ids()
