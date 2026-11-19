@@ -127,7 +127,11 @@ def classify_trial_outcome(trajectory: Trajectory) -> TrialOutcomeClass:
     reason = trajectory.termination_reason
     if reason in EXCLUDED_TYPED_REASONS:
         return TrialOutcomeClass.INFRASTRUCTURE_ABORT
-    if reason in (TerminationReason.ERROR, TerminationReason.TRIAL_LOST):
+    if reason in (
+        TerminationReason.ERROR,
+        TerminationReason.HARNESS_CLI_FAILED,
+        TerminationReason.TRIAL_LOST,
+    ):
         return TrialOutcomeClass.HARNESS_ERROR
     if reason is None and trajectory.status in (
         TrialStatus.ERROR,

@@ -819,6 +819,7 @@ class TrialRunner:
                 )
             )
 
+            self._warn_on_unreadable_episode_failure(harness)
             refused = self._harness_requests_all_refused()
             if refused is not None:
                 # The CLI ran, wrote a transcript and exited — but the provider
@@ -840,6 +841,24 @@ class TrialRunner:
                     requests=refused.requests,
                     statuses=list(refused.statuses),
                 )
+            elif self._harness_episode_spent_nothing():
+                # The CLI exited non-zero and its own telemetry says it spent
+                # nothing, so the episode never reached the model: a stale
+                # version pin, a bad flag, a CLI that died on startup. Left as a
+                # completed trial this scores a verifier against a repository
+                # the agent never touched, and reports the zero as the model's.
+                status = TrialStatus.ERROR
+                termination_reason = TerminationReason.HARNESS_CLI_FAILED
+                self.logger.error(
+                    "Harness CLI exited non-zero having reported no spend; not scoring it",
+                    harness=harness,
+                    exit_status=self._harness_episode_exit_status,
+                    cli_error=(
+                        self._harness_stdout_telemetry.error_text
+                        if self._harness_stdout_telemetry is not None
+                        else None
+                    ),
+                )
             elif tool_status is ToolExecutionStatus.SUCCESS:
                 status = TrialStatus.COMPLETED
                 termination_reason = TerminationReason.AGENT_DONE
@@ -855,6 +874,61 @@ class TrialRunner:
             return self._finalise(
                 status=status, termination_reason=termination_reason, start_ts=start_ts
             )
+
+    def _harness_episode_spent_nothing(self) -> bool:
+        """Whether the episode exited non-zero having reported no spend of its own.
+
+        The conjunction is the rule, and each half is load-bearing. A non-zero
+        exit alone condemns a CLI that did the work and crashed on the way out.
+        A zero total alone is indistinguishable from a CLI that prints no counts
+        at all. Only a CLI that reported counts of its own, totalling zero,
+        beside a non-zero exit, says the episode never reached the model.
+
+        The middleware records are deliberately not a third conjunct:
+        :meth:`_harness_requests_all_refused` already consumes the only shape
+        they could contribute, and it is checked first. That holds because no
+        shipped harness has both a token-reporting stdout tap and a middleware
+        proxy — a harness declaring both would need the records back here,
+        because its stdout tap could report zero while the proxy recorded
+        served requests.
+        """
+        if not self._harness_episode_failed():
+            return False
+        telemetry = self._harness_stdout_telemetry
+        if telemetry is None or not telemetry.has_token_counts:
+            return False
+        return (telemetry.prompt_tokens or 0) + (telemetry.completion_tokens or 0) == 0
+
+    def _harness_episode_failed(self) -> bool:
+        """Whether the episode reported an exit status, and it was non-zero.
+
+        ``None`` is "not measured" and answers ``False`` here: a stream that
+        lost the marker says nothing about how the CLI ended.
+        """
+        exit_status = self._harness_episode_exit_status
+        return exit_status is not None and exit_status != 0
+
+    def _warn_on_unreadable_episode_failure(self, harness: str) -> None:
+        """Report an episode that failed where no tap can say whether it worked.
+
+        ``gemini-cli`` declares neither a stdout dialect nor request middleware,
+        so its non-zero exit is the only evidence there is — and an exit status
+        alone may not condemn a trial that might have solved the task. The gap
+        is left visible in the run rather than guessed at.
+        """
+        if not self._harness_episode_failed():
+            return
+        telemetry = self._harness_stdout_telemetry
+        if telemetry is not None and telemetry.has_token_counts:
+            return
+        if self._harness_usage_records is not None:
+            return
+        self.logger.warning(
+            "Harness CLI exited non-zero and no tap reported what it spent; "
+            "the trial stands as measured",
+            harness=harness,
+            exit_status=self._harness_episode_exit_status,
+        )
 
     def _harness_requests_all_refused(self) -> HarnessRequestOutcomes | None:
         """The trial's request outcomes when the provider served none of them.

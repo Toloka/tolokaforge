@@ -25,15 +25,22 @@ import json
 import logging
 import re
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
+from tests.canonical._factories import make_trial_spec
+from tolokaforge.core.failure_attribution import (
+    TrialOutcomeClass,
+    attribute_failure,
+    classify_trial_outcome,
+)
 from tolokaforge.core.metrics import calculate_task_metrics
-from tolokaforge.core.models import Trajectory, TrialStatus
+from tolokaforge.core.models import Grade, Trajectory, TrialStatus
 from tolokaforge.core.models.trial_status import TerminationReason
 from tolokaforge.core.pricing import get_pricing_info
 from tolokaforge.core.runner import TrialRunner
+from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
 from tolokaforge.tools.registry import ToolResult
 from tolokaforge_coding_harnesses import MIDDLEWARE_PROXY_USAGE_SOURCE
 
@@ -1151,3 +1158,156 @@ class TestTheCacheRateFlagTracksTheRateThatWasMissing:
         ).metrics
 
         assert metrics.cost_cache_rate_fallback is True
+
+
+_FAILED_RESULT_EVENT: dict[str, Any] = {
+    "type": "result",
+    "subtype": "success",
+    "is_error": True,
+    "result": (
+        "API Error: 400 Claude Code 2.1.233 does not support this model; "
+        "version 2.1.280 or newer is required."
+    ),
+}
+"""The terminal event of the run #2007 reproduced: an API error, no usage
+block, and a ``subtype`` that still says ``success``."""
+
+_FAILED_STREAM_JSON = "\n".join(
+    json.dumps(event) for event in ({"type": "system"}, _FAILED_RESULT_EVENT)
+)
+
+
+def _graded(trajectory: Trajectory) -> Grade | None:
+    """The grade the harness lane's own grader answers *trajectory* with."""
+    return RunnerRPCTrialGrader(
+        runner_address="stub:0", logger=MagicMock(), runner_client=MagicMock()
+    ).grade(make_trial_spec(), trajectory, "You are an agent.")
+
+
+class TestACliThatFailedWithoutSpendingAnythingIsNotAMeasurement:
+    """The conjunction is the rule: a non-zero exit **and** a CLI that reported
+    token counts of its own totalling zero.
+
+    Either half alone is a different trial. A non-zero exit on its own is a CLI
+    that may have done the work and crashed on the way out, and a zero total on
+    its own is indistinguishable from a CLI that prints no counts at all —
+    condemning either would destroy a real verifier score.
+    """
+
+    def test_the_issue_signature_is_a_harness_error_not_the_models_failure(self) -> None:
+        """#2007's acceptance criterion, end to end: exit 1 beside a terminal
+        event reporting an API error and no spend.
+
+        What this trial used to produce was ``completed`` / ``agent_done`` /
+        ``measured`` / ``model_reasoning`` with a verifier score of 0.0 against
+        a repository the agent never touched — a stale version pin reported as
+        model weakness.
+        """
+        trajectory = _run(_FAILED_STREAM_JSON, episode_exit_code=1)
+
+        assert trajectory.status is TrialStatus.ERROR
+        assert trajectory.termination_reason is TerminationReason.HARNESS_CLI_FAILED
+        assert classify_trial_outcome(trajectory) is TrialOutcomeClass.HARNESS_ERROR
+
+        grade = _graded(trajectory)
+        assert grade is not None
+        assert grade.score == 0.0
+        assert grade.binary_pass is False
+        assert grade.synthesized_by_termination_reason is TerminationReason.HARNESS_CLI_FAILED
+        assert "reported no spend" in grade.reasons
+
+        trajectory.grade = grade
+        assert attribute_failure(trajectory)["failure_class"] == "harness_autofail"
+
+    def test_the_trial_stays_in_the_denominator_as_our_own_defect(self) -> None:
+        """A harness error is counted, not excluded: the fault is ours and the
+        route to it is agent-reachable, so removing it would take our own
+        defects out of the measurement."""
+        trajectory = _run(_FAILED_STREAM_JSON, episode_exit_code=1)
+        trajectory.grade = _graded(trajectory)
+
+        metrics = calculate_task_metrics([trajectory])
+
+        assert metrics["total_trials"] == 1
+        assert metrics["harness_errors"] == 1
+        assert sum(metrics["infrastructure_aborts"].values()) == 0
+
+    def test_a_cli_that_spent_something_before_failing_is_still_measured(self) -> None:
+        """The blast-radius guard. This CLI billed for real work and then
+        exited non-zero; its trial is the agent's own and is graded normally."""
+        trajectory = _run(_STREAM_JSON, episode_exit_code=1)
+
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.AGENT_DONE
+
+    def test_an_episode_that_exited_zero_is_untouched_whatever_it_called_itself(self) -> None:
+        """A CLI that set ``is_error`` on a run it completed — a turn-budget
+        cutoff does exactly that — is a measured agent outcome. The verdict is
+        diagnostic; only the exit status and the spend gate the lane."""
+        trajectory = _run(_FAILED_STREAM_JSON, episode_exit_code=0)
+
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.AGENT_DONE
+
+    def test_an_unknown_exit_status_condemns_nothing(self) -> None:
+        """A stream that lost the marker says nothing about how the CLI ended,
+        and an absent measurement may not condemn a trial."""
+        trajectory = _run(_FAILED_STREAM_JSON, episode_exit_code=None)
+
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.AGENT_DONE
+
+    def test_a_refusing_proxy_still_wins(self) -> None:
+        """Both conditions at once. The proxy's per-request statuses are the
+        more specific evidence — they say the trial never reached the model —
+        and they are typed evidence that earns exclusion, which this reason
+        deliberately does not."""
+        trajectory = _run(
+            "",
+            harness="kimi-code",
+            model=_KIMI_MODEL,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=json.dumps(
+                {
+                    "timestamp": "2026-09-18T10:00:00+00:00",
+                    "path": "/v1/chat/completions",
+                    "status": 403,
+                    "model": "kimi-k2",
+                }
+            )
+            + "\n",
+            episode_exit_code=1,
+        )
+
+        assert trajectory.termination_reason is TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS
+
+
+class TestAHarnessWithNoReadableTapIsNotCondemned:
+    """``gemini-cli`` declares neither a stdout dialect nor request middleware,
+    so nothing can say whether its episode did any work.
+
+    Condemning it on the exit status alone would destroy a real verifier score
+    for a trial that solved the task and exited non-zero on the way out, and
+    destroying a measurement is the worse error. The gap is logged instead of
+    guessed at, so it is visible in a run rather than silent.
+    """
+
+    def test_the_trial_stands_as_measured(self) -> None:
+        trajectory = _run("Implemented the ingest path.", harness="gemini-cli", episode_exit_code=1)
+
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.AGENT_DONE
+
+    def test_the_gap_is_named_in_the_run(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING):
+            _run("Implemented the ingest path.", harness="gemini-cli", episode_exit_code=1)
+
+        assert [r for r in caplog.records if "no tap reported what it spent" in r.getMessage()]
+
+    def test_an_episode_that_exited_zero_says_nothing(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING):
+            _run("Implemented the ingest path.", harness="gemini-cli", episode_exit_code=0)
+
+        assert [
+            r for r in caplog.records if "no tap reported what it spent" in r.getMessage()
+        ] == []
