@@ -209,7 +209,8 @@ describe its newly executed attempts.
 * **`judge_prompt` derivation**: computed from the trial's effective
   `grading_config.llm_judge` at bundle-write time, not from an actual
   judge invocation, so an auto-fail trial (`ERROR` / `TIMEOUT` /
-  `STUCK_DETECTED` / `CONTEXT_WINDOW_EXCEEDED` / `PROVIDER_CONTENT_FILTER`)
+  `HARNESS_CLI_FAILED` / `STUCK_DETECTED` / `CONTEXT_WINDOW_EXCEEDED` /
+  `PROVIDER_CONTENT_FILTER`)
   that never called the judge
   still records the contract it would have graded under. Same source of
   truth as the judge's own composition
@@ -1561,7 +1562,7 @@ judge_kb_gating:                # the judge's knowledge-search surface; null unl
 synthesized_by_termination_reason: null  # null on every grade produced by a real evaluator;
                                 # named ``TerminationReason`` (e.g. ``stuck_detected``,
                                 # ``context_window_exceeded``, ``provider_content_filter``,
-                                # ``error``) when a
+                                # ``harness_cli_failed``, ``error``) when a
                                 # ``TrialGrader`` auto-fail branch synthesised the
                                 # grade — no evaluator ran on the trial,
                                 # ``components`` is empty and this field names which reason
@@ -2076,7 +2077,7 @@ to be readable:
 | `measured_trials` | The denominator the run holds itself accountable for — every rate in the row except `avg_score` is over it |
 | `scored_trials` | The measured attempts that produced a grade — `avg_score`'s denominator, and the weight `avg_score_micro` uses. Below `measured_trials` on any run that hit an `ungradeable` attempt, a `trial_lost` one, or one that ended `error` / `timeout` / `failed` with no verdict behind it on a reason that is not an exclusion |
 | `infrastructure_aborts` | Per reason, the attempts excluded from that denominator: `{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`. Every excluded reason's key is always present, zero or not — a zero is a fact about the run, a missing key only a fact about the writer |
-| `harness_errors` | Attempts that failed on a defect of ours, including every attempt that ended `error` / `timeout` / `failed` and reached no verdict on any reason that is not an exclusion. On an excluded reason the provider or the substrate killed it, and it is an `infrastructure_abort` outside the denominator instead. Counted **inside** `measured_trials`; a non-zero value is a run-health signal |
+| `harness_errors` | Attempts that failed on a defect of ours — a bare `error`, a `trial_lost` registration, a `harness_cli_failed` coding-harness episode, or any attempt that ended `error` / `timeout` / `failed` and reached no verdict on a reason that is not an exclusion. On an excluded reason the provider or the substrate killed it, and it is an `infrastructure_abort` outside the denominator instead. Counted **inside** `measured_trials`; a non-zero value is a run-health signal |
 | `ungradeable` | Attempts whose grading refused. Also **inside** `measured_trials`, and a non-pass in `success_rate` / `pass@k`; the cause is in that trial's `trajectory.yaml` under `grading_error`. A non-zero count makes `tolokaforge run` / `worker` exit `1` ([CLI.md § Run and worker exit codes](CLI.md#run-and-worker-exit-codes)), so this is the number to read when a completed run failed its CI step |
 | `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`. An ungradeable attempt terminates the way a graded one does, so it is keyed `ungradeable_<reason>`: `{"ungradeable_agent_done": {"class": "ungradeable", "count": 1}}`. An attempt that ended `error` / `timeout` / `failed` and reached no verdict on a reason that is not an exclusion terminates on reasons a graded one reaches too, so it is keyed `unscored_<reason>` with class `harness_error`: `{"unscored_api_error": {"class": "harness_error", "count": 4}}`. On an excluded reason it is keyed bare with class `infrastructure_abort` and counted in `infrastructure_aborts` — exclusion is read first, so a provider- or substrate-killed attempt never takes the `unscored_` prefix. A trial whose runner no longer held it is keyed `trial_lost` with class `harness_error`, and carries no grade — `error` and `trial_lost` take no prefix because they name the fault ours with a grade or without, so their row holds one class already. A runner lost *after* the trial's last tool call instead lands under `ungradeable_<reason>`, because the agent finished and grading refused |
 

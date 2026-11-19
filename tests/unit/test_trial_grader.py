@@ -15,7 +15,13 @@ from tests.canonical._factories import make_trajectory, make_trial_spec
 from tests.unit.test_failure_attribution import outcome_cells
 from tolokaforge.core.failure_attribution import TrialOutcomeClass
 from tolokaforge.core.models import Grade, JudgeStatus, TerminationReason, TrialStatus
-from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
+from tolokaforge.core.trial_grader import (
+    GraderRPCTrialGrader,
+    GradingFailedError,
+    JudgeBackedTrialGrader,
+    QueueTrialGrader,
+    RunnerRPCTrialGrader,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -658,3 +664,45 @@ class TestRuntimeBackendDispatchPreference:
 
         assert grader.runtime_backend is backend_target
         assert grader.runner_client is None
+
+
+def _every_ladder() -> list[Any]:
+    """One instance of each shipped grader.
+
+    The auto-fail arms answer before any dispatch, so the collaborators below
+    are never called — what is under test is the ladder each class carries, and
+    `trial_grader` states that they must stay drop-in swaps of one another.
+    """
+    return [
+        _make_grader()[0],
+        JudgeBackedTrialGrader(judge_fn=MagicMock(), logger=MagicMock()),
+        GraderRPCTrialGrader("stub:0", MagicMock(), grader_client=MagicMock()),
+        QueueTrialGrader(broker=MagicMock(), logger=MagicMock()),
+    ]
+
+
+@pytest.mark.parametrize("grader", _every_ladder(), ids=lambda g: type(g).__name__)
+def test_every_ladder_names_a_harness_cli_failure_rather_than_its_status(grader) -> None:
+    """A harness CLI that failed without spending anything is diagnosable from
+    the grade in every grader, not only the one in production today.
+
+    Placed above each ladder's ERROR / TIMEOUT arm, which would otherwise claim
+    the trial — it arrives with ``TrialStatus.ERROR`` — and report it as a bare
+    "Trial failed with status: error". Queue and grader-service grading are live
+    paths, so a fix in one ladder alone would go quiet the moment the board
+    moved, with a degraded sentence as the only symptom.
+    """
+    grade = grader.grade(
+        make_trial_spec(),
+        make_trajectory(
+            status=TrialStatus.ERROR,
+            termination_reason=TerminationReason.HARNESS_CLI_FAILED,
+        ),
+        "sysprompt",
+    )
+
+    assert grade is not None
+    assert grade.score == 0.0
+    assert grade.binary_pass is False
+    assert grade.synthesized_by_termination_reason is TerminationReason.HARNESS_CLI_FAILED
+    assert "reported no spend" in grade.reasons

@@ -38,6 +38,12 @@ class TerminationReason(str, Enum):
         # proxy's own per-request records
         "provider_refused_all_requests"
     )
+    HARNESS_CLI_FAILED = (
+        # The coding-harness CLI exited non-zero and its own telemetry reported
+        # no turns, no cost and token counts totalling zero, so the episode spent
+        # nothing on the model
+        "harness_cli_failed"
+    )
     EMPTY_COMPLETION = "empty_completion"  # Provider returned no text and no tool calls
     PROVIDER_CONTENT_FILTER = (
         # The provider's safety classifier declined the request: HTTP 200 with a

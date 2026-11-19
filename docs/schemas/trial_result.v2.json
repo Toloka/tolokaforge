@@ -1700,6 +1700,7 @@
         "api_timeout",
         "api_error",
         "provider_refused_all_requests",
+        "harness_cli_failed",
         "empty_completion",
         "provider_content_filter",
         "reasoning_without_action",

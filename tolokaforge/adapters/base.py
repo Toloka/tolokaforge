@@ -47,11 +47,21 @@ class ComposeImageBuild:
             image nobody predicted. Same guarantee
             :meth:`tolokaforge.docker.image.Image.expected_ref` gives the
             engine's own images.
+        timeout_sec: Seconds this one build may run before the orchestrator
+            kills it and raises
+            :class:`~tolokaforge.docker.image.ImageBuildTimeout`, or ``None``
+            to let it run unbounded. The budget is per entry, not per task: a
+            task contributing several builds gives each of them this much, so
+            the error names the one service that wedged. Adapters whose task
+            format declares a build budget pass it through here — a build that
+            reaches out to a package mirror can otherwise stall forever, and a
+            run that dies on the CI wall clock hours later names nothing.
     """
 
     compose_file: Path
     service: str
     expected_image_ref: str
+    timeout_sec: float | None = None
 
 
 @dataclass

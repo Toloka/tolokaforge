@@ -96,6 +96,8 @@ class TestTerminalBenchAdapterCanon:
         canonical one, whose compose lives under ``environment/`` and declares
         a service the agent's container talks to. Discovery keyed on a root
         compose file would return neither, and report no error for either.
+        ``echo-hello-verified`` is the separate-verifier shape, which declares
+        no root compose file either and whose suite lives in a second container.
         """
         task_ids = tbench_adapter.get_task_ids()
         assert task_ids == [
@@ -103,6 +105,7 @@ class TestTerminalBenchAdapterCanon:
             "echo-hello-multi",
             "echo-hello-single",
             "echo-hello-skills",
+            "echo-hello-verified",
         ]
 
     def test_task_config(self, tbench_adapter, canon_snapshot):

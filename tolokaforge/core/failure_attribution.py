@@ -106,7 +106,13 @@ direction the tie breaks. ``tests/canonical/test_termination_reason_reachability
 fails if any reason here becomes producible from prose.
 """
 
-HARNESS_ERROR_REASONS = frozenset({TerminationReason.ERROR, TerminationReason.TRIAL_LOST})
+HARNESS_ERROR_REASONS = frozenset(
+    {
+        TerminationReason.ERROR,
+        TerminationReason.HARNESS_CLI_FAILED,
+        TerminationReason.TRIAL_LOST,
+    }
+)
 """The reasons that name the fault ours whatever else the trial carries.
 
 A trial ending on one of these is a ``HARNESS_ERROR`` with a grade or without,
@@ -228,11 +234,12 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         trajectory.grade is not None
         and trajectory.grade.synthesized_by_termination_reason is not None
     ):
-        # A harness-synthesised auto-fail grade — the deterministic branches above
-        # already claim ``timeout_or_resource`` for the ERROR / TIMEOUT /
-        # EMPTY_COMPLETION reasons, so this branch fires on any synthesised trial
+        # A harness-synthesised auto-fail grade — the deterministic branch above
+        # already claims ``timeout_or_resource`` for every reason it enumerates,
+        # so this branch fires on any synthesised trial
         # whose ``termination_reason`` is not enumerated above (today
-        # STUCK_DETECTED and PROVIDER_CONTENT_FILTER). The tool-log scan below
+        # HARNESS_CLI_FAILED, STUCK_DETECTED and PROVIDER_CONTENT_FILTER). The
+        # tool-log scan below
         # settles on ``model_reasoning`` by default, which would
         # misattribute a harness-terminated trial to the
         # model, so the synth marker takes precedence. Forward-compat: a future

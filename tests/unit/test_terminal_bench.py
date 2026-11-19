@@ -348,30 +348,54 @@ class TestCoreStackDinD:
 
 
 class TestTerminalBenchAdapterDockerStackRequirements:
-    """Adapter declares one :class:`ComposeImageBuild` per discovered task."""
+    """Adapter declares the :class:`ComposeImageBuild` set each discovered task needs."""
 
     @pytest.fixture
     def fixture_dir(self) -> Path:
         return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
 
-    def test_image_builds_one_per_task(self, fixture_dir, tmp_path):
+    @staticmethod
+    def _services_by_task(adapter, builds) -> dict[str, list[str]]:
+        """Each task's declared build services, in the order they are run."""
+        by_compose_file: dict[Path, list[str]] = {}
+        for build in builds:
+            by_compose_file.setdefault(build.compose_file, []).append(build.service)
+        # Project, do not filter: a build naming a compose file that belongs to no
+        # discovered task would otherwise be dropped before the comparison, and the
+        # exact-list assertions this helper replaced would have caught it.
+        assert set(by_compose_file) == {
+            adapter._environment(task_id).compose_file for task_id in adapter.get_task_ids()
+        }, "a declared build names a compose file belonging to no discovered task"
+        return {
+            task_id: by_compose_file[adapter._environment(task_id).compose_file]
+            for task_id in adapter.get_task_ids()
+        }
+
+    def test_image_builds_cover_the_agent_and_any_separate_verifier(self, fixture_dir, tmp_path):
+        """Every task contributes its agent image; a separate-verifier task
+        contributes its verifier image too.
+
+        The verifier image is built from the task's own ``tests/`` and no
+        registry carries it, so a requirements list that stops at the agent
+        leaves the trial to pull a tag nothing produces.
+        """
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
         adapter = TerminalBenchAdapter(
             {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
         )
-        task_ids = adapter.get_task_ids()
 
         reqs = adapter.docker_stack_requirements()
         assert reqs.mount_docker_socket is False
         assert reqs.task_pack_mounts == []
         assert reqs.extra_runner_binds == []
-        assert [b.service for b in reqs.image_builds] == [
-            adapter._environment(tid).agent_service for tid in task_ids
-        ]
-        assert [b.compose_file for b in reqs.image_builds] == [
-            adapter._environment(tid).compose_file for tid in task_ids
-        ]
+        assert self._services_by_task(adapter, reqs.image_builds) == {
+            "echo-hello": ["main"],
+            "echo-hello-multi": ["main"],
+            "echo-hello-single": ["main"],
+            "echo-hello-skills": ["main"],
+            "echo-hello-verified": ["main", "verifier"],
+        }
 
     def test_declared_image_refs_match_what_the_compose_file_pins(self, fixture_dir, tmp_path):
         """What the adapter hands the orchestrator's pre-build seam and what
@@ -388,12 +412,64 @@ class TestTerminalBenchAdapterDockerStackRequirements:
             }
         )
         builds = adapter.docker_stack_requirements().image_builds
-        # One base + one layered build per task, in task order.
-        assert [b.service for b in builds] == ["main-base", "main"] * len(adapter.get_task_ids())
+        # Base before the layer that is ``FROM`` it. The harness layer goes on the
+        # agent only — the verifier runs the task's suite, never the agent's CLI.
+        assert self._services_by_task(adapter, builds) == {
+            "echo-hello": ["main-base", "main"],
+            "echo-hello-multi": ["main-base", "main"],
+            "echo-hello-single": ["main-base", "main"],
+            "echo-hello-skills": ["main-base", "main"],
+            "echo-hello-verified": ["main-base", "main", "verifier"],
+        }
         for build in builds:
             with build.compose_file.open() as handle:
                 doc = yaml.safe_load(handle)
             assert doc["services"][build.service]["image"] == build.expected_image_ref
+
+    def test_declared_build_timeout_reaches_every_build_of_a_multi_container_task(
+        self, fixture_dir, tmp_path
+    ):
+        """``[environment].build_timeout_sec`` is what bounds the build subprocess,
+        so it has to arrive on every entry the task contributes — the sidecar-bearing
+        task included, whose stack is exactly where an unbounded build hangs a board.
+
+        Harness mode is what makes a task contribute more than one entry: it splits
+        the build into a base layer and the layered agent image. The base and agent
+        entries are locked here. The verifier entry is reachable only under
+        ``environment_mode = "separate"``, which no fixture declares, so that third
+        propagation site is covered once #2019's ``echo-hello-verified`` fixture
+        carries a ``build_timeout_sec``.
+        """
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                "agent_harness": "claude-code",
+                "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
+            }
+        )
+        builds = adapter.docker_stack_requirements().image_builds
+
+        multi_compose = adapter._environment("echo-hello-multi").compose_file
+        entries = [b for b in builds if b.compose_file == multi_compose]
+        assert [b.service for b in entries] == ["main-base", "main"]
+        assert [b.timeout_sec for b in entries] == [900.0, 900.0]
+
+    def test_a_task_declaring_no_build_timeout_carries_none(self, fixture_dir, tmp_path):
+        """No invented default: a task that declares no budget must reach the
+        orchestrator with ``None``, or a number nobody asked for would kill its build."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+        builds = adapter.docker_stack_requirements().image_builds
+
+        single_compose = adapter._environment("echo-hello-single").compose_file
+        declared = {b.compose_file: b.timeout_sec for b in builds}
+        assert declared[single_compose] is None
 
     def test_prebuild_images_false_returns_no_builds(self, fixture_dir, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
