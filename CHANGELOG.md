@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.9 (2026-11-19)
+
+### BREAKING CHANGE
+
+- aggregate.json is stamped `schema_version: 6`. A consumer
+gating on `schema_version == 5` must accept 6, and a run's error-shaped trials
+that reached no verdict are keyed `unscored_<reason>` under class
+`harness_error` rather than `<reason>` under `measured`.
+
+### Fix
+
+- **terminal-bench**: the v4 agent and verifier no longer share a host log directory (#2026)
+- **metrics**: a trial that produced no score is not a measurement (#2023)
+- **terminal-bench, orchestrator**: a task's declared build_timeout_sec bounds its image builds (#2022)
+- **runner, grading**: a coding-harness CLI that failed to start is not a measurement of the model (#2016)
+
 ## v0.34.8 (2026-11-09)
 
 ### BREAKING CHANGE
