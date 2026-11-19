@@ -62,13 +62,17 @@ def test_the_newest_contract_row_is_the_live_schema_version() -> None:
 
 
 def test_the_history_only_ever_grows() -> None:
-    """Append-only, strictly increasing, and never losing a reason.
+    """Append-only, strictly increasing versions, and never losing a reason.
 
     The strict increase is the half that makes the bump unavoidable — a new row
-    cannot reuse the version the previous key set already claimed. The growth
+    cannot reuse the version the previous key set already claimed. The retention
     check is the other half: a reason removed from the exclusion set is a
     judgement about measurement honesty, not a schema edit, and it would silently
     stop R2 demanding a key that older bundles still carry.
+
+    A generation that moved for a wire change other than the abort keys repeats
+    its predecessor's set, so retention is what is asserted of consecutive rows,
+    not growth — a bump obliges a row, never a new reason.
     """
     versions = [version for version, _ in ABORT_KEY_CONTRACT_HISTORY]
 
@@ -80,7 +84,7 @@ def test_the_history_only_ever_grows() -> None:
     for (older_version, older), (newer_version, newer) in zip(
         ABORT_KEY_CONTRACT_HISTORY, ABORT_KEY_CONTRACT_HISTORY[1:], strict=False
     ):
-        assert older < newer, (
+        assert older <= newer, (
             f"schema version {newer_version} drops abort keys that {older_version} "
             f"required: {sorted(older - newer)}. Removing a reason from the "
             "exclusion set is a measurement-honesty decision, not a schema bump"

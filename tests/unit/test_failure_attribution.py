@@ -160,8 +160,9 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
 # grade, and no refusal either. The class column is written out rather than
 # carried over from the graded half, because the two differ exactly where this
 # table earns its place — a trial that ended error-shaped with nothing to show
-# for it measured nothing, whatever reason it carries, so it is a harness error
-# rather than a result. A trial that ran to an end and was simply not graded yet
+# for it measured nothing, so it is a harness error rather than a result on every
+# reason the exclusion allowlist does not already claim, and an infrastructure
+# abort on the ones it does. A trial that ran to an end and was simply not graded yet
 # is the grade-later shape the replay path writes, and keeps its graded class.
 _NEVER_SCORED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeClass], ...] = (
     (TrialStatus.COMPLETED, TerminationReason.AGENT_DONE, _MEASURED),
@@ -387,28 +388,27 @@ class TestOutcomeClassificationCrossProduct:
         assert counted == set(TerminationReason) - EXCLUDED_TYPED_REASONS
 
     def test_a_trial_that_ended_badly_with_no_verdict_measured_nothing(self) -> None:
-        """The whole never-scored half in one statement: an error-shaped trial
-        that produced no grade is a harness error whatever reason it carries, so
-        a provider outage that spent every retry reads as four defects of ours
-        rather than four measurements of the agent. It stays in the denominator
-        — ``HARNESS_ERROR`` is inside ``measured_trials`` — so no historical
-        ``avg_score`` moves; what changes is that the run says so."""
-        measured = {
-            (status, reason)
-            for status, reason, outcome_class in _NEVER_SCORED_CELLS
-            if outcome_class is _MEASURED
-        }
-        assert {status for status, _ in measured} == {TrialStatus.COMPLETED}
-        assert (
-            classify_trial_outcome(
-                _cell_trajectory(
-                    TrialStatus.ERROR,
-                    TerminationReason.API_ERROR,
-                    verdict=_Verdict.NEVER_SCORED,
-                )
+        """The whole never-scored half in one statement, read off the classifier
+        over the entire cross-product rather than off the table above: the only
+        status that still measures anything without a verdict is the one that ran
+        to an end. An error-shaped trial that produced no grade is a harness error
+        on any reason that is not an exclusion — and an infrastructure abort on
+        one that is — so a provider outage that spent every retry reads as four
+        defects of ours rather than four measurements of the agent. Either way it
+        is not a measurement, which is what this asserts; ``HARNESS_ERROR`` is
+        inside ``measured_trials``, so no historical ``avg_score`` moves and what
+        changes is that the run says so."""
+        still_measured = {
+            status
+            for status in TrialStatus
+            for reason in (*TerminationReason, None)
+            if classify_trial_outcome(
+                _cell_trajectory(status, reason, verdict=_Verdict.NEVER_SCORED)
             )
-            is _HARNESS
-        )
+            is _MEASURED
+        }
+
+        assert still_measured == {TrialStatus.COMPLETED}
 
     def test_empty_completion_is_excluded_from_the_measured_denominator(self) -> None:
         """A trial whose provider returned no text and no tool calls after

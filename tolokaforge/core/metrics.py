@@ -431,7 +431,8 @@ def _measured_averages(measured: Sequence[Trajectory]) -> dict[str, Any]:
     denominator, counted from the same list, so the run-level micro can rebuild
     the numerator instead of assuming every measured trial was graded. The two
     counts differ on any run that hit an ``UNGRADEABLE`` trial, whose grading
-    refused, or a ``trial_lost`` one, which is not graded at all.
+    refused, a ``trial_lost`` one, which is not graded at all, or one that ended
+    error-shaped with no verdict behind it.
     """
     scores = [t.grade.score for t in measured if t.grade is not None]
     return {

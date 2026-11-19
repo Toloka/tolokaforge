@@ -4751,7 +4751,7 @@ infrastructure:
 | `trial_lost` | harness error | The runner no longer holds the trial the engine is running, so a tool call reached no tool. The exclusion bar is typed evidence that the *provider or the substrate* killed the trial, and a tool executing agent-supplied input that crashes the runner process is an agent-reachable route to this fault, so it is counted. It is the one counted reason that is **not graded**: the runner that would compute the verdict is the one that lost the trial, so no fabricated `0.0` enters `avg_score` |
 | `stuck_detected` | measured | The agent issued the identical tool call and got the same result back over and over. It auto-fails with `score: 0.0`, and that verdict is correct. An agent that talks without acting is not this — that is a per-task question, asked by `transcript_rules` in the task's `grading.yaml` |
 | any reason, with `grading_error` set | ungradeable | Grading refused, so no verdict exists. Counted for the same reason a harness error is — the fault is ours — and reported separately as `ungradeable`. This is read **before** the reason, so a refusal is never traded for an exclusion |
-| any reason, on a trial that ended `error` / `timeout` / `failed` carrying no grade | harness error | Nothing about the agent was observed: the trial ended badly and no verdict came back, which is what a run reaching no grading at all leaves behind — a dispatch node that returned an ungraded trajectory, or a provider that died after the retries were spent. The reason it carries cannot make it a measurement, so the class is read from the missing verdict instead of the reason. Counted, like every other defect of ours, so the denominator is unmoved |
+| any reason that is not an exclusion, on a trial that ended `error` / `timeout` / `failed` carrying no grade | harness error | Nothing about the agent was observed: the trial ended badly and no verdict came back, which is what a run reaching no grading at all leaves behind — a dispatch node that returned an ungraded trajectory, or a provider that died after the retries were spent. The reason it carries cannot make it a measurement, so the class is read from the missing verdict instead of the reason. Counted, like every other defect of ours, so the denominator is unmoved. Unlike the row above, this is read **after** the exclusion allowlist: a trial the provider or the substrate killed stays an `infrastructure_abort` outside the denominator rather than being traded for a harness error |
 
 The asymmetry decides every borderline case: misclassifying an agent failure as
 infrastructure raises every published number with nothing in the output to show
@@ -4765,8 +4765,10 @@ benchmark.
 as, so any of these judgements can be recomputed from a finished run's aggregate
 without a rerun. An ungradeable trial's row is keyed `ungradeable_<reason>` —
 `ungradeable_agent_done` for the common case — and a trial that ended
-`error` / `timeout` / `failed` carrying no verdict is keyed `unscored_<reason>`,
-`unscored_api_error` for the provider that died after the retries were spent.
+`error` / `timeout` / `failed` carrying no verdict on a reason that is not an
+exclusion is keyed `unscored_<reason>`, `unscored_api_error` for the provider
+that died after the retries were spent. On an excluded reason it is an
+`infrastructure_abort`, keyed bare under that class.
 Both prefixes keep one key mapping to exactly one class while leaving the reason
 legible, so the graded, ungradeable and never-scored shares of one reason stay
 separable from the aggregate alone. See

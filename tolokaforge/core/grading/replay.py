@@ -1125,6 +1125,11 @@ def _no_grade_reason(trial_dir: Path) -> str:
             "the run measured this trial and the runner lost its registration before a "
             f"verdict could be computed (termination_reason: {termination}), {tail}"
         )
+    if outcome is TrialOutcomeClass.HARNESS_ERROR:
+        return (
+            "the trial ended before a verdict was computed and none came back "
+            f"(status: {trajectory.status.value}, termination_reason: {termination}), {tail}"
+        )
     return (
         f"the run recorded no grade for a trial it classified {outcome.value} "
         f"(termination_reason: {termination}), which is neither grade-less shape the "
