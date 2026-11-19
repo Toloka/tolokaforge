@@ -371,7 +371,8 @@ called to serialize the task for transfer to the Runner container.
 |-------|--------|
 | `agent_tools` | `tools.agent.enabled` list + schemas from `resolve_tool_schemas` (see [Tool Schemas](#tool-schemas-fixturestoolsjson)) |
 | `user_tools` | `tools.user.enabled` list + schemas from `resolve_tool_schemas`, built identically — a builtin carries no `ToolSource`, a block naming an `mcp_server` carries that script |
-| `initial_state.tables` | `initial_state.json` (collection → list of records) |
+| `initial_state.tables` | `initial_state.json` (collection → list of records) — or nothing under `compute.trial_data_delivery: mount` |
+| `initial_state.tables_ref` | Under `compute.trial_data_delivery: mount`, the state file by artefact path, SHA-256 and size (ADR-0071) |
 | `initialization_actions` | `initial_state.initialization_actions` |
 | `grading` | `grading.yaml`, translated into the runner's grading config |
 | `system_prompt` | system prompt file content |
@@ -422,6 +423,16 @@ deliveries read; a subclass that overrides `_bundle_task_artifacts` alone is ref
 bundle used to carry. The RAG corpus has the same pair: `_corpus_artifact_paths` and
 `_bundle_corpus_artifacts`. A file the adapter cannot read fails the description under either
 delivery.
+
+**The initial state by reference.** Under the same `compute.trial_data_delivery: mount`
+(ADR-0071, ADR-0072), the adapter does not parse the `initial_state.json_db` file: it delivers
+the file as one of the referenced artefacts (the entry that already carries it, such as the
+case state beside a shared MCP server, or a new entry under its path in the task directory)
+and records `initial_state.tables_ref` — that artefact's path, SHA-256 and size — with
+`initial_state.tables` empty. The checks that read the seeded rows (`state_checks.id_fields`,
+a comparison view) move from the description build to `RegisterTrial`, where the runner reads
+the file; `create_environment` and the conductor leave the engine's copy of the state empty.
+A `json_db` written inline in `task.yaml`, or none, travels inline whatever the run says.
 
 ### Tool schema resolution for Docker
 

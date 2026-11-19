@@ -90,7 +90,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
             context.set_details(f"Trial '{request.trial_id}' not registered")
             return pb2.ReadStateResponse()
         initial = trial_context.task_description.initial_state
-        tables = initial.tables if initial is not None else {}
+        tables = trial_context.initial_tables() if initial is not None else {}
         return pb2.ReadStateResponse(state_json=json.dumps(tables or {}))
 
     def ReadFinalDBState(  # noqa: N802

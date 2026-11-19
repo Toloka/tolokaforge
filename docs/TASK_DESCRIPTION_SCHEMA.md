@@ -611,6 +611,40 @@ out while it is unset, so an inline description serialises as an engine predatin
 ADR-0072 emitted it: a runner or grader image of that age, which forbids both keys,
 still accepts it, and refuses a `mount` description it could not serve.
 
+### `initial_state.tables_ref`: the initial tables by reference (ADR-0071)
+
+A task the run delivers by reference (`trial_data_delivery: mount`) whose `json_db` names
+a file carries no rows in `initial_state.tables`. Its state file
+is one of the referenced artefacts, and `initial_state.tables_ref` names it:
+
+```json
+"initial_state": {
+  "tables": {},
+  "tables_ref": {"artifact": "initial_state.json", "sha256": "<64 hex>", "size": 489123456},
+  "schemas": [],
+  "unstable_fields": [],
+  "filesystem": {}
+}
+```
+
+- **`artifact`** is the key of the file's entry in `tool_artifact_refs`, and
+  **`sha256`** / **`size`** repeat that entry's; a description whose `tables_ref` names no
+  referenced artefact, or another digest, is refused, as is one carrying tables both ways.
+- The file holds the task's `json_db` as written. The runner normalises each collection to
+  its records exactly as the native adapter does for `tables` (a list is the records, a
+  mapping of mappings is records keyed by id, anything else one record), so every grader
+  sees the same tables, values and order either way.
+- The task provisions a database (`provisions_database`) without its file being read.
+
+At `RegisterTrial` the runner copies and verifies the file with the other references, and
+seeds the database service from it by streaming the file's bytes as the body of
+`POST /trials/{id}/init/json_db`; a database service that predates the route is seeded
+from the file read once and sent inline. The tables are parsed at registration only when a
+check or tool reads rows there (`state_checks.id_fields`, a comparison view, an app world,
+`mcp_async` toolset models) and dropped when registration returns. Grading reads them from
+the file on first use, checking its digest again, and keeps them only until the grade
+returns.
+
 ---
 
 ## Examples
