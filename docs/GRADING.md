@@ -950,8 +950,8 @@ Two downstream properties depend on the marker:
 
 - `failure_attribution.py:attribute_failure` returns `failure_class:
   harness_autofail` on any synth trial whose termination reason is not
-  otherwise enumerated in the deterministic elif chain (today only
-  `STUCK_DETECTED`). The default `model_reasoning` label from the tool-log
+  otherwise enumerated in the deterministic elif chain (today
+  `HARNESS_CLI_FAILED`, `STUCK_DETECTED` and `PROVIDER_CONTENT_FILTER`). The default `model_reasoning` label from the tool-log
   scan would misattribute a harness-terminated trial to the model, so the
   synth marker takes precedence. Every
   attribution record also carries `synthesized: bool` and
