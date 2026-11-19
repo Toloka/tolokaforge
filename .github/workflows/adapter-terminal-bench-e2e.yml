@@ -1,20 +1,35 @@
 name: Terminal-bench adapter e2e
 
 # The terminal-bench adapter's Docker e2e (builds engine + agent images, drives a
-# real per-trial bracket) is expensive (~15-20 min). It runs when the ADAPTER
-# changes — not on every core-engine change — plus nightly and on demand. Core
-# keeps the cheap adapter-free routing coverage (tests/unit/test_backend_selection.py).
+# real per-trial bracket) is expensive (~15-20 min), so it runs on the paths the
+# separate-verifier (4.0) grading path is actually made of, plus nightly and on
+# demand. Core keeps the cheap adapter-free routing coverage
+# (tests/unit/test_backend_selection.py).
+#
+# The core paths are listed because the v4 path does not live in the adapter
+# alone: a trial is graded by `tolokaforge/core/grading` driving `materialise_path`
+# and `run_test_suite` against `tolokaforge/runner/service.py`. A change to either
+# can break separate-verifier grading without touching a single adapter file, and
+# no other PR job drives that path against real containers.
 on:
   push:
     branches:
       - main
     paths:
       - 'external_adapters/tolokaforge-adapter-terminal-bench/**'
+      - 'tolokaforge/core/grading/**'
+      - 'tolokaforge/runner/service.py'
+      - 'tests/data/terminal_bench_tasks/**'
       - '.github/workflows/adapter-terminal-bench-e2e.yml'
   pull_request:
     types: [opened, synchronize, reopened]
+    # Identical to the push filter above; GitHub Actions does not expand YAML
+    # anchors, so the list is written out twice.
     paths:
       - 'external_adapters/tolokaforge-adapter-terminal-bench/**'
+      - 'tolokaforge/core/grading/**'
+      - 'tolokaforge/runner/service.py'
+      - 'tests/data/terminal_bench_tasks/**'
       - '.github/workflows/adapter-terminal-bench-e2e.yml'
   schedule:
     - cron: '0 5 * * *'
