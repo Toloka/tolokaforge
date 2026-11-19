@@ -49,6 +49,14 @@ from tolokaforge.core.docker_compose_materialiser import DockerComposeMaterialis
 from tolokaforge.core.models.task_config import SeedRef
 from tolokaforge.core.models.trajectory import ProvisionStage
 from tolokaforge.core.plugin_registry import ReadinessProbeFactory, load_readiness_probe
+from tolokaforge.core.refs_staging import (
+    ENGINE_DIR_NAME,
+    REFS_DIR_NAME,
+    RefsStagingError,
+    mark_owner,
+    stage_referenced_files,
+    sweep_stale_staging,
+)
 from tolokaforge.core.run_display_events import RunDisplayEvents
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.service_lifecycle_dispatchers import DISPATCHER_REGISTRY
@@ -160,6 +168,7 @@ class DefaultSubstrateComposer:
                 grpc_max_message_mb=ctx.grpc_max_message_mb,
                 state_read_timeout_s=ctx.state_read_timeout_s,
                 task_dir_of=ctx.task_dir_of,
+                refs_staging_dir=ctx.refs_staging_dir,
             )
 
         assert runner_decl is not None  # narrowed by runner_handle presence
@@ -197,6 +206,7 @@ class DefaultSubstrateComposer:
             grpc_max_message_mb=ctx.grpc_max_message_mb,
             state_read_timeout_s=ctx.state_read_timeout_s,
             task_dir_of=ctx.task_dir_of,
+            refs_staging_dir=ctx.refs_staging_dir,
         )
 
     # ------------------------------------------------------------------
@@ -219,14 +229,23 @@ class DefaultSubstrateComposer:
             if spec.task.trial_data_delivery == "mount"
             else None
         )
+        refs_owned: list[Path] = []
         try:
-            handle = self._provision_trial_stacks(plan, spec, manifest, run_sub, final_state_dir)
+            refs_dir = _stage_trial_refs(spec, run_sub, final_state_dir, refs_owned)
+            handle = self._provision_trial_stacks(
+                plan, spec, manifest, run_sub, final_state_dir, refs_dir
+            )
         except BaseException:
             _remove_final_state_dir(final_state_dir)
+            _remove_refs_staging_dir(refs_owned[0] if refs_owned else None)
             raise
         if final_state_dir is None:
             return handle
-        return dataclasses.replace(handle, final_state_dir=final_state_dir)
+        return dataclasses.replace(
+            handle,
+            final_state_dir=final_state_dir,
+            refs_staging_dir=refs_owned[0] if refs_owned else None,
+        )
 
     def _provision_trial_stacks(
         self,
@@ -235,12 +254,13 @@ class DefaultSubstrateComposer:
         manifest: EnvironmentManifest,
         run_sub: RunSubstrate,
         final_state_dir: Path | None,
+        refs_dir: Path | None = None,
     ) -> ComposedEnvHandle:
         newly: list[tuple[StackDecl, StackHandle]] = []
         try:
             self._materialise_task_stacks(plan, spec, manifest, run_sub, newly)
             trial_handles = self._materialise_trial_stacks(
-                plan, spec, manifest, run_sub, newly, final_state_dir
+                plan, spec, manifest, run_sub, newly, final_state_dir, refs_dir
             )
         except BaseException:
             _teardown_handles_best_effort(self.materialiser, [h for _, h in newly])
@@ -300,6 +320,7 @@ class DefaultSubstrateComposer:
         run_sub: RunSubstrate,
         newly: list[tuple[StackDecl, StackHandle]],
         final_state_dir: Path | None = None,
+        refs_dir: Path | None = None,
     ) -> list[StackHandle]:
         trial_handles: list[StackHandle] = []
         for decl in [d for d in plan if d.stack_scope == "trial"]:
@@ -323,7 +344,7 @@ class DefaultSubstrateComposer:
                 ),
                 events=run_sub.events,
                 component_id_prefix=f"trial/{spec.trial_id}",
-                tool_artifact_refs_root=_tool_artifact_refs_root(decl, spec, run_sub),
+                tool_artifact_refs_root=refs_dir if decl.runner_service is not None else None,
                 final_state_dir=final_state_dir if decl.runner_service is not None else None,
             )
             handle = self.materialiser.materialise(decl, ctx)
@@ -463,6 +484,7 @@ class DefaultSubstrateComposer:
                 )
         _teardown_handles_best_effort(self.materialiser, list(env_handle.trial_stack_handles))
         _remove_final_state_dir(env_handle.final_state_dir)
+        _remove_refs_staging_dir(env_handle.refs_staging_dir)
 
     def teardown_run(self, run_sub: RunSubstrate) -> None:
         if run_sub.runner_client is not None:
@@ -632,22 +654,34 @@ def _refuse_reserved_prefix(
         )
 
 
-def _tool_artifact_refs_root(
-    decl: StackDecl, spec: TrialSpec, run_sub: RunSubstrate
+def _stage_trial_refs(
+    spec: TrialSpec,
+    run_sub: RunSubstrate,
+    final_state_dir: Path | None,
+    owned: list[Path],
 ) -> Path | None:
-    """The task directory to mount into ``decl``'s runner, or ``None`` (ADR-0068, ADR-0072).
+    """The directory of the trial's referenced files to mount into its runner, or ``None``.
 
-    Only the stack that owns the trial's runner gets it, and only when the
-    trial's description delivers artefacts by reference. The description names
-    each file by its ``pack:`` address; the directory those addresses resolve
+    A description that delivers its artefacts by reference names each file by its
+    ``pack:`` address (ADR-0068, ADR-0072); the directory those addresses resolve
     against is this machine's copy of the task, found through
-    :attr:`RunSubstrate.task_dir_of`, never a path the describing machine wrote.
+    :attr:`RunSubstrate.task_dir_of`, never a path the describing machine wrote. The
+    runner gets only the referenced files (:func:`stage_referenced_files`), not the
+    whole task directory. They are staged on the task directory's filesystem, in the
+    run's directory or beside the task (:func:`_refs_staging_root`), so every file is a
+    hard link and nothing lands in a memory-backed temporary filesystem; that root is
+    appended to ``owned``, for the caller to remove on a failure and to keep on the
+    trial's handle for teardown. Where neither is possible they are staged beside the
+    trial's final-state directory, and go with it.
 
     Raises:
-        ProvisionError: the description has references and this run cannot
-            locate the task's directory.
+        ProvisionError: the description has references and this run cannot locate
+            the task's directory, the trial has no final-state directory (references
+            need ``trial_data_delivery: mount``), or a referenced file is missing,
+            outside the task's directory, or of another size than described.
     """
-    if spec.task.tool_artifact_refs is None or decl.runner_service is None:
+    refs = spec.task.tool_artifact_refs
+    if refs is None:
         return None
     if run_sub.task_dir_of is None:
         raise ProvisionError(
@@ -656,10 +690,99 @@ def _tool_artifact_refs_root(
             reason=(
                 "the task delivers its tool artefacts as pack: references "
                 "(compute.trial_data_delivery: mount), but this run has no way to locate "
-                "the task's directory on this machine to mount into the runner"
+                "the task's directory on this machine to stage its files for the runner"
             ),
         )
-    return run_sub.task_dir_of(spec.task.task_id).resolve()
+    if final_state_dir is None:
+        raise ProvisionError(
+            trial_id=spec.trial_id,
+            stage="provision",
+            reason=(
+                "the task delivers its tool artefacts as pack: references without "
+                "trial_data_delivery: mount, so the trial has no directory to stage them in"
+            ),
+        )
+    task_dir = run_sub.task_dir_of(spec.task.task_id)
+    root, where = _refs_staging_root(task_dir, spec.trial_id, run_sub.refs_staging_dir)
+    if root is not None:
+        owned.append(root)
+        logger.info("staging the references of trial %s in %s", spec.trial_id, where)
+    else:
+        logger.info(
+            "staging the references of trial %s beside its final-state directory: %s",
+            spec.trial_id,
+            where,
+        )
+    parent = root if root is not None else final_state_dir.parent
+    try:
+        staged = stage_referenced_files(task_dir, refs, parent / _REFS_STAGING_NAME)
+    except RefsStagingError as exc:
+        raise ProvisionError(trial_id=spec.trial_id, stage="provision", reason=str(exc)) from exc
+    return staged.directory
+
+
+def _refs_staging_root(
+    task_dir: Path, trial_id: str, run_dir: Path | None
+) -> tuple[Path | None, str]:
+    """A fresh directory for the trial's references on the task directory's filesystem.
+
+    In order: the run's own directory (``run_dir``, under the run's output) and the one
+    documented hidden directory beside the task directory
+    (``<parent>/.tolokaforge/refs``), each when it can be made, is writable and is on
+    the task directory's device, so every file is a hard link. Each is swept of what an
+    engine killed before its teardown left there, the first time this process stages
+    into it. Returns the directory and where it is, or ``None`` and why neither could
+    be used: the caller then stages beside the final-state directory, where a file the
+    filesystem cannot link is copied.
+    """
+    resolved = task_dir.resolve()
+    try:
+        task_device = _device_of(resolved)
+    except OSError as exc:
+        return None, f"the task directory {task_dir} cannot be read ({exc})"
+    reasons: list[str] = []
+    beside_task = resolved.parent / ENGINE_DIR_NAME / REFS_DIR_NAME
+    for label, base in (("the run's directory", run_dir), ("beside the task", beside_task)):
+        if base is None:
+            reasons.append(f"{label}: none")
+            continue
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            if _device_of(base) != task_device:
+                reasons.append(f"{label} {base}: another device than the task directory")
+                continue
+            if base not in _SWEPT:
+                _SWEPT.add(base)
+                sweep_stale_staging(base)
+            root = Path(tempfile.mkdtemp(prefix=f"{compose_trial_slug(trial_id)}-", dir=base))
+            mark_owner(root)
+            return root, f"{label} ({base})"
+        except OSError as exc:
+            reasons.append(f"{label} {base}: {exc.strerror or exc} (errno {exc.errno})")
+    return None, "; ".join(reasons)
+
+
+_SWEPT: set[Path] = set()
+"""Staging bases this process has swept of stale entries."""
+
+
+def _device_of(path: Path) -> int:
+    """The device ``path`` is on (a seam for tests)."""
+    return path.stat().st_dev
+
+
+def _remove_refs_staging_dir(directory: Path | None) -> None:
+    """Remove a trial's staged references made beside its task; a failure is logged, not raised."""
+    if directory is None:
+        return
+    try:
+        shutil.rmtree(directory)
+    except OSError:
+        logger.exception("DefaultSubstrateComposer: left staged references %s", directory)
+
+
+_REFS_STAGING_NAME = "pack-refs"
+"""The staged references' directory beside a trial's final-state directory, in the same parent."""
 
 
 def _refuse_refs_no_trial_runner_can_take(plan: CompositionPlan, spec: TrialSpec) -> None:
@@ -682,7 +805,7 @@ def _refuse_refs_no_trial_runner_can_take(plan: CompositionPlan, spec: TrialSpec
         reason=(
             "the task delivers its tool artefacts by reference (compute.trial_data_delivery: "
             "mount), which needs a trial-scope stack to own the runner so the engine can "
-            f"mount the task's directory into it; the runner here: {found}"
+            f"mount the trial's referenced files into it; the runner here: {found}"
         ),
     )
 
@@ -732,7 +855,7 @@ def _make_final_state_dir(trial_id: str) -> Path:
 
 
 def _remove_final_state_dir(directory: Path | None) -> None:
-    """Remove a trial's final-state directory; a failure is logged, not raised.
+    """Remove a trial's final-state directory and its staged references; a failure is logged.
 
     Teardown goes on to the trial's other stacks, but what stays behind is the
     trial's whole final state, which a large world repeated across a run can

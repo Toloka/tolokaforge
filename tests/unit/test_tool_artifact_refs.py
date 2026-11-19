@@ -16,8 +16,10 @@ import dataclasses
 import hashlib
 import json
 import logging
+import os
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -774,6 +776,147 @@ class TestComposeMount:
 
 
 class TestComposer:
+    def _composer(self) -> tuple[Any, Any]:
+        from tests.unit.test_default_substrate_composer import (
+            _always_ready_loader,
+            _fake_client_factory,
+            _FakeMaterialiser,
+        )
+        from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
+
+        materialiser = _FakeMaterialiser()
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+            readiness_probe_loader=_always_ready_loader,
+        )
+        return composer, materialiser
+
+    def _provision(self, tmp_path: Path, root: Path) -> tuple[Any, Any, Path]:
+        from tests.unit.test_default_substrate_composer import _decl, _empty_run_sub
+
+        compose = _compose(tmp_path)
+        composer, materialiser = self._composer()
+        plan = [_decl(compose, stack_id="world", stack_scope="trial", runner_service="runner")]
+        run_sub = dataclasses.replace(_empty_run_sub(), task_dir_of=lambda _task: root)
+        handle = composer.provision_trial(plan, self._spec(compose, root), run_sub)
+        (staged,) = [ctx.tool_artifact_refs_root for ctx in materialiser.materialise_contexts]
+        return composer, handle, staged
+
+    def test_an_unwritable_task_parent_stages_beside_the_final_state(self, tmp_path: Path) -> None:
+        if os.geteuid() == 0:
+            pytest.skip("root writes through any mode")
+        root = _world(tmp_path / "packs")
+        (tmp_path / "packs").chmod(0o555)
+        try:
+            composer, handle, staged = self._provision(tmp_path, root)
+            assert staged.parent == handle.final_state_dir.parent
+            assert handle.refs_staging_dir is None
+            assert not (tmp_path / "packs" / ".tolokaforge").exists()
+            composer.teardown_trial(handle)
+            assert not staged.exists()
+        finally:
+            (tmp_path / "packs").chmod(0o755)
+
+    def test_a_task_parent_on_another_device_stages_beside_the_final_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tolokaforge.core.default_substrate_composer as composer_module
+
+        root = _world(tmp_path)
+        monkeypatch.setattr(
+            composer_module, "_device_of", lambda path: 1 if path == root.resolve() else 2
+        )
+        composer, handle, staged = self._provision(tmp_path, root)
+        assert staged.parent == handle.final_state_dir.parent
+        assert handle.refs_staging_dir is None
+        composer.teardown_trial(handle)
+        assert not staged.exists()
+
+    @pytest.mark.parametrize("placement", ["beside_task", "beside_final_state"])
+    def test_a_failed_provision_removes_the_staged_references(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, placement: str
+    ) -> None:
+        import tolokaforge.core.default_substrate_composer as composer_module
+        from tests.unit.test_default_substrate_composer import _decl, _empty_run_sub
+
+        root = _world(tmp_path)
+        if placement == "beside_final_state":
+            monkeypatch.setattr(
+                composer_module, "_device_of", lambda path: 1 if path == root.resolve() else 2
+            )
+        made: list[Path] = []
+        real = composer_module._make_final_state_dir
+
+        def recording(trial_id: str) -> Path:
+            made.append(real(trial_id))
+            return made[-1]
+
+        def boom(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("stack failed")
+
+        monkeypatch.setattr(composer_module, "_make_final_state_dir", recording)
+        monkeypatch.setattr(
+            composer_module.DefaultSubstrateComposer, "_provision_trial_stacks", boom
+        )
+        compose = _compose(tmp_path)
+        composer, _ = self._composer()
+        plan = [_decl(compose, stack_id="world", stack_scope="trial", runner_service="runner")]
+        run_sub = dataclasses.replace(_empty_run_sub(), task_dir_of=lambda _task: root)
+
+        with pytest.raises(RuntimeError, match="stack failed"):
+            composer.provision_trial(plan, self._spec(compose, root), run_sub)
+        assert not list((tmp_path / ".tolokaforge" / "refs").glob("*"))
+        assert not made[0].parent.exists()
+        assert (root / "tools" / "world_tool.py").is_file()
+
+    def test_the_run_directory_is_preferred_on_the_task_s_filesystem(self, tmp_path: Path) -> None:
+        from tests.unit.test_default_substrate_composer import _decl, _empty_run_sub
+
+        root = _world(tmp_path)
+        run_dir = tmp_path / "run" / ".tolokaforge" / "refs"
+        compose = _compose(tmp_path)
+        composer, materialiser = self._composer()
+        plan = [_decl(compose, stack_id="world", stack_scope="trial", runner_service="runner")]
+        run_sub = dataclasses.replace(
+            _empty_run_sub(), task_dir_of=lambda _task: root, refs_staging_dir=run_dir
+        )
+        handle = composer.provision_trial(plan, self._spec(compose, root), run_sub)
+        (staged,) = [ctx.tool_artifact_refs_root for ctx in materialiser.materialise_contexts]
+
+        assert staged.parent.parent == run_dir
+        assert not (tmp_path / ".tolokaforge").exists()
+        composer.teardown_trial(handle)
+        assert not staged.parent.exists() and run_dir.is_dir()
+
+    def test_a_failure_while_staging_is_a_provision_error_and_leaves_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import errno
+
+        from tests.unit.test_default_substrate_composer import _decl, _empty_run_sub
+        from tolokaforge.core import refs_staging
+
+        def cross_device(_src: Any, _dst: Any) -> None:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+        def disk_full(_src: Any, _dst: Any) -> None:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(refs_staging.os, "link", cross_device)
+        monkeypatch.setattr(refs_staging.shutil, "copyfile", disk_full)
+        root = _world(tmp_path)
+        compose = _compose(tmp_path)
+        composer, materialiser = self._composer()
+        plan = [_decl(compose, stack_id="world", stack_scope="trial", runner_service="runner")]
+        run_sub = dataclasses.replace(_empty_run_sub(), task_dir_of=lambda _task: root)
+
+        with pytest.raises(ProvisionError, match="No space left on device") as raised:
+            composer.provision_trial(plan, self._spec(compose, root), run_sub)
+        assert raised.value.stage == "provision"
+        assert materialiser.materialise_contexts == []
+        assert not list((tmp_path / ".tolokaforge" / "refs").glob("*"))
+
     def _spec(self, compose: Path, root: Path) -> Any:
         from tests.unit.test_default_substrate_composer import _manifest, _trial_spec
 
@@ -821,13 +964,69 @@ class TestComposer:
 
         run_sub = dataclasses.replace(_empty_run_sub(), task_dir_of=task_dir_of)
         spec = self._spec(compose, root)
-        composer.provision_trial(plan, spec, run_sub)
+        handle = composer.provision_trial(plan, spec, run_sub)
 
-        assert [ctx.tool_artifact_refs_root for ctx in materialiser.materialise_contexts] == [
-            root.resolve(),
-            None,
-        ]
+        staged, side = [ctx.tool_artifact_refs_root for ctx in materialiser.materialise_contexts]
+        assert side is None
         assert asked == [spec.task.task_id]
+        # The runner gets the referenced file alone, not the task's directory (ADR-0072).
+        assert staged is not None and staged != root.resolve()
+        assert sorted(p.relative_to(staged).as_posix() for p in staged.rglob("*")) == [
+            "tools",
+            "tools/world_tool.py",
+        ]
+        assert (staged / "tools" / "world_tool.py").read_text() == "ANSWER = 42\n"
+        # Beside the task, under the one hidden engine directory, on its filesystem: a hard
+        # link, kept on the handle for teardown.
+        assert staged.parent.parent == root.parent / ".tolokaforge" / "refs"
+        assert handle.refs_staging_dir == staged.parent
+        source = (root / "tools" / "world_tool.py").stat()
+        assert (staged / "tools" / "world_tool.py").stat().st_ino == source.st_ino
+        composer.teardown_trial(handle)
+        assert not staged.parent.exists()
+        assert (root / "tools" / "world_tool.py").read_text() == "ANSWER = 42\n"
+
+    def test_a_referenced_file_of_another_size_is_refused_before_any_stack_starts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tolokaforge.core.default_substrate_composer as composer_module
+
+        made: list[Path] = []
+        real = composer_module._make_final_state_dir
+
+        def recording(trial_id: str) -> Path:
+            made.append(real(trial_id))
+            return made[-1]
+
+        monkeypatch.setattr(composer_module, "_make_final_state_dir", recording)
+        from tests.unit.test_default_substrate_composer import (
+            _always_ready_loader,
+            _decl,
+            _empty_run_sub,
+            _fake_client_factory,
+            _FakeMaterialiser,
+        )
+        from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
+
+        compose = _compose(tmp_path)
+        root = _world(tmp_path)
+        materialiser = _FakeMaterialiser()
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+            readiness_probe_loader=_always_ready_loader,
+        )
+        plan = [_decl(compose, stack_id="world", stack_scope="trial", runner_service="runner")]
+        spec = self._spec(compose, root)
+        (root / "tools" / "world_tool.py").write_text("ANSWER = 4242\n")
+        run_sub = dataclasses.replace(_empty_run_sub(), task_dir_of=lambda _task: root)
+
+        with pytest.raises(ProvisionError, match="pack:tools/world_tool.py has 14 bytes"):
+            composer.provision_trial(plan, spec, run_sub)
+        assert materialiser.materialise_contexts == []
+        # Nothing staged is left: neither beside the task nor a final-state directory.
+        assert not list((tmp_path / ".tolokaforge" / "refs").glob("*"))
+        assert made and not made[0].parent.exists()
 
     def test_references_with_no_way_to_find_the_task_are_refused(self, tmp_path: Path) -> None:
         from tests.unit.test_default_substrate_composer import (
@@ -1083,3 +1282,214 @@ class TestTrialContractGate:
         from tolokaforge.core.trial_validation import validate_trial_inputs
 
         validate_trial_inputs(self._inputs(tmp_path, None), default_grader_name="runner_rpc")
+
+
+# ---------------------------------------------------------------------------
+# Staging: the runner's mount holds the referenced files only (ADR-0072)
+# ---------------------------------------------------------------------------
+
+
+class TestStaging:
+    def test_only_the_referenced_files_are_staged_at_their_pack_paths(self, tmp_path: Path) -> None:
+        from tolokaforge.core.refs_staging import stage_referenced_files
+
+        root = _world(tmp_path)
+        refs = {
+            "tools/world_tool.py": _ref_for(root, "tools/world_tool.py"),
+            "state/records.json": _ref_for(root, "data/records.json"),
+            "again/records.json": _ref_for(root, "data/records.json"),
+        }
+        staged = stage_referenced_files(root, refs, tmp_path / "staged")
+
+        files = sorted(
+            p.relative_to(staged.directory).as_posix()
+            for p in staged.directory.rglob("*")
+            if p.is_file()
+        )
+        assert files == ["data/records.json", "tools/world_tool.py"]
+        assert staged.linked + staged.copied == 2
+        for rel in files:
+            assert (staged.directory / rel).read_bytes() == (root / rel).read_bytes()
+
+    def test_a_file_is_a_hard_link_where_the_filesystem_allows_it(self, tmp_path: Path) -> None:
+        from tolokaforge.core.refs_staging import stage_referenced_files
+
+        root = _world(tmp_path)
+        refs = {"tools/world_tool.py": _ref_for(root, "tools/world_tool.py")}
+        staged = stage_referenced_files(root, refs, tmp_path / "staged")
+
+        assert (staged.linked, staged.copied) == (1, 0)
+        source = (root / "tools" / "world_tool.py").stat()
+        assert (staged.directory / "tools" / "world_tool.py").stat().st_ino == source.st_ino
+
+    def test_a_refused_link_falls_back_to_a_copy_with_a_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import errno
+
+        from tolokaforge.core import refs_staging
+
+        def cross_device(_src: Any, _dst: Any) -> None:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+        monkeypatch.setattr(refs_staging.os, "link", cross_device)
+        root = _world(tmp_path)
+        refs = {"data/records.json": _ref_for(root, "data/records.json")}
+        size = (root / "data" / "records.json").stat().st_size
+        with caplog.at_level(logging.WARNING, logger=refs_staging.__name__):
+            staged = refs_staging.stage_referenced_files(root, refs, tmp_path / "staged")
+
+        assert (staged.linked, staged.copied, staged.copied_bytes) == (0, 1, size)
+        assert f"1 copied ({size} bytes)" in caplog.text
+        copy = staged.directory / "data" / "records.json"
+        assert copy.read_bytes() == (root / "data" / "records.json").read_bytes()
+        assert copy.stat().st_ino != (root / "data" / "records.json").stat().st_ino
+
+    def test_every_missing_or_resized_file_is_named_and_nothing_is_staged(
+        self, tmp_path: Path
+    ) -> None:
+        from tolokaforge.core.refs_staging import RefsStagingError, stage_referenced_files
+
+        root = _world(tmp_path)
+        refs = {
+            "tools/world_tool.py": _ref_for(root, "tools/world_tool.py"),
+            "gone.py": _ref("tools/gone.py"),
+            "case_state.json": _ref("case_state.json", size=999),
+        }
+        with pytest.raises(RefsStagingError) as raised:
+            stage_referenced_files(root, refs, tmp_path / "staged")
+
+        assert "2 of 3 referenced file(s)" in str(raised.value)
+        assert "pack:tools/gone.py is not a file" in str(raised.value)
+        assert "pack:case_state.json has 11 bytes, the description 999" in str(raised.value)
+        assert not (tmp_path / "staged").exists()
+
+    def test_a_link_out_of_the_task_directory_is_refused(self, tmp_path: Path) -> None:
+        from tolokaforge.core.refs_staging import RefsStagingError, stage_referenced_files
+
+        root = _world(tmp_path)
+        (tmp_path / "secret.txt").write_text("x")
+        (root / "tools" / "escape.txt").symlink_to(tmp_path / "secret.txt")
+        refs = {"escape.txt": _ref("tools/escape.txt")}
+
+        with pytest.raises(RefsStagingError, match="resolves outside the task directory"):
+            stage_referenced_files(root, refs, tmp_path / "staged")
+
+    def test_a_copy_keeps_the_mode_readable_by_every_user(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import errno
+        import stat
+
+        from tolokaforge.core import refs_staging
+
+        def cross_device(_src: Any, _dst: Any) -> None:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+        monkeypatch.setattr(refs_staging.os, "link", cross_device)
+        root = _world(tmp_path)
+        (root / "tools" / "world_tool.py").chmod(0o750)
+        refs = {"tools/world_tool.py": _ref_for(root, "tools/world_tool.py")}
+        previous = os.umask(0o077)
+        try:
+            staged = refs_staging.stage_referenced_files(root, refs, tmp_path / "staged")
+        finally:
+            os.umask(previous)
+
+        mode = stat.S_IMODE((staged.directory / "tools" / "world_tool.py").stat().st_mode)
+        assert mode == 0o754
+        assert stat.S_IMODE((staged.directory / "tools").stat().st_mode) == 0o755
+
+    def test_a_link_refused_for_another_reason_is_an_error_naming_the_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tolokaforge.core import refs_staging
+
+        def exists(_src: Any, dst: Any) -> None:
+            raise FileExistsError(17, "File exists", str(dst))
+
+        monkeypatch.setattr(refs_staging.os, "link", exists)
+        root = _world(tmp_path)
+        refs = {"tools/world_tool.py": _ref_for(root, "tools/world_tool.py")}
+
+        with pytest.raises(
+            refs_staging.RefsStagingError, match="pack:tools/world_tool.py cannot be linked"
+        ):
+            refs_staging.stage_referenced_files(root, refs, tmp_path / "staged")
+        assert not (tmp_path / "staged").exists()
+
+    def test_two_addresses_differing_only_in_case_are_refused_on_such_a_filesystem(
+        self, tmp_path: Path
+    ) -> None:
+        from tolokaforge.core.refs_staging import RefsStagingError, stage_referenced_files
+
+        probe = tmp_path / "probe"
+        probe.write_text("x")
+        if not (tmp_path / "PROBE").exists():
+            pytest.skip("this filesystem tells names apart by case")
+        root = _world(tmp_path)
+        refs = {
+            "data/records.json": _ref_for(root, "data/records.json"),
+            "DATA/records.json": _ref_for(root, "DATA/records.json"),
+        }
+        with pytest.raises(RefsStagingError, match="differ only in case"):
+            stage_referenced_files(root, refs, tmp_path / "staged")
+        assert not (tmp_path / "staged").exists()
+
+    def test_the_sweep_removes_what_a_dead_or_old_engine_left_and_keeps_a_live_one(
+        self, tmp_path: Path
+    ) -> None:
+        import json as _json
+        import socket
+        import subprocess
+
+        from tolokaforge.core.refs_staging import STALE_AFTER_S, mark_owner, sweep_stale_staging
+
+        base = tmp_path / "refs"
+        live, dead, old, foreign = (base / name for name in ("live", "dead", "old", "foreign"))
+        for entry in (live, dead, old, foreign):
+            entry.mkdir(parents=True)
+        mark_owner(live)
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        (dead / ".owner").write_text(_json.dumps({"pid": gone.pid, "host": socket.gethostname()}))
+        (foreign / ".owner").write_text(_json.dumps({"pid": gone.pid, "host": "elsewhere"}))
+        past = time.time() - STALE_AFTER_S - 60
+        os.utime(old, (past, past))
+
+        removed = sweep_stale_staging(base)
+
+        assert sorted(p.name for p in removed) == ["dead", "old"]
+        assert live.is_dir() and foreign.is_dir()
+
+
+class TestPackWalksSkipTheEngineDirectory:
+    def test_a_task_s_artefacts_leave_out_staged_references_nested_in_it(
+        self, tmp_path: Path
+    ) -> None:
+        root = _world(tmp_path)
+        nested = root / ".tolokaforge" / "refs" / "other-trial-x" / "pack-refs" / "tools"
+        nested.mkdir(parents=True)
+        (nested / "world_tool.py").write_text("ANSWER = 0\n")
+
+        paths = NativeAdapter._task_artifact_paths(root)
+
+        assert "tools/world_tool.py" in paths
+        assert not [path for path in paths if ".tolokaforge" in path]
+
+    def test_task_discovery_skips_a_task_file_staged_by_the_engine(self, tmp_path: Path) -> None:
+        tasks = tmp_path / "tasks"
+        task = tasks / "one"
+        task.mkdir(parents=True)
+        (task / "task.yaml").write_text("task_id: one\n")
+        staged = tasks / ".tolokaforge" / "refs" / "one-0-x" / "pack-refs"
+        staged.mkdir(parents=True)
+        (staged / "task.yaml").write_text("task_id: one\n")
+        adapter = NativeAdapter.__new__(NativeAdapter)
+        seen: list[Path] = []
+        adapter._process_discovered_task_file = seen.append  # type: ignore[method-assign]
+        adapter._expand_braces = lambda pattern: [pattern]  # type: ignore[method-assign]
+
+        adapter._discover_from_pattern(str(tasks / "**" / "task.yaml"))
+
+        assert seen == [task / "task.yaml"]

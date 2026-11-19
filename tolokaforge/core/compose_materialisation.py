@@ -503,10 +503,11 @@ def mount_docker_socket_into_runner(compose_file: Path, runner_service: str) -> 
 def mount_tool_artifact_refs_into_runner(
     compose_file: Path, runner_service: str, refs_root: Path
 ) -> None:
-    """Bind-mount a task's tool-artefact reference root read-only into ``runner_service``.
+    """Bind-mount a trial's tool-artefact reference root read-only into ``runner_service``.
 
     A description that delivers its artefacts by reference (ADR-0068) carries
-    only paths and hashes; the runner reads the bytes from ``refs_root``, which
+    only paths and hashes; the runner reads the bytes from ``refs_root``, the
+    trial's staged copy of the referenced files (:mod:`tolokaforge.core.refs_staging`), which
     is mounted at :data:`TOOL_ARTIFACT_REFS_MOUNT_PATH` and named to the runner
     by :data:`TOOL_ARTIFACT_REFS_DIR_ENV_VAR`. The mount is read-only, so no
     trial can change the task's files for the trials after it.

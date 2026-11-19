@@ -1113,6 +1113,7 @@ class SharedStackRuntimeBackend:
         grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
         state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S,
         task_dir_of: Callable[[str], Path] | None = None,
+        refs_staging_dir: Path | None = None,
     ):
         from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
 
@@ -1147,6 +1148,7 @@ class SharedStackRuntimeBackend:
         self._state_read_timeout_s: float = state_read_timeout_s
         # Where each task's ``pack:`` references resolve on this machine (ADR-0072).
         self._task_dir_of = task_dir_of
+        self._refs_staging_dir = refs_staging_dir
         self._run_substrate: RunSubstrate | None = None
         self._env_handles: dict[str, ComposedEnvHandle] = {}
         self._connected_trials: set[str] = set()
@@ -1262,6 +1264,7 @@ class SharedStackRuntimeBackend:
             grpc_max_message_mb=self._grpc_max_message_mb,
             state_read_timeout_s=self._state_read_timeout_s,
             task_dir_of=self._task_dir_of,
+            refs_staging_dir=self._refs_staging_dir,
         )
         self._run_substrate = self.composer.materialise_run(
             plan=list(self._env_manifest.stacks), ctx=ctx
@@ -1768,6 +1771,7 @@ class SharedStackRuntimeBackend:
             grpc_max_message_mb=self._grpc_max_message_mb,
             state_read_timeout_s=self._state_read_timeout_s,
             task_dir_of=self._task_dir_of,
+            refs_staging_dir=self._refs_staging_dir,
         )
 
     def __enter__(self):
@@ -1811,6 +1815,7 @@ def shared_runtime_backend_factory(
             grpc_max_message_mb=ctx.grpc_max_message_mb,
             state_read_timeout_s=ctx.state_read_timeout_s,
             task_dir_of=ctx.task_dir_of,
+            refs_staging_dir=ctx.refs_staging_dir,
         )
     if ctx.per_trial_mode:
         backend = SharedStackRuntimeBackend(
@@ -1825,6 +1830,7 @@ def shared_runtime_backend_factory(
             grpc_max_message_mb=ctx.grpc_max_message_mb,
             state_read_timeout_s=ctx.state_read_timeout_s,
             task_dir_of=ctx.task_dir_of,
+            refs_staging_dir=ctx.refs_staging_dir,
         )
         backend._per_trial_mode = True
         return backend

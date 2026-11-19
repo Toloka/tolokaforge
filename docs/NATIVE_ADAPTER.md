@@ -408,15 +408,16 @@ tool schemas in `fixtures/tools.json` are also resolved on the host and embedded
 move is the deployment's choice, not the task's. For each task whose runner a `trial`-scope
 stack owns, the adapter then puts nothing in `tool_artifacts`: it records the same files in
 `tool_artifact_refs` — each file's `pack:` address relative to the task directory, SHA-256
-and size, hashed in chunks — and the engine bind-mounts its own copy of the task directory
-read-only into the runner, which copies and verifies every file at `RegisterTrial`. A task
+and size, hashed in chunks — and the engine stages those files from its own copy of the task
+directory into a per-trial directory it bind-mounts read-only into the runner, which copies and
+verifies every file at `RegisterTrial`. A task
 whose runner the run owns stays inline, with a log line saying why. A file outside the task
 directory (a `json_db` path with `..`) is refused under `mount`. See
 [`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifact_refs`](TASK_DESCRIPTION_SCHEMA.md#tool_artifact_refs-the-tasks-files-by-reference-adr-0068-adr-0072).
 
-Two things to know before a pack opts in. The runner service sees the whole task directory,
-read-only, not only the referenced files: a directory that holds something the runner (and so
-a tool that reads files) must not see keeps inline delivery. And a subclass that ships its
+Two things to know before a pack opts in. The runner service sees only the referenced files,
+read-only, the same set inline delivery would have bundled: a file the adapter's
+`_task_artifact_sources` leaves out never reaches the runner. And a subclass that ships its
 own set of the task's files overrides `_task_artifact_sources(task_dir)`, the one hook both
 deliveries read; a subclass that overrides `_bundle_task_artifacts` alone is refused under
 `mount`, since its references would name the default set and the runner would miss what its
