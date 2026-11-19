@@ -8,9 +8,14 @@ name: Terminal-bench adapter e2e
 #
 # The core paths are listed because the v4 path does not live in the adapter
 # alone: a trial is graded by `tolokaforge/core/grading` driving `materialise_path`
-# and `run_test_suite` against `tolokaforge/runner/service.py`. A change to either
-# can break separate-verifier grading without touching a single adapter file, and
-# no other PR job drives that path against real containers.
+# and `run_test_suite` against `tolokaforge/runner/service.py`, which selects the
+# executor for both through `tolokaforge/runner/env_exec.py`. A change to any of
+# the three can break separate-verifier grading without touching a single adapter
+# file, and no other PR job drives that path against real containers.
+#
+# `tolokaforge/runner/substrate_service.py` delegates to the same two
+# implementations but is the detached-grader path, which this e2e does not drive,
+# so it is deliberately absent.
 on:
   push:
     branches:
@@ -19,6 +24,7 @@ on:
       - 'external_adapters/tolokaforge-adapter-terminal-bench/**'
       - 'tolokaforge/core/grading/**'
       - 'tolokaforge/runner/service.py'
+      - 'tolokaforge/runner/env_exec.py'
       - 'tests/data/terminal_bench_tasks/**'
       - '.github/workflows/adapter-terminal-bench-e2e.yml'
   pull_request:
@@ -29,6 +35,7 @@ on:
       - 'external_adapters/tolokaforge-adapter-terminal-bench/**'
       - 'tolokaforge/core/grading/**'
       - 'tolokaforge/runner/service.py'
+      - 'tolokaforge/runner/env_exec.py'
       - 'tests/data/terminal_bench_tasks/**'
       - '.github/workflows/adapter-terminal-bench-e2e.yml'
   schedule:
