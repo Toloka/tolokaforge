@@ -101,6 +101,41 @@ in sync with the code:
   bypass, root-under-sandbox, config-file precedence, empty-response fallback
   behaviour, and so on).
 
+## Stdout telemetry — what a CLI reported about its own run
+
+A harness trial is one tool call, so the engine measures no turns, tokens or
+cost of its own. `parse_harness_stdout(harness, stdout)` reads what the CLI
+printed into a `HarnessStdoutTelemetry`, or returns `None` when there is
+nothing to read — the harness declares no dialect, the stream is empty, or it
+never reached its terminal totals. Four CLIs print a readable dialect
+(`claude-code`, `codex`, `opencode`, `kimi-code`); the rest print none.
+
+**Every field distinguishes "not reported" from "reported as zero".** `None`
+is the absence of a measurement and zero is a measurement that came out zero,
+and the two must not be collapsed: `kimi-code` prints no token counts at all,
+so a zero there would read as a trial that somehow spent nothing.
+`prompt_tokens` and `completion_tokens` are inclusive totals — cache counters
+and reasoning tokens are inside them, not beside them — so one field means one
+thing across dialects.
+
+`reported_error` and `error_text` carry the CLI's own verdict on its run, on
+that same convention, three-valued:
+
+| `reported_error` | meaning |
+|---|---|
+| `None` | this dialect reports no verdict — `codex`, `opencode`, `kimi-code` |
+| `False` | the CLI said its run succeeded |
+| `True` | the CLI said its run failed; `error_text` is what it said about it |
+
+`error_text` is `None` wherever `reported_error` is not `True`. Only
+`claude-code` reports a verdict, from the `is_error` and `result` fields of its
+terminal `result` event — not from `subtype`, which reads `"success"` even on a
+run that died on an API error.
+
+The verdict is a **diagnostic, not a judgement**. `claude-code` sets the same
+flag for a run that merely exhausted its turn budget, which is an outcome the
+agent earned, so nothing may condemn a trial on this field alone.
+
 ## Middleware proxy — Kimi K2.7 provider pinning
 
 Some harnesses need a body-injection knob no CLI flag exposes. `kimi-code`

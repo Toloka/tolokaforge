@@ -455,6 +455,10 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         the layer's Dockerfile is ``FROM`` the base image, and the orchestrator
         builds the list in order.
 
+        Every entry a task contributes carries that task's declared
+        ``[environment].build_timeout_sec``, so a wedged build fails naming the
+        service rather than hanging the run.
+
         Skipped under ``prebuild_images: false``, for callers pre-warming
         images themselves.
         """
@@ -463,12 +467,14 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         builds = []
         for task_id in self.get_task_ids():
             env = self._environment(task_id)
+            timeout_sec = self._tasks[task_id].build_timeout_sec
             if env.base_build_service is not None:
                 builds.append(
                     ComposeImageBuild(
                         compose_file=env.compose_file,
                         service=env.base_build_service,
                         expected_image_ref=env.base_image,
+                        timeout_sec=timeout_sec,
                     )
                 )
             builds.append(
@@ -476,6 +482,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     compose_file=env.compose_file,
                     service=env.agent_service,
                     expected_image_ref=env.agent_image,
+                    timeout_sec=timeout_sec,
                 )
             )
             if env.verifier_service is not None and env.verifier_image is not None:
@@ -484,6 +491,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                         compose_file=env.compose_file,
                         service=env.verifier_service,
                         expected_image_ref=env.verifier_image,
+                        timeout_sec=timeout_sec,
                     )
                 )
         return DockerStackRequirements(image_builds=builds)

@@ -1,0 +1,33 @@
+artifacts = [
+  "/app/answer.txt",
+  { source = "/app/workdir", exclude = ["**/__pycache__/**", "*.log"] },
+  { source = "/dumps/greeting.sql", service = "db" },
+]
+
+[task]
+name = "echo-hello-verified"
+description = "Greet in a file and in the database."
+
+[metadata]
+author_name = "test"
+difficulty = "medium"
+category = "software_engineering"
+tags = ["shell", "database"]
+
+[agent]
+timeout_sec = 120.0
+user = "agent"
+
+[verifier]
+environment_mode = "separate"
+timeout_sec = 600.0
+user = "root"
+
+[[verifier.collect]]
+command = "pg_dump -h db -U greeter --table greeting greeter > /dumps/greeting.sql"
+service = "db"
+timeout_sec = 60.0
+
+[environment]
+cpus = 2
+memory_mb = 1024

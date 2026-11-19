@@ -141,7 +141,10 @@ address (`runner_address` on `TrialGraderContext`), calls
 `GradeTrial` on the runner service, and translates the returned proto
 into a `Grade`. Short-circuits with an auto-fail on
 `TrialStatus.ERROR` / `TrialStatus.TIMEOUT` /
-`TerminationReason.STUCK_DETECTED` before the RPC is dialled.
+`TerminationReason.HARNESS_CLI_FAILED` / `TerminationReason.STUCK_DETECTED` /
+`TerminationReason.CONTEXT_WINDOW_EXCEEDED` /
+`TerminationReason.PROVIDER_CONTENT_FILTER` before the RPC is dialled, and
+answers `TerminationReason.TRIAL_LOST` with no grade at all.
 
 ```toml
 [project.entry-points."tolokaforge.trial_graders"]

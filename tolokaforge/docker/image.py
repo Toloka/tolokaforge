@@ -133,6 +133,23 @@ class ImagePullError(ImageError):
         super().__init__("pull", full_tag, f"[{kind}] {message}")
 
 
+class ImageBuildTimeout(ImageError):
+    """Raised when an image build outlives the budget its declarer allowed.
+
+    Named rather than folded into :class:`ImageError` because the operator
+    response differs: a build that failed has a broken Dockerfile to read,
+    while a build that expired has a stalled network or an under-budgeted
+    task, and neither is visible in a generic build failure.
+
+    Attributes:
+        timeout_sec: The budget that expired, in seconds.
+    """
+
+    def __init__(self, image_name: str, timeout_sec: float, message: str) -> None:
+        self.timeout_sec = timeout_sec
+        super().__init__("build", image_name, f"[timeout after {timeout_sec}s] {message}")
+
+
 class Image(BaseModel):
     """Represents a built Docker image with content-hash tagging.
 

@@ -1404,10 +1404,9 @@ class InProcessConductor:
         """Compute the trial's :class:`Grade` via the injected
         :class:`TrialGrader` and assign it to ``trajectory.grade``.
 
-        Grading strategy — including auto-fail on ``ERROR`` / ``TIMEOUT``
-        / ``STUCK_DETECTED``, the ``None`` verdict for a trial the
-        infrastructure aborted, and the runner-RPC path for a normal
-        completion — lives inside the grader. This phase is the trigger
+        Grading strategy — including the auto-fail branches, the ``None``
+        verdict for a trial the infrastructure aborted, and the runner-RPC
+        path for a normal completion — lives inside the grader. This phase is the trigger
         (per CLOUD_RUNTIME §6.3): assemble the agent's post-policy
         system prompt, delegate.
 

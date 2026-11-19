@@ -1389,7 +1389,83 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
-def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str:
+_EPISODE_EXIT_MARKER_HEAD = "__tf_episode_exit__"
+"""Opening word of the line the wrapped episode prints to report its own status.
+
+The engine has no other channel for it: ``ToolWrapper.execute`` returns a
+string, and the fine-grained status a tool call carries says only whether the
+exec itself completed, not what the CLI inside it returned.
+
+The nonce that follows is a collision guard, not a secret — it is readable from
+``/proc`` inside the container, and from the episode's own ``bash -c`` argv. It
+stops a CLI that happens to print this text from being mistaken for the
+wrapper. The marker never reaches the model's context either way, because the
+recorded command is the unwrapped one.
+"""
+
+_EPISODE_OUTPUT_FOOTERS = ("\n[exit code: ", "\n[timed out after ")
+"""Where :func:`_run_argv_preserving_partial_output` stops relaying stdout.
+
+Everything it appends past one of these — the exit-code line and the command's
+whole stderr — is host-side framing, so the episode's own stdout is whatever
+precedes the first of them.
+"""
+
+
+def _episode_stdout_end(output: str) -> int:
+    """Index at which the episode's stdout gives way to the host's framing."""
+    starts = [at for at in (output.find(footer) for footer in _EPISODE_OUTPUT_FOOTERS) if at != -1]
+    return min(starts) if starts else len(output)
+
+
+def read_episode_exit_status(output: str, nonce: str) -> tuple[int | None, str]:
+    """The episode's own exit status, and *output* with its markers removed.
+
+    The public half of the rule :func:`wrap_episode_command_with_watchdog`
+    writes. The status is resolved only from a well-formed marker inside the
+    episode's stdout, which ends at the first host-appended footer; the
+    wrapper's own marker always precedes that footer, and the stderr relayed
+    after it is a channel the agent writes freely. The last qualifying marker
+    wins. A stream whose stdout happens to contain the footer text has its
+    search cut short and resolves ``None`` — that is the fail-safe direction,
+    because "not measured" condemns nothing. It is also the residual evasion:
+    an agent that can write the footer text onto the episode's own stdout makes
+    its exit status unreadable, which costs it nothing and buys it back the
+    verifier's grade.
+
+    ``None`` is "not measured" — a stream truncated, killed or lost before the
+    marker, or one carrying another trial's nonce — and a caller may read it
+    neither as success nor as failure.
+
+    Removal is wider than the search: every framed marker carrying *nonce*
+    comes out wherever it sits and whatever code it carries, so no engine
+    plumbing survives into the recorded stream. It is substring-exact on the
+    framed form, so every byte outside the framed marker survives, including a
+    final line the CLI left without its newline. A marker written without its
+    own trailing newline borrows the following line's, and takes it.
+    """
+    head = f"\n{_EPISODE_EXIT_MARKER_HEAD}:{nonce}:"
+    stdout_end = _episode_stdout_end(output)
+    exit_status: int | None = None
+    kept: list[str] = []
+    cursor = 0
+    search_from = 0
+    while (start := output.find(head, search_from)) != -1:
+        code_at = start + len(head)
+        end = output.find("\n", code_at)
+        if end == -1:
+            break
+        code = output[code_at:end]
+        search_from = end
+        if code.isascii() and code.isdigit() and start < stdout_end:
+            exit_status = int(code)
+        kept.append(output[cursor:start])
+        cursor = max(cursor, end + 1)
+    kept.append(output[cursor:])
+    return exit_status, "".join(kept)
+
+
+def wrap_episode_command_with_watchdog(command: str, kill_after_s: float, *, nonce: str) -> str:
     """Return *command* guarded by an in-container wall-clock watchdog.
 
     The wrapped script runs *command* in a process group of its own and
@@ -1398,6 +1474,12 @@ def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str
     whether or not the host-side ``docker exec`` client is still attached. The
     wrapped script exits with the command's own code, or ``137``
     (``128 + SIGKILL``) when the watchdog fired.
+
+    That same code is printed to stdout as a marker line carrying *nonce*,
+    which is how the engine learns it: :func:`read_episode_exit_status` reads
+    the marker and takes it back out of the stream. The marker is framed in
+    newlines of its own, because a CLI whose last line ends without one would
+    otherwise have that line fused to the marker.
 
     The new process group is opened with ``setsid`` where it exists, and under
     bash job control (``set -m``) where it does not — some minimal images ship
@@ -1408,6 +1490,11 @@ def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str
     the engine loop issues run unwrapped, so a backgrounded service they start
     keeps outliving its exec as before.
     """
+    if not (nonce.isascii() and nonce.isalnum()):
+        raise ValueError(
+            f"episode nonce must be ASCII alphanumeric, got {nonce!r}: it is rendered "
+            "into the script's printf format, where quoting cannot protect it"
+        )
     quoted = shlex.quote(command)
     # busybox ``sleep`` takes a whole number of seconds and rejects the ``%g``
     # scientific form (e.g. ``1e+06``), which would fire the kill at once, so
@@ -1444,6 +1531,7 @@ def wrap_episode_command_with_watchdog(command: str, kill_after_s: float) -> str
         "{ wait $__tf_cpid; __tf_rc=$?; } 2>/dev/null; "
         "kill -KILL -$__tf_wd 2>/dev/null; "
         "wait $__tf_wd 2>/dev/null; "
+        f"printf '\\n{_EPISODE_EXIT_MARKER_HEAD}:{nonce}:%s\\n' \"$__tf_rc\"; "
         "exit $__tf_rc"
     )
 

@@ -13,6 +13,8 @@ from tolokaforge_adapter_terminal_bench.task_parser import (
     discover_tasks,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _write_task(
     base: Path, task_id: str, task_toml: str, *, tests_dockerfile: bool = False
@@ -320,4 +322,54 @@ def test_a_user_that_is_not_a_non_empty_string_is_refused(tmp_path: Path, bad: s
         f'[metadata]\ndifficulty = "easy"\n\n[verifier]\nuser = {bad}\n',
     )
     with pytest.raises(ValueError, match="verifier.user"):
+        discover_tasks(tmp_path)
+
+
+_BUILD_TIMEOUT_TOML = """
+[metadata]
+difficulty = "medium"
+
+[agent]
+timeout_sec = 1800.0
+
+[environment]
+cpus = 2
+memory_mb = 4096
+build_timeout_sec = 1200.0
+"""
+
+
+def test_declared_build_timeout_is_parsed(tmp_path: Path) -> None:
+    """Every delivered TB4 pack declares one; unparsed, the build runs unbounded."""
+    _write_task(tmp_path, "budgeted", _BUILD_TIMEOUT_TOML)
+    assert discover_tasks(tmp_path)["budgeted"].build_timeout_sec == 1200.0
+
+
+def test_an_integer_build_timeout_is_parsed_as_seconds(tmp_path: Path) -> None:
+    """The corpus spells the same budget both ways (``1800`` and ``1800.0``)."""
+    _write_task(
+        tmp_path,
+        "int-budget",
+        '[metadata]\ndifficulty = "easy"\n\n[environment]\nbuild_timeout_sec = 1800\n',
+    )
+    assert discover_tasks(tmp_path)["int-budget"].build_timeout_sec == 1800.0
+
+
+def test_a_task_declaring_no_build_timeout_stays_none(tmp_path: Path) -> None:
+    """``None`` rather than a default: an invented budget would kill a build
+    the task was willing to wait for."""
+    _write_task(tmp_path, "no-budget", _V21_TOML)
+    assert discover_tasks(tmp_path)["no-budget"].build_timeout_sec is None
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", '"900"', "true"])
+def test_a_build_timeout_that_is_not_a_positive_number_is_refused(tmp_path: Path, bad: str) -> None:
+    """Refused rather than dropped: a budget that cannot bound the subprocess
+    would silently restore the unbounded build this field exists to end."""
+    _write_task(
+        tmp_path,
+        "bad-budget",
+        f'[metadata]\ndifficulty = "easy"\n\n[environment]\nbuild_timeout_sec = {bad}\n',
+    )
+    with pytest.raises(ValueError, match="environment.build_timeout_sec"):
         discover_tasks(tmp_path)

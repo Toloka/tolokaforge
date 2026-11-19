@@ -14,6 +14,8 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
 )
 from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
 
+pytestmark = pytest.mark.unit
+
 _TASK_TOML = """
 [metadata]
 difficulty = "medium"

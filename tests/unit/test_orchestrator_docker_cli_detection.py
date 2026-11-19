@@ -559,3 +559,86 @@ class TestPerformDeclaredComposeImageBuilds:
                     ],
                 )
             )
+
+    def test_a_build_outliving_its_declared_budget_raises_a_named_timeout(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A wedged build must fail naming the service and the budget.
+
+        The build shells out for real here — only the argv is swapped for a
+        sleeper — so the expiry is produced by ``subprocess.run``'s own timeout
+        machinery rather than by a stub that agrees to raise.
+        """
+        import subprocess
+        import sys
+
+        from tolokaforge.adapters.base import ComposeImageBuild, DockerStackRequirements
+        from tolokaforge.docker.image import ImageBuildTimeout
+
+        compose = tmp_path / "docker-compose.yaml"
+        compose.write_text("services:\n  main:\n    image: wedged:local-a1b2c3d4\n")
+
+        real_run = subprocess.run
+
+        def _run(cmd: list[str], **kwargs: Any) -> Any:
+            if cmd[:3] == ["docker", "image", "inspect"]:
+                return MagicMock(returncode=1)
+            if cmd[:2] == ["docker", "compose"] and "build" in cmd:
+                return real_run([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        monkeypatch.setattr("subprocess.run", _run)
+
+        orch = Orchestrator(_run_config(adapter_type=None))
+        with pytest.raises(ImageBuildTimeout) as excinfo:
+            orch._perform_declared_compose_image_builds(
+                DockerStackRequirements(
+                    image_builds=[
+                        ComposeImageBuild(
+                            compose_file=compose,
+                            service="main",
+                            expected_image_ref="wedged:local-a1b2c3d4",
+                            timeout_sec=0.5,
+                        )
+                    ],
+                )
+            )
+
+        assert excinfo.value.timeout_sec == 0.5
+        assert "main" in str(excinfo.value)
+        assert "wedged:local-a1b2c3d4" in str(excinfo.value)
+
+    def test_a_build_with_no_declared_budget_runs_unbounded(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An adapter that declares no budget must not acquire an invented one:
+        a default minted here would kill a build its task was willing to wait for."""
+        from tolokaforge.adapters.base import ComposeImageBuild, DockerStackRequirements
+
+        compose = tmp_path / "docker-compose.yaml"
+        compose.write_text("services:\n  main:\n    image: unbounded:local-a1b2c3d4\n")
+
+        timeouts: list[Any] = []
+
+        def _run(cmd: list[str], **kwargs: Any) -> Any:
+            if cmd[:3] == ["docker", "image", "inspect"]:
+                return MagicMock(returncode=0 if timeouts else 1)
+            timeouts.append(kwargs["timeout"])
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr("subprocess.run", _run)
+
+        orch = Orchestrator(_run_config(adapter_type=None))
+        orch._perform_declared_compose_image_builds(
+            DockerStackRequirements(
+                image_builds=[
+                    ComposeImageBuild(
+                        compose_file=compose,
+                        service="main",
+                        expected_image_ref="unbounded:local-a1b2c3d4",
+                    )
+                ],
+            )
+        )
+
+        assert timeouts == [None]

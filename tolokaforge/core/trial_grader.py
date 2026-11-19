@@ -14,21 +14,27 @@ The conductor's job (per ``docs/CLOUD_RUNTIME_ARCHITECTURE.md`` §6.3) is to
      ``INFRASTRUCTURE_ABORT``) — **no grade at all**. The provider or the
      substrate killed the trial before the agent could be measured, and any
      score would describe work that never happened.
-  2. ``TrialStatus.ERROR`` / ``TrialStatus.TIMEOUT`` — auto-fail without
+  2. ``TerminationReason.HARNESS_CLI_FAILED`` — auto-fail. The coding-harness
+     CLI exited non-zero and its own telemetry reported no turns, no cost and
+     token counts totalling zero, so the episode never reached the model and
+     the repository is the one the trial started with. It is placed above case
+     3 because it arrives with ``TrialStatus.ERROR``, which that case would
+     otherwise claim and report as a bare "failed with status: error".
+  3. ``TrialStatus.ERROR`` / ``TrialStatus.TIMEOUT`` — auto-fail without
      touching the runner. The trial did end badly on the agent's watch, but
      running the judge on a truncated transcript would produce a false
      positive.
-  3. ``TerminationReason.STUCK_DETECTED`` — auto-fail. A stuck agent fails
+  4. ``TerminationReason.STUCK_DETECTED`` — auto-fail. A stuck agent fails
      even if the state hash happens to match the golden.
-  4. ``TerminationReason.CONTEXT_WINDOW_EXCEEDED`` — auto-fail. The wire
+  5. ``TerminationReason.CONTEXT_WINDOW_EXCEEDED`` — auto-fail. The wire
      history exceeded the provider's max input tokens and no summarize
      recovery was possible; the transcript is truncated by definition, so
      dispatching to the runner would score a mid-trial cutoff against the
      golden.
-  5. ``TerminationReason.PROVIDER_CONTENT_FILTER`` — auto-fail. The provider's
+  6. ``TerminationReason.PROVIDER_CONTENT_FILTER`` — auto-fail. The provider's
      safety classifier declined the request, so there is no action in the
      transcript to grade.
-  6. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
+  7. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
      judge components against the golden state and returns a raw dict that
      is parsed into :class:`Grade`. A grading run that could not produce a
      verdict raises :class:`GradingFailedError`; the verdict is the runner's
@@ -270,6 +276,21 @@ class RunnerRPCTrialGrader:
                 status=trajectory.status.value,
             )
             return None
+
+        if trajectory.termination_reason == TerminationReason.HARNESS_CLI_FAILED:
+            self.logger.info(
+                "Harness CLI failed without spending anything - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Coding-harness CLI exited non-zero having reported no spend; the trial measured nothing",
+                synthesized_by_termination_reason=TerminationReason.HARNESS_CLI_FAILED,
+            )
 
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
             self.logger.info(
@@ -730,6 +751,21 @@ class JudgeBackedTrialGrader:
             )
             return None
 
+        if trajectory.termination_reason == TerminationReason.HARNESS_CLI_FAILED:
+            self.logger.info(
+                "Harness CLI failed without spending anything - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Coding-harness CLI exited non-zero having reported no spend; the trial measured nothing",
+                synthesized_by_termination_reason=TerminationReason.HARNESS_CLI_FAILED,
+            )
+
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
             self.logger.info(
                 "Trial did not complete successfully - automatic fail",
@@ -882,6 +918,21 @@ class GraderRPCTrialGrader:
                 status=trajectory.status.value,
             )
             return None
+
+        if trajectory.termination_reason == TerminationReason.HARNESS_CLI_FAILED:
+            self.logger.info(
+                "Harness CLI failed without spending anything - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Coding-harness CLI exited non-zero having reported no spend; the trial measured nothing",
+                synthesized_by_termination_reason=TerminationReason.HARNESS_CLI_FAILED,
+            )
 
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
             self.logger.info(
@@ -1115,6 +1166,21 @@ class QueueTrialGrader:
                 status=trajectory.status.value,
             )
             return None
+
+        if trajectory.termination_reason == TerminationReason.HARNESS_CLI_FAILED:
+            self.logger.info(
+                "Harness CLI failed without spending anything - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Coding-harness CLI exited non-zero having reported no spend; the trial measured nothing",
+                synthesized_by_termination_reason=TerminationReason.HARNESS_CLI_FAILED,
+            )
 
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
             self.logger.info(

@@ -568,8 +568,9 @@ class FailureRecord(BaseModel):
     ``synthesized`` + ``synthesized_by_termination_reason`` name the
     harness auto-fail branches of :class:`~tolokaforge.core.trial_grader.TrialGrader`:
     a trial whose grade was fabricated by the harness (no evaluator ran
-    on it — ``ERROR`` / ``TIMEOUT`` / ``STUCK_DETECTED`` /
-    ``CONTEXT_WINDOW_EXCEEDED`` / ``PROVIDER_CONTENT_FILTER``) carries
+    on it — ``ERROR`` / ``TIMEOUT`` / ``HARNESS_CLI_FAILED`` /
+    ``STUCK_DETECTED`` / ``CONTEXT_WINDOW_EXCEEDED`` /
+    ``PROVIDER_CONTENT_FILTER``) carries
     ``synthesized: true`` and the reason
     name, and the record's ``failure_class`` is ``harness_autofail``
     when the synth reason is not otherwise enumerated in

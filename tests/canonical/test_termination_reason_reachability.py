@@ -36,6 +36,7 @@ while a change to *which* reasons are answered that way fails them.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -375,6 +376,59 @@ def _provider_refused_trajectory() -> Trajectory:
     )
 
 
+class _FailedHarnessCliContainer:
+    """The trial container of a harness run whose CLI never started.
+
+    The CLI prints its terminal event — an API error, no usage block — and
+    exits non-zero; the wrapped episode reports that status on stdout under the
+    nonce the engine minted, which the fake reads back out of the command it
+    was handed, exactly as the real script does.
+    """
+
+    _RESULT_EVENT = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": True,
+        "result": "API Error: 400 version 2.1.280 or newer is required.",
+    }
+    _NONCE = re.compile(r"__tf_episode_exit__:([0-9a-f]+):")
+
+    def execute(
+        self,
+        tool_name: str,
+        arguments: dict | None = None,
+        *,
+        call_id: str = "",
+        validation_schema: dict | None = None,
+    ) -> ToolResult:
+        command = (arguments or {}).get("command", "")
+        nonce = self._NONCE.search(command)
+        assert nonce is not None, f"the episode command carries no exit marker: {command}"
+        return ToolResult(
+            success=True,
+            output=f"{json.dumps(self._RESULT_EVENT)}\n__tf_episode_exit__:{nonce.group(1)}:1\n",
+        )
+
+
+def _harness_cli_failed_trajectory() -> Trajectory:
+    """Drive a harness trial whose CLI exited non-zero having spent nothing."""
+    return TrialRunner(
+        task_id="reachability",
+        trial_index=0,
+        agent_client=_HarnessAgentClient(),  # type: ignore[arg-type]
+        user_simulator=None,
+        tool_executor=_FailedHarnessCliContainer(),
+        tool_schemas=[],
+        episode_timeout_s=600,
+    ).run_harness(
+        tool_name="bash",
+        command="claude --print",
+        instruction="Fix the failing tests.",
+        timeout_s=600,
+        harness="claude-code",
+    )
+
+
 def _provision_failure_trajectory() -> Trajectory:
     """Drive the provisioning bracket with an environment that never comes up."""
     result = ProvisioningTrialExecutor(
@@ -432,6 +486,7 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
         _run_trial(ContextWindowExceededError("input too large", "anthropic/claude", "anthropic")),
         _user_tool_loop_trajectory(),
         _provider_refused_trajectory(),
+        _harness_cli_failed_trajectory(),
         _provision_failure_trajectory(),
         drive_lost_trial()[0],
     ]
