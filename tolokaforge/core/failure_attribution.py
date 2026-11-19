@@ -29,6 +29,9 @@ _CONNECTION_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ERROR_SHAPED_STATUSES = frozenset({TrialStatus.ERROR, TrialStatus.TIMEOUT, TrialStatus.FAILED})
+"""The statuses of a trial that ended badly rather than running to an end."""
+
 
 class TrialOutcomeClass(str, Enum):
     """Whether a trial measured the agent, and if not, whose fault that was.
@@ -103,11 +106,19 @@ direction the tie breaks. ``tests/canonical/test_termination_reason_reachability
 fails if any reason here becomes producible from prose.
 """
 
+HARNESS_ERROR_REASONS = frozenset({TerminationReason.ERROR, TerminationReason.TRIAL_LOST})
+"""The reasons that name the fault ours whatever else the trial carries.
+
+A trial ending on one of these is a ``HARNESS_ERROR`` with a grade or without,
+which is what lets ``outcomes_by_reason`` key it by the reason alone: the row
+cannot hold two classes.
+"""
+
 
 def classify_trial_outcome(trajectory: Trajectory) -> TrialOutcomeClass:
     """Return whether *trajectory* measured the agent.
 
-    ``grading_error`` is read before the pair, and unconditionally: it is typed
+    ``grading_error`` is read first, and unconditionally: it is typed
     evidence that *we* failed, while exclusion is earned by typed evidence that
     the provider or the substrate killed the trial. Our own defects stay in the
     denominator, so a refusal outranks any reason that would have removed one.
@@ -116,31 +127,38 @@ def classify_trial_outcome(trajectory: Trajectory) -> TrialOutcomeClass:
     ungradeable even when its own termination was also a defect of ours, so it
     leaves ``harness_errors`` alone and lands in ``ungradeable`` instead.
 
-    Total over ``(status, termination_reason)`` and gated on the exclusion
-    allowlist, so a reason this function has never heard of is ``MEASURED``.
-    That default is the point: an unrecognised reason that fell out of the
-    denominator would be invisible in the output, while one that stayed in is
+    Total over ``(status, termination_reason, grade)`` and gated on the
+    exclusion allowlist, so a reason this function has never heard of stays in
+    the denominator rather than falling out of it: an unrecognised reason that
+    fell out would be invisible in the output, while one that stayed in is
     visible in ``outcomes_by_reason`` and recoverable without a rerun.
+
+    Staying in the denominator is not the same as being measured. A trial that
+    ended error-shaped says which it is with two things: a reason naming what
+    ended it, and a verdict. Missing either, nothing about the agent was
+    observed — a trial whose provider died after its retries were spent carries
+    no grade and no measurement, and reporting it ``MEASURED`` would read an
+    outage as a benchmark result. It is ``HARNESS_ERROR`` instead, which stays
+    inside the denominator and is counted in ``harness_errors``, so no rate
+    moves and the run says which trials it measured. A trial that ran to an end
+    and carries no grade is the grade-later shape a dispatch node and the replay
+    path both write, not a defect, and is measured.
     """
     if trajectory.grading_error is not None:
         return TrialOutcomeClass.UNGRADEABLE
     reason = trajectory.termination_reason
     if reason in EXCLUDED_TYPED_REASONS:
         return TrialOutcomeClass.INFRASTRUCTURE_ABORT
-    if reason in (TerminationReason.ERROR, TerminationReason.TRIAL_LOST):
+    if reason in HARNESS_ERROR_REASONS:
         return TrialOutcomeClass.HARNESS_ERROR
-    if reason is None and trajectory.status in (
-        TrialStatus.ERROR,
-        TrialStatus.TIMEOUT,
-        TrialStatus.FAILED,
-    ):
+    if trajectory.status in _ERROR_SHAPED_STATUSES and (reason is None or trajectory.grade is None):
         return TrialOutcomeClass.HARNESS_ERROR
     return TrialOutcomeClass.MEASURED
 
 
 def is_failed_trajectory(trajectory: Trajectory) -> bool:
     """Return True if trajectory should be considered a failed attempt."""
-    if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT, TrialStatus.FAILED):
+    if trajectory.status in _ERROR_SHAPED_STATUSES:
         return True
     if trajectory.grade is None:
         return True

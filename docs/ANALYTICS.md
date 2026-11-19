@@ -122,15 +122,20 @@ The counts that say which is which sit in the same row:
   every rate below except `avg_score`**
 - `scored_trials`: the measured attempts that produced a grade — **`avg_score`'s
   denominator**, and the weight `avg_score_micro` uses. An `ungradeable` trial
-  reaches grading and comes back without a verdict, and a `trial_lost` one is not
-  graded at all, so `scored_trials < measured_trials` on any run that hit either
+  reaches grading and comes back without a verdict, a `trial_lost` one is not
+  graded at all, and an attempt that ended `error` / `timeout` / `failed` with
+  no verdict behind it never measured anything, so `scored_trials <
+  measured_trials` on any run that hit one of the three
 - `infrastructure_aborts`: per reason, the attempts excluded from that
   denominator (`{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`).
   Every excluded reason's key is always present, so a zero is distinguishable
   from a missing key
-- `harness_errors`: attempts that failed on a defect of ours. **Inside**
-  `measured_trials`, not excluded from it — our own bugs stay in the denominator.
-  A non-zero value is a run-health signal
+- `harness_errors`: attempts that failed on a defect of ours — including every
+  attempt that ended `error` / `timeout` / `failed` carrying no verdict, which
+  measured nothing whatever reason it ended on. **Inside** `measured_trials`,
+  not excluded from it — our own bugs stay in the denominator. A non-zero value
+  is a run-health signal, and a run whose provider died after its retries were
+  spent reports its trials here rather than as a floor of zeroes
 - `ungradeable`: attempts whose grading refused. Also **inside**
   `measured_trials`, also a defect of ours, and a non-pass in `success_rate` and
   `pass@k` — so a grading regression deflates the run visibly rather than
@@ -140,8 +145,13 @@ The counts that say which is which sit in the same row:
   it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`. An
   ungradeable attempt terminates the way a graded one does, so its row is keyed
   `ungradeable_<reason>` — `{"ungradeable_agent_done": {"class": "ungradeable",
-  "count": 1}}` — which keeps one key mapping to exactly one class. A trial the
-  runner lost is keyed `trial_lost` with class `harness_error`; a runner lost
+  "count": 1}}` — which keeps one key mapping to exactly one class. An attempt
+  that ended `error` / `timeout` / `failed` and reached no verdict is keyed the
+  same way, `unscored_<reason>` with class `harness_error`, because `api_error`
+  and `timeout` are reasons a graded attempt reaches too. A trial the
+  runner lost is keyed `trial_lost` with class `harness_error` and takes no
+  prefix — that reason names the fault ours with a grade or without, as `error`
+  does, so its row holds one class already; a runner lost
   *after* the trial's last tool call is not that row, because the agent finished
   and it was grading that refused — that attempt lands under
   `ungradeable_<reason>`, which is the honest reading of it
