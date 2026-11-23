@@ -4,15 +4,19 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge-adapter-terminal-bench"
-version = "0.2.0"
+version = "0.3.0"
 description = "Terminal-bench adapter plugin for tolokaforge"
 requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 dependencies = [
-    # Engine. Floored at 0.32.0: the adapter imports
-    # ``RunnerGradingConfig`` from ``tolokaforge.runner.models``, the name
-    # this release carries (earlier engines exposed ``GradingConfig`` there).
-    "tolokaforge>=0.32.0",
+    # Engine. Floored at 0.34.9, the first engine that carries every engine-side
+    # half this adapter calls into:
+    # - ``require_reward`` on the test-execution grading config (#1953, engine 0.34.3);
+    # - a task's ``build_timeout_sec`` bounding its image builds (#2022, engine 0.34.9).
+    # An older engine would load the adapter and then fail at grading or build time.
+    # The separate-verifier log split (#2026: the agent mounts only ``/logs/agent``,
+    # the verifier only ``/logs/verifier``) lives in this adapter alone.
+    "tolokaforge>=0.34.9",
     # The ``tolokaforge_coding_harnesses`` import package the adapter reads is
     # bundled INTO the engine wheel (see tolokaforge's wheel ``packages`` list),
     # not published as its own distribution, so ``tolokaforge`` above provides

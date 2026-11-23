@@ -4308,7 +4308,7 @@ image-services = [
 
 [[package]]
 name = "tolokaforge-adapter-terminal-bench"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "external_adapters/tolokaforge-adapter-terminal-bench" }
 dependencies = [
     { name = "jinja2" },
