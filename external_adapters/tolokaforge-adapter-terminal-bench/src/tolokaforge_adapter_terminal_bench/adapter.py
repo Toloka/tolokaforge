@@ -59,6 +59,7 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     skills_bundle_digest,
 )
 from tolokaforge_adapter_terminal_bench.task_parser import (
+    NO_NETWORK,
     TerminalBenchTask,
     discover_tasks,
     parse_task_dir,
@@ -555,8 +556,59 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     },
                 ),
             },
-            network_policy=self.network_policy,
+            network_policy=self._network_policy_for(task_id),
         )
+
+    def _network_policy_for(self, task_id: str) -> NetworkPolicy:
+        """The network posture this task's stack runs under.
+
+        A task that declares ``network_mode = "no-network"`` on either its
+        agent (``[environment]``) or its verifier (``[verifier]``) resolves
+        :attr:`~tolokaforge.runner.models.NetworkPolicy.NO_INTERNET`: the
+        engine puts every service in the stack on an internal network, so the
+        agent and its task-authored siblings still reach each other by service
+        name while nothing in the stack reaches the internet. Both declarations
+        land on the same value because the agent, its siblings and the verifier
+        share one compose file, and the posture is a property of that stack.
+
+        Any other declaration keeps the run's own ``network_policy`` — the
+        task's isolation is a floor under the operator's knob, not a
+        replacement for it.
+        """
+        meta = self._tasks[task_id]
+        if NO_NETWORK not in (meta.network_mode, meta.verifier_network_mode):
+            return self.network_policy
+        self._refuse_an_isolation_this_task_cannot_be_given(meta)
+        return NetworkPolicy.NO_INTERNET
+
+    def _refuse_an_isolation_this_task_cannot_be_given(self, meta: TerminalBenchTask) -> None:
+        """Refuse the two shapes a declared ``no-network`` cannot be honoured in.
+
+        Raised per task out of :meth:`get_task`, so the run skips this pack (or
+        refuses outright under ``orchestrator.strict_task_load``) rather than
+        scoring it with the egress it asked to lose.
+        """
+        if self.agent_harness != ENGINE_LOOP:
+            raise ValueError(
+                f"terminal-bench task {meta.task_id!r} declares network_mode "
+                f"{NO_NETWORK!r}, which cannot be honoured under agent_harness "
+                f"{self.agent_harness!r}: that CLI reaches its model provider from "
+                f"inside the task container, so a stack with no egress ends every "
+                f"trial in a connection error instead of a score. Run this task "
+                f"under agent_harness {ENGINE_LOOP!r}, where the engine calls the "
+                f"model and execs the commands into the container."
+            )
+        if meta.has_tests_compose:
+            raise ValueError(
+                f"terminal-bench task {meta.task_id!r} declares network_mode "
+                f"{NO_NETWORK!r} and ships a verifier stack "
+                f"(tests/docker-compose.yaml). Isolating the task puts that stack's "
+                f"sidecars on the same internal network as the agent's own, where "
+                f"the aliases the verifier reaches them by collide with the agent's "
+                f"service names and DNS answers with either container. Refused "
+                f"rather than run on an ambiguous name: give the task the "
+                f"single-container verifier shape, or drop the declaration."
+            )
 
     # -- environment ----------------------------------------------------------
 
