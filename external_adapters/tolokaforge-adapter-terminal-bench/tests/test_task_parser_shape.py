@@ -387,6 +387,12 @@ def test_a_build_timeout_that_is_not_a_positive_number_is_refused(tmp_path: Path
             '[verifier.environment]\nnetwork_mode = "host"\n',
             id="verifier-nested",
         ),
+        pytest.param(
+            "verifier.environment.network_mode",
+            '[verifier]\nnetwork_mode = "no-network"\n'
+            '[verifier.environment]\nnetwork_mode = "host"\n',
+            id="verifier-nested-beside-a-valid-direct-key",
+        ),
     ],
 )
 def test_an_unknown_network_mode_is_refused_not_dropped(

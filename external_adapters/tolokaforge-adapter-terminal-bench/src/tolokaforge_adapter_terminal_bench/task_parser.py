@@ -366,13 +366,14 @@ def _refuse_harness_log_artifact(task_id: str, source: str) -> None:
 
 
 #: ``network_mode`` values a task may declare. ``"no-network"`` is the only
-#: isolating one Terminal-Bench packs use; the rest name the default, and are
-#: accepted so a pack that spells it out is not refused. Anything else is
-#: refused rather than dropped — a value nobody renders is a task asking for an
-#: isolation it does not get, which is exactly the silent-measurement bug this
-#: field exists to end.
+#: isolating one, and the only one the Terminal-Bench corpus uses. The rest ask
+#: for no isolation at all — ``"default"`` names the harness default, ``"bridge"``
+#: Docker's own bridge network — so accepting them takes nothing away: the run's
+#: own ``network_policy`` still applies. Anything else is refused rather than
+#: dropped — a value nobody renders is a task asking for an isolation it does not
+#: get, which is exactly the silent-measurement bug this field exists to end.
 NO_NETWORK = "no-network"
-_NETWORK_MODES_DEFAULT = frozenset({"default", "bridge"})
+_NETWORK_MODES_NOT_ISOLATING = frozenset({"default", "bridge"})
 
 
 def _parse_network_mode(task_id: str, section: Mapping[str, Any], section_name: str) -> str | None:
@@ -386,11 +387,11 @@ def _parse_network_mode(task_id: str, section: Mapping[str, Any], section_name: 
             f"non-empty string; got {mode!r}."
         )
     mode = mode.strip()
-    if mode != NO_NETWORK and mode not in _NETWORK_MODES_DEFAULT:
+    if mode != NO_NETWORK and mode not in _NETWORK_MODES_NOT_ISOLATING:
         raise ValueError(
             f"terminal-bench task {task_id!r}: {section_name}.network_mode "
             f"{mode!r} is not one of {NO_NETWORK!r}, "
-            f"{sorted(_NETWORK_MODES_DEFAULT)}. Refused rather than ignored: a "
+            f"{sorted(_NETWORK_MODES_NOT_ISOLATING)}. Refused rather than ignored: a "
             "network mode nobody renders would leave the container on the network "
             "the task asked to be kept off."
         )
@@ -404,14 +405,18 @@ def _parse_verifier_network_mode(task_id: str, verifier: Mapping[str, Any]) -> s
     ``[verifier.environment]``; TB4.1 puts it on ``[verifier]``. Both are read
     so the isolation is not lost to which table the author chose, with the
     direct key winning when a pack sets both.
+
+    Both spellings are validated before either is preferred: a direct key does
+    not excuse an unrenderable nested one, which would be dropped unread.
     """
     direct = _parse_network_mode(task_id, verifier, "verifier")
-    if direct is not None:
-        return direct
-    nested = verifier.get("environment")
-    if not isinstance(nested, Mapping):
-        return None
-    return _parse_network_mode(task_id, nested, "verifier.environment")
+    nested_table = verifier.get("environment")
+    nested = (
+        _parse_network_mode(task_id, nested_table, "verifier.environment")
+        if isinstance(nested_table, Mapping)
+        else None
+    )
+    return direct if direct is not None else nested
 
 
 def _parse_artifacts(task_id: str, toml_data: Mapping[str, Any]) -> list[TerminalBenchArtifact]:

@@ -196,21 +196,37 @@ its agent and on `[verifier].network_mode` (or the nested
 `[verifier.environment].network_mode`, which packs split between) for its
 verifier. Both are parsed; `no-network` on either resolves the whole task
 stack to `EnvironmentManifest.network_policy: no_internet`, the engine's only
-network-posture surface. Any other declared value — `default`, `bridge`, or
-none at all — keeps the run's own `network_policy` adapter param (default
-`full_internet`): the task's isolation is a floor under the operator's knob,
-not a replacement for it. A value that is none of those three is refused at
-discovery with a `ValueError` naming the task and the section, because a mode
-nobody resolves leaves the container on the network the task asked to be kept
-off.
+network-posture surface. The other two accepted values ask for no isolation at
+all — `default` names the harness default, `bridge` names Docker's own bridge
+network — so they, and no declaration at all, keep the run's own
+`network_policy` adapter param (default `full_internet`). The task's isolation
+is a floor under the operator's knob, not a replacement for it: a task
+declaring `default` or `bridge` under a run-level `no_internet` still comes up
+sealed. A value that is none of the three is refused at discovery with a
+`ValueError` naming the task and the section, because a mode nobody resolves
+leaves the container on the network the task asked to be kept off. Both
+verifier spellings are validated even when the pack sets both, so an
+unrenderable nested value is refused rather than dropped under the direct key
+that wins.
+
+Each resolution is logged at INFO with the task id, the declared modes and the
+policy they resolved to — on a board of mixed packs that record is the only
+place the posture a score was measured under survives.
 
 The agent, its task-authored siblings and the verifier share one compose file,
 so one policy covers them all. Under `no_internet` the engine flips every
 network the file declares to `internal: true` and attaches each service to an
 injected internal network, so the agent still reaches its own database by
-service name and only egress is gone. Nothing renders compose `network_mode`
-for this: that detaches a container from every network including the implicit
-`default`, and `enforce_network_policy` skips any service declaring it.
+service name and only egress is gone. Compose's own `network_mode` is never
+rendered for this: it detaches a container from every network including the
+implicit `default`, and `enforce_network_policy` skips any service declaring
+it.
+
+The engine stack is run-scope, and `network_policy` is not part of the
+run-scope signature the orchestrator compares across tasks, so a board whose
+packs disagree on the posture runs that shared stack under whichever task's
+policy resolved first. Every pack in the TB4.0 and TB4.1 corpora declares
+`no-network`, so a mixed board is not a shape these packs produce.
 
 Two shapes refuse a declared `no-network` rather than run without it, raised
 per task out of `get_task` so the run skips that pack (or refuses outright
@@ -221,10 +237,10 @@ under `orchestrator.strict_task_load`):
   with no egress ends every trial in a connection error instead of a score.
   Under `engine-loop` the engine calls the model and execs the commands in,
   and the container needs no egress of its own.
-- **A verifier stack.** Isolating a tier-3 task puts the merged stack's
-  sidecars on the same internal network as the agent's own, where the aliases
-  the suite reaches them by collide with the agent's service names and Docker
-  answers the lookup with either container.
+- **A verifier stack.** A task shipping its own `tests/docker-compose.yaml` is
+  a topology this adapter cannot isolate: the posture is one policy over the
+  whole merged compose file, so sealing the agent's half also rewrites the
+  networks the suite's own services were authored against.
 
 ### Agent-image pre-build
 

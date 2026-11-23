@@ -141,9 +141,23 @@ def test_nested_verifier_environment_declaration_is_read(tmp_path: Path) -> None
     assert _resolved_policy(tmp_path, "task") is NetworkPolicy.NO_INTERNET
 
 
-def test_an_undeclared_task_keeps_a_stricter_run_level_policy(tmp_path: Path) -> None:
-    """The declaration is a floor under the operator's knob, not a replacement for it."""
-    _write_task(tmp_path, "task")
+@pytest.mark.parametrize(
+    "environment_keys",
+    [
+        pytest.param("", id="undeclared"),
+        pytest.param('network_mode = "default"\n', id="default"),
+        pytest.param('network_mode = "bridge"\n', id="bridge"),
+    ],
+)
+def test_a_non_isolating_task_keeps_a_stricter_run_level_policy(
+    tmp_path: Path, environment_keys: str
+) -> None:
+    """The declaration is a floor under the operator's knob, not a replacement for it.
+
+    A task asking for no isolation does not take the operator's isolation away:
+    against a run-level ``no_internet`` the stack still comes up sealed.
+    """
+    _write_task(tmp_path, "task", environment_keys=environment_keys)
 
     policy = _resolved_policy(tmp_path, "task", network_policy=NetworkPolicy.NO_INTERNET.value)
 
@@ -167,12 +181,12 @@ def test_no_network_refuses_a_coding_harness_by_name(
 
 
 def test_no_network_refuses_a_verifier_stack_by_name(tmp_path: Path) -> None:
-    """A merged verifier stack's aliases collide with the agent's own service names.
+    """A task-authored verifier stack is a topology this adapter cannot isolate.
 
-    Isolation puts both stacks on one internal network, where the verifier
-    sidecar's ``postgres`` alias and the agent's own ``postgres`` service
-    answer the same lookup. Refused rather than scored on whichever container
-    Docker's DNS happened to return.
+    Isolation is one policy over the whole merged compose file, so the engine
+    cannot seal the agent's half while leaving the suite's own services on the
+    terms their author wrote. Refused rather than scored under a posture
+    neither half was authored for.
     """
     _write_task(
         tmp_path,
@@ -194,10 +208,11 @@ def test_no_network_refuses_a_verifier_stack_by_name(tmp_path: Path) -> None:
 def test_no_network_keeps_a_multi_container_task_reachable(tmp_path: Path) -> None:
     """The agent keeps its own sidecars; only egress goes.
 
-    ``network_mode: none`` on the agent service — the rendering this resolution
-    replaces — detaches it from every network including compose's implicit
-    default, so a task whose agent cannot reach its own database scores 0.0
-    with the stack reporting healthy.
+    Isolation is the engine's ``network_policy`` and never a compose
+    ``network_mode: none`` on the agent service: that detaches the container
+    from every network including compose's implicit default, so an agent that
+    could no longer reach its own database would score 0.0 with the stack
+    reporting healthy.
     """
     _write_task(
         tmp_path,

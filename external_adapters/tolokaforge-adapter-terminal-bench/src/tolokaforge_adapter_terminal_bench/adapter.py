@@ -25,6 +25,7 @@ from tolokaforge.adapters.base import (
     DockerStackRequirements,
 )
 from tolokaforge.core.agent_prompt_contract import CONTRACTS
+from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -79,6 +80,8 @@ from tolokaforge_coding_harnesses import (
     validate_harness,
     validate_provider_env_keys,
 )
+
+logger = get_logger(__name__)
 
 _AGENT_TOOL_TIMEOUT_S = 120.0
 
@@ -574,12 +577,24 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         Any other declaration keeps the run's own ``network_policy`` — the
         task's isolation is a floor under the operator's knob, not a
         replacement for it.
+
+        The resolution is logged per task: on a board of mixed packs the
+        posture each score was measured under is otherwise unrecorded.
         """
         meta = self._tasks[task_id]
-        if NO_NETWORK not in (meta.network_mode, meta.verifier_network_mode):
-            return self.network_policy
-        self._refuse_an_isolation_this_task_cannot_be_given(meta)
-        return NetworkPolicy.NO_INTERNET
+        if NO_NETWORK in (meta.network_mode, meta.verifier_network_mode):
+            self._refuse_an_isolation_this_task_cannot_be_given(meta)
+            policy = NetworkPolicy.NO_INTERNET
+        else:
+            policy = self.network_policy
+        logger.info(
+            "Resolved terminal-bench network posture",
+            task_id=task_id,
+            network_policy=policy.value,
+            declared_environment_network_mode=meta.network_mode,
+            declared_verifier_network_mode=meta.verifier_network_mode,
+        )
+        return policy
 
     def _refuse_an_isolation_this_task_cannot_be_given(self, meta: TerminalBenchTask) -> None:
         """Refuse the two shapes a declared ``no-network`` cannot be honoured in.
@@ -601,13 +616,13 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         if meta.has_tests_compose:
             raise ValueError(
                 f"terminal-bench task {meta.task_id!r} declares network_mode "
-                f"{NO_NETWORK!r} and ships a verifier stack "
-                f"(tests/docker-compose.yaml). Isolating the task puts that stack's "
-                f"sidecars on the same internal network as the agent's own, where "
-                f"the aliases the verifier reaches them by collide with the agent's "
-                f"service names and DNS answers with either container. Refused "
-                f"rather than run on an ambiguous name: give the task the "
-                f"single-container verifier shape, or drop the declaration."
+                f"{NO_NETWORK!r} and ships its own verifier stack "
+                f"(tests/docker-compose.yaml), which this adapter cannot isolate: "
+                f"the posture is one policy over the whole merged compose file, so "
+                f"sealing the agent's half also rewrites the networks the suite's "
+                f"services were authored against. Refused rather than scored under "
+                f"a posture the verifier stack was not written for: give the task "
+                f"the single-container verifier shape, or drop the declaration."
             )
 
     # -- environment ----------------------------------------------------------
