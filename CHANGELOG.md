@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.10 (2026-11-23)
+
+### Fix
+
+- **terminal-bench**: a task declaring no-network runs without egress (#2005) (#2028)
+
 ## v0.34.9 (2026-11-19)
 
 ### BREAKING CHANGE
