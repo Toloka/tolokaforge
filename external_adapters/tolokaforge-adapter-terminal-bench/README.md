@@ -189,6 +189,43 @@ Contents of a staging directory:
     `EnvironmentManifest._check_pinned_images` enforces, applied earlier
     with the adapter's own message.
 
+### Network posture
+
+A task declares what network it expects on `[environment].network_mode` for
+its agent and on `[verifier].network_mode` (or the nested
+`[verifier.environment].network_mode`, which packs split between) for its
+verifier. Both are parsed; `no-network` on either resolves the whole task
+stack to `EnvironmentManifest.network_policy: no_internet`, the engine's only
+network-posture surface. Any other declared value — `default`, `bridge`, or
+none at all — keeps the run's own `network_policy` adapter param (default
+`full_internet`): the task's isolation is a floor under the operator's knob,
+not a replacement for it. A value that is none of those three is refused at
+discovery with a `ValueError` naming the task and the section, because a mode
+nobody resolves leaves the container on the network the task asked to be kept
+off.
+
+The agent, its task-authored siblings and the verifier share one compose file,
+so one policy covers them all. Under `no_internet` the engine flips every
+network the file declares to `internal: true` and attaches each service to an
+injected internal network, so the agent still reaches its own database by
+service name and only egress is gone. Nothing renders compose `network_mode`
+for this: that detaches a container from every network including the implicit
+`default`, and `enforce_network_policy` skips any service declaring it.
+
+Two shapes refuse a declared `no-network` rather than run without it, raised
+per task out of `get_task` so the run skips that pack (or refuses outright
+under `orchestrator.strict_task_load`):
+
+- **A coding-harness CLI.** Under `agent_harness` other than `engine-loop` the
+  CLI reaches its model provider from inside the task container, so a stack
+  with no egress ends every trial in a connection error instead of a score.
+  Under `engine-loop` the engine calls the model and execs the commands in,
+  and the container needs no egress of its own.
+- **A verifier stack.** Isolating a tier-3 task puts the merged stack's
+  sidecars on the same internal network as the agent's own, where the aliases
+  the suite reaches them by collide with the agent's service names and Docker
+  answers the lookup with either container.
+
 ### Agent-image pre-build
 
 The synthesised compose file references `tbench-{task_id}:{image_tag}` for

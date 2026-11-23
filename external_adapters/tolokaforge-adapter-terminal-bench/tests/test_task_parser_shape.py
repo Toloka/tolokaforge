@@ -373,3 +373,38 @@ def test_a_build_timeout_that_is_not_a_positive_number_is_refused(tmp_path: Path
     )
     with pytest.raises(ValueError, match="environment.build_timeout_sec"):
         discover_tasks(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("section", "keys"),
+    [
+        pytest.param(
+            "environment.network_mode", '[environment]\nnetwork_mode = "host"\n', id="agent"
+        ),
+        pytest.param("verifier.network_mode", '[verifier]\nnetwork_mode = "host"\n', id="verifier"),
+        pytest.param(
+            "verifier.environment.network_mode",
+            '[verifier.environment]\nnetwork_mode = "host"\n',
+            id="verifier-nested",
+        ),
+    ],
+)
+def test_an_unknown_network_mode_is_refused_not_dropped(
+    tmp_path: Path, section: str, keys: str
+) -> None:
+    """A mode nobody resolves would leave the container on the network the task
+    asked to be kept off."""
+    _write_task(tmp_path, "odd-net", f'[metadata]\ndifficulty = "easy"\n\n{keys}')
+    with pytest.raises(ValueError, match=section):
+        discover_tasks(tmp_path)
+
+
+def test_a_verifier_declaration_wins_over_its_nested_table(tmp_path: Path) -> None:
+    """Packs split between the two spellings; the direct key is the specific one."""
+    _write_task(
+        tmp_path,
+        "both-spellings",
+        '[metadata]\ndifficulty = "easy"\n\n[verifier]\nnetwork_mode = "no-network"\n'
+        '[verifier.environment]\nnetwork_mode = "default"\n',
+    )
+    assert discover_tasks(tmp_path)["both-spellings"].verifier_network_mode == "no-network"
