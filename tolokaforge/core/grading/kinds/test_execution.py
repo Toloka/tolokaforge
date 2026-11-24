@@ -192,11 +192,14 @@ class TestExecutionKindConfig(BaseModel):
     knows its pack's contract passes the user, and one that does not inherits
     the image's own ``USER``.
 
-    One identity for everything grading does inside the trial's containers: the
-    suite, the :attr:`stage_paths` probe, the :attr:`collect` hooks and the
-    :attr:`detail_paths` reads. A pack that seals its reward directory seals it
-    against the agent, so a step running as anyone else sees permission denied
-    on exactly the paths the pack grades by.
+    One identity for every exec grading makes into the container the suite is
+    graded in: the suite, the :attr:`stage_paths` probe, the :attr:`collect`
+    hooks, the :attr:`detail_paths` reads, and the destination side of every
+    :attr:`stage_paths` and :attr:`artifacts` copy. A pack that seals its reward
+    directory seals it against the agent, so a step running as anyone else sees
+    permission denied on exactly the paths the pack grades by. Reads out of a
+    copy's *source* container keep that container's own user — this identity
+    belongs to the verifier and need not exist in the agent's image.
     """
     require_reward: bool = False
     """Treat a missing or unparseable reward as ungradeable instead of 0.0.
@@ -319,6 +322,7 @@ class TestExecutionGraderKind:
                 dst_service=cfg.service,
                 path=staged.source,
                 exclude=staged.exclude,
+                user=cfg.user,
             )
             # materialise_path treats an absent SOURCE as "the verifier runs
             # without it": correct for an artifact the agent never produced,
@@ -365,6 +369,7 @@ class TestExecutionGraderKind:
                 dst_service=cfg.service,
                 path=artifact.source,
                 exclude=artifact.exclude,
+                user=cfg.user,
             )
         result = substrate.run_test_suite(
             script_path=cfg.script_path,

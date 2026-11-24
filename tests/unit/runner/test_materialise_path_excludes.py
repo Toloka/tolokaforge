@@ -97,6 +97,8 @@ def _install_fake_subprocess(
     probe_rc: int = 0,
     prune_rc: int = 0,
     prune_stderr: str = "",
+    prepare_rc: int = 0,
+    prepare_stderr: str = "",
 ) -> tuple[list[str], list[str]]:
     """Fake ``subprocess.run``/``Popen`` in the service module.
 
@@ -111,7 +113,7 @@ def _install_fake_subprocess(
         if "__TF_PRESENT__" in command:
             return _FakeCompleted(returncode=probe_rc, stdout=probe_stdout)
         if "mkdir" in command:
-            return _FakeCompleted(returncode=0)
+            return _FakeCompleted(returncode=prepare_rc, stderr=prepare_stderr)
         if "-prune" in command:
             prune_commands.append(command)
             return _FakeCompleted(returncode=prune_rc, stderr=prune_stderr)
@@ -461,3 +463,83 @@ def test_non_compose_env_tool_surfaces_clear_message(monkeypatch: pytest.MonkeyP
             exclude=(),
             trial_id="t-1",
         )
+
+
+def test_the_declared_user_reaches_every_destination_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wipe, the parent recreation and the prune run as the declared user.
+
+    A verifier image declaring a non-root ``USER`` cannot prepare a destination
+    the pack owns, and the copy then lands on a half-emptied tree — so the trial
+    grades against the wrong filesystem rather than losing an audit trail. The
+    source probe stays on the source container's own user: the verifier's
+    identity need not exist in the agent's image.
+    """
+    run_argvs, _popen_argvs = _capture_docker_argv(monkeypatch)
+    svc = _service_with_started_tool()
+
+    svc._materialise_path(
+        src_service=None,
+        dst_service="verifier",
+        path="/app/output",
+        exclude=("__pycache__",),
+        user="root",
+        trial_id="t-1",
+    )
+
+    probe, wipe, prune = run_argvs
+    assert "__TF_PRESENT__" in probe[-1]
+    assert "mkdir -p /app" in wipe[-1]
+    assert "-prune" in prune[-1]
+
+    assert probe[:3] == ["docker", "exec", "tbencht-1_agent"]
+    for argv in (wipe, prune):
+        assert argv[:5] == ["docker", "exec", "--user", "root", "tbencht-1_verifier"], argv
+
+
+def test_no_declared_user_leaves_the_container_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every pack that names no user keeps the destination container's own."""
+    run_argvs, _popen_argvs = _capture_docker_argv(monkeypatch)
+    svc = _service_with_started_tool()
+
+    svc._materialise_path(
+        src_service=None,
+        dst_service="verifier",
+        path="/app/output",
+        exclude=("__pycache__",),
+        trial_id="t-1",
+    )
+
+    assert not any("--user" in argv for argv in run_argvs)
+
+
+def test_a_destination_the_user_cannot_prepare_refuses_the_trial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed wipe is ungradeable, not a copy onto a half-emptied tree.
+
+    The refusal names the user because the commonest cause is a destination the
+    pack owns and the exec does not.
+    """
+    _install_fake_subprocess(
+        monkeypatch, prepare_rc=1, prepare_stderr="rm: cannot remove '/app/output'"
+    )
+    svc = _service_with_started_tool()
+
+    with pytest.raises(SubstrateUnreachableError) as err:
+        svc._materialise_path(
+            src_service=None,
+            dst_service="verifier",
+            path="/app/output",
+            exclude=(),
+            user="verifier-user",
+            trial_id="t-1",
+        )
+
+    message = str(err.value)
+    assert "preparing '/app/output'" in message
+    assert "verifier-user" in message
+    assert "cannot remove" in message

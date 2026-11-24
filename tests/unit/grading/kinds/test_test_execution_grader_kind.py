@@ -114,6 +114,7 @@ class _ScriptedSubstrate:
         dst_service: str,
         path: str,
         exclude: Any = (),
+        user: str | None = None,
     ) -> None:
         self.materialise_calls.append(
             {
@@ -121,6 +122,7 @@ class _ScriptedSubstrate:
                 "dst_service": dst_service,
                 "path": path,
                 "exclude": list(exclude),
+                "user": user,
             }
         )
         self.events.append(f"materialise:{path}")
@@ -621,6 +623,44 @@ def test_the_probe_the_hooks_and_the_reports_run_as_the_declared_user() -> None:
         ("pg_dumpall > /tmp/d", "root"),
         ("cat /logs/verifier/ctrf.json", "root"),
     ]
+
+
+def test_both_copy_loops_carry_the_declared_user() -> None:
+    """``stage_paths`` and ``artifacts`` both materialise as the declared user.
+
+    The copy's destination is a tree the pack owns — a verifier image with a
+    non-root ``USER`` cannot wipe it or recreate its parent, and the copy then
+    lands on a half-prepared destination. ``artifacts`` is how the
+    separate-verifier shape gets the agent's output in front of the suite at
+    all, so this is the trial grading against the wrong filesystem, not a lost
+    audit trail.
+    """
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1.0\n"))
+    _evaluate(
+        substrate,
+        kind_config={
+            "service": "verifier",
+            "user": "root",
+            "stage_paths": [{"source": "/tests", "src_service": "tests-vault"}],
+            "artifacts": [{"source": "/app/output"}],
+        },
+    )
+
+    assert [(c["path"], c["user"]) for c in substrate.materialise_calls] == [
+        ("/tests", "root"),
+        ("/app/output", "root"),
+    ]
+
+
+def test_an_unset_user_leaves_the_copies_on_the_container_default() -> None:
+    """No declared user means no ``--user``, for every pack that names none."""
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"1.0\n"))
+    _evaluate(
+        substrate,
+        kind_config={"service": "verifier", "artifacts": [{"source": "/app/output"}]},
+    )
+
+    assert substrate.materialise_calls[0]["user"] is None
 
 
 def test_user_and_require_reward_default_to_the_pre_fix_behaviour() -> None:

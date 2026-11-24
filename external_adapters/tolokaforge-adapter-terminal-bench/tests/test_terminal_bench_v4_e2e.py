@@ -7,7 +7,9 @@ verifier container), not a stand-in:
 
 * the oracle writes the declared artifact and scores **1.0** — it is
   re-materialised from the agent into the verifier container and the suite there
-  passes;
+  passes. The landing site is root-owned while the image's own ``USER`` is not,
+  so emptying it and recreating its parent only succeeds because the staging
+  carries the task's declared user too;
 * a no-op writes nothing and scores **0.0** — the artifact is absent, so the
   verifier runs without it and the suite fails;
 * the agent's container holds ``/logs/agent`` and **no** ``/logs/verifier``, and
@@ -197,21 +199,37 @@ def _in_the_agent_container(
 
 
 def _assert_the_fixture_seals_its_reports() -> None:
-    """The report read is only a test of the user seam while the fixture seals.
+    """The user seam is only under test while the fixture stays sealed.
 
-    An image without the unprivileged ``USER``, or a suite that leaves its
-    reports world-readable, would let the report assertions pass whichever user
-    the exec ran as — a green test for the condition it exists to catch.
+    An image without the unprivileged ``USER``, a suite that leaves its reports
+    world-readable, or an artifact destination handed to that user would let
+    these assertions pass whichever user the exec ran as — a green test for the
+    condition it exists to catch.
     """
     verifier_image = (_FIXTURES / _TASK_ID / "tests" / "Dockerfile").read_text(encoding="utf-8")
     suite = (_FIXTURES / _TASK_ID / "tests" / "test.sh").read_text(encoding="utf-8")
-    assert "\nUSER verifier\n" in verifier_image, (
-        "the v4 fixture's verifier image must drop to a non-root USER, or the report "
-        "read lands as root whether or not grading carries the task's user"
+    # The LAST directive is the one the container runs as, so a later ``USER
+    # root`` appended below the drop would undo it while the drop still reads.
+    user_directives = [
+        line.split(maxsplit=1)[1].strip()
+        for line in verifier_image.splitlines()
+        if line.startswith("USER ")
+    ]
+    assert user_directives[-1:] == ["verifier"], (
+        "the v4 fixture's verifier image must END on a non-root USER, or every exec "
+        f"grading makes lands as root whether or not it carries the task's user; "
+        f"USER directives were {user_directives!r}"
     )
-    assert 'chmod 600 "$LOGS/ctrf.json"' in suite, (
-        "the v4 fixture's suite must seal its reports to the user it grades as, or an "
-        "unprivileged report read succeeds and asserts nothing"
+    sealed = next((line for line in suite.splitlines() if line.startswith("chmod 600 ")), "")
+    for report in ("ctrf.json", "reward-details.json", "reward.txt"):
+        assert report in sealed, (
+            f"the v4 fixture's suite must seal {report} to the user it grades as, or an "
+            f"unprivileged read of it succeeds and asserts nothing; the chmod line was "
+            f"{sealed!r}"
+        )
+    assert "chown" not in verifier_image, (
+        "the v4 fixture's artifact destination must stay root-owned, or the staging "
+        "that empties it succeeds as the image's own user and asserts nothing"
     )
 
 

@@ -262,6 +262,7 @@ class GrpcSubstrateClient:
         dst_service: str | None,
         path: str,
         exclude: Sequence[str] = (),
+        user: str | None = None,
     ) -> None:
         try:
             response = self._stub.MaterialisePath(
@@ -274,6 +275,7 @@ class GrpcSubstrateClient:
                     dst_service=dst_service or "",
                     path=path,
                     exclude=list(exclude),
+                    user=user or "",
                 )
             )
         except grpc.RpcError as err:

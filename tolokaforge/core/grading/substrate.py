@@ -284,6 +284,7 @@ class GradingSubstrate(Protocol):
         dst_service: str | None,
         path: str,
         exclude: Sequence[str] = (),
+        user: str | None = None,
     ) -> None:
         """Re-create *path* inside *dst_service*'s container from *src_service*'s.
 
@@ -301,8 +302,19 @@ class GradingSubstrate(Protocol):
         then-copy, so the destination holds exactly the source's current tree
         and nothing the image baked in or a prior step left behind.
 
+        *user* is the Unix identity that prepares the DESTINATION — the wipe of
+        *path*, the recreation of its parent and the exclude prune — the same
+        identity :meth:`run_test_suite` and :meth:`exec_in_service` take.
+        ``None`` inherits the destination container's own default user. A pack
+        whose verifier outranks its agent passes it here too: on an image with a
+        non-root ``USER`` the preparation has to reach a destination the pack
+        owns, and a copy landing on a half-emptied tree grades against the wrong
+        filesystem. The source is read as the source container's own user, which
+        is the only identity guaranteed to exist in that image.
+
         Raises :class:`SubstrateUnreachableError` when the substrate cannot
-        reach the containers (e.g. a snapshot substrate, which has none).
+        reach the containers (e.g. a snapshot substrate, which has none) or
+        cannot prepare the destination as *user*.
         """
         ...
 
@@ -577,6 +589,7 @@ class InProcessGradingSubstrate:
         dst_service: str | None,
         path: str,
         exclude: Sequence[str] = (),
+        user: str | None = None,
     ) -> None:
         if self._materialise_path_impl is None:
             raise SubstrateUnreachableError(
@@ -589,6 +602,7 @@ class InProcessGradingSubstrate:
             dst_service=dst_service,
             path=path,
             exclude=tuple(exclude),
+            user=user,
         )
 
     def exec_in_service(
@@ -831,6 +845,7 @@ class SnapshotGradingSubstrate:
         dst_service: str,
         path: str,
         exclude: Sequence[str] = (),  # noqa: ARG002
+        user: str | None = None,  # noqa: ARG002
     ) -> None:
         raise SubstrateUnreachableError(
             f"SnapshotGradingSubstrate cannot materialise a path offline "

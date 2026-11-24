@@ -7,8 +7,10 @@ reads cannot run as one user in process and another across gRPC. A pack that
 seals its reward directory against its agent is denied on exactly the paths it
 grades by when they do, and the denial is recorded as the command's output.
 
-These pin both edges of that lane: the client puts the bound user on the
-request, and the servicer threads it back off the request onto the helper.
+These pin the servicer edge of that lane: the user threads back off the request
+onto the helper, and an unreachable container still reports through ``error``.
+The client edge and the wire itself are pinned by a real round-trip in
+``tests/canonical/test_substrate_service_user_roundtrip.py``.
 """
 
 from __future__ import annotations
@@ -19,7 +21,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
-from tolokaforge.core.grading.substrate_client import GrpcSubstrateClient
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.substrate_service import SubstrateServicer
 
@@ -40,8 +41,8 @@ class _FakeRunner:
         service: str | None,
         command: str,
         timeout_s: float,
-        user: str | None = None,
         trial_id: str,
+        user: str | None = None,
     ) -> tuple[int, str]:
         self.calls.append(
             {
@@ -53,15 +54,6 @@ class _FakeRunner:
             }
         )
         return self._result
-
-
-def _client_with_stub() -> tuple[GrpcSubstrateClient, MagicMock]:
-    """A client whose stub records the request it was handed."""
-    stub = MagicMock()
-    stub.ExecInService.return_value = pb2.ExecInServiceResponse(exit_code=0, output="ok")
-    client = GrpcSubstrateClient(MagicMock(), "trial-1")
-    client._stub = stub
-    return client, stub
 
 
 def test_the_servicer_threads_the_user_onto_the_helper() -> None:
@@ -100,31 +92,6 @@ def test_an_unset_user_arrives_as_the_container_default() -> None:
     assert runner.calls[0]["user"] is None
     assert runner.calls[0]["service"] is None
     assert runner.calls[0]["timeout_s"] == 300.0  # 0.0 → servicer default
-
-
-def test_the_client_puts_the_user_on_the_request() -> None:
-    client, stub = _client_with_stub()
-
-    client.exec_in_service(service="verifier", command="cat /r", timeout_s=7.0, user="root")
-
-    sent = stub.ExecInService.call_args.args[0]
-    assert (sent.trial_id, sent.service, sent.command, sent.timeout_s) == (
-        "trial-1",
-        "verifier",
-        "cat /r",
-        7.0,
-    )
-    assert sent.user == "root"
-
-
-def test_the_client_sends_an_empty_user_when_none_is_bound() -> None:
-    client, stub = _client_with_stub()
-
-    client.exec_in_service(service=None, command="collect", timeout_s=1.0)
-
-    sent = stub.ExecInService.call_args.args[0]
-    assert sent.user == ""
-    assert sent.service == ""
 
 
 def test_a_servicer_side_unreachable_still_rides_the_error_field() -> None:

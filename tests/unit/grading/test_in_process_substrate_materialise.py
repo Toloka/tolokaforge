@@ -61,12 +61,14 @@ def test_materialise_path_delegates_to_impl() -> None:
         dst_service="verifier",
         path="/app/cracker.py",
         exclude=["*.pyc"],
+        user="root",
     )
     assert seen == {
         "src_service": None,
         "dst_service": "verifier",
         "path": "/app/cracker.py",
         "exclude": ("*.pyc",),
+        "user": "root",
     }
 
 

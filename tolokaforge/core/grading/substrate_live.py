@@ -199,12 +199,14 @@ class LiveRunnerCallbackGradingSubstrate:
         dst_service: str | None,
         path: str,
         exclude: Sequence[str] = (),
+        user: str | None = None,
     ) -> None:
         self._client.materialise_path(
             src_service=src_service,
             dst_service=dst_service,
             path=path,
             exclude=exclude,
+            user=user,
         )
 
     def exec_in_service(

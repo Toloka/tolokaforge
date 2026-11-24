@@ -973,6 +973,12 @@ message MaterialisePathRequest {
   string path = 4;
   // Glob patterns pruned from the copy (caches, regenerable build output).
   repeated string exclude = 5;
+  // Unix user the DESTINATION preparation runs as (``docker exec --user``):
+  // the wipe of ``path``, the recreation of its parent and the exclude prune.
+  // Empty → the destination container's own default user. The source probe
+  // keeps the source container's default user: this names the identity the
+  // verifier grades as, which need not exist in the agent's image.
+  string user = 6;
 }
 
 message MaterialisePathResponse {
