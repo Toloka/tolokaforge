@@ -287,6 +287,7 @@ class GrpcSubstrateClient:
         service: str | None,
         command: str,
         timeout_s: float,
+        user: str | None = None,
     ) -> tuple[int, str]:
         try:
             response = self._stub.ExecInService(
@@ -295,6 +296,7 @@ class GrpcSubstrateClient:
                     service=service or "",
                     command=command,
                     timeout_s=timeout_s,
+                    user=user or "",
                 )
             )
         except grpc.RpcError as err:

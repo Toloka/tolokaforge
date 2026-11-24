@@ -991,6 +991,11 @@ message ExecInServiceRequest {
   string command = 3;
   // Wall-clock cap on the command. 0.0 → the servicer's default.
   double timeout_s = 4;
+  // Unix user the command runs as (``docker exec --user``). Empty → the
+  // container's own default user. A pack whose verifier outranks its agent
+  // names the same user here as on RunTestSuiteRequest, so the reports beside
+  // a reward are read by whoever was entitled to write it.
+  string user = 5;
 }
 
 message ExecInServiceResponse {

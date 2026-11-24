@@ -312,6 +312,7 @@ class GradingSubstrate(Protocol):
         service: str | None,
         command: str,
         timeout_s: float,
+        user: str | None = None,
     ) -> tuple[int, str]:
         """Run a shell *command* in *service*'s container, returning (exit_code, output).
 
@@ -322,8 +323,15 @@ class GradingSubstrate(Protocol):
         :meth:`materialise_path` carries into the verifier. The caller decides
         what a non-zero exit means.
 
+        *user* is the Unix identity the command runs under, the same parameter
+        :meth:`run_test_suite` takes. ``None`` inherits the container's own
+        default user. A pack that seals its reward directory passes the user it
+        grades as here too, so the probes and reports around a reward are
+        reached by whoever was entitled to write it.
+
         Raises :class:`SubstrateUnreachableError` when the substrate cannot reach
-        the container (e.g. a snapshot substrate, which has none).
+        the container (e.g. a snapshot substrate, which has none) or cannot run
+        the command as *user*.
         """
         ...
 
@@ -589,6 +597,7 @@ class InProcessGradingSubstrate:
         service: str | None,
         command: str,
         timeout_s: float,
+        user: str | None = None,
     ) -> tuple[int, str]:
         if self._exec_in_service_impl is None:
             raise SubstrateUnreachableError(
@@ -600,6 +609,7 @@ class InProcessGradingSubstrate:
             service=service,
             command=command,
             timeout_s=timeout_s,
+            user=user,
         )
 
     def trajectory(self) -> Mapping[str, Any] | None:
@@ -834,6 +844,7 @@ class SnapshotGradingSubstrate:
         service: str | None,
         command: str,  # noqa: ARG002
         timeout_s: float,  # noqa: ARG002
+        user: str | None = None,  # noqa: ARG002
     ) -> tuple[int, str]:
         raise SubstrateUnreachableError(
             f"SnapshotGradingSubstrate cannot exec in a service offline "

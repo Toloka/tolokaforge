@@ -213,11 +213,13 @@ class LiveRunnerCallbackGradingSubstrate:
         service: str | None,
         command: str,
         timeout_s: float,
+        user: str | None = None,
     ) -> tuple[int, str]:
         return self._client.exec_in_service(
             service=service,
             command=command,
             timeout_s=timeout_s,
+            user=user,
         )
 
     def trajectory(self) -> Mapping[str, Any] | None:

@@ -29,8 +29,8 @@ class FakeSubstrate:
     def materialise_path(self, *, src_service, dst_service, path, exclude=()):
         self.calls.append(("materialise_path", src_service, dst_service, path, tuple(exclude)))
 
-    def exec_in_service(self, *, service, command, timeout_s):
-        self.calls.append(("exec_in_service", service, command, timeout_s))
+    def exec_in_service(self, *, service, command, timeout_s, user=None):
+        self.calls.append(("exec_in_service", service, command, timeout_s, user))
         if command.startswith("test -e"):
             return (0, "") if self._staged_present else (1, "")
         return (0, "")

@@ -71,8 +71,11 @@ class _ScriptedSubstrate:
         service: str | None,
         command: str,
         timeout_s: float,
+        user: str | None = None,
     ) -> tuple[int, str]:
-        self.exec_calls.append({"service": service, "command": command, "timeout_s": timeout_s})
+        self.exec_calls.append(
+            {"service": service, "command": command, "timeout_s": timeout_s, "user": user}
+        )
         self.events.append(f"collect:{service}")
         for needle, scripted in self._exec_results.items():
             if needle in command:
@@ -384,6 +387,7 @@ def test_detail_path_reports_reach_the_reasons() -> None:
             "service": "verifier",
             "command": "cat /logs/verifier/ctrf.json",
             "timeout_s": 7.0,
+            "user": None,
         }
     ]
 
@@ -587,6 +591,36 @@ def test_verifier_user_reaches_the_substrate() -> None:
     _evaluate(substrate, kind_config={"user": "root"})
 
     assert substrate.calls[0]["user"] == "root"
+
+
+def test_the_probe_the_hooks_and_the_reports_run_as_the_declared_user() -> None:
+    """The staging probe, the collect hooks and the report reads share the user.
+
+    A pack seals its reward directory against its agent, so a step running as
+    anyone else sees permission denied on exactly the paths it grades by: the
+    probe reads a staged suite it cannot stat as one that never landed, a
+    collect hook exits non-zero, and each report arrives as ``unavailable``.
+    """
+    substrate = _ScriptedSubstrate(
+        _result(reward_bytes=b"1.0\n"),
+        exec_results={"ctrf.json": (0, "{}")},
+    )
+    _evaluate(
+        substrate,
+        kind_config={
+            "service": "verifier",
+            "user": "root",
+            "stage_paths": [{"source": "/tests", "src_service": "tests-vault"}],
+            "collect": [{"service": "postgres", "command": "pg_dumpall > /tmp/d"}],
+            "detail_paths": ["/logs/verifier/ctrf.json"],
+        },
+    )
+
+    assert [(c["command"], c["user"]) for c in substrate.exec_calls] == [
+        ("test -e /tests", "root"),
+        ("pg_dumpall > /tmp/d", "root"),
+        ("cat /logs/verifier/ctrf.json", "root"),
+    ]
 
 
 def test_user_and_require_reward_default_to_the_pre_fix_behaviour() -> None:

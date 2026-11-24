@@ -405,11 +405,12 @@ class CodingHarnessAdapterMixin:
         CTRF report, a per-criterion JSON — which are read out of its container
         and quoted in the grade's ``reasons``. See
         :attr:`~tolokaforge.core.grading.kinds.TestExecutionKindConfig.detail_paths`
-        for the guarantees, including that the read is unprivileged.
+        for the guarantees.
 
-        *user* is the Unix user the verifier runs as. A pack whose suite must
+        *user* is the Unix user grading runs as — the suite, the staging probe,
+        the collect hooks and the report reads alike. A pack whose suite must
         outrank its agent — reading an oracle, or writing a reward the agent
-        must not be able to forge — names that user; without it the suite
+        must not be able to forge — names that user; without it grading
         inherits the agent's identity. *require_reward* makes a reward the
         verifier never wrote refuse the trial as ungradeable instead of scoring
         it 0.0, which is otherwise indistinguishable from a model that failed.

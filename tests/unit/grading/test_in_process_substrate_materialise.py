@@ -84,9 +84,16 @@ def test_exec_in_service_delegates_to_impl() -> None:
         return (0, "ok")
 
     sub = _substrate(exec_in_service_impl=impl)
-    rc, out = sub.exec_in_service(service="postgres", command="pg_dumpall", timeout_s=30.0)
+    rc, out = sub.exec_in_service(
+        service="postgres", command="pg_dumpall", timeout_s=30.0, user="root"
+    )
     assert (rc, out) == (0, "ok")
-    assert seen == {"service": "postgres", "command": "pg_dumpall", "timeout_s": 30.0}
+    assert seen == {
+        "service": "postgres",
+        "command": "pg_dumpall",
+        "timeout_s": 30.0,
+        "user": "root",
+    }
 
 
 def test_exec_in_service_without_impl_is_unreachable() -> None:

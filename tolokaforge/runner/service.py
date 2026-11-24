@@ -2329,6 +2329,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         service: str | None,
         command: str,
         timeout_s: float,
+        user: str | None = None,
         trial_id: str,
     ) -> tuple[int, str]:
         """Run *command* in *service*'s container, returning (exit_code, output).
@@ -2336,9 +2337,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Resolves the service's container from the trial's compose-exec tool and
         runs the command through the shared docker-exec seam (the EPIPE-safe
         staged stdio the test suite uses). ``service=None`` runs in the agent's
-        own container under bash; a named sidecar runs under POSIX ``sh``. Raises
-        :class:`SubstrateUnreachableError` when the trial or a compose-backed exec
-        tool cannot be resolved, or the exec itself fails operationally; a
+        own container under bash; a named sidecar runs under POSIX ``sh``.
+        *user* reaches ``docker exec --user``; ``None`` inherits the container's
+        own default user. Raises :class:`SubstrateUnreachableError` when the
+        trial or a compose-backed exec tool cannot be resolved, when the command
+        cannot be run as *user*, or when the exec itself fails operationally; a
         non-zero exit from the command is returned, not raised (the caller
         decides what it means).
         """
@@ -2361,6 +2364,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # redis:alpine) with no bash, so its collect runs under POSIX ``sh``.
         shell = "bash" if service is None else "sh"
         container = getattr(exec_tool, "container_name", None)
+        if container is None and user is not None:
+            # ``--user`` is a property of the docker-exec plan below, and the
+            # container-less fallback has none to build one against. Running as
+            # the container's own user instead would read a path the task sealed
+            # against that user and record the denial as the report's contents.
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: the command must run as {user!r}, but this trial's "
+                f"exec tool ({type(exec_tool).__name__}) resolves no container to select "
+                "a user on."
+            )
         try:
             if container is None:
                 # No resolvable sibling container (a non-compose executor). This
@@ -2380,8 +2393,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 # stdio and preserves partial output under bash.
                 return exec_tool.exec_in_env_with_exit_code(command, timeout_s)
             # Reuse the shared docker-exec seam (EPIPE-safe staged stdio) rather
-            # than a raw subprocess, selecting the shell for this service.
-            plan = _docker_exec_plan(container, command, shell=shell)
+            # than a raw subprocess, selecting the shell and identity for this service.
+            plan = _docker_exec_plan(container, command, user=user, shell=shell)
             return _run_argv_with_exit_code(plan.argv, timeout_s)
         except (subprocess.SubprocessError, OSError) as exc:
             # Only operational exec/transport failures become "unreachable"; a

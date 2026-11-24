@@ -17,7 +17,11 @@ verifier container), not a stand-in:
 * the reports the verifier writes beside that reward — the CTRF report and the
   reward-details JSON the task declares — are read out of the verifier
   container and quoted into the grade's ``reasons``, so a 0.0 names the
-  criterion that failed instead of being auditable only by a re-run.
+  criterion that failed instead of being auditable only by a re-run. The
+  fixture's verifier image drops to an unprivileged ``USER`` and its suite
+  leaves each report root-owned at ``0600``, so that read lands only because
+  grading carries the task's declared user onto every exec it makes into the
+  container.
 
 Heavy (it builds Docker images and brings up compose stacks), so it carries the
 ``integration`` / ``docker`` / ``requires_docker`` markers plus a
@@ -192,6 +196,25 @@ def _in_the_agent_container(
     return result.output
 
 
+def _assert_the_fixture_seals_its_reports() -> None:
+    """The report read is only a test of the user seam while the fixture seals.
+
+    An image without the unprivileged ``USER``, or a suite that leaves its
+    reports world-readable, would let the report assertions pass whichever user
+    the exec ran as — a green test for the condition it exists to catch.
+    """
+    verifier_image = (_FIXTURES / _TASK_ID / "tests" / "Dockerfile").read_text(encoding="utf-8")
+    suite = (_FIXTURES / _TASK_ID / "tests" / "test.sh").read_text(encoding="utf-8")
+    assert "\nUSER verifier\n" in verifier_image, (
+        "the v4 fixture's verifier image must drop to a non-root USER, or the report "
+        "read lands as root whether or not grading carries the task's user"
+    )
+    assert 'chmod 600 "$LOGS/ctrf.json"' in suite, (
+        "the v4 fixture's suite must seal its reports to the user it grades as, or an "
+        "unprivileged report read succeeds and asserts nothing"
+    )
+
+
 def _grade(backend: SharedStackRuntimeBackend, trial_id: str) -> dict[str, Any]:
     graded = backend.grade_trial(trial_id=trial_id, llm_messages_json=json.dumps([]))
     assert graded["success"] is True, graded.get("error")
@@ -266,11 +289,16 @@ class TestTerminalBenchV4SeparateVerifier:
         The reward file carries one number, so a trial whose per-criterion
         verdict is unreadable can only be explained by running the task again —
         and the directory holding the reports is the trial's compose staging,
-        gone at teardown. The declared reports are read **unprivileged**, so the
-        fixture's chmod is what makes the read land; ``unavailable`` is what the
-        engine writes in place of a report it could not read, which is why its
-        absence here is the whole point.
+        gone at teardown.
+
+        The fixture seals those reports the way a hardened pack does: the
+        verifier image drops to an unprivileged ``USER`` and the suite leaves
+        each report root-owned at ``0600``. So the read lands only if grading
+        reaches the container as the user the task declared — as the image's own
+        user it is denied with ``Permission denied``, and ``unavailable`` is
+        what the engine then writes in place of each report.
         """
+        _assert_the_fixture_seals_its_reports()
         reasons = _provision_and_grade(
             connected_backend,
             prebuilt_environment["task"],
@@ -290,8 +318,8 @@ class TestTerminalBenchV4SeparateVerifier:
         )
         assert "unavailable" not in reasons, (
             f"every declared report must have been read, not recorded as unavailable — "
-            f"the read is unprivileged, so this is where a sealed log directory shows up; "
-            f"reasons were: {reasons!r}"
+            f"the fixture seals its reports, so this is where an exec that dropped the "
+            f"task's declared user shows up; reasons were: {reasons!r}"
         )
 
     def test_an_agent_planting_a_reward_still_scores_zero(
