@@ -842,7 +842,7 @@ class SnapshotGradingSubstrate:
         self,
         *,
         src_service: str | None,  # noqa: ARG002
-        dst_service: str,
+        dst_service: str | None,
         path: str,
         exclude: Sequence[str] = (),  # noqa: ARG002
         user: str | None = None,  # noqa: ARG002

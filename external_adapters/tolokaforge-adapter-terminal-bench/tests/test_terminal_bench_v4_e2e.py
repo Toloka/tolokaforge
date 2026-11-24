@@ -7,11 +7,13 @@ verifier container), not a stand-in:
 
 * the oracle writes the declared artifact and scores **1.0** — it is
   re-materialised from the agent into the verifier container and the suite there
-  passes. The landing site is root-owned while the image's own ``USER`` is not,
-  so emptying it and recreating its parent only succeeds because the staging
-  carries the task's declared user too;
-* a no-op writes nothing and scores **0.0** — the artifact is absent, so the
-  verifier runs without it and the suite fails;
+  passes. The verifier image bakes a stale root-owned answer at the landing site
+  while its own ``USER`` is not root, so the staging's ``rm -rf`` of that answer
+  exits 1 unless it carries the task's declared user — and a staging that exits
+  1 raises ``SubstrateUnreachableError``, which books the trial as ungradeable
+  rather than scoring it;
+* a no-op writes nothing and scores **0.0** — the staging leaves the landing
+  site without the oracle's answer, so the suite there fails;
 * the agent's container holds ``/logs/agent`` and **no** ``/logs/verifier``, and
   an agent that plants its own ``/logs/verifier/reward.txt = 1`` still scores
   **0.0** — the file it wrote is container-local and the trial is graded from
@@ -198,22 +200,21 @@ def _in_the_agent_container(
     return result.output
 
 
-def _assert_the_fixture_seals_its_reports() -> None:
-    """The user seam is only under test while the fixture stays sealed.
+def _assert_the_fixture_stays_hardened() -> None:
+    """The user seam is only under test while the fixture stays hardened.
 
     An image without the unprivileged ``USER``, a suite that leaves its reports
-    world-readable, or an artifact destination handed to that user would let
+    world-readable, or a landing site with nothing root-owned at it would let
     these assertions pass whichever user the exec ran as — a green test for the
     condition it exists to catch.
     """
     verifier_image = (_FIXTURES / _TASK_ID / "tests" / "Dockerfile").read_text(encoding="utf-8")
     suite = (_FIXTURES / _TASK_ID / "tests" / "test.sh").read_text(encoding="utf-8")
+    image_lines = verifier_image.splitlines()
     # The LAST directive is the one the container runs as, so a later ``USER
     # root`` appended below the drop would undo it while the drop still reads.
     user_directives = [
-        line.split(maxsplit=1)[1].strip()
-        for line in verifier_image.splitlines()
-        if line.startswith("USER ")
+        line.split(maxsplit=1)[1].strip() for line in image_lines if line.startswith("USER ")
     ]
     assert user_directives[-1:] == ["verifier"], (
         "the v4 fixture's verifier image must END on a non-root USER, or every exec "
@@ -227,9 +228,24 @@ def _assert_the_fixture_seals_its_reports() -> None:
             f"unprivileged read of it succeeds and asserts nothing; the chmod line was "
             f"{sealed!r}"
         )
-    assert "chown" not in verifier_image, (
-        "the v4 fixture's artifact destination must stay root-owned, or the staging "
-        "that empties it succeeds as the image's own user and asserts nothing"
+    # ``rm -rf`` suppresses ENOENT and ``mkdir -p`` an existing directory, so a
+    # landing site holding nothing exits 0 under any user. The stale answer is
+    # what the staging must actually unlink, and it is root-owned only while it
+    # is baked above the ``USER`` drop.
+    first_drop = next(index for index, line in enumerate(image_lines) if line.startswith("USER "))
+    stale = [
+        line
+        for index, line in enumerate(image_lines)
+        if "> /app/answer.txt" in line and index < first_drop
+    ]
+    assert stale, (
+        "the v4 fixture's verifier image must bake a root-owned answer at /app/answer.txt "
+        "above its USER drop, or the staging that empties the landing site exits 0 as the "
+        f"image's own user and asserts nothing; image lines were {image_lines!r}"
+    )
+    assert "42" not in stale[-1], (
+        "the baked answer must differ from the oracle's 42, or the suite passes on the stale "
+        f"file and the copy from the agent asserts nothing; the bake line was {stale[-1]!r}"
     )
 
 
@@ -270,6 +286,16 @@ class TestTerminalBenchV4SeparateVerifier:
         connected_backend: SharedStackRuntimeBackend,
         prebuilt_environment: dict[str, Any],
     ) -> None:
+        """A 1.0 here needs a write the verifier image's own user cannot make.
+
+        The image bakes a stale root-owned answer at the landing site, so the
+        staging's ``rm -rf`` of it exits 1 as that image's unprivileged ``USER``
+        and 0 only as the user the task declares. A staging that exits 1 raises
+        ``SubstrateUnreachableError``, which grading reports as
+        ``success=False`` — so a dropped user trips ``_grade``'s assertion
+        before any score is read.
+        """
+        _assert_the_fixture_stays_hardened()
         score = _provision_and_grade(
             connected_backend,
             prebuilt_environment["task"],
@@ -293,8 +319,9 @@ class TestTerminalBenchV4SeparateVerifier:
             solve=False,
         )["score"]
         assert score == 0.0, (
-            f"a no-op leaves the declared artifact absent, so the verifier runs "
-            f"without it and the suite fails; expected 0.0, got {score}."
+            f"a no-op writes no artifact, so the staging leaves the landing site "
+            f"without the oracle's answer and the suite there fails; expected 0.0, "
+            f"got {score}."
         )
 
     def test_the_verifier_reports_reach_the_grade(
@@ -316,7 +343,7 @@ class TestTerminalBenchV4SeparateVerifier:
         user it is denied with ``Permission denied``, and ``unavailable`` is
         what the engine then writes in place of each report.
         """
-        _assert_the_fixture_seals_its_reports()
+        _assert_the_fixture_stays_hardened()
         reasons = _provision_and_grade(
             connected_backend,
             prebuilt_environment["task"],
