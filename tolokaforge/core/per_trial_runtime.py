@@ -80,6 +80,10 @@ class PerTrialRuntimeBackend:
     grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
     state_read_timeout_s: float = DEFAULT_STATE_READ_TIMEOUT_S
     task_dir_of: Callable[[str], Path] | None = None
+    refs_staging_dir: Path | None = None
+    """A directory of the run the engine owns, where a trial's referenced files are
+    staged for its runner when it is on the task directory's filesystem (ADR-0072);
+    ``None`` stages them beside the task directory or the final-state directory."""
     composer: SubstrateComposer | None = None
     _delegate: SharedStackRuntimeBackend = field(init=False)
 
@@ -95,6 +99,7 @@ class PerTrialRuntimeBackend:
             grpc_max_message_mb=self.grpc_max_message_mb,
             state_read_timeout_s=self.state_read_timeout_s,
             task_dir_of=self.task_dir_of,
+            refs_staging_dir=self.refs_staging_dir,
             composer=self._build_composer(),
         )
         self._delegate._per_trial_mode = True
@@ -256,6 +261,7 @@ def per_trial_runtime_backend_factory(
         grpc_max_message_mb=ctx.grpc_max_message_mb,
         state_read_timeout_s=ctx.state_read_timeout_s,
         task_dir_of=ctx.task_dir_of,
+        refs_staging_dir=ctx.refs_staging_dir,
     )
 
 

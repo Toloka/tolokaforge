@@ -235,21 +235,35 @@ The pieces that matter:
 
 How a task's files reach the runner is not part of the environment: it is
 the run's `compute.trial_data_delivery` (`inline` by default, or `mount`;
-ADR-0068, ADR-0072). Under `mount` the engine bind-mounts the task directory
-read-only into the runner service at `/tolokaforge/tool-artifact-refs` for a
-task whose runner a `trial`-scope stack owns, and the runner copies and
-verifies each file by SHA-256; and the engine bind-mounts a per-trial writable
+ADR-0068, ADR-0072). Under `mount` the engine stages the files the description
+references, alone, into a per-trial directory on the task directory's filesystem
+(the run's `.tolokaforge/refs`, else the one beside the task) as hard links, and
+bind-mounts it read-only into the runner service
+at `/tolokaforge/tool-artifact-refs` for a task whose runner a `trial`-scope
+stack owns, and the runner copies and verifies each file by SHA-256; and the engine bind-mounts a per-trial writable
 directory at `/tolokaforge/final-state`, where the runner writes the trial's
 final database state and answers `GetState` with the file's path, SHA-256 and
 size, which the engine checks and copies into the trial bundle as
 `final_state.json` without parsing it (ADR-0069). A task whose runner the run
 owns stays inline. Only the `runner_rpc` grader without snapshot bundles grades
 a trial delivered this way, and a redacting artifact-write policy withholds
-`final_state.json`. Both directories are made under the engine's temporary
-directory, so an engine that drives the host's Docker daemon from inside a
-container needs `TMPDIR` on a path the daemon can bind from. A task manifest
+`final_state.json`. The final-state directory, and the staged references when
+they fall back beside it, are made under the engine's temporary directory, so an
+engine that drives the host's Docker daemon from inside a container needs
+`TMPDIR`, the run's output directory and the task directory's parent on paths the
+daemon can bind from. A task manifest
 that names `tool_artifacts_delivery`, `final_state_delivery` or
 `initial_state_delivery` is refused.
+
+A file is copied instead of linked, with a warning naming the bytes, when neither
+staging location is writable on the task directory's device (the trial then stages
+beside its final-state directory, in the system's temporary directory) or when the
+filesystem refuses the link itself (links not allowed, the link limit); a copy keeps
+the file readable by every user. On overlayfs a link of a lower-layer file copies it
+up first. With Docker Desktop, share the run's output directory and the task
+directory's parent with the VM. An engine killed before its teardown leaves
+`.tolokaforge/` beside the task until the next run sweeps it; keep it out of version
+control.
 
 A task can declare its own `environment_manifest` with the same shape; it
 deep-merges on top of `default_environment` per service. A task that

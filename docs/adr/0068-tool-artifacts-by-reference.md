@@ -8,6 +8,8 @@
 - **Revised:** 2026-11-09, by the addressing of [ADR-0072](https://github.com/Toloka/tolokaforge/pull/1983):
   a reference is a `pack:` address, the delivery is a run setting, and the grader rule
   is written on the trial contract.
+- **Revised:** 2026-11-10, ADR-0072's open question 4: the runner's mount holds the referenced
+  files only, staged per trial, not the whole task directory.
 
 ## Context and Problem Statement
 
@@ -127,7 +129,22 @@ the engine materialises per trial from a task-declared stack.
   run's adapter (`RunSubstrate.task_dir_of`) and hands it to the stack that owns
   the trial's runner (and refuses a description with references when no
   trial-scope stack owns it, or when the run cannot locate the task, before any
-  stack starts). The docker-compose materialiser adds a read-only bind mount of it at
+  stack starts). It stages the referenced files alone into a per-trial directory at
+  their `pack:` paths, on the task directory's filesystem so each is a hard link to
+  the task's file: in the run's own directory (`<run output>/.tolokaforge/refs`), else
+  in the one hidden directory beside the task (`<task parent>/.tolokaforge/refs`),
+  each only when it is writable and on the task directory's device; else beside the
+  trial's final-state directory. A file that cannot be linked (another filesystem,
+  links refused, the link limit) is copied, keeping its mode readable by every user,
+  with a warning naming the bytes; any other failure refuses the trial. Each trial's
+  directory records its owner; the first staging of a run into a directory sweeps
+  what an engine killed before its teardown left there (an owner gone from this host,
+  or older than a day), and every walk of a pack's files (task discovery, the task's
+  artefacts, the harness's tree hash) skips `.tolokaforge`. A file that is
+  missing, resolves outside the task directory or has another size than described
+  is refused there, every one listed, before any stack starts; the runner's digest
+  check stays the one that decides. The directory is removed at teardown, and when
+  the trial's provision fails. The docker-compose materialiser adds a read-only bind mount of it at
   `/tolokaforge/tool-artifact-refs` to the runner service and sets
   `TOLOKAFORGE_TOOL_ARTIFACT_REFS_DIR` to it; a compose file that already
   declares the variable or a volume at that path is refused.
@@ -168,9 +185,12 @@ the engine materialises per trial from a task-declared stack.
 
 ### Negative / Trade-offs
 
-- The runner service sees the whole task directory read-only, not only the files
-  the trial references; a pack that keeps something there the runner must not
-  see cannot use `mount`.
+- An engine killed before its teardown leaves its trials' staged links behind, in
+  the run's directory or beside the task, until the next run sweeps them; a pack
+  checkout may show `.tolokaforge/` until then (ignore it in version control).
+- On overlayfs, a link of a file in a lower layer copies it up first: it is counted
+  as linked but costs the copy. Docker Desktop must share the staging location with
+  its VM, as it must the task directory.
 - The engine reads the task's files once per description to hash them, and the
   runner hashes them again per trial while copying.
 - Each trial copies the referenced files to the runner's disk, as inline
@@ -197,6 +217,9 @@ the engine materialises per trial from a task-declared stack.
   `mount` also needs detached grading.
 - A world seeded into the database as `initial_state.tables` still travels
   inline; it is not a tool artefact.
+- Staging per (run, task) instead of per trial: concurrent trials of one task on a
+  machine where links fail each copy the task's files today; one shared staging
+  per task, released with the task's last trial, would copy them once.
 - `copy_compose_context` copies the compose file's whole directory into every
   trial's context; a pack whose compose file sits beside a large world copies
   that world once per trial. Copy the compose file and its relative bind

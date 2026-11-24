@@ -54,6 +54,7 @@ from tolokaforge.core.plugin_registry import (
     load_runtime_backend,
     load_trial_grader,
 )
+from tolokaforge.core.refs_staging import ENGINE_DIR_NAME, REFS_DIR_NAME
 from tolokaforge.core.run_display_events import _NULL_EVENTS, RunDisplayEvents
 from tolokaforge.core.trial import NodeRunSettings, TrialNodeInputs, TrialResult, TrialSpec
 from tolokaforge.core.trial_executor import (
@@ -426,6 +427,9 @@ def _run_verified_trial(inputs: TrialNodeInputs, task: TaskConfig, spec: TrialSp
             grpc_max_message_mb=inputs.grpc_max_message_mb,
             # Looked up only for a trial whose artefacts are pack: references.
             task_dir_of=lambda task_id: adapter.get_task_dir(task_id),
+            refs_staging_dir=(
+                None if output_dir is None else output_dir / ENGINE_DIR_NAME / REFS_DIR_NAME
+            ),
         )
     )
     # Resolve the conductor factory before validating the user-simulator config

@@ -78,6 +78,7 @@ from tolokaforge.core.project_loader import (
     resolve_effective_grading_combine,
 )
 from tolokaforge.core.project_loader import resolve as resolve_environment
+from tolokaforge.core.refs_staging import is_engine_path
 from tolokaforge.runner.id_resolution import check_id_fields_against_seeded_tables
 from tolokaforge.runner.initial_state_file import seeded_table_shapes as seeded_json_db_table_shapes
 from tolokaforge.runner.initial_state_file import seeded_tables as seeded_json_db_tables
@@ -457,6 +458,8 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """
         for expanded_pattern in self._expand_braces(pattern):
             for task_file in glob_module.glob(expanded_pattern, recursive=True):
+                if is_engine_path(task_file):
+                    continue  # the engine's own staging beside a task (ADR-0072)
                 self._process_discovered_task_file(Path(task_file))
 
     def _process_discovered_task_file(self, task_path: Path) -> None:
@@ -1688,7 +1691,10 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             for file_path in task_dir.glob(pattern):
                 if not file_path.is_file():
                     continue
-                paths.setdefault(file_path.relative_to(task_dir).as_posix(), file_path)
+                relative = file_path.relative_to(task_dir)
+                if is_engine_path(relative):
+                    continue  # another task's staged references, nested inside this one
+                paths.setdefault(relative.as_posix(), file_path)
         return paths
 
 
