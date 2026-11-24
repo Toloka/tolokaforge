@@ -403,10 +403,9 @@ class CodingHarnessAdapterMixin:
 
         *detail_paths* are reports the verifier writes beside its reward — a
         CTRF report, a per-criterion JSON — which are read out of its container
-        and quoted in the grade's ``reasons``. A suite that prints only its
-        reward records its verdicts nowhere else, and the directory holding them
-        goes with the trial's compose stack, so a report not named here cannot
-        be recovered afterwards.
+        and quoted in the grade's ``reasons``. See
+        :attr:`~tolokaforge.core.grading.kinds.TestExecutionKindConfig.detail_paths`
+        for the guarantees, including that the read is unprivileged.
 
         *user* is the Unix user the verifier runs as. A pack whose suite must
         outrank its agent — reading an oracle, or writing a reward the agent

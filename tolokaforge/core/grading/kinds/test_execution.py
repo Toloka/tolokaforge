@@ -26,8 +26,8 @@ Both refusals are mapped by the runner's dispatcher to
 
 A pack whose suite prints only its reward names its per-criterion reports on
 ``detail_paths``; each is read out of the container the suite ran in and quoted
-in ``reasons``, on the refusal paths above as well as on a score. The reports
-live with the trial's stack and go at teardown, so one not read here is gone.
+in ``reasons``, on the refusal paths above as well as on a score. See that
+field for what the kind does and does not guarantee about reading them.
 
 Per-task configuration rides ``kind_config`` — validated into
 :class:`TestExecutionKindConfig` (``extra="forbid"``). Defaults are
@@ -152,15 +152,22 @@ class TestExecutionKindConfig(BaseModel):
     detail_paths: list[str] = Field(default_factory=list)
     """Reports the verifier writes, carried into the grade's ``reasons``.
 
-    A suite that prints only its reward leaves the per-criterion verdicts in
-    files instead: a Terminal-Bench 4.1 pack writes a CTRF report and a
-    reward-details JSON beside the reward and chmods both open to the harness.
-    The directory holding them belongs to the trial's compose stack and is
-    removed at teardown, so a report not read here is gone — and a 0.0 can then
-    only be audited by running the task again.
+    A suite that prints only its reward records its per-criterion verdicts in
+    files instead. The directory holding them belongs to the trial's compose
+    stack and is removed at teardown, so a report not read here is gone — and a
+    verdict of 0.0 can then only be audited by running the task again.
+
+    Read **unprivileged**, unlike the reward: :attr:`user` reaches
+    ``run_test_suite`` but there is no such parameter on the exec seam these go
+    through, so a pack that seals its log directory must leave these entries
+    readable to the verifier image's own user or they arrive as "unavailable".
 
     A path that is absent or unreadable is recorded as such instead of failing
     the trial: a pack that writes no report must still be able to score.
+
+    Together these two budgets bound what one trial can add to ``grade.yaml``:
+    the reports share a single :attr:`output_truncation_chars` allowance rather
+    than taking one each.
     """
     detail_read_timeout_s: float = Field(default=10.0, gt=0.0)
     """Wall-clock cap on each ``cat`` of a :attr:`detail_paths` entry."""
@@ -255,6 +262,10 @@ def _read_verifier_reports(substrate: GradingSubstrate, cfg: TestExecutionKindCo
     """
     from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 
+    # One allowance split across the reports, not one each: every byte here is
+    # written verbatim into the trial's grade.yaml, so a per-report budget would
+    # multiply that file by the number of reports on every trial of a run.
+    budget = cfg.output_truncation_chars // max(1, len(cfg.detail_paths))
     sections: list[str] = []
     for path in cfg.detail_paths:
         try:
@@ -267,7 +278,7 @@ def _read_verifier_reports(substrate: GradingSubstrate, cfg: TestExecutionKindCo
             # Replay and snapshot substrates carry no container to exec into.
             sections.append(f"verifier report {path}: unavailable ({exc})")
             continue
-        body = output[: cfg.output_truncation_chars]
+        body = output[:budget]
         if exit_code != 0:
             sections.append(
                 f"verifier report {path}: unavailable (exit {exit_code}): {body.strip()}"
@@ -441,9 +452,7 @@ class TestExecutionGraderKind:
             reward = 0.0
         stdout = result.stdout or ""
         shown = stdout[: cfg.output_truncation_chars]
-        # Only claim a truncation that happened. The unconditional label sent a
-        # board owner after a truncation bug that did not exist, while the real
-        # gap -- a suite that prints nothing but its reward -- went unread.
+        # Only claim a truncation that happened.
         label = (
             f"test output (truncated to {cfg.output_truncation_chars} chars):"
             if len(stdout) > cfg.output_truncation_chars

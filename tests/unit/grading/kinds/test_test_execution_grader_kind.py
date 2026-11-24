@@ -365,7 +365,13 @@ def test_detail_path_reports_reach_the_reasons() -> None:
     )
     grade = _evaluate(
         substrate,
-        kind_config={"service": "verifier", "detail_paths": ["/logs/verifier/ctrf.json"]},
+        kind_config={
+            "service": "verifier",
+            "detail_paths": ["/logs/verifier/ctrf.json"],
+            # Non-default, so a field that ignored its configured value fails
+            # here rather than passing on the default it shares with the reward.
+            "detail_read_timeout_s": 7.0,
+        },
     )
 
     assert grade is not None
@@ -377,9 +383,35 @@ def test_detail_path_reports_reach_the_reasons() -> None:
         {
             "service": "verifier",
             "command": "cat /logs/verifier/ctrf.json",
-            "timeout_s": 10.0,
+            "timeout_s": 7.0,
         }
     ]
+
+
+def test_the_reports_share_one_output_budget() -> None:
+    """Several reports split one allowance rather than taking one each.
+
+    Every byte reaches the trial's ``grade.yaml`` verbatim, so a per-report
+    budget would multiply that file by the number of reports on every trial of
+    a run.
+    """
+    big = "Y" * 5_000
+    substrate = _ScriptedSubstrate(
+        _result(reward_bytes=b"1.0\n", stdout=""),
+        exec_results={"a.json": (0, big), "b.json": (0, big)},
+    )
+    grade = _evaluate(
+        substrate,
+        kind_config={
+            "service": "verifier",
+            "detail_paths": ["/logs/verifier/a.json", "/logs/verifier/b.json"],
+            "output_truncation_chars": 1_000,
+        },
+    )
+
+    assert grade is not None
+    assert grade.reasons.count("Y" * 500) == 2
+    assert grade.reasons.count("Y") == 1_000
 
 
 def test_an_unreadable_report_is_noted_and_still_scores() -> None:
