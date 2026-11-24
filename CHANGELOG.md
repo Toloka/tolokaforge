@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.34.11 (2026-11-24)
+
+### BREAKING CHANGE
+
+- the engine/runner wire protocol is version 10.
+`ExecInServiceRequest` carries `user`; an older runner image drops the unknown
+field (proto3 discards unknown fields) and execs as the container's own user,
+so a pack whose verifier image declares a non-root `USER` grades half
+privileged. The host refuses an image whose `runner_protocol_version` is below
+10 at registration, and the runner refuses an engine below 10. Rebuild the
+runner image from the engine you are running, or pin a matching tag.
+
+### Fix
+
+- **grading**: the exec seam carries the verifier's user (#2032) (#2033)
+- **grading**: a verifier's per-criterion report reaches the grade (#2031)
+
 ## v0.34.10 (2026-11-23)
 
 ### Fix
