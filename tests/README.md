@@ -507,6 +507,14 @@ When a container fixture's wait strategy does give up, the failure names the
 service and carries that container's last 40 log lines, so the reason is in the
 pytest output rather than in a `docker logs` command nobody ran.
 
+A container test that asserts on a uid, a gid or a permission bit must not make
+that assertion over a **host bind mount**. On Docker Desktop a bind mount is a
+`fakeowner` mount: it reports whatever uid the caller asks for and ignores mode
+entirely, so the assertion passes on macOS no matter which user the container
+ran as — including the user the test exists to rule out. Put the path on a
+**named volume** when the test has to measure locally; a bind mount measures
+nothing until CI's Linux daemon runs it, where the mount carries real ownership.
+
 Some suites in this tier are the `enforcing_test` a grading-key manifest entry
 names — `test_docker_grading_hash_composition.py` for the `state_checks.hash`
 family and for `state_checks.numeric_string_fields`,

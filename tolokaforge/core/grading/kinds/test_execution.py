@@ -157,10 +157,9 @@ class TestExecutionKindConfig(BaseModel):
     stack and is removed at teardown, so a report not read here is gone — and a
     verdict of 0.0 can then only be audited by running the task again.
 
-    Read **unprivileged**, unlike the reward: :attr:`user` reaches
-    ``run_test_suite`` but there is no such parameter on the exec seam these go
-    through, so a pack that seals its log directory must leave these entries
-    readable to the verifier image's own user or they arrive as "unavailable".
+    Read as :attr:`user`, the identity the reward itself is read as, so a pack
+    that seals its log directory against its agent has these read by the same
+    user its verifier wrote them as.
 
     A path that is absent or unreadable is recorded as such instead of failing
     the trial: a pack that writes no report must still be able to score.
@@ -184,14 +183,23 @@ class TestExecutionKindConfig(BaseModel):
     container, which is exactly the case this field exists for.
     """
     user: str | None = None
-    """Unix user the verifier runs as, or ``None`` to inherit the container's
+    """Unix user grading runs as, or ``None`` to inherit the container's
     default user.
 
-    A task pack may run its suite as a different user than the agent — commonly
+    A task pack may grade as a different user than the agent — commonly
     ``root``, so the suite can read an oracle and write a reward into a
     directory the agent cannot touch. Nothing infers this: an adapter that
-    knows its pack's contract passes the user, and every adapter that does not
-    keeps the pre-existing behaviour of inheriting the image's ``USER``.
+    knows its pack's contract passes the user, and one that does not inherits
+    the image's own ``USER``.
+
+    One identity for every exec grading makes into the container the suite is
+    graded in: the suite, the :attr:`stage_paths` probe, the :attr:`collect`
+    hooks, the :attr:`detail_paths` reads, and the destination side of every
+    :attr:`stage_paths` and :attr:`artifacts` copy. A pack that seals its reward
+    directory seals it against the agent, so a step running as anyone else sees
+    permission denied on exactly the paths the pack grades by. Reads out of a
+    copy's *source* container keep that container's own user — this identity
+    belongs to the verifier and need not exist in the agent's image.
     """
     require_reward: bool = False
     """Treat a missing or unparseable reward as ungradeable instead of 0.0.
@@ -273,6 +281,7 @@ def _read_verifier_reports(substrate: GradingSubstrate, cfg: TestExecutionKindCo
                 service=cfg.service,
                 command=f"cat {shlex.quote(path)}",
                 timeout_s=cfg.detail_read_timeout_s,
+                user=cfg.user,
             )
         except SubstrateUnreachableError as exc:
             # Replay and snapshot substrates carry no container to exec into.
@@ -313,6 +322,7 @@ class TestExecutionGraderKind:
                 dst_service=cfg.service,
                 path=staged.source,
                 exclude=staged.exclude,
+                user=cfg.user,
             )
             # materialise_path treats an absent SOURCE as "the verifier runs
             # without it": correct for an artifact the agent never produced,
@@ -325,6 +335,7 @@ class TestExecutionGraderKind:
                 service=cfg.service,
                 command=f"test -e {shlex.quote(staged.source)}",
                 timeout_s=cfg.stage_probe_timeout_s,
+                user=cfg.user,
             )
             if exit_code != 0:
                 raise GraderKindRefusedError(
@@ -342,6 +353,7 @@ class TestExecutionGraderKind:
                 service=hook.service,
                 command=hook.command,
                 timeout_s=hook.timeout_s,
+                user=cfg.user,
             )
             if exit_code != 0:
                 raise GraderKindRefusedError(
@@ -357,6 +369,7 @@ class TestExecutionGraderKind:
                 dst_service=cfg.service,
                 path=artifact.source,
                 exclude=artifact.exclude,
+                user=cfg.user,
             )
         result = substrate.run_test_suite(
             script_path=cfg.script_path,

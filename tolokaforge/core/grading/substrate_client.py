@@ -262,6 +262,7 @@ class GrpcSubstrateClient:
         dst_service: str | None,
         path: str,
         exclude: Sequence[str] = (),
+        user: str | None = None,
     ) -> None:
         try:
             response = self._stub.MaterialisePath(
@@ -274,6 +275,7 @@ class GrpcSubstrateClient:
                     dst_service=dst_service or "",
                     path=path,
                     exclude=list(exclude),
+                    user=user or "",
                 )
             )
         except grpc.RpcError as err:
@@ -287,6 +289,7 @@ class GrpcSubstrateClient:
         service: str | None,
         command: str,
         timeout_s: float,
+        user: str | None = None,
     ) -> tuple[int, str]:
         try:
             response = self._stub.ExecInService(
@@ -295,6 +298,7 @@ class GrpcSubstrateClient:
                     service=service or "",
                     command=command,
                     timeout_s=timeout_s,
+                    user=user or "",
                 )
             )
         except grpc.RpcError as err:

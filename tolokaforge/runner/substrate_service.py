@@ -381,6 +381,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
                 dst_service=request.dst_service or None,
                 path=request.path,
                 exclude=list(request.exclude),
+                user=request.user or None,
                 trial_id=request.trial_id,
             )
         except SubstrateUnreachableError as exc:
@@ -405,6 +406,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
                 service=request.service or None,
                 command=request.command,
                 timeout_s=timeout_s,
+                user=request.user or None,
                 trial_id=request.trial_id,
             )
         except SubstrateUnreachableError as exc:

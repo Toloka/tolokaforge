@@ -199,12 +199,14 @@ class LiveRunnerCallbackGradingSubstrate:
         dst_service: str | None,
         path: str,
         exclude: Sequence[str] = (),
+        user: str | None = None,
     ) -> None:
         self._client.materialise_path(
             src_service=src_service,
             dst_service=dst_service,
             path=path,
             exclude=exclude,
+            user=user,
         )
 
     def exec_in_service(
@@ -213,11 +215,13 @@ class LiveRunnerCallbackGradingSubstrate:
         service: str | None,
         command: str,
         timeout_s: float,
+        user: str | None = None,
     ) -> tuple[int, str]:
         return self._client.exec_in_service(
             service=service,
             command=command,
             timeout_s=timeout_s,
+            user=user,
         )
 
     def trajectory(self) -> Mapping[str, Any] | None:

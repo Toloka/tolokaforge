@@ -973,6 +973,12 @@ message MaterialisePathRequest {
   string path = 4;
   // Glob patterns pruned from the copy (caches, regenerable build output).
   repeated string exclude = 5;
+  // Unix user the DESTINATION preparation runs as (``docker exec --user``):
+  // the wipe of ``path``, the recreation of its parent and the exclude prune.
+  // Empty → the destination container's own default user. The source probe
+  // keeps the source container's default user: this names the identity the
+  // verifier grades as, which need not exist in the agent's image.
+  string user = 6;
 }
 
 message MaterialisePathResponse {
@@ -991,6 +997,11 @@ message ExecInServiceRequest {
   string command = 3;
   // Wall-clock cap on the command. 0.0 → the servicer's default.
   double timeout_s = 4;
+  // Unix user the command runs as (``docker exec --user``). Empty → the
+  // container's own default user. A pack whose verifier outranks its agent
+  // names the same user here as on RunTestSuiteRequest, so the reports beside
+  // a reward are read by whoever was entitled to write it.
+  string user = 5;
 }
 
 message ExecInServiceResponse {

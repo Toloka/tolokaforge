@@ -2330,15 +2330,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         command: str,
         timeout_s: float,
         trial_id: str,
+        user: str | None = None,
     ) -> tuple[int, str]:
         """Run *command* in *service*'s container, returning (exit_code, output).
 
         Resolves the service's container from the trial's compose-exec tool and
         runs the command through the shared docker-exec seam (the EPIPE-safe
         staged stdio the test suite uses). ``service=None`` runs in the agent's
-        own container under bash; a named sidecar runs under POSIX ``sh``. Raises
-        :class:`SubstrateUnreachableError` when the trial or a compose-backed exec
-        tool cannot be resolved, or the exec itself fails operationally; a
+        own container under bash; a named sidecar runs under POSIX ``sh``.
+        *user* reaches ``docker exec --user``; ``None`` inherits the container's
+        own default user. Raises :class:`SubstrateUnreachableError` when the
+        trial or a compose-backed exec tool cannot be resolved, when the command
+        cannot be run as *user*, or when the exec itself fails operationally; a
         non-zero exit from the command is returned, not raised (the caller
         decides what it means).
         """
@@ -2361,6 +2364,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # redis:alpine) with no bash, so its collect runs under POSIX ``sh``.
         shell = "bash" if service is None else "sh"
         container = getattr(exec_tool, "container_name", None)
+        if container is None and user is not None:
+            # ``--user`` is a property of the docker-exec plan below, and the
+            # container-less fallback has none to build one against. Running as
+            # the container's own user instead would read a path the task sealed
+            # against that user and record the denial as the report's contents.
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: the command must run as {user!r}, but this trial's "
+                f"exec tool ({type(exec_tool).__name__}) resolves no container to select "
+                "a user on. This is a configuration mismatch between the pack and the "
+                "executor it runs on, not lost infrastructure: either the pack declares a "
+                "user it cannot have here, or the trial needs a compose-backed executor."
+            )
         try:
             if container is None:
                 # No resolvable sibling container (a non-compose executor). This
@@ -2380,8 +2395,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 # stdio and preserves partial output under bash.
                 return exec_tool.exec_in_env_with_exit_code(command, timeout_s)
             # Reuse the shared docker-exec seam (EPIPE-safe staged stdio) rather
-            # than a raw subprocess, selecting the shell for this service.
-            plan = _docker_exec_plan(container, command, shell=shell)
+            # than a raw subprocess, selecting the shell and identity for this service.
+            plan = _docker_exec_plan(container, command, user=user, shell=shell)
             return _run_argv_with_exit_code(plan.argv, timeout_s)
         except (subprocess.SubprocessError, OSError) as exc:
             # Only operational exec/transport failures become "unreachable"; a
@@ -2400,6 +2415,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         path: str,
         exclude: Collection[str] = (),
         trial_id: str,
+        user: str | None = None,
     ) -> None:
         """Copy *path* from one trial container into another, emptying it first.
 
@@ -2412,6 +2428,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         the copy also runs inwards: the grading suite is staged into the agent's
         container from the sidecar that kept it out of the agent's reach. Any *exclude* glob is pruned from the
         destination afterwards.
+
+        *user* reaches ``docker exec --user`` for every step that writes in the
+        destination — the wipe, the parent recreation and the prune — so a
+        verifier image with a non-root ``USER`` still prepares a destination the
+        pack owns. ``None`` inherits the destination container's own default
+        user. The source probe keeps the source container's default user: a
+        verifier's identity need not exist in the agent's image, and reading the
+        source was never the privileged half. ``docker cp`` takes no identity at
+        all — the daemon tars through as root and restores the source's own
+        ownership — so the copy itself needs nothing here.
 
         Raises :class:`SubstrateUnreachableError` when the containers cannot be
         resolved or a copy step fails — grading then books the trial as
@@ -2460,12 +2486,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         def _run(argv: list[str], *, stdin: int | None = None, stdout: int | None = None):
             return subprocess.Popen(argv, stdin=stdin, stdout=stdout)
 
+        def _exec_in_dst(script: str) -> subprocess.CompletedProcess[str]:
+            argv = ["docker", "exec"]
+            if user is not None:
+                argv.extend(["--user", user])
+            argv.extend([dst_container, "sh", "-c", script])
+            return subprocess.run(
+                argv, capture_output=True, text=True, timeout=_MATERIALISE_PATH_TIMEOUT_S
+            )
+
         try:
             # Probe the source before touching the destination. A declared artifact
             # the agent never produced is not an error: the verifier simply runs
             # without it and the tests fail. Probing first means a failed probe (an
             # unreachable source container) raises before the destination is wiped,
             # so the verifier's baked tree is not destroyed on a copy that never ran.
+            # As the SOURCE container's own user, deliberately: *user* is the
+            # identity the suite is graded under in the destination, and it need
+            # not exist in the agent's image — ``docker exec --user`` would then
+            # fail on a source the agent can read perfectly well.
             probe = subprocess.run(
                 [
                     "docker",
@@ -2488,18 +2527,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # Empty the destination path and ensure its parent exists. Done only
             # after a successful probe so an absent source still leaves the
             # destination empty (reward 0) while an unreachable one never destroys it.
-            subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    dst_container,
-                    "sh",
-                    "-c",
-                    f"rm -rf {shlex.quote(path)} && mkdir -p {shlex.quote(parent)}",
-                ],
-                check=True,
-                timeout=_MATERIALISE_PATH_TIMEOUT_S,
-            )
+            prepared = _exec_in_dst(f"rm -rf {shlex.quote(path)} && mkdir -p {shlex.quote(parent)}")
+            if prepared.returncode != 0:
+                # A half-prepared destination grades the suite against whatever
+                # survived the wipe, so this is ungradeable rather than a copy
+                # that proceeds onto it. The user is named because the commonest
+                # cause is a destination the pack owns and the exec does not.
+                raise SubstrateUnreachableError(
+                    f"Trial {trial_id!r}: preparing {path!r} in "
+                    f"{dst_service or 'agent'!r} as {user or 'the container default user'} "
+                    f"failed (rc={prepared.returncode}): {prepared.stderr.strip()}"
+                )
             if source_absent:
                 logger.info(
                     "RunnerServiceImpl._materialise_path: trial %r source %r absent in "
@@ -2555,21 +2593,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     match = ["-path", f"{base}/{glob}"]
                 else:
                     match = ["-name", glob]
-                pruned = subprocess.run(
-                    [
-                        "docker",
-                        "exec",
-                        dst_container,
-                        "sh",
-                        "-c",
-                        "find {} {} -prune -exec rm -rf {{}} +".format(
-                            shlex.quote(path),
-                            " ".join(shlex.quote(part) for part in match),
-                        ),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=_MATERIALISE_PATH_TIMEOUT_S,
+                pruned = _exec_in_dst(
+                    "find {} {} -prune -exec rm -rf {{}} +".format(
+                        shlex.quote(path),
+                        " ".join(shlex.quote(part) for part in match),
+                    )
                 )
                 if pruned.returncode != 0:
                     # A failed prune leaves files the task declared excluded in the

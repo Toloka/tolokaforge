@@ -26,11 +26,13 @@ class FakeSubstrate:
         self._staged_present = staged_present
         self._reward = reward
 
-    def materialise_path(self, *, src_service, dst_service, path, exclude=()):
-        self.calls.append(("materialise_path", src_service, dst_service, path, tuple(exclude)))
+    def materialise_path(self, *, src_service, dst_service, path, exclude=(), user=None):
+        self.calls.append(
+            ("materialise_path", src_service, dst_service, path, tuple(exclude), user)
+        )
 
-    def exec_in_service(self, *, service, command, timeout_s):
-        self.calls.append(("exec_in_service", service, command, timeout_s))
+    def exec_in_service(self, *, service, command, timeout_s, user=None):
+        self.calls.append(("exec_in_service", service, command, timeout_s, user))
         if command.startswith("test -e"):
             return (0, "") if self._staged_present else (1, "")
         return (0, "")
@@ -91,7 +93,7 @@ def test_copy_happens_before_the_suite_runs_and_targets_the_agent():
     grade = _evaluate(sub, STAGE)
     kinds = [c[0] for c in sub.calls]
     assert kinds == ["materialise_path", "exec_in_service", "run_test_suite"], kinds
-    assert sub.calls[0] == ("materialise_path", "tests-vault", None, "/tests", ())
+    assert sub.calls[0] == ("materialise_path", "tests-vault", None, "/tests", (), None)
     assert sub.calls[2] == ("run_test_suite", "/tests/test.sh", None)
     assert grade.score == 1.0 and grade.binary_pass
 
