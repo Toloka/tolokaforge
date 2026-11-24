@@ -235,9 +235,7 @@ def test_happy_rc_zero_scored_by_reward(service: RunnerServiceImpl, mock_grpc_co
     assert response.success is True
     assert response.grade.binary_pass is True
     assert response.grade.score == pytest.approx(0.85)
-    assert response.grade.reasons == (
-        "test-execution reward: 0.8500\n\ntest output (truncated):\nPASS"
-    )
+    assert response.grade.reasons == ("test-execution reward: 0.8500\n\ntest output:\nPASS")
 
 
 def test_happy_rc_nonzero_scored_by_reward_not_gated_on_exit_code(

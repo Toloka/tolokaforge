@@ -366,6 +366,7 @@ class CodingHarnessAdapterMixin:
         artifacts: list[dict[str, Any]] | None = None,
         collect: list[dict[str, Any]] | None = None,
         stage_paths: list[dict[str, Any]] | None = None,
+        detail_paths: list[str] | None = None,
         user: str | None = None,
         require_reward: bool = False,
     ) -> dict[str, Any]:
@@ -400,6 +401,13 @@ class CodingHarnessAdapterMixin:
         agent's filesystem until the episode is over — an agent that can read
         the assertions it is scored by is not being measured.
 
+        *detail_paths* are reports the verifier writes beside its reward — a
+        CTRF report, a per-criterion JSON — which are read out of its container
+        and quoted in the grade's ``reasons``. A suite that prints only its
+        reward records its verdicts nowhere else, and the directory holding them
+        goes with the trial's compose stack, so a report not named here cannot
+        be recovered afterwards.
+
         *user* is the Unix user the verifier runs as. A pack whose suite must
         outrank its agent — reading an oracle, or writing a reward the agent
         must not be able to forge — names that user; without it the suite
@@ -426,6 +434,8 @@ class CodingHarnessAdapterMixin:
             config["collect"] = collect
         if stage_paths:
             config["stage_paths"] = stage_paths
+        if detail_paths:
+            config["detail_paths"] = detail_paths
         if user is not None:
             config["user"] = user
         if require_reward:

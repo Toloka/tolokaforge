@@ -161,7 +161,7 @@ def test_rc_nonzero_with_reward_is_surfaced_by_reward_not_exit_code() -> None:
     :meth:`DockerComposeExecToolWrapper.exec_in_env_with_exit_code` appends on
     rc≠0, so the wire stdout preserves the exit-code marker — the same
     suffix a reader would see in ``Grade.reasons`` when the kind renders
-    the merged stdout in its "test output (truncated):" block."""
+    the merged stdout in its "test output:" block."""
     tool = _StubBashTool(
         responses=[
             (1, "FAIL: 1/42 tests\n[exit code: 1]\n"),

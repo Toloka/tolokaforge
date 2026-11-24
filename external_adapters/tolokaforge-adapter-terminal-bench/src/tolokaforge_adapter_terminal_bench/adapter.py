@@ -51,6 +51,7 @@ from tolokaforge.secrets import expand_secret_refs, get_default
 from tolokaforge.tools.builtin import registry as builtin_registry
 from tolokaforge.tools.builtin.submit import SUBMIT_TOOL_NAME
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+    CONTAINER_VERIFIER_LOGS_DIR,
     DEFAULT_SKILL_DELIVERY,
     PROJECT_PREFIX,
     MaterialisedEnvironment,
@@ -919,6 +920,22 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                             }
                         ]
                         if env.tests_sidecar_service is not None
+                        else None
+                    ),
+                    # A v4 suite prints its reward and nothing else: the
+                    # per-criterion verdicts go to a CTRF report and a details
+                    # JSON beside it, which test.sh chmods open to the harness
+                    # on its way out — on the failure path too, where it names
+                    # the step that failed. The directory is the trial's compose
+                    # staging, removed at teardown, so a report not read during
+                    # grading cannot be recovered: a 0.0 would be auditable only
+                    # by running the task again.
+                    detail_paths=(
+                        [
+                            f"{CONTAINER_VERIFIER_LOGS_DIR}/ctrf.json",
+                            f"{CONTAINER_VERIFIER_LOGS_DIR}/reward-details.json",
+                        ]
+                        if meta.is_v4
                         else None
                     ),
                 )
