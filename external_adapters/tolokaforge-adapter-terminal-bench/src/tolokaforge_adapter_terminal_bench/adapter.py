@@ -51,6 +51,7 @@ from tolokaforge.secrets import expand_secret_refs, get_default
 from tolokaforge.tools.builtin import registry as builtin_registry
 from tolokaforge.tools.builtin.submit import SUBMIT_TOOL_NAME
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+    CONTAINER_VERIFIER_LOGS_DIR,
     DEFAULT_SKILL_DELIVERY,
     PROJECT_PREFIX,
     MaterialisedEnvironment,
@@ -919,6 +920,16 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                             }
                         ]
                         if env.tests_sidecar_service is not None
+                        else None
+                    ),
+                    # Report filenames the v4 pack itself writes; gated because
+                    # the v2.1 shape has no /logs/verifier mount to write them to.
+                    detail_paths=(
+                        [
+                            f"{CONTAINER_VERIFIER_LOGS_DIR}/ctrf.json",
+                            f"{CONTAINER_VERIFIER_LOGS_DIR}/reward-details.json",
+                        ]
+                        if meta.is_v4
                         else None
                     ),
                 )

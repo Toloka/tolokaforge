@@ -3,8 +3,12 @@
 Locks every observable outcome cell of the reference-suite kind:
 
 - **Happy** (rc=0, reward parseable) → ``Grade(binary_pass, score=reward)``
-  with the ``"test-execution reward: {r:.4f}\\n\\ntest output (truncated):\\n{out}"``
-  reasons format.
+  with the ``"test-execution reward: {r:.4f}\\n\\ntest output:\\n{out}"``
+  reasons format; the label states a truncation only when the output exceeded
+  ``output_truncation_chars``.
+- **Declared reports** — each ``detail_paths`` entry is read out of the
+  verifier and quoted in ``reasons`` (and in the ``require_reward`` refusal),
+  while one that is absent degrades to a note and still scores.
 - **rc≠0 + reward present** → scored by reward. The kind does NOT gate on
   ``exit_code``.
 - **Reward absent** — the servicer's shell fallback produces ``b"0.0\\n"``;
@@ -45,9 +49,17 @@ pytestmark = pytest.mark.unit
 class _ScriptedSubstrate:
     """Records the ``run_test_suite`` kwargs; returns a scripted result."""
 
-    def __init__(self, result: RunTestSuiteResult, exec_result: tuple[int, str] = (0, "")) -> None:
+    def __init__(
+        self,
+        result: RunTestSuiteResult,
+        exec_result: tuple[int, str] = (0, ""),
+        exec_results: dict[str, tuple[int, str]] | None = None,
+    ) -> None:
         self._result = result
         self._exec_result = exec_result
+        # Keyed by a substring of the command, so a test can answer the report
+        # reads differently from the stage probe and the collect hooks.
+        self._exec_results = exec_results or {}
         self.calls: list[dict[str, Any]] = []
         self.materialise_calls: list[dict[str, Any]] = []
         self.exec_calls: list[dict[str, Any]] = []
@@ -62,6 +74,9 @@ class _ScriptedSubstrate:
     ) -> tuple[int, str]:
         self.exec_calls.append({"service": service, "command": command, "timeout_s": timeout_s})
         self.events.append(f"collect:{service}")
+        for needle, scripted in self._exec_results.items():
+            if needle in command:
+                return scripted
         return self._exec_result
 
     def run_test_suite(
@@ -152,9 +167,7 @@ def test_happy_path_rc_zero_with_reward_parses_and_matches_reasons_format() -> N
     assert grade.binary_pass is True
     assert grade.score == pytest.approx(0.85)
     assert grade.components.custom_checks == pytest.approx(0.85)
-    assert grade.reasons == (
-        "test-execution reward: 0.8500\n\ntest output (truncated):\nPASS: 42/42 tests"
-    )
+    assert grade.reasons == ("test-execution reward: 0.8500\n\ntest output:\nPASS: 42/42 tests")
 
 
 def test_rc_nonzero_with_reward_is_scored_by_reward_not_exit_code() -> None:
@@ -316,11 +329,143 @@ def test_stdout_truncated_at_configured_char_cap() -> None:
     grade = _evaluate(substrate)
 
     assert grade is not None
-    output_marker = "test output (truncated):\n"
+    output_marker = "test output (truncated to 65536 chars):\n"
     idx = grade.reasons.index(output_marker) + len(output_marker)
     tail = grade.reasons[idx:]
     assert len(tail) == 65_536
     assert tail == big[:65_536]
+
+
+def test_output_under_the_cap_is_not_labelled_truncated() -> None:
+    """The label states a truncation only when one happened.
+
+    The label used to read ``(truncated)`` on every grade. A TB4.1 verifier
+    prints nothing but its reward, so the label was the only evidence a reader
+    had, and it pointed at a truncation that was not occurring.
+    """
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"0.0\n", stdout="reward: 0.0\n"))
+    grade = _evaluate(substrate)
+
+    assert grade is not None
+    assert "test output:\nreward: 0.0" in grade.reasons
+    assert "truncated" not in grade.reasons
+
+
+def test_detail_path_reports_reach_the_reasons() -> None:
+    """A declared report is read out of the verifier and quoted in the grade.
+
+    The reward file carries one number; the per-criterion verdicts live in the
+    report, and the directory holding it is destroyed at teardown. Without this
+    a 0.0 can only be audited by running the task again.
+    """
+    ctrf = '{"results":{"tests":[{"name":"test_speed_limit","status":"failed"}]}}'
+    substrate = _ScriptedSubstrate(
+        _result(reward_bytes=b"0.0\n", stdout="reward: 0.0\n"),
+        exec_results={"ctrf.json": (0, ctrf)},
+    )
+    grade = _evaluate(
+        substrate,
+        kind_config={
+            "service": "verifier",
+            "detail_paths": ["/logs/verifier/ctrf.json"],
+            # Non-default, so a field that ignored its configured value fails
+            # here rather than passing on the default it shares with the reward.
+            "detail_read_timeout_s": 7.0,
+        },
+    )
+
+    assert grade is not None
+    assert grade.score == 0.0
+    assert "verifier report /logs/verifier/ctrf.json:" in grade.reasons
+    assert "test_speed_limit" in grade.reasons
+    read = [c for c in substrate.exec_calls if "ctrf.json" in c["command"]]
+    assert read == [
+        {
+            "service": "verifier",
+            "command": "cat /logs/verifier/ctrf.json",
+            "timeout_s": 7.0,
+        }
+    ]
+
+
+def test_the_reports_share_one_output_budget() -> None:
+    """Several reports split one allowance rather than taking one each.
+
+    Every byte reaches the trial's ``grade.yaml`` verbatim, so a per-report
+    budget would multiply that file by the number of reports on every trial of
+    a run.
+    """
+    big = "Y" * 5_000
+    substrate = _ScriptedSubstrate(
+        _result(reward_bytes=b"1.0\n", stdout=""),
+        exec_results={"a.json": (0, big), "b.json": (0, big)},
+    )
+    grade = _evaluate(
+        substrate,
+        kind_config={
+            "service": "verifier",
+            "detail_paths": ["/logs/verifier/a.json", "/logs/verifier/b.json"],
+            "output_truncation_chars": 1_000,
+        },
+    )
+
+    assert grade is not None
+    assert grade.reasons.count("Y" * 500) == 2
+    assert grade.reasons.count("Y") == 1_000
+
+
+def test_an_unreadable_report_is_noted_and_still_scores() -> None:
+    """A report that is absent degrades to a note instead of failing the trial.
+
+    A pack that writes no report must still be able to score: the reports are
+    an audit trail, not a second verdict.
+    """
+    substrate = _ScriptedSubstrate(
+        _result(reward_bytes=b"1.0\n", stdout=""),
+        exec_results={"ctrf.json": (1, "cat: /logs/verifier/ctrf.json: No such file or directory")},
+    )
+    grade = _evaluate(
+        substrate,
+        kind_config={"service": "verifier", "detail_paths": ["/logs/verifier/ctrf.json"]},
+    )
+
+    assert grade is not None
+    assert grade.score == 1.0
+    assert grade.binary_pass is True
+    assert "unavailable (exit 1)" in grade.reasons
+    assert "No such file or directory" in grade.reasons
+
+
+def test_detail_reports_reach_the_require_reward_refusal() -> None:
+    """The refusal path carries the report too.
+
+    A TB4.1 verifier that fails one of its own steps deletes the reward files
+    and leaves a report naming the stage. That refusal is precisely where a
+    reader has nothing else to go on.
+    """
+    ctrf = '{"results":{"tests":[{"name":"verifier_setup","message":"/tests is not root-only"}]}}'
+    substrate = _ScriptedSubstrate(
+        _result(
+            reward_bytes=b"cat: /logs/verifier/reward.txt: No such file or directory\n",
+            stdout="verifier error: /tests is not root-only\n",
+            exit_code=2,
+        ),
+        exec_results={"ctrf.json": (0, ctrf)},
+    )
+
+    with pytest.raises(GraderKindRefusedError) as excinfo:
+        _evaluate(
+            substrate,
+            kind_config={
+                "service": "verifier",
+                "require_reward": True,
+                "detail_paths": ["/logs/verifier/ctrf.json"],
+            },
+        )
+
+    assert "produced no usable verdict" in excinfo.value.reason
+    assert "verifier_setup" in excinfo.value.reason
+    assert "/tests is not root-only" in excinfo.value.reason
 
 
 def test_service_and_artifacts_parse_into_config() -> None:

@@ -144,6 +144,15 @@ Contents of a staging directory:
   usage records, and for `opencode` the CLI's whole XDG state — stay out of
   the container that scores it.
 
+  A v4 suite prints its reward and little else, recording which criteria
+  failed in `ctrf.json` and `reward-details.json` beside it. The adapter
+  names both on the grading config's `detail_paths`, so the grader reads
+  them out of the verifier and quotes them in the trial's `grade.yaml` —
+  on the refusal path too, where the report names the step that failed.
+  Nothing else carries them: this directory is the trial's compose
+  staging and goes when the stack is torn down, which would leave a 0.0
+  auditable only by running the task again.
+
   A tier-3 task (one shipping `tests/docker-compose.yaml`) gets a verifier
   *stack* instead of a lone service: every service in that file is merged
   under a `verifier_` key prefix onto a dedicated `tb4_verifier` network,

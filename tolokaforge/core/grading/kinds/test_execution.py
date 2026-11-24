@@ -24,10 +24,16 @@ shapes:
 Both refusals are mapped by the runner's dispatcher to
 ``GradeTrialResponse(success=False, error=exc.reason)``.
 
+A pack whose suite prints only its reward names its per-criterion reports on
+``detail_paths``; each is read out of the container the suite ran in and quoted
+in ``reasons``, on the refusal paths above as well as on a score. See that
+field for what the kind does and does not guarantee about reading them.
+
 Per-task configuration rides ``kind_config`` — validated into
 :class:`TestExecutionKindConfig` (``extra="forbid"``). Defaults are
 ``/tests/test.sh`` (script), ``/logs/verifier/reward.txt`` (reward), 300s
-script timeout, 10s reward-cat timeout, 65536-char output truncation.
+script timeout, 10s reward-cat timeout, 65536-char output truncation, and no
+reports.
 """
 
 from __future__ import annotations
@@ -143,6 +149,28 @@ class TestExecutionKindConfig(BaseModel):
     output_truncation_chars: int = Field(default=65_536, ge=0)
     stage_probe_timeout_s: float = Field(default=30.0, gt=0.0)
     """Wall-clock cap on the one ``test -e`` that confirms a staged path landed."""
+    detail_paths: list[str] = Field(default_factory=list)
+    """Reports the verifier writes, carried into the grade's ``reasons``.
+
+    A suite that prints only its reward records its per-criterion verdicts in
+    files instead. The directory holding them belongs to the trial's compose
+    stack and is removed at teardown, so a report not read here is gone — and a
+    verdict of 0.0 can then only be audited by running the task again.
+
+    Read **unprivileged**, unlike the reward: :attr:`user` reaches
+    ``run_test_suite`` but there is no such parameter on the exec seam these go
+    through, so a pack that seals its log directory must leave these entries
+    readable to the verifier image's own user or they arrive as "unavailable".
+
+    A path that is absent or unreadable is recorded as such instead of failing
+    the trial: a pack that writes no report must still be able to score.
+
+    Together these two budgets bound what one trial can add to ``grade.yaml``:
+    the reports share a single :attr:`output_truncation_chars` allowance rather
+    than taking one each.
+    """
+    detail_read_timeout_s: float = Field(default=10.0, gt=0.0)
+    """Wall-clock cap on each ``cat`` of a :attr:`detail_paths` entry."""
     service: str | None = None
     artifacts: list[ArtifactSpec] = Field(default_factory=list)
     collect: list[CollectSpec] = Field(default_factory=list)
@@ -222,6 +250,42 @@ def _looks_like_a_missing_file(raw: str) -> bool:
     """
     lowered = raw.lower()
     return "no such file" in lowered or "cannot open" in lowered
+
+
+def _read_verifier_reports(substrate: GradingSubstrate, cfg: TestExecutionKindConfig) -> str:
+    """Read each :attr:`TestExecutionKindConfig.detail_paths` entry, as report text.
+
+    One section per path, for the grade's ``reasons``. A read that fails is
+    reported in place of that report's contents rather than raised: these are an
+    audit trail, so losing one must not turn a reward the suite did produce into
+    a refusal, nor displace the precise refusal the caller is about to raise.
+    """
+    from tolokaforge.core.grading.substrate import SubstrateUnreachableError
+
+    # One allowance split across the reports, not one each: every byte here is
+    # written verbatim into the trial's grade.yaml, so a per-report budget would
+    # multiply that file by the number of reports on every trial of a run.
+    budget = cfg.output_truncation_chars // max(1, len(cfg.detail_paths))
+    sections: list[str] = []
+    for path in cfg.detail_paths:
+        try:
+            exit_code, output = substrate.exec_in_service(
+                service=cfg.service,
+                command=f"cat {shlex.quote(path)}",
+                timeout_s=cfg.detail_read_timeout_s,
+            )
+        except SubstrateUnreachableError as exc:
+            # Replay and snapshot substrates carry no container to exec into.
+            sections.append(f"verifier report {path}: unavailable ({exc})")
+            continue
+        body = output[:budget]
+        if exit_code != 0:
+            sections.append(
+                f"verifier report {path}: unavailable (exit {exit_code}): {body.strip()}"
+            )
+        else:
+            sections.append(f"verifier report {path}:\n{body}")
+    return "\n\n".join(sections)
 
 
 class TestExecutionGraderKind:
@@ -307,6 +371,10 @@ class TestExecutionGraderKind:
             raise GraderKindRefusedError(result.tool_absent_reason)
         if result.script_exec_error:
             raise GraderKindRefusedError(f"test.sh execution failed: {result.script_exec_error}")
+        # Before the reward is parsed, because the refusals below are where a
+        # per-criterion report is needed most: a pack that fails its own checks
+        # deletes the reward file and leaves the report naming the stage behind.
+        reports = _read_verifier_reports(substrate, cfg)
         raw = result.reward_bytes.decode(errors="ignore").strip()
         try:
             reward = float(raw.split("\n")[-1])
@@ -368,8 +436,7 @@ class TestExecutionGraderKind:
                     )
                 elif raw:
                     reason = (
-                        f"the reward at {cfg.reward_path!r} is not a finite "
-                        f"number. Read: {raw!r}"
+                        f"the reward at {cfg.reward_path!r} is not a finite number. Read: {raw!r}"
                     )
                 else:
                     reason = (
@@ -380,14 +447,23 @@ class TestExecutionGraderKind:
                     )
                 raise GraderKindRefusedError(
                     f"test-execution produced no usable verdict: {reason}"
+                    + (f"\n\n{reports}" if reports else "")
                 ) from None
             reward = 0.0
+        stdout = result.stdout or ""
+        shown = stdout[: cfg.output_truncation_chars]
+        # Only claim a truncation that happened.
+        label = (
+            f"test output (truncated to {cfg.output_truncation_chars} chars):"
+            if len(stdout) > cfg.output_truncation_chars
+            else "test output:"
+        )
+        reasons = f"test-execution reward: {reward:.4f}\n\n{label}\n{shown}"
+        if reports:
+            reasons = f"{reasons}\n\n{reports}"
         return Grade(
             binary_pass=(reward >= 0.5),
             score=reward,
             components=GradeComponents(custom_checks=reward),
-            reasons=(
-                f"test-execution reward: {reward:.4f}\n\n"
-                f"test output (truncated):\n{result.stdout[: cfg.output_truncation_chars]}"
-            ),
+            reasons=reasons,
         )

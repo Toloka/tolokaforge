@@ -13,7 +13,11 @@ verifier container), not a stand-in:
 * the agent's container holds ``/logs/agent`` and **no** ``/logs/verifier``, and
   an agent that plants its own ``/logs/verifier/reward.txt = 1`` still scores
   **0.0** — the file it wrote is container-local and the trial is graded from
-  the verifier's own reward, which the agent cannot reach.
+  the verifier's own reward, which the agent cannot reach;
+* the reports the verifier writes beside that reward — the CTRF report and the
+  reward-details JSON the task declares — are read out of the verifier
+  container and quoted into the grade's ``reasons``, so a 0.0 names the
+  criterion that failed instead of being auditable only by a re-run.
 
 Heavy (it builds Docker images and brings up compose stacks), so it carries the
 ``integration`` / ``docker`` / ``requires_docker`` markers plus a
@@ -188,12 +192,12 @@ def _in_the_agent_container(
     return result.output
 
 
-def _grade(backend: SharedStackRuntimeBackend, trial_id: str) -> float:
+def _grade(backend: SharedStackRuntimeBackend, trial_id: str) -> dict[str, Any]:
     graded = backend.grade_trial(trial_id=trial_id, llm_messages_json=json.dumps([]))
     assert graded["success"] is True, graded.get("error")
     grade = graded["grade"]
     assert grade is not None
-    return grade["score"]
+    return grade
 
 
 def _provision_and_grade(
@@ -202,8 +206,12 @@ def _provision_and_grade(
     trial_id: str,
     *,
     solve: bool,
-) -> float:
-    """Provision one trial, optionally apply the oracle, grade it, tear it down."""
+) -> dict[str, Any]:
+    """Provision one trial, optionally apply the oracle, grade it, tear it down.
+
+    Returns the whole grade, so a caller can read its ``reasons`` as well as
+    its score.
+    """
     with _registered_trial(backend, task, trial_id) as registered:
         if solve:
             # Apply the oracle in the AGENT container; grading then re-materialises
@@ -214,7 +222,7 @@ def _provision_and_grade(
 
 @pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
 class TestTerminalBenchV4SeparateVerifier:
-    """Oracle and no-op acceptance for a separate-verifier (4.0) task."""
+    """Oracle, no-op, isolation and report acceptance for a 4.0 task."""
 
     def test_oracle_solution_scores_one(
         self,
@@ -226,7 +234,7 @@ class TestTerminalBenchV4SeparateVerifier:
             prebuilt_environment["task"],
             f"{_TASK_ID}:oracle",
             solve=True,
-        )
+        )["score"]
         assert score == 1.0, (
             f"the oracle writes the declared artifact, which is re-materialised into "
             f"the verifier container where the suite passes; expected 1.0, got {score}."
@@ -242,10 +250,48 @@ class TestTerminalBenchV4SeparateVerifier:
             prebuilt_environment["task"],
             f"{_TASK_ID}:noop",
             solve=False,
-        )
+        )["score"]
         assert score == 0.0, (
             f"a no-op leaves the declared artifact absent, so the verifier runs "
             f"without it and the suite fails; expected 0.0, got {score}."
+        )
+
+    def test_the_verifier_reports_reach_the_grade(
+        self,
+        connected_backend: SharedStackRuntimeBackend,
+        prebuilt_environment: dict[str, Any],
+    ) -> None:
+        """A 0.0 has to say which criterion failed, or it cannot be audited.
+
+        The reward file carries one number, so a trial whose per-criterion
+        verdict is unreadable can only be explained by running the task again —
+        and the directory holding the reports is the trial's compose staging,
+        gone at teardown. The declared reports are read **unprivileged**, so the
+        fixture's chmod is what makes the read land; ``unavailable`` is what the
+        engine writes in place of a report it could not read, which is why its
+        absence here is the whole point.
+        """
+        reasons = _provision_and_grade(
+            connected_backend,
+            prebuilt_environment["task"],
+            f"{_TASK_ID}:reports",
+            solve=False,
+        )["reasons"]
+        assert (
+            "verifier report /logs/verifier/ctrf.json:" in reasons
+        ), f"the declared CTRF report must be quoted into the grade; reasons were: {reasons!r}"
+        assert '"name":"test_answer_is_42","status":"failed"' in reasons, (
+            f"the grade must name the criterion that failed, not just the score; "
+            f"reasons were: {reasons!r}"
+        )
+        assert "verifier report /logs/verifier/reward-details.json:" in reasons, (
+            f"the declared reward-details report must be quoted into the grade too; "
+            f"reasons were: {reasons!r}"
+        )
+        assert "unavailable" not in reasons, (
+            f"every declared report must have been read, not recorded as unavailable — "
+            f"the read is unprivileged, so this is where a sealed log directory shows up; "
+            f"reasons were: {reasons!r}"
         )
 
     def test_an_agent_planting_a_reward_still_scores_zero(
@@ -292,7 +338,7 @@ class TestTerminalBenchV4SeparateVerifier:
                 f"a refusal would mean the trees are still joined; got {planted!r}"
             )
 
-            score = _grade(connected_backend, trial_id)
+            score = _grade(connected_backend, trial_id)["score"]
 
         assert score == 0.0, (
             f"the planted reward is container-local; grading reads the verifier's own, "
