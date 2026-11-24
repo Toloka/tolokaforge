@@ -277,9 +277,9 @@ class TestTerminalBenchV4SeparateVerifier:
             f"{_TASK_ID}:reports",
             solve=False,
         )["reasons"]
-        assert "verifier report /logs/verifier/ctrf.json:" in reasons, (
-            f"the declared CTRF report must be quoted into the grade; reasons were: {reasons!r}"
-        )
+        assert (
+            "verifier report /logs/verifier/ctrf.json:" in reasons
+        ), f"the declared CTRF report must be quoted into the grade; reasons were: {reasons!r}"
         assert '"name":"test_answer_is_42","status":"failed"' in reasons, (
             f"the grade must name the criterion that failed, not just the score; "
             f"reasons were: {reasons!r}"
