@@ -145,8 +145,8 @@ def _task_provisions_db(task_description: Any) -> bool:
     structurally to preserve the ``bundle-producer-purity`` contract.
 
     A trial's DB service is seeded at ``RegisterTrial`` iff
-    ``initial_state`` declares ``tables``, ``schemas``, or
-    ``unstable_fields``. When none of the three is set, the runner skips
+    ``initial_state`` declares ``tables`` (inline or by ``tables_ref``),
+    ``schemas``, or ``unstable_fields``. When none of the three is set, the runner skips
     ``db_client.init_trial`` and the substrate's ``ReadFinalDBState[Stable]``
     RPCs would refuse with ``DBTrialNotFoundError`` — the producer skips
     the DB reads instead.
@@ -156,6 +156,7 @@ def _task_provisions_db(task_description: Any) -> bool:
         return False
     return bool(
         getattr(initial_state, "tables", None)
+        or getattr(initial_state, "tables_ref", None) is not None
         or getattr(initial_state, "schemas", None)
         or getattr(initial_state, "unstable_fields", None)
     )

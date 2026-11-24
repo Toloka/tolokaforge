@@ -21,6 +21,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import re
 import reprlib
 import sqlite3
@@ -29,7 +30,7 @@ from threading import Lock
 from typing import Any, NoReturn
 
 try:
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import FastAPI, HTTPException, Query, Request
 except ImportError as exc:  # noqa: BLE001 -- explicit re-raise below
     raise ImportError(
         "tolokaforge.env.json_db_service.app requires `fastapi`. "
@@ -43,7 +44,7 @@ from jsonpath_ng.exceptions import JSONPathError
 from jsonpath_ng.ext import parse  # .ext: supports filter exprs, superset of base grammar
 from jsonpath_ng.ext.string import DefintionInvalid
 from jsonpath_ng.jsonpath import Child, Fields, JSONPath
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +302,39 @@ class InitRequest(BaseModel):
     tables: dict[str, list[dict[str, Any]]]
     schemas: list[TableSchema] | None = None
     unstable_fields: list[UnstableFieldSpec] | None = None
+
+
+class InitFromJsonDbRequest(BaseModel):
+    """Trial initialization from a task's ``json_db`` as written (ADR-0071).
+
+    The runner streams the task's state file into :attr:`json_db` without
+    parsing it; the service normalises each collection to the table the inline
+    :class:`InitRequest` would carry (:func:`seeded_records`).
+    """
+
+    json_db: dict[str, Any]
+    schemas: list[TableSchema] | None = None
+    unstable_fields: list[UnstableFieldSpec] | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+def seeded_records(collection: Any) -> list[Any]:
+    """Normalise one seeded collection to the record list its table carries.
+
+    A vendored copy of :func:`tolokaforge.runner.initial_state_file.seeded_records`
+    (the db-service image installs this directory alone); the parity test
+    ``tests/unit/runner/test_initial_state_by_reference.py`` holds the two equal. A
+    list is the records, a mapping of mappings is records keyed by id, anything
+    else is one record.
+    """
+    if isinstance(collection, list):
+        return collection
+    if isinstance(collection, dict):
+        values = list(collection.values())
+        if values and all(isinstance(value, dict) for value in values):
+            return values
+    return [collection]
 
 
 class MutationOperation(BaseModel):
@@ -1079,6 +1113,96 @@ db_service = DBService()
 @app.post("/trials/{trial_id}/init")
 async def init_trial(trial_id: str, req: InitRequest) -> dict[str, Any]:
     """Initialize a trial with initial state, schemas, and unstable field specifications."""
+    return _init_trial(trial_id, req)
+
+
+_JSON_WHITESPACE = re.compile(r"[ \t\n\r]*")
+
+
+def _after_json_whitespace(text: str, start: int) -> int:
+    """The index of the first non-whitespace character of ``text`` from ``start`` on."""
+    match = _JSON_WHITESPACE.match(text, start)
+    assert match is not None  # the pattern matches the empty string
+    return match.end()
+
+
+def _non_finite_as_null(_constant: str) -> None:
+    """``NaN`` and ``Infinity`` read as ``null``, as the engine's serialiser writes them inline."""
+    return None
+
+
+def _finite_float_or_null(text: str) -> float | None:
+    """A number too large for a float (``1e999``) reads as ``null`` too: it would parse to ``inf``."""
+    value = float(text)
+    return value if math.isfinite(value) else None
+
+
+def _refuse_init_body(reason: str) -> NoReturn:
+    raise HTTPException(
+        status_code=422, detail=[{"loc": ["body"], "msg": reason, "type": "value_error"}]
+    )
+
+
+@app.post("/trials/{trial_id}/init/json_db")
+async def init_trial_from_json_db(trial_id: str, request: Request) -> dict[str, Any]:
+    """Initialize a trial from a task's ``json_db`` as written (ADR-0071).
+
+    The body is one line of JSON, the init's ``schemas`` and ``unstable_fields``,
+    then the task's state file as written, which must be exactly one JSON object:
+    framed apart from the head, nothing in the file can be read as part of it.
+    Each collection is normalised to its records exactly as the engine normalises
+    it for the inline :func:`init_trial`, then held to the same table shape; the
+    rest is :func:`init_trial`'s.
+    """
+    body = await request.body()
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        _refuse_init_body("the body is not UTF-8")
+    del body
+    head_end = text.find("\n")
+    if head_end < 0:
+        _refuse_init_body("expected a line of init fields, then the state file")
+    decoder = json.JSONDecoder(
+        parse_constant=_non_finite_as_null, parse_float=_finite_float_or_null
+    )
+    try:
+        head = json.loads(text[:head_end])
+        start = _after_json_whitespace(text, head_end + 1)
+        json_db, end = decoder.raw_decode(text, start)
+    except ValueError as exc:
+        _refuse_init_body(f"not JSON: {exc}")
+    if _after_json_whitespace(text, end) != len(text):
+        _refuse_init_body("the state file holds more than one JSON value")
+    del text
+    if not isinstance(head, dict) or not isinstance(json_db, dict):
+        _refuse_init_body("the init fields and the state file must each be a JSON object")
+    try:
+        req = InitFromJsonDbRequest.model_validate({**head, "json_db": json_db})
+    except ValidationError as exc:
+        detail = [
+            {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
+            for error in exc.errors(include_url=False)
+        ]
+        raise HTTPException(status_code=422, detail=detail) from exc
+    del json_db
+    tables = {name: seeded_records(collection) for name, collection in req.json_db.items()}
+    req.json_db = {}
+    try:
+        init = InitRequest(tables=tables, schemas=req.schemas, unstable_fields=req.unstable_fields)
+    except ValidationError as exc:
+        # The offending values are left out: a collection can be the whole world.
+        detail = [
+            {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
+            for error in exc.errors(include_url=False)
+        ]
+        raise HTTPException(status_code=422, detail=detail) from exc
+    del tables
+    return _init_trial(trial_id, init)
+
+
+def _init_trial(trial_id: str, req: InitRequest) -> dict[str, Any]:
+    """Create ``trial_id`` from ``req``; the body both init routes share."""
     logger.info("Initializing trial", extra={"trial_id": trial_id, "num_tables": len(req.tables)})
     try:
         trial = db_service.create_trial(trial_id)

@@ -21,6 +21,7 @@ from tests.utils.comparison_view_runner import (
     grade_through_the_runner,
     verdict_of,
 )
+from tests.utils.runner_requests import event_loop_thread, initial_table_read_threads
 from tolokaforge.runner.models import ComparisonViewGradeRecord
 
 pytestmark = pytest.mark.unit
@@ -103,6 +104,24 @@ def test_a_trial_that_differs_only_in_a_generated_id_passes(runner_service, mock
     assert record.view_diff is None and record.trial_error is None
     assert record.trial is not None and record.trial.config_sha256 == record.golden.config_sha256
     assert [field.dotted for field in record.golden.rekeyed_fields] == ["documents.id"]
+
+
+def test_the_view_reads_the_initial_tables_off_the_event_loop(
+    runner_service, mock_grpc_context, monkeypatch
+):
+    reads = initial_table_read_threads(monkeypatch)
+
+    response = grade_through_the_runner(
+        runner_service,
+        mock_grpc_context,
+        description=_description("view_off_loop"),
+        trial_id="view_off_loop:0",
+        trial=_filed("D3", created_at="t9"),
+        golden=_filed("D2", created_at="t5"),
+    )
+
+    assert verdict_of(response) is Verdict.PASS, response.error or response.grade.reasons
+    assert reads and event_loop_thread(runner_service) not in reads
 
 
 def test_without_the_view_the_same_pair_fails_and_records_no_view(

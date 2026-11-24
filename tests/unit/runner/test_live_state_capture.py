@@ -22,7 +22,13 @@ import grpc
 import httpx
 import pytest
 
-from tests.utils.runner_requests import register_request, simple_task_description, trial_spec_json
+from tests.utils.runner_requests import (
+    event_loop_thread,
+    initial_table_read_threads,
+    register_request,
+    simple_task_description,
+    trial_spec_json,
+)
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.models import ModelConfig
@@ -285,6 +291,26 @@ class TestStateReadsCarryTheirDeadline:
         for method, url, timeout in recorder.sent:
             assert isinstance(timeout, httpx.Timeout), (method, url, timeout)
             assert timeout.read == deadlines.final_state_read_s, (method, url, timeout)
+
+    def test_hash_grading_and_a_reset_read_the_initial_tables_off_the_event_loop(
+        self, runner_service, mock_grpc_context, mcp_trial, trial_id, monkeypatch
+    ) -> None:
+        """By reference that read parses a file, which would stall every trial's calls."""
+        wrapper = mcp_trial(_task(golden_balance=120))
+        _mutate(runner_service, wrapper, 999)
+        reads = initial_table_read_threads(monkeypatch)
+        loop = event_loop_thread(runner_service)
+
+        assert _grade(runner_service, mock_grpc_context, trial_id).success
+        assert reads, "the golden replay's holder reset reads the initial tables"
+        assert loop not in reads
+
+        reads.clear()
+        reset = runner_service.ResetTrial(
+            pb2.ResetTrialRequest(trial_id=trial_id), mock_grpc_context
+        )
+        assert reset.success, reset.error
+        assert reads and loop not in reads
 
     def test_a_request_inside_grade_trial_is_cut_to_what_the_call_has_left(
         self, runner_service, trial_id, monkeypatch

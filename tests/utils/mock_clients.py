@@ -52,7 +52,14 @@ class MockAsyncClient:
         return self._wrap_response(response)
 
     async def post(self, url: str, **kwargs) -> httpx.Response:
-        """Perform POST request via TestClient."""
+        """Perform POST request via TestClient.
+
+        A streamed body (an async iterable ``content``) is gathered first: the
+        synchronous TestClient takes bytes.
+        """
+        content = kwargs.get("content")
+        if content is not None and hasattr(content, "__aiter__"):
+            kwargs["content"] = b"".join([chunk async for chunk in content])
         response = self.test_client.post(url, **_in_process(kwargs))
         return self._wrap_response(response)
 
