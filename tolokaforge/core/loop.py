@@ -114,7 +114,7 @@ from tolokaforge.core.summarize_policy import SummarizePolicy, SummarizerFailedE
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.core.tool_message_format import TOOL_ERROR_MESSAGE_PREFIX
 from tolokaforge.core.tool_output_truncation import keep_head_and_tail
-from tolokaforge.runner.protocol import TrialNotRegisteredError
+from tolokaforge.runner.protocol import TrialLostError
 from tolokaforge.tools.registry import (
     ENVIRONMENT_ERROR_STATUSES,
     ToolExecuting,
@@ -395,9 +395,10 @@ def classify_loop_error(
     """Classify a turn-loop exception into a terminal reason + message.
 
     ``TRIAL_LOST`` is matched by type first and is the one typed reason here that
-    keeps the trial in the denominator: a runner that no longer holds the trial
-    is our fault, and the call it refused reached no tool, so the trial ends at
-    the fault rather than handing the agent a failure to retry against.
+    keeps the trial in the denominator: a runner that no longer holds the trial,
+    or that no longer answers at all, is our fault, and the call reached no tool,
+    so the trial ends at the fault rather than handing the agent a failure to
+    retry against.
 
     ``API_TIMEOUT`` and ``RATE_LIMIT`` are matched by *type* — through the
     ``__cause__`` chain for the rate limit, since the client re-raises every
@@ -413,7 +414,7 @@ def classify_loop_error(
     consults *patterns* — the caller's compiled per-provider list.
     """
     error_str = str(exc)
-    if isinstance(exc, TrialNotRegisteredError):
+    if isinstance(exc, TrialLostError):
         return TerminationDecision(
             reason=TerminationReason.TRIAL_LOST,
             system_message=f"{error_str} Dialogue terminated.",

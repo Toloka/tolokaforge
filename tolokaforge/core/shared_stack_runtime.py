@@ -62,6 +62,7 @@ from tolokaforge.runner.models import PlanShape
 from tolokaforge.runner.protocol import (
     COMPLETED_EXECUTION_STATUSES,
     ENGINE_PROTOCOL_VERSION,
+    RunnerUnreachableError,
     TrialNotRegisteredError,
     recorded_status,
 )
@@ -209,7 +210,7 @@ class RunnerClient(Protocol):
     ) -> ToolResult:
         """Execute one tool call, under
         :meth:`~tolokaforge.core.runtime.RuntimeBackend.execute_tool`'s contract —
-        including its ``TrialNotRegisteredError``."""
+        including its ``TrialNotRegisteredError`` and ``RunnerUnreachableError``."""
         ...
 
     def grade_trial(
@@ -596,6 +597,8 @@ class GrpcRunnerClient:
 
         except grpc.RpcError as e:
             logger.error(f"gRPC error in execute_tool: {e}")
+            if isinstance(e, grpc.Call) and e.code() is grpc.StatusCode.UNAVAILABLE:
+                raise RunnerUnreachableError(trial_id, tool_name, e.details() or str(e)) from e
             return ToolResult(success=False, output="", error=f"gRPC error: {str(e)}")
 
     def _rpc_error_text(self, operation: str, error: grpc.RpcError) -> str:
