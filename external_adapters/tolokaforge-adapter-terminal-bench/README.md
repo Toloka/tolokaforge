@@ -89,6 +89,14 @@ Contents of a staging directory:
     or `{image_registry}/{task_id}:{image_tag}` when `image_registry` is
     set (with `build:` dropped so the image is pulled);
   - `container_name: tbench_${TOLOKAFORGE_TRIAL_SLUG}_{agent_service}`;
+  - `cpus:` and `mem_limit:` from `[environment].cpus` and `memory_mb`
+    (`{memory_mb}m`), each only when the task declares it, as upstream caps
+    its `main` container. An agent service whose own compose sets either key
+    keeps its value for it, and one with `deploy.resources.limits` gets
+    neither. Without the cap the agent shares the trial's machine with
+    dockerd and the tool runner, and `nproc` in its container counts the
+    host's CPUs, so a build at that width can starve the runner until every
+    tool call fails;
   - exactly one adapter-owned log mount, appended to whatever volumes the
     task declared — a relative bind against the staging dir. Which mount it
     is, and what the agent may not be handed alongside it, follows the

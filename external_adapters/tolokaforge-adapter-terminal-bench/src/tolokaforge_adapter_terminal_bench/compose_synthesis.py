@@ -792,6 +792,25 @@ def _single_container_compose(meta: TerminalBenchTask) -> dict[str, Any]:
     }
 
 
+def _cap_agent_resources(agent_body: dict[str, Any], meta: TerminalBenchTask) -> None:
+    """Cap the agent container at the CPUs and memory the task declares.
+
+    Upstream caps the task's ``main`` container the same way, with top-level
+    ``cpus`` and ``mem_limit``, and only for the fields the task declares. An
+    agent service the task's own compose already limits keeps its own numbers:
+    that compose is the more specific statement, and compose refuses
+    ``mem_limit`` beside a different ``deploy.resources.limits.memory``.
+    """
+    deploy = agent_body.get("deploy")
+    resources = deploy.get("resources") if isinstance(deploy, Mapping) else None
+    if isinstance(resources, Mapping) and resources.get("limits"):
+        return
+    if meta.cpu_limit is not None:
+        agent_body.setdefault("cpus", meta.cpu_limit)
+    if meta.memory_limit_mb is not None:
+        agent_body.setdefault("mem_limit", f"{meta.memory_limit_mb}m")
+
+
 def _agent_dockerfile(meta: TerminalBenchTask, agent_body: Mapping[str, Any]) -> Path:
     """The Dockerfile the agent service actually builds.
 
@@ -1327,6 +1346,7 @@ def _build_synthesised_compose(
     if image_registry:
         agent_body.pop("build", None)
     agent_body["container_name"] = agent_container_name
+    _cap_agent_resources(agent_body, meta)
     agent_body["volumes"] = _agent_volumes(
         agent_body.get("volumes"), shape=_AGENT_MOUNT_SHAPES[meta.shape]
     )
