@@ -19,34 +19,9 @@ import yaml
 from tolokaforge_adapter_terminal_bench.compose_synthesis import materialise_task_environment
 from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
 
+from tests.task_scaffold import write_task
+
 pytestmark = pytest.mark.unit
-
-_SEPARATE_VERIFIER = '[verifier]\ntimeout_sec = 300.0\nenvironment_mode = "separate"\n'
-
-
-def _write_task(
-    base: Path,
-    *,
-    environment: str,
-    agent_compose: str | None = None,
-    separate_verifier: bool = False,
-) -> None:
-    task_dir = base / "task"
-    (task_dir / "environment").mkdir(parents=True)
-    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
-    if agent_compose is not None:
-        (task_dir / "environment" / "docker-compose.yaml").write_text(agent_compose)
-    (task_dir / "instruction.md").write_text("Do the thing.\n")
-    tests_dir = task_dir / "tests"
-    tests_dir.mkdir()
-    (tests_dir / "test.sh").write_text("#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n")
-    verifier = "[verifier]\ntimeout_sec = 300.0\n"
-    if separate_verifier:
-        (tests_dir / "Dockerfile").write_text('FROM python:3.12-slim\nCMD ["sleep", "infinity"]\n')
-        verifier = 'artifacts = ["/app"]\n' + _SEPARATE_VERIFIER
-    (task_dir / "task.toml").write_text(
-        f"{verifier}[agent]\ntimeout_sec = 1800.0\n[environment]\n{environment}"
-    )
 
 
 def _services(base: Path) -> dict[str, Any]:
@@ -58,13 +33,13 @@ def _services(base: Path) -> dict[str, Any]:
 def test_declared_cpus_and_memory_cap_the_agent_container(
     tmp_path: Path, separate_verifier: bool
 ) -> None:
-    _write_task(
+    write_task(
         tmp_path, environment="cpus = 4\nmemory_mb = 12288\n", separate_verifier=separate_verifier
     )
 
     services = _services(tmp_path)
 
-    assert services["main"]["cpus"] == 4.0
+    assert services["main"]["cpus"] == 4
     assert services["main"]["mem_limit"] == "12288m"
     for name, body in services.items():
         if name != "main":
@@ -72,7 +47,7 @@ def test_declared_cpus_and_memory_cap_the_agent_container(
 
 
 def test_an_undeclared_field_caps_nothing(tmp_path: Path) -> None:
-    _write_task(tmp_path, environment="memory_mb = 2048\n")
+    write_task(tmp_path, environment="memory_mb = 2048\n", separate_verifier=False)
 
     main = _services(tmp_path)["main"]
 
@@ -81,7 +56,7 @@ def test_an_undeclared_field_caps_nothing(tmp_path: Path) -> None:
 
 
 def test_a_task_declaring_neither_runs_uncapped(tmp_path: Path) -> None:
-    _write_task(tmp_path, environment="")
+    write_task(tmp_path, environment="", separate_verifier=False)
 
     main = _services(tmp_path)["main"]
 
@@ -89,32 +64,48 @@ def test_a_task_declaring_neither_runs_uncapped(tmp_path: Path) -> None:
 
 
 def test_the_task_compose_keeps_its_own_agent_limits(tmp_path: Path) -> None:
-    _write_task(
+    write_task(
         tmp_path,
         environment="cpus = 4\nmemory_mb = 12288\n",
         agent_compose="services:\n  main:\n    mem_limit: 6g\n",
+        separate_verifier=False,
     )
 
     main = _services(tmp_path)["main"]
 
     assert main["mem_limit"] == "6g"
-    assert main["cpus"] == 4.0
+    assert main["cpus"] == 4
 
 
 def test_deploy_limits_in_the_task_compose_win_whole(tmp_path: Path) -> None:
-    _write_task(
+    write_task(
         tmp_path,
         environment="cpus = 4\nmemory_mb = 12288\n",
         agent_compose=(
             "services:\n  main:\n    deploy:\n      resources:\n        limits:\n"
             "          memory: 6G\n"
         ),
+        separate_verifier=False,
     )
 
     main = _services(tmp_path)["main"]
 
     assert "cpus" not in main and "mem_limit" not in main
     assert main["deploy"]["resources"]["limits"] == {"memory": "6G"}
+
+
+def test_the_substituted_values_follow_the_declaration(tmp_path: Path) -> None:
+    """``${CPUS}`` / ``${MEMORY}`` read the same validated fields the caps do, with
+    the defaults only for a task that declares none."""
+    write_task(
+        tmp_path, "declared", environment="cpus = 4\nmemory_mb = 12288\n", separate_verifier=False
+    )
+    write_task(tmp_path, "undeclared", environment="", separate_verifier=False)
+
+    tasks = discover_tasks(tmp_path)
+
+    assert (tasks["declared"].cpus, tasks["declared"].memory_mb) == (4, 12288)
+    assert (tasks["undeclared"].cpus, tasks["undeclared"].memory_mb) == (2, 4096)
 
 
 @pytest.mark.parametrize(
@@ -129,7 +120,7 @@ def test_deploy_limits_in_the_task_compose_win_whole(tmp_path: Path) -> None:
 def test_an_invalid_declaration_is_refused_at_parse(
     tmp_path: Path, environment: str, message: str
 ) -> None:
-    _write_task(tmp_path, environment=environment)
+    write_task(tmp_path, environment=environment, separate_verifier=False)
 
     with pytest.raises(ValueError, match=message):
         discover_tasks(tmp_path)

@@ -14,38 +14,9 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
 )
 from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
 
+from tests.task_scaffold import write_task
+
 pytestmark = pytest.mark.unit
-
-_TASK_TOML = """
-[metadata]
-difficulty = "medium"
-tags = ["demo"]
-
-[agent]
-timeout_sec = 1800.0
-
-[verifier]
-timeout_sec = 300.0
-
-[environment]
-cpus = 2
-memory_mb = 4096
-"""
-
-
-def _write_task(base: Path, task_id: str, *, v4: bool) -> None:
-    task_dir = base / task_id
-    (task_dir / "environment").mkdir(parents=True)
-    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
-    (task_dir / "instruction.md").write_text("Do the thing.\n")
-    toml = _TASK_TOML
-    if v4:
-        toml = 'artifacts = ["/app"]\n' + _TASK_TOML
-        tests_dir = task_dir / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "Dockerfile").write_text('FROM python:3.12-slim\nCMD ["sleep", "infinity"]\n')
-        (tests_dir / "test.sh").write_text("#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n")
-    (task_dir / "task.toml").write_text(toml)
 
 
 def _materialise(base: Path, task_id: str):
@@ -87,7 +58,7 @@ def _env_map(service_body: dict) -> dict[str, str]:
 
 
 def test_v4_task_gets_a_verifier_service(tmp_path: Path) -> None:
-    _write_task(tmp_path, "sep", v4=True)
+    write_task(tmp_path, "sep", separate_verifier=True)
     env, doc = _materialise(tmp_path, "sep")
 
     assert env.verifier_service == "verifier"
@@ -116,7 +87,7 @@ def test_v4_task_gets_a_verifier_service(tmp_path: Path) -> None:
 
 
 def test_v21_task_has_no_verifier_service(tmp_path: Path) -> None:
-    _write_task(tmp_path, "plain", v4=False)
+    write_task(tmp_path, "plain", separate_verifier=False)
     env, doc = _materialise(tmp_path, "plain")
 
     assert env.verifier_service is None
@@ -178,7 +149,7 @@ def test_v4_agent_keeps_no_task_mount_into_the_log_tree(tmp_path: Path, dialect:
     check is what closes it, and it has to run on the substituted path because
     that is the only point at which the variable is a directory.
     """
-    _write_task(tmp_path, "adv", v4=True)
+    write_task(tmp_path, "adv", separate_verifier=True)
     (tmp_path / "adv" / dialect).write_text(_LOG_TREE_REACH[dialect])
 
     _env, doc = _materialise(tmp_path, "adv")
@@ -301,7 +272,7 @@ def test_tier3_sibling_log_mount_survives_pending_2020(tmp_path: Path) -> None:
 
 
 def test_tier1_has_no_verifier_stack(tmp_path: Path) -> None:
-    _write_task(tmp_path, "plain", v4=True)
+    write_task(tmp_path, "plain", separate_verifier=True)
     env, doc = _materialise(tmp_path, "plain")
     # The single-container shape keeps the lone `verifier` service, no stack.
     assert env.verifier_service == "verifier"
@@ -381,7 +352,7 @@ def _volume_sources(service_body: dict) -> list[str]:
 
 
 def _write_tier1_task(base: Path, task_id: str) -> None:
-    _write_task(base, task_id, v4=True)
+    write_task(base, task_id, separate_verifier=True)
 
 
 def _names_the_same_tree(left: str, right: str) -> bool:
