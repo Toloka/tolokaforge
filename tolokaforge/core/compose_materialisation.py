@@ -28,6 +28,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -1327,12 +1328,44 @@ def resolve_env_endpoints(
 # ---------------------------------------------------------------------------
 
 
-def shutdown_compose(compose: DockerCompose) -> None:
-    """Best-effort ``docker compose down --volumes``. Never raises."""
-    try:
-        compose.stop(down=True)
-    except Exception:  # noqa: BLE001 — best-effort teardown
-        logger.exception("compose_materialisation: docker compose down failed")
+COMPOSE_DOWN_TIMEOUT_S = 300.0
+"""How long :func:`shutdown_compose` waits for ``docker compose down`` to finish.
+
+A healthy ``down`` of one trial's stack takes seconds. ``DockerCompose.stop``
+waits on its subprocess with no deadline of its own: on a trial whose agent had
+starved its machine, the teardown stopped right after its log routers and held
+the run for 92 minutes, until the job around the run killed it.
+"""
+
+
+def shutdown_compose(compose: DockerCompose, *, timeout_s: float = COMPOSE_DOWN_TIMEOUT_S) -> None:
+    """Best-effort ``docker compose down --volumes``, waited on for *timeout_s*. Never raises.
+
+    A ``down`` still running when the wait ends is left to finish in a daemon
+    thread, and the teardown goes on: whatever hung it hangs a second ``down``
+    as well, so waiting longer buys nothing, and the error names what may be
+    left behind.
+    """
+    failures: list[Exception] = []
+
+    def _down() -> None:
+        try:
+            compose.stop(down=True)
+        except Exception as exc:  # noqa: BLE001 — best-effort teardown
+            failures.append(exc)
+
+    worker = threading.Thread(target=_down, name="compose-down", daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive():
+        logger.error(
+            "compose_materialisation: docker compose down did not finish in %.0f s; "
+            "teardown goes on without it, and the stack's containers may still exist",
+            timeout_s,
+        )
+        return
+    if failures:
+        logger.error("compose_materialisation: docker compose down failed", exc_info=failures[0])
 
 
 def compose_container_to_snapshot(container: ComposeContainer) -> ContainerSnapshot:

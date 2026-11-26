@@ -15,6 +15,9 @@ Here we stub :class:`DockerCompose` so the tests run in-process.
 from __future__ import annotations
 
 import copy
+import logging
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -469,6 +472,35 @@ class TestShutdownCompose:
         compose.stop.side_effect = RuntimeError("docker daemon disconnected")
 
         shutdown_compose(compose)  # must not raise
+
+    def test_a_down_that_never_finishes_does_not_hold_the_teardown(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``DockerCompose.stop`` has no deadline of its own, and a dockerd that
+        stopped answering held a trial's teardown, and the run, for 92 minutes."""
+        release = threading.Event()
+        compose = MagicMock()
+        compose.stop.side_effect = lambda **_: release.wait(30)
+
+        started = time.monotonic()
+        with caplog.at_level(logging.ERROR):
+            shutdown_compose(compose, timeout_s=0.2)
+        waited = time.monotonic() - started
+        release.set()
+
+        assert waited < 5
+        compose.stop.assert_called_once_with(down=True)
+        assert "did not finish in 0 s" in caplog.text
+
+    def test_a_failed_down_is_logged_with_its_error(self, caplog: pytest.LogCaptureFixture) -> None:
+        compose = MagicMock()
+        compose.stop.side_effect = RuntimeError("docker daemon disconnected")
+
+        with caplog.at_level(logging.ERROR):
+            shutdown_compose(compose)
+
+        assert "docker compose down failed" in caplog.text
+        assert "docker daemon disconnected" in caplog.text
 
 
 class TestComposeContainerToSnapshot:
