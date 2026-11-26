@@ -1066,10 +1066,12 @@ the rubric judge all see the line as the agent's first message.
   - *Attempted and rejected.* An unknown tool name or schema-invalid arguments are
     recorded, so the call emits a normal pair carrying `tool_not_found` /
     `invalid_arguments` and a `status` matcher counts it.
-  - *`trial_not_found`, which emits the first state's shape.* The runner holds no
-    registration for the trial, so the call reached no tool on either substrate:
-    runner-side there is no trial context to record into, and core-side
-    `GrpcRunnerClient` raises `TrialNotRegisteredError` rather than building a
+  - *A lost trial, which emits the first state's shape.* Either the runner holds no
+    registration for the trial (`trial_not_found`), or it cannot be reached at all
+    (gRPC `UNAVAILABLE` on `ExecuteTool`), so the call reached no tool on either
+    substrate: runner-side there is no trial context to record into, or no runner
+    answering, and core-side `GrpcRunnerClient` raises `TrialNotRegisteredError` or
+    `RunnerUnreachableError` (both `TrialLostError`) rather than building a
     `ToolResult`. Both emit a `tool_call` with no `tool_result`. The trial ends
     there, with `termination_reason: trial_lost` and outcome class
     `harness_error`, and it is not graded — see § Retryability and countability in
@@ -4705,7 +4707,7 @@ Those are two questions, and an abort is the case that answers both the same way
 *Is there a verdict to compute?* decides whether the trial is graded. *Whose fault
 was the trial's end?* decides whether it leaves the denominator. A trial the runner
 lost — `trial_lost` — separates them: no verdict exists, because the party that
-would compute it is the one that lost the registration, but the fault is ours, so
+would compute it is the one that lost the trial (its registration, or its reachability), but the fault is ours, so
 the trial is counted like any other failure of ours. Ungraded therefore never
 implies excluded, and the rest of this section answers the two questions in turn.
 
@@ -4750,7 +4752,7 @@ infrastructure:
 | `provider_content_filter` | measured | The provider's safety classifier declined the request: HTTP 200, no text, no tool calls, nothing billed. Wire-identical to `empty_completion` and the opposite claim — the provider answered, it declined — so the agent had its turn and produced nothing usable. Excluding it would shrink every rate by exactly the trials one provider refuses, flattering whichever model it refuses for most. Graded as a synthesised failure instead |
 | `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal. A user simulator whose every generation of one turn was flagged by a detector lands here: the reply guard refuses the turn rather than delivering it, and the trajectory's `user_reply_guard_events` carries the evidence (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)). So does an `isolated` simulator that takes more than `max_tool_steps` tool steps before its opening message: the agent has not spoken, so nothing of its is there to grade |
 | `harness_cli_failed` | harness error | The coding-harness CLI exited non-zero and its own stdout telemetry reported no turns, no cost and token counts totalling zero, so the episode never reached the model — a stale version pin in our registry, a bad flag, a CLI that died on startup. Our defect, so excluding it would take our own bugs out of the denominator; and the route is agent-reachable, since the agent runs shell in that container and can kill or wedge the CLI. Graded as a synthesised failure, which is what distinguishes it from a verifier score against a repository the agent never touched |
-| `trial_lost` | harness error | The runner no longer holds the trial the engine is running, so a tool call reached no tool. The exclusion bar is typed evidence that the *provider or the substrate* killed the trial, and a tool executing agent-supplied input that crashes the runner process is an agent-reachable route to this fault, so it is counted. It is the one counted reason that is **not graded**: the runner that would compute the verdict is the one that lost the trial, so no fabricated `0.0` enters `avg_score` |
+| `trial_lost` | harness error | The runner no longer holds the trial the engine is running, or cannot be reached at all (gRPC `UNAVAILABLE` on `ExecuteTool`), so a tool call reached no tool. The exclusion bar is typed evidence that the *provider or the substrate* killed the trial, and a tool executing agent-supplied input that crashes the runner process is an agent-reachable route to this fault, so it is counted. It is the one counted reason that is **not graded**: the runner that would compute the verdict is the one that lost the trial, so no fabricated `0.0` enters `avg_score` |
 | `stuck_detected` | measured | The agent issued the identical tool call and got the same result back over and over. It auto-fails with `score: 0.0`, and that verdict is correct. An agent that talks without acting is not this — that is a per-task question, asked by `transcript_rules` in the task's `grading.yaml` |
 | any reason, with `grading_error` set | ungradeable | Grading refused, so no verdict exists. Counted for the same reason a harness error is — the fault is ours — and reported separately as `ungradeable`. This is read **before** the reason, so a refusal is never traded for an exclusion |
 | any reason that is not an exclusion, on a trial that ended `error` / `timeout` / `failed` carrying no grade | harness error | Nothing about the agent was observed: the trial ended badly and no verdict came back, which is what a run reaching no grading at all leaves behind — a dispatch node that returned an ungraded trajectory, or a provider that died after the retries were spent. The reason it carries cannot make it a measurement, so the class is read from the missing verdict instead of the reason. Counted, like every other defect of ours, so the denominator is unmoved. Unlike the row above, this is read **after** the exclusion allowlist: a trial the provider or the substrate killed stays an `infrastructure_abort` outside the denominator rather than being traded for a harness error |

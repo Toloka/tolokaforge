@@ -789,7 +789,7 @@ independent by design:
 
 - **Is another attempt worth making?** `Orchestrator._is_retryable_trajectory`.
   Anything transient — a rate limit, an API error, a timeout, a bare error, a
-  `trial_lost` registration, a gateway that refused every request, a
+  lost trial (`trial_lost`), a gateway that refused every request, a
   coding-harness CLI that failed without spending anything — is requeued
   until `max_attempt_retries` is spent. A deterministic fault
   (`provision_error`, an auth-shaped `api_error` or
