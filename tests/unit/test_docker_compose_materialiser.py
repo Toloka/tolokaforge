@@ -9,12 +9,15 @@ of on-disk transforms and driver-side calls is observable in-process.
 
 from __future__ import annotations
 
+import logging
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
+from tolokaforge.core import compose_materialisation
 from tolokaforge.core.compose_materialisation import (
     CONTAINER_SECRETS_ENV_VAR,
     DOCKER_SOCKET_PATH,
@@ -76,8 +79,10 @@ class _StubDockerCompose:
         wait: bool,
         containers: list[_StubComposeContainer] | None = None,
         start_should_raise: BaseException | None = None,
+        stop_release: threading.Event | None = None,
     ) -> None:
         self.context = context
+        self._stop_release = stop_release
         self.compose_file_name = compose_file_name
         self.pull = pull
         self.build = build
@@ -98,6 +103,9 @@ class _StubDockerCompose:
 
     def stop(self, down: bool = True) -> None:
         self.calls.append(("stop", (down,)))
+        if self._stop_release is not None:
+            # A ``down`` that a dockerd no longer answering holds open.
+            self._stop_release.wait(30)
 
     def get_containers(self) -> list[_StubComposeContainer]:
         self.calls.append(("get_containers", ()))
@@ -117,15 +125,18 @@ class _FactoryRecorder:
         *,
         containers: list[_StubComposeContainer] | None = None,
         start_should_raise: BaseException | None = None,
+        stop_release: threading.Event | None = None,
     ) -> None:
         self._containers = containers or []
         self._start_should_raise = start_should_raise
+        self._stop_release = stop_release
         self.instances: list[_StubDockerCompose] = []
 
     def __call__(self, **kwargs: Any) -> _StubDockerCompose:
         stub = _StubDockerCompose(
             containers=self._containers,
             start_should_raise=self._start_should_raise,
+            stop_release=self._stop_release,
             **kwargs,
         )
         self.instances.append(stub)
@@ -477,6 +488,30 @@ class TestTeardown:
         assert not Path(temp_dir).exists()
         stop_calls = [c for c in factory.last.calls if c[0] == "stop"]
         assert len(stop_calls) == 1
+
+    def test_a_down_still_running_keeps_its_compose_context(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The temp dir is the ``down``'s cwd and holds its compose file, so a
+        teardown that stops waiting must not remove it under the running ``down``."""
+        monkeypatch.setattr(compose_materialisation, "COMPOSE_DOWN_TIMEOUT_S", 0.2)
+        release = threading.Event()
+        factory = _FactoryRecorder(stop_release=release)
+        materialiser = DockerComposeMaterialiser(docker_compose_factory=factory)
+        handle = materialiser.materialise(_make_decl(_write_compose(tmp_path)), _make_ctx())
+        temp_dir = Path(handle.temp_dir)  # type: ignore[attr-defined]
+
+        try:
+            with caplog.at_level(logging.ERROR):
+                materialiser.teardown(handle)
+
+            assert temp_dir.exists()
+            assert "leaving" in caplog.text and str(temp_dir) in caplog.text
+        finally:
+            release.set()
 
     def test_teardown_is_idempotent(self, tmp_path: Path) -> None:
         """A second teardown call is a no-op: compose ``stop`` runs

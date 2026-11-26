@@ -11,6 +11,7 @@
         "sleep infinity"
       ],
       "container_name": "tbench_${TOLOKAFORGE_TRIAL_SLUG}_main",
+      "cpus": 1,
       "environment": [
         "ANTHROPIC_API_KEY=${TBENCH_PROVIDER_ANTHROPIC_API_KEY}",
         "ANTHROPIC_BASE_URL=${TBENCH_PROVIDER_ANTHROPIC_BASE_URL}",
@@ -19,6 +20,7 @@
         "IS_SANDBOX=1"
       ],
       "image": "tbench-echo-hello:local-claude-code-2.1.233-c6d03927",
+      "mem_limit": "512m",
       "volumes": [
         "./_logs:/logs"
       ]

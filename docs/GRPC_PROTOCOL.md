@@ -848,7 +848,7 @@ The tool execution flow:
 | `INVALID_ARGUMENTS` | Arguments don't match the schema, or an MCP tool refused them in a typed way (JSON-RPC `-32602`, or `isError: true` with `_meta` `tolokaforge/error_category: invalid_arguments`) | Return the feedback to LLM; it does not count as an environment error | yes; with empty `arguments` when the runner refused unparseable JSON |
 | `TRIAL_NOT_FOUND` | Trial ID not registered | Abort the trial as `trial_lost` | no — on either side; the call reached no tool |
 
-A call the runner refuses before execution is still recorded, because the host appends a `role: tool` error message for it either way; a record that omitted it would read as a call the agent never attempted. `TRIAL_NOT_FOUND` is the exception, and it is not one: the runner holds no registration, so the call reached no tool and there is no outcome for either side to record. `GrpcRunnerClient` raises `TrialNotRegisteredError` instead of building a `ToolResult`, and the trial ends with `termination_reason: trial_lost` — see [RUNNER.md](RUNNER.md) § Retryability and countability are two questions.
+A call the runner refuses before execution is still recorded, because the host appends a `role: tool` error message for it either way; a record that omitted it would read as a call the agent never attempted. `TRIAL_NOT_FOUND` is the exception, and it is not one: the runner holds no registration, so the call reached no tool and there is no outcome for either side to record. `GrpcRunnerClient` raises `TrialNotRegisteredError` instead of building a `ToolResult`, and the trial ends with `termination_reason: trial_lost` — see [RUNNER.md](RUNNER.md) § Retryability and countability are two questions. A call that fails at the transport with `UNAVAILABLE` (nothing answers at the runner's address, or the connection under the call broke) ends the same way through `RunnerUnreachableError`; both are `TrialLostError`. Any other gRPC error on `ExecuteTool` is still returned to the LLM as a failed call.
 
 ### GradeTrialRequest
 
@@ -1241,7 +1241,7 @@ See [`DB_SERVICE_API.md`](DB_SERVICE_API.md) for full endpoint specifications.
 | `NOT_FOUND` | Trial/tool not found | Re-register |
 | `DEADLINE_EXCEEDED` | Timeout | Retry or fail |
 | `INTERNAL` | Server error | Retry with backoff |
-| `UNAVAILABLE` | Service down | Wait and retry |
+| `UNAVAILABLE` | Service down | Wait and retry, except on `ExecuteTool`: the engine raises `RunnerUnreachableError` and ends the trial as `trial_lost` |
 | `RESOURCE_EXHAUSTED` | A message exceeded the gRPC message size bound (`compute.grpc_max_message_mb`, default 50 MiB, applied on both ends) | Raise the bound; see [RUNNER.md § gRPC message size](RUNNER.md#grpc-message-size) |
 
 ## Security Considerations

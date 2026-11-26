@@ -24,6 +24,8 @@ production path records the full vocabulary instead of a bool.
 :class:`TrialNotRegisteredError` is the third: the one ``ExecutionStatus`` that
 describes the trial rather than the call, translated into the exception the
 engine terminates on instead of a result the agent would read as a tool failure.
+:class:`RunnerUnreachableError` is the same ending for a call the runner never
+answered, and both are :class:`TrialLostError`.
 """
 
 from tolokaforge.core.models import TerminationReason
@@ -73,21 +75,56 @@ def recorded_status(status: int) -> ToolExecutionStatus:
     return recorded
 
 
-class TrialNotRegisteredError(RuntimeError):
+class TrialLostError(RuntimeError):
+    """A tool call could not reach the trial's tools through the runner.
+
+    There is no tool outcome for either substrate to record, and nothing in the
+    call the agent could have done differently, so the engine ends the trial on
+    it (``termination_reason: trial_lost``) rather than handing it back as a tool
+    failure the agent would read as its own and retry against. Each subclass
+    names one way the trial was lost.
+    """
+
+    def __init__(self, message: str, *, trial_id: str, tool_name: str) -> None:
+        super().__init__(message)
+        self.trial_id = trial_id
+        self.tool_name = tool_name
+
+
+class TrialNotRegisteredError(TrialLostError):
     """The runner holds no registration for the trial a tool call named.
 
     The call reached no tool, so there is nothing about it for either substrate
-    to record and nothing in it the agent could have done differently. The
-    engine ends the trial on it rather than handing it back as a tool failure.
+    to record and nothing in it the agent could have done differently.
     """
 
     def __init__(self, trial_id: str, tool_name: str) -> None:
         super().__init__(
             f"Trial {trial_id!r} is not registered on the runner, so its call to "
-            f"{tool_name!r} reached no tool."
+            f"{tool_name!r} reached no tool.",
+            trial_id=trial_id,
+            tool_name=tool_name,
         )
-        self.trial_id = trial_id
-        self.tool_name = tool_name
+
+
+class RunnerUnreachableError(TrialLostError):
+    """The runner could not be reached for a tool call (gRPC ``UNAVAILABLE``).
+
+    Every later call of the trial would fail the same way: the agent's tools all
+    run through the one runner. Handed back as a tool failure, each would read as
+    the agent's own error, and the agent spends the rest of its episode retrying
+    commands that never reach its container. Seen on a trial whose agent starved
+    the machine: from one call on, ``echo hi`` and ``true`` each came back as
+    ``UNAVAILABLE`` after minutes, until the episode's time ran out.
+    """
+
+    def __init__(self, trial_id: str, tool_name: str, detail: str) -> None:
+        super().__init__(
+            f"The runner could not be reached for trial {trial_id!r}'s call to "
+            f"{tool_name!r}: {detail}",
+            trial_id=trial_id,
+            tool_name=tool_name,
+        )
 
 
 def parse_termination_reason(raw: str) -> TerminationReason | None:

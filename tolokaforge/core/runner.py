@@ -85,7 +85,7 @@ from tolokaforge.core.simulation_budget import SimulationBudget, SimulationBudge
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.summarize_policy import LLMSummarizer, SummarizePolicy
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
-from tolokaforge.runner.protocol import TrialNotRegisteredError
+from tolokaforge.runner.protocol import TrialLostError
 from tolokaforge.runner.tool_factory import (
     BACKSTOP_GRACE_S,
     read_episode_exit_status,
@@ -663,10 +663,10 @@ class TrialRunner:
                 # ``EXCLUDED_TYPED_REASONS``. Consulting the classifier here
                 # avoids pricing "one 429 on the opening generation" as a
                 # scored agent failure when "the identical 429 one turn later"
-                # is excluded. ``TrialNotRegisteredError`` beats the classifier
+                # is excluded. ``TrialLostError`` beats the classifier
                 # (it is the "trial-lost" signal, unrelated to provider health).
                 status = TrialStatus.ERROR
-                if isinstance(e, TrialNotRegisteredError):
+                if isinstance(e, TrialLostError):
                     termination_reason = TerminationReason.TRIAL_LOST
                 else:
                     # ``classify_loop_error`` maps typed provider faults

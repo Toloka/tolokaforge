@@ -251,6 +251,9 @@ class RuntimeBackend(Protocol):
                 failed :class:`ToolResult`: there is no tool outcome to
                 record, and the trial ends here rather than the agent
                 seeing a tool of its own fail.
+            RunnerUnreachableError: the runner could not be reached for the
+                call, so it reached no tool either; the trial ends here for
+                the same reason.
         """
         ...
 

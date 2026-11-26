@@ -28,6 +28,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -1327,12 +1328,46 @@ def resolve_env_endpoints(
 # ---------------------------------------------------------------------------
 
 
-def shutdown_compose(compose: DockerCompose) -> None:
-    """Best-effort ``docker compose down --volumes``. Never raises."""
-    try:
-        compose.stop(down=True)
-    except Exception:  # noqa: BLE001 — best-effort teardown
-        logger.exception("compose_materialisation: docker compose down failed")
+COMPOSE_DOWN_TIMEOUT_S = 300.0
+"""How long :func:`shutdown_compose` waits for ``docker compose down`` to finish.
+
+A healthy ``down`` of one trial's stack takes seconds. ``DockerCompose.stop``
+waits on its subprocess with no deadline of its own: on a trial whose agent had
+starved its machine, the teardown stopped right after its log routers and held
+the run for 92 minutes, until the job around the run killed it.
+"""
+
+
+def shutdown_compose(compose: DockerCompose, *, timeout_s: float | None = None) -> bool:
+    """Best-effort ``docker compose down --volumes``, waited on for *timeout_s*
+    (:data:`COMPOSE_DOWN_TIMEOUT_S` when ``None``). Never raises.
+
+    Returns ``True`` once the ``down`` is over, whether it succeeded or not; a
+    failure is logged with its error, also when it comes after the wait ended.
+    Returns ``False`` when the wait ended with the ``down`` still running in its
+    daemon thread: it runs in the compose context, so the caller must leave that
+    directory in place. Whatever hung it would hang a second ``down`` too, so
+    waiting longer buys nothing.
+    """
+    wait_s = COMPOSE_DOWN_TIMEOUT_S if timeout_s is None else timeout_s
+
+    def _down() -> None:
+        try:
+            compose.stop(down=True)
+        except Exception:  # noqa: BLE001 — best-effort teardown
+            logger.exception("compose_materialisation: docker compose down failed")
+
+    worker = threading.Thread(target=_down, name="compose-down", daemon=True)
+    worker.start()
+    worker.join(wait_s)
+    if not worker.is_alive():
+        return True
+    logger.error(
+        "compose_materialisation: docker compose down did not finish in %.0f s; "
+        "teardown goes on without it, and the stack's containers may still exist",
+        wait_s,
+    )
+    return False
 
 
 def compose_container_to_snapshot(container: ComposeContainer) -> ContainerSnapshot:
@@ -1362,10 +1397,14 @@ def cleanup_partial_materialisation(compose: DockerCompose | None, temp_dir: Pat
     a typed error is re-raised. Handles both the early-failure case
     (``compose is None`` — the DockerCompose was never constructed) and
     the late-failure case (containers up but endpoint resolution
-    failed).
+    failed). A ``down`` still running after its wait keeps *temp_dir*,
+    which is its compose context.
     """
-    if compose is not None:
-        shutdown_compose(compose)
+    if compose is not None and not shutdown_compose(compose):
+        logger.error(
+            "compose_materialisation: leaving %s in place for the unfinished down", temp_dir
+        )
+        return
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 

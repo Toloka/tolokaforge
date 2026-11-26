@@ -13,6 +13,10 @@ from typing import Any
 import yaml
 
 CONTAINER_LOGS_DIR = "/logs"
+DEFAULT_CPUS = 2
+"""``${CPUS}`` for a task that declares no ``[environment].cpus``; it caps nothing."""
+DEFAULT_MEMORY_MB = 4096
+"""``${MEMORY}`` in MiB for a task that declares no ``[environment].memory_mb``; it caps nothing."""
 """The harness log tree inside a trial container.
 
 The value a terminal-bench pack authors against as ``T_BENCH_CONTAINER_LOGS_PATH``.
@@ -138,8 +142,23 @@ class TerminalBenchTask:
     agent, and on a pack that seals its reward directory the write fails and
     every trial of that task scores zero no matter what the agent did.
     """
-    cpus: float = 2
-    memory_mb: int = 4096
+    cpu_limit: float | None = None
+    """The CPUs ``[environment].cpus`` declares, or ``None`` when it declares none.
+
+    The agent container is capped at it (``cpus:`` on the agent service). Capping a
+    task at a default it never declared would change what it measures, so an
+    undeclared field caps nothing, as upstream does; :attr:`cpus` carries the
+    default a task-authored compose's ``${CPUS}`` still needs.
+    """
+    memory_limit_mb: int | None = None
+    """The memory ``[environment].memory_mb`` declares, or ``None`` when it declares none.
+
+    The agent container is capped at it (``mem_limit:`` on the agent service).
+    Without a cap the agent's processes share the trial's machine with dockerd and
+    the tool runner, and a build or a test the agent runs at the machine's full
+    width can starve both: the runner stops answering and every later tool call
+    fails, though nothing the agent did was wrong on a machine of the declared size.
+    """
     build_timeout_sec: float | None = None
     """Seconds the task allows each of its image builds, from
     ``[environment].build_timeout_sec``, or ``None`` when it declares none.
@@ -201,6 +220,18 @@ class TerminalBenchTask:
     — one more image layer under the shipped default. The bundle rides with the
     task rather than with the operator's home directory, so what the agent could
     read is versioned alongside the tests it is scored against."""
+
+    @property
+    def cpus(self) -> float:
+        """What a task-authored compose's ``${CPUS}`` resolves to: :attr:`cpu_limit`,
+        or ``DEFAULT_CPUS`` for a task that declares none."""
+        return self.cpu_limit if self.cpu_limit is not None else DEFAULT_CPUS
+
+    @property
+    def memory_mb(self) -> int:
+        """What ``${MEMORY}`` resolves to, in MiB: :attr:`memory_limit_mb`, or
+        ``DEFAULT_MEMORY_MB`` for a task that declares none."""
+        return self.memory_limit_mb if self.memory_limit_mb is not None else DEFAULT_MEMORY_MB
 
     @property
     def is_v4(self) -> bool:
@@ -287,6 +318,19 @@ def _parse_positive_seconds(
     a verifier budget is only reached once the agent's trial is paid for, and
     a build budget only once the build is already running.
     """
+    declared = _parse_positive_number(task_id, section, section_name, key)
+    return None if declared is None else float(declared)
+
+
+def _parse_positive_number(
+    task_id: str, section: Mapping[str, Any], section_name: str, key: str
+) -> int | float | None:
+    """A quantity a ``task.toml`` section declares, as declared, or ``None`` when it
+    declares none.
+
+    Refused unless it is a positive number. Kept as the TOML gave it, so a whole
+    number renders as one wherever it is written back out (``cpus: 4``).
+    """
     declared = section.get(key)
     if declared is None:
         return None
@@ -300,7 +344,20 @@ def _parse_positive_seconds(
             f"terminal-bench task {task_id!r}: {section_name}.{key} must be greater "
             f"than zero; got {declared!r}."
         )
-    return float(declared)
+    return declared
+
+
+def _parse_memory_limit_mb(task_id: str, environment: Mapping[str, Any]) -> int | None:
+    """``[environment].memory_mb`` as whole MiB, or ``None`` when the task declares none."""
+    declared = _parse_positive_number(task_id, environment, "environment", "memory_mb")
+    if declared is None:
+        return None
+    if not float(declared).is_integer():
+        raise ValueError(
+            f"terminal-bench task {task_id!r}: environment.memory_mb must be a whole number "
+            f"of MiB; got {environment['memory_mb']!r}."
+        )
+    return int(declared)
 
 
 def _parse_user(task_id: str, section: Mapping[str, Any], section_name: str) -> str | None:
@@ -607,8 +664,8 @@ def parse_task_dir(task_dir: Path) -> TerminalBenchTask:
         verifier_timeout_sec=_parse_positive_seconds(task_id, verifier, "verifier", "timeout_sec"),
         agent_user=_parse_user(task_id, agent, "agent"),
         verifier_user=_parse_user(task_id, verifier, "verifier"),
-        cpus=environment.get("cpus", 2),
-        memory_mb=environment.get("memory_mb", 4096),
+        cpu_limit=_parse_positive_number(task_id, environment, "environment", "cpus"),
+        memory_limit_mb=_parse_memory_limit_mb(task_id, environment),
         build_timeout_sec=_parse_positive_seconds(
             task_id, environment, "environment", "build_timeout_sec"
         ),

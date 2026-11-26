@@ -321,8 +321,9 @@ class ComposeMaterialiser(Protocol):
         ``{service: bytes_written}``. Never raises."""
 
     def teardown(self, handle: StackHandle) -> None:
-        """Stop routers, ``shutdown_compose``, remove the temp dir.
-        Idempotent; never raises past its own ``try/finally``."""
+        """Stop routers, ``shutdown_compose``, remove the temp dir once the
+        ``down`` is over (a ``down`` still running after its wait keeps it, as
+        its compose context). Idempotent; never raises past its own ``try/finally``."""
 
 
 @runtime_checkable

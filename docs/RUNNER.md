@@ -789,7 +789,7 @@ independent by design:
 
 - **Is another attempt worth making?** `Orchestrator._is_retryable_trajectory`.
   Anything transient — a rate limit, an API error, a timeout, a bare error, a
-  `trial_lost` registration, a gateway that refused every request, a
+  lost trial (`trial_lost`), a gateway that refused every request, a
   coding-harness CLI that failed without spending anything — is requeued
   until `max_attempt_retries` is spent. A deterministic fault
   (`provision_error`, an auth-shaped `api_error` or
@@ -822,8 +822,10 @@ fixed, and the reason in the bundle is what says so.
 
 `trial_lost` is the one of those the agent had no part in: the runner no longer
 holds the trial the engine is running — a restarted shared-stack runner, a
-shutdown sweep, or the deregistration before a retry — so the tool call that hit
-it reached no tool. The trial ends there rather than spending its turn budget on
+shutdown sweep, or the deregistration before a retry — or cannot be reached at
+all (gRPC `UNAVAILABLE` on `ExecuteTool`), so the tool call that hit it reached
+no tool. An unreachable runner would fail every later call of the trial the same
+way, and as tool failures they read to the agent as its own errors. The trial ends there rather than spending its turn budget on
 refusals, classifies as `harness_error`, and is **not graded**: the runner that
 would compute the verdict is the one that lost the trial, so no fabricated score
 enters `avg_score`. Re-registering is exactly the repair, which is why it is

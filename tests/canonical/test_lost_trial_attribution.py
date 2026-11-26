@@ -6,19 +6,24 @@ deliberate deregistration before a retry. None of them is the agent calling a ba
 tool, and every one of them reaches the agent as an ordinary tool failure unless
 the engine ends the trial where the fault happened.
 
-Both routes into that fault are driven here with nothing mocked but the two LLMs:
-the real ``RunnerServiceImpl`` answering ``ExecuteTool`` for a trial it was never
-asked to register, the real ``GrpcRunnerClient`` translating the response, the
-real ``TrialRunner`` and its recorder around it, and ``build_trial_timeline`` over
-the result. The agent's own tool call runs inside the turn loop; the simulator's
-opening call runs before the loop, under a different ``except``, so a fix applied
-to one route leaves the other visibly open.
+A runner that cannot be reached at all (gRPC ``UNAVAILABLE``) is the same fault
+reached another way: the call reaches no tool, and every later call would fail
+the same way.
+
+Both routes into the fault, for both faults, are driven here with nothing mocked
+but the two LLMs: the real ``RunnerServiceImpl`` answering ``ExecuteTool`` for a
+trial it was never asked to register, or a real ``GrpcRunnerClient`` on a channel
+to an address nothing listens on; the real ``TrialRunner`` and its recorder
+around it, and ``build_trial_timeline`` over the result. The agent's own tool
+call runs inside the turn loop; the simulator's opening call runs before the loop,
+under a different ``except``, so a fix applied to one route leaves the other
+visibly open.
 """
 
 from __future__ import annotations
 
 from itertools import count
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import MagicMock
 
 import pytest
@@ -28,6 +33,7 @@ from tests.canonical._factories import make_trajectory, make_trial_spec
 from tests.utils.mock_clients import MockAsyncClient
 from tests.utils.runner_requests import execute_request
 from tests.utils.servicer_runtime import ServicerBackend
+from tests.utils.unreachable_runner import unreachable_runner_client
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.failure_attribution import (
     EXCLUDED_TYPED_REASONS,
@@ -68,6 +74,10 @@ LOST_TOOL = "calculator"
 so the name only has to be the same on both views."""
 
 _TASK_IDS = count()
+
+LostTrialFault = Literal["not_registered", "unreachable"]
+"""How the driven trial is lost: a runner that answers ``TRIAL_NOT_FOUND``, or one
+that cannot be reached at all."""
 
 
 def _servicer() -> tuple[RunnerServiceImpl, Any]:
@@ -115,20 +125,25 @@ def _calling_simulator() -> MagicMock:
 
 
 def drive_lost_trial(
-    *, bootstrap: bool = False
+    *, bootstrap: bool = False, fault: LostTrialFault = "not_registered"
 ) -> tuple[Trajectory, tuple[RecordedToolCall, ...], TrialTimeline]:
-    """Run one whole trial against a runner that never registered it.
+    """Run one whole trial against a runner that lost it.
 
-    ``bootstrap`` routes the fault through the simulator's opening turn, which
-    runs before the turn loop; otherwise the agent hits it inside the loop.
+    ``fault`` picks how: a runner that never registered the trial, or a runner
+    nothing answers for. ``bootstrap`` routes the fault through the simulator's
+    opening turn, which runs before the turn loop; otherwise the agent hits it
+    inside the loop.
 
     A plain function rather than a fixture: the reachability census in
     ``tests/canonical/test_termination_reason_reachability.py`` calls it from a
     module-scoped fixture, which cannot request the function-scoped servicer
     fixtures this builds for itself.
     """
-    service, context = _servicer()
-    runtime = ServicerBackend(service, context)
+    if fault == "unreachable":
+        runtime: Any = unreachable_runner_client()
+    else:
+        service, context = _servicer()
+        runtime = ServicerBackend(service, context)
     task_id = f"lost_trial_{next(_TASK_IDS)}"
     trial_id = f"{task_id}:0"
 
@@ -148,14 +163,23 @@ def drive_lost_trial(
     return trajectory, records, timeline
 
 
-@pytest.fixture
-def loop_route() -> tuple[Trajectory, tuple[RecordedToolCall, ...], TrialTimeline]:
-    return drive_lost_trial()
+@pytest.fixture(params=["not_registered", "unreachable"])
+def fault(request: pytest.FixtureRequest) -> LostTrialFault:
+    return request.param
 
 
 @pytest.fixture
-def bootstrap_route() -> tuple[Trajectory, tuple[RecordedToolCall, ...], TrialTimeline]:
-    return drive_lost_trial(bootstrap=True)
+def loop_route(
+    fault: LostTrialFault,
+) -> tuple[Trajectory, tuple[RecordedToolCall, ...], TrialTimeline]:
+    return drive_lost_trial(fault=fault)
+
+
+@pytest.fixture
+def bootstrap_route(
+    fault: LostTrialFault,
+) -> tuple[Trajectory, tuple[RecordedToolCall, ...], TrialTimeline]:
+    return drive_lost_trial(bootstrap=True, fault=fault)
 
 
 def test_the_runner_refuses_a_call_for_a_trial_it_never_registered() -> None:

@@ -362,8 +362,9 @@ def test_teardown_stops_routers_before_shutdown_compose(monkeypatch: pytest.Monk
 
     shutdown_ts: list[float] = []
 
-    def recording_shutdown(_compose: Any) -> None:
+    def recording_shutdown(_compose: Any) -> bool:
         shutdown_ts.append(time.monotonic())
+        return True
 
     monkeypatch.setattr(materialiser_module, "shutdown_compose", recording_shutdown)
 
@@ -525,7 +526,7 @@ def test_teardown_swallows_router_stop_errors(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(
         materialiser_module,
         "shutdown_compose",
-        lambda _compose: shutdown_calls.append(True),
+        lambda _compose: shutdown_calls.append(True) or True,
     )
 
     backend = _make_backend(factory)
