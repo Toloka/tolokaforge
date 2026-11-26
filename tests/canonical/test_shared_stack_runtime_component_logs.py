@@ -256,7 +256,7 @@ def test_close_stops_routers_before_shutdown_compose(
 
     shutdown_ts: list[float] = []
     monkeypatch.setattr(
-        module, "shutdown_compose", lambda _compose: shutdown_ts.append(time.monotonic())
+        module, "shutdown_compose", lambda _compose: shutdown_ts.append(time.monotonic()) or True
     )
 
     backend = _connect_run_scope(monkeypatch, manifest, fake_compose)
@@ -359,7 +359,9 @@ def test_close_swallows_router_stop_errors(monkeypatch: pytest.MonkeyPatch, tmp_
     from tolokaforge.core import docker_compose_materialiser as module
 
     shutdown_calls: list[bool] = []
-    monkeypatch.setattr(module, "shutdown_compose", lambda _compose: shutdown_calls.append(True))
+    monkeypatch.setattr(
+        module, "shutdown_compose", lambda _compose: shutdown_calls.append(True) or True
+    )
 
     backend = _connect_run_scope(monkeypatch, manifest, fake_compose)
     backend.connect()

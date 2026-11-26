@@ -25,6 +25,7 @@ import pytest
 import yaml
 from testcontainers.compose.compose import ComposeContainer, PublishedPortModel
 
+from tolokaforge.core import compose_materialisation
 from tolokaforge.core.compose_materialisation import (
     NETPOLICY_EDGE_NETWORK,
     NETPOLICY_INTERNAL_NETWORK,
@@ -484,21 +485,23 @@ class TestShutdownCompose:
 
         started = time.monotonic()
         with caplog.at_level(logging.ERROR):
-            shutdown_compose(compose, timeout_s=0.2)
+            finished = shutdown_compose(compose, timeout_s=0.2)
         waited = time.monotonic() - started
         release.set()
 
         assert waited < 5
         compose.stop.assert_called_once_with(down=True)
         assert "did not finish in 0 s" in caplog.text
+        assert finished is False
 
     def test_a_failed_down_is_logged_with_its_error(self, caplog: pytest.LogCaptureFixture) -> None:
         compose = MagicMock()
         compose.stop.side_effect = RuntimeError("docker daemon disconnected")
 
         with caplog.at_level(logging.ERROR):
-            shutdown_compose(compose)
+            finished = shutdown_compose(compose)
 
+        assert finished is True
         assert "docker compose down failed" in caplog.text
         assert "docker daemon disconnected" in caplog.text
 
@@ -598,6 +601,24 @@ class TestCleanupPartialMaterialisation:
 
         compose.stop.assert_called_once_with(down=True)
         assert not d.exists()
+
+    def test_a_down_still_running_keeps_the_temp_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The temp dir is the compose context of the ``down`` still running."""
+        monkeypatch.setattr(compose_materialisation, "COMPOSE_DOWN_TIMEOUT_S", 0.2)
+        release = threading.Event()
+        compose = MagicMock()
+        compose.stop.side_effect = lambda **_: release.wait(30)
+        d = tmp_path / "materialisation"
+        d.mkdir()
+
+        try:
+            cleanup_partial_materialisation(compose, d)
+
+            assert d.exists()
+        finally:
+            release.set()
 
     def test_missing_temp_dir_does_not_raise(self, tmp_path: Path) -> None:
         """Teardown is idempotent — a temp dir already removed

@@ -252,8 +252,15 @@ class DockerComposeMaterialiser:
                     router.container_name,
                     typed.stack_id,
                 )
-        shutdown_compose(typed.compose)
-        shutil.rmtree(typed.temp_dir, ignore_errors=True)
+        if shutdown_compose(typed.compose):
+            shutil.rmtree(typed.temp_dir, ignore_errors=True)
+            return
+        logger.error(
+            "DockerComposeMaterialiser.teardown: leaving %s in place for the unfinished "
+            "down of stack %r",
+            typed.temp_dir,
+            typed.stack_id,
+        )
 
     # ------------------------------------------------------------------
     # Failure-time diagnostics
